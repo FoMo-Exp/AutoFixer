@@ -49,10 +49,10 @@ MUST resolve within the retained evidence bundle.
 | Record | Required purpose | Required linkage |
 | --- | --- | --- |
 | `task_input` | Identifies the requested remediation and target revision. | `task_id`, `issue_id`, repository URL, base SHA |
-| `risk_assessment` | Records the pre-approval risk decision. | `task_id`, `run_id`, risk class, assessor, policy version |
+| `risk_assessment` | Records the pre-approval risk decision. | `task_id`, `run_id`, risk class, assessor, policy version, elevated-approval reference when applicable |
 | `capability_grant` | Bounds the only actions a runner may exercise. | `run_id`, grant version, repository/base SHA, permitted scope |
 | `execution_event[]` | Immutable evidence of each state transition and tool invocation. | `run_id`, ordered digest chain, prior/resulting state |
-| `patch_report` | Binds the proposed change and validation evidence to its PR head. | `task_id`, `run_id`, PR ID, branch, base SHA, head SHA |
+| `patch_report` | Records an explicit no-patch outcome or binds a patch and validation evidence to its revision. | `task_id`, `run_id`, base SHA, and branch/head/PR identifiers when they exist |
 | `approval_snapshot` | Shows the merge boundary for one exact head, or why no approval was available. | `run_id`, current head SHA or `null`, snapshot time |
 
 `task_input` MUST contain:
@@ -80,19 +80,24 @@ in an approved `capability_grant`.
 
 `risk_assessment` MUST contain `contract_version`, `task_id`, `run_id`,
 `assessed_at`, `assessor_identity`, `risk_class`, `decision_code`,
-`rationale_reference`, and `policy_version`. `risk_class` is exactly one of
-`low`, `elevated`, or `prohibited`. An `elevated` assessment MUST name the human
-approval that precedes grant issuance. A `prohibited` assessment MUST lead to
-`rejected`; it MUST NOT be downgraded in the same run.
+`rationale_reference`, `policy_version`, and `elevated_approval_reference`.
+`risk_class` is exactly one of `low`, `elevated`, or `prohibited`.
+`elevated_approval_reference` MUST be a non-null reference to the pre-grant
+approval record for an `elevated` assessment. That record MUST name the human
+approver and approval timestamp, and its timestamp MUST precede grant issuance.
+For `low` and `prohibited` assessments, `elevated_approval_reference` MUST be
+explicitly `null`. A `prohibited` assessment MUST lead to `rejected`; it MUST
+NOT be downgraded in the same run.
 
 `capability_grant`, when a run is approved, MUST contain `contract_version`,
 `task_id`, `run_id`, `issued_at`, `expires_at`, `policy_version`,
 `capability_grant_version`, `repository_url`, `base_sha`, `permitted_paths`,
 `permitted_tools`, `network_destinations`, `max_wall_clock_seconds`,
 `resource_limits`, `may_create_patch`, `may_create_or_update_pr`, and
-`approval_reference`. Missing scope means denied. `permitted_tools` records a
-tool identity and its allowed arguments; `network_destinations` is an explicit
-allowlist and is normally empty.
+`approval_reference`. Missing scope means denied. For an `elevated` run,
+`approval_reference` MUST equal `risk_assessment.elevated_approval_reference`.
+`permitted_tools` records a tool identity and its allowed arguments;
+`network_destinations` is an explicit allowlist and is normally empty.
 
 ## 3. Required immutable execution event
 
@@ -131,37 +136,59 @@ head-unbound evidence MUST stop the run and revoke the grant.
 
 ## 4. Patch report and approval snapshot
 
-When a patch or PR exists, `patch_report` MUST contain:
+Every complete evidence bundle MUST contain one `patch_report`, including a
+rejection or cancellation that produced no patch. `patch_status` is exactly one
+of `not_created`, `prepared_no_pr`, `proposed`, or `merged`; it determines which
+revision fields are present:
+
+- `not_created`: `branch`, `head_sha`, and `pr_id` MUST each be explicitly
+  `null`.
+- `prepared_no_pr`: `branch` and `head_sha` MUST be non-null, `branch` MUST
+  begin `autofixer/`, and `pr_id` MUST be explicitly `null`.
+- `proposed` or `merged`: `branch`, `head_sha`, and `pr_id` MUST all be
+  non-null, and `branch` MUST begin `autofixer/`.
+
+`patch_report` MUST contain:
 
 | Field | Rule | FP-01 source |
 | --- | --- | --- |
 | `contract_version`, `task_id`, `run_id`, `issued_at` | Versioned, time-stamped task/run linkage. | Consequences; audit record |
-| `repository_url`, `base_sha`, `branch`, `head_sha`, `pr_id` | All point to the exact proposed revision. `branch` MUST begin `autofixer/`. | Audit record; GitHub merge boundary |
-| `change_summary` | Bounded description of the proposed patch. | Scope: prepare a patch only inside approved checkout |
+| `repository_url`, `base_sha` | Identify the exact repository and base revision for every outcome. | Audit record |
+| `patch_status`, `branch`, `head_sha`, `pr_id` | Follow the status-specific null and branch rules above. A non-null revision value identifies the exact proposed revision. | Audit record; GitHub merge boundary |
+| `change_summary` | Bounded patch description, or an explicit no-patch disposition. | Scope: prepare a patch only inside approved checkout |
 | `validation` | At least one record for every validation attempt: tool/arguments, redacted exit status, output digest, and matching event reference. | Audit record; stop condition for validation failure |
-| `evidence_references` | Non-empty references to retained event/artifact evidence bound to `head_sha`. | Audit record; evidence must be tied to current head |
+| `evidence_references` | Non-empty retained event/artifact references, bound to `head_sha` when one exists, or to the terminal event when `patch_status` is `not_created`. | Audit record; evidence must be tied to current head |
 | `report_digest`, `digest_algorithm` | Tamper-evident report reference. | Audit record; threat model digest chain |
 
 An `approval_snapshot` MUST contain `contract_version`, `task_id`, `run_id`,
 `observed_at`, `head_sha`, `qa`, `required_checks`, `review_discussions`,
-`owner_approvals`, `merge_queue_eligible`, `approval_snapshot_status`, and an
-`evidence_reference`. It is always required, even when approval was not
-requested or cannot apply. In that case, use an explicit status such as
-`not_requested` or `not_applicable`, set `merge_queue_eligible` to `false`, and
-preserve empty arrays rather than omitting the observations.
+`approval_quorum`, `merge_queue_eligible`, `approval_snapshot_status`, and an
+`evidence_reference`. `approval_quorum` follows the language in `CONTEXT.md`:
+it is an object containing `status`, `head_sha`, and `approvals`; each approval
+contains the approver identity, approved head SHA, and timestamp. It is always
+required, even when approval was not requested or cannot apply. In that case,
+use an explicit status such as `not_requested` or `not_applicable`, set
+`merge_queue_eligible` to `false`, and preserve empty arrays rather than
+omitting the observations.
+
+The snapshot `head_sha`, `qa.head_sha`, `review_discussions.head_sha`, and
+`approval_quorum.head_sha` MAY be `null` only when the associated
+`patch_report.patch_status` is `not_created`; otherwise they MUST equal the
+patch report's non-null `head_sha`. `qa.identity` and `qa.approved_at` MAY be
+`null` only when `qa.status` is `not_requested` or `not_applicable`.
 
 For a proposed PR head, a snapshot is `eligible` only if, simultaneously:
 
 1. `qa.status` is `passed` for that exact `head_sha`;
 2. every `required_checks[]` entry is `passed` for that exact `head_sha`;
 3. `review_discussions.status` is `resolved` for that exact `head_sha`; and
-4. `owner_approvals` has current-head approvals from both `Luthiel` and
-   `Ludwig-Planck`.
+4. `approval_quorum.approvals` has current-head approvals from both `Luthiel`
+   and `Ludwig-Planck`.
 
 A new head SHA MUST produce a new snapshot and invalidates the old QA/checks/
-discussion/owner observations. A snapshot describes GitHub's merge boundary; a
-runner MUST NOT use it to merge, dismiss reviews, waive checks, self-approve,
-or enqueue a PR.
+discussion/approval-quorum observations. A snapshot describes GitHub's merge
+boundary; a runner MUST NOT use it to merge, dismiss reviews, waive checks,
+self-approve, or enqueue a PR.
 
 ## 5. State and completeness rules
 
@@ -179,9 +206,12 @@ only state values. Transitions MUST follow FP-01's state table. In particular:
 - `timed_out`, `expired`, `rejected`, `cancelled`, and `merged` are terminal
   for that grant.
 
-Every terminal outcome MUST retain a complete evidence bundle, even when the
-bundle has no PR or tool output. `null` is permitted only where this document
-explicitly permits it; absence is never a substitute for a known empty or
+Every terminal outcome MUST retain a complete evidence bundle, including a
+`patch_report` and `approval_snapshot`, even when it has no patch, PR, or tool
+output. `null` is permitted only for the risk-assessment cases explicitly
+defined in section 2, the execution-event cases in section 3, the patch-report
+and approval-snapshot cases explicitly defined in section 4, and nowhere else.
+Absence is never a substitute for a known empty or
 not-applicable value. Evidence references MUST resolve to access-controlled,
 append-only retained records. Artifact references MUST name the digest
 algorithm and digest; sensitive raw data remains outside the contract record.
@@ -211,7 +241,8 @@ they do not authorize the described work.
     "risk_class": "low",
     "decision_code": "risk_low_approved",
     "rationale_reference": "evidence://risk/task-demo-success-001",
-    "policy_version": "governance-1"
+    "policy_version": "governance-1",
+    "elevated_approval_reference": null
   },
   "patch_report": {
     "contract_version": "1.0.0",
@@ -220,6 +251,7 @@ they do not authorize the described work.
     "issued_at": "2026-10-21T09:12:00Z",
     "repository_url": "https://github.com/example/service.git",
     "base_sha": "base111",
+    "patch_status": "merged",
     "branch": "autofixer/task-demo-success-001",
     "head_sha": "head222",
     "pr_id": "pr-42",
@@ -243,10 +275,14 @@ they do not authorize the described work.
     "qa": { "status": "passed", "head_sha": "head222", "identity": "qa:team", "approved_at": "2026-10-21T09:30:00Z" },
     "required_checks": [{ "name": "required-check", "status": "passed", "head_sha": "head222", "observed_at": "2026-10-21T09:35:00Z" }],
     "review_discussions": { "status": "resolved", "head_sha": "head222", "observed_at": "2026-10-21T09:40:00Z" },
-    "owner_approvals": [
-      { "identity": "Luthiel", "head_sha": "head222", "approved_at": "2026-10-21T09:45:00Z" },
-      { "identity": "Ludwig-Planck", "head_sha": "head222", "approved_at": "2026-10-21T09:50:00Z" }
-    ],
+    "approval_quorum": {
+      "status": "satisfied",
+      "head_sha": "head222",
+      "approvals": [
+        { "identity": "Luthiel", "head_sha": "head222", "approved_at": "2026-10-21T09:45:00Z" },
+        { "identity": "Ludwig-Planck", "head_sha": "head222", "approved_at": "2026-10-21T09:50:00Z" }
+      ]
+    },
     "merge_queue_eligible": true,
     "approval_snapshot_status": "eligible",
     "evidence_reference": "evidence://approvals/run-demo-success-001/head222"
@@ -272,7 +308,8 @@ they do not authorize the described work.
     "risk_class": "prohibited",
     "decision_code": "prohibited_secret_access",
     "rationale_reference": "evidence://risk/task-demo-rejected-001",
-    "policy_version": "governance-1"
+    "policy_version": "governance-1",
+    "elevated_approval_reference": null
   },
   "patch_report": {
     "contract_version": "1.0.0",
@@ -281,6 +318,7 @@ they do not authorize the described work.
     "issued_at": "2026-10-21T11:01:00Z",
     "repository_url": "https://github.com/example/service.git",
     "base_sha": "base555",
+    "patch_status": "not_created",
     "branch": null,
     "head_sha": null,
     "pr_id": null,
@@ -299,7 +337,7 @@ they do not authorize the described work.
     "qa": { "status": "not_requested", "head_sha": null, "identity": null, "approved_at": null },
     "required_checks": [],
     "review_discussions": { "status": "not_applicable", "head_sha": null, "observed_at": "2026-10-21T11:01:00Z" },
-    "owner_approvals": [],
+    "approval_quorum": { "status": "not_requested", "head_sha": null, "approvals": [] },
     "merge_queue_eligible": false,
     "approval_snapshot_status": "not_requested",
     "evidence_reference": "evidence://approvals/run-demo-rejected-001/no-pr"
@@ -325,7 +363,8 @@ they do not authorize the described work.
     "risk_class": "elevated",
     "decision_code": "elevated_approved_then_cancelled",
     "rationale_reference": "evidence://risk/task-demo-cancelled-001",
-    "policy_version": "governance-1"
+    "policy_version": "governance-1",
+    "elevated_approval_reference": "evidence://grant-approvals/run-demo-cancelled-001"
   },
   "patch_report": {
     "contract_version": "1.0.0",
@@ -334,6 +373,7 @@ they do not authorize the described work.
     "issued_at": "2026-10-21T12:10:00Z",
     "repository_url": "https://github.com/example/service.git",
     "base_sha": "base777",
+    "patch_status": "prepared_no_pr",
     "branch": "autofixer/task-demo-cancelled-001",
     "head_sha": "head888",
     "pr_id": null,
@@ -357,12 +397,12 @@ they do not authorize the described work.
     "qa": { "status": "not_requested", "head_sha": "head888", "identity": null, "approved_at": null },
     "required_checks": [],
     "review_discussions": { "status": "not_applicable", "head_sha": "head888", "observed_at": "2026-10-21T12:15:00Z" },
-    "owner_approvals": [],
+    "approval_quorum": { "status": "not_requested", "head_sha": "head888", "approvals": [] },
     "merge_queue_eligible": false,
     "approval_snapshot_status": "not_requested",
     "evidence_reference": "evidence://approvals/run-demo-cancelled-001/head888"
   },
-  "evidence_references": ["evidence://risk/task-demo-cancelled-001", "evidence://events/run-demo-cancelled-001/5", "evidence://approvals/run-demo-cancelled-001/head888"]
+  "evidence_references": ["evidence://risk/task-demo-cancelled-001", "evidence://grant-approvals/run-demo-cancelled-001", "evidence://events/run-demo-cancelled-001/5", "evidence://approvals/run-demo-cancelled-001/head888"]
 }
 ```
 
