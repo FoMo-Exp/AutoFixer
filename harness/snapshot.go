@@ -24,6 +24,7 @@ const (
 	DenyApprovalQuorumIncomplete      = "deny_approval_quorum_incomplete"
 	DenyApprovalQuorumStaleHead       = "deny_approval_quorum_stale_head"
 	DenySnapshotRunMismatch           = "deny_snapshot_run_mismatch"
+	DenySnapshotHeadMismatch          = "deny_snapshot_head_mismatch"
 )
 
 // RequiredApprovers is the approval quorum from CONTEXT.md: simultaneous

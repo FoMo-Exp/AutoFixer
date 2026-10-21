@@ -101,6 +101,9 @@ func IssueGrant(assessment RiskAssessment, p GrantParams) (CapabilityGrant, erro
 	if policyVersion == "" {
 		policyVersion = DefaultPolicyVersion
 	}
+	if policyVersion != assessment.PolicyVersion {
+		return CapabilityGrant{}, errors.New("harness: capability grant policy version must match the risk assessment")
+	}
 	return CapabilityGrant{
 		ContractVersion:        ContractVersion,
 		TaskID:                 p.TaskID,

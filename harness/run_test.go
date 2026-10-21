@@ -534,3 +534,240 @@ func TestStoppedRunRequiresNewGrantToReapprove(t *testing.T) {
 		t.Errorf("VerifyChain: %v", err)
 	}
 }
+
+func TestApprovedForMergeRequiresEligibleSnapshot(t *testing.T) {
+	store := NewEventStore()
+	run, _ := runningRun(t, store)
+	if err := run.SetPR("autofixer/task-1", "head222", "pr-42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Transition(StateAwaitingReview, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// no approval evidence of any kind: the merge boundary must hold
+	if err := run.Transition(StateApprovedForMerge, ""); err == nil {
+		t.Error("approved_for_merge without an eligible snapshot: err = nil, want error")
+	}
+	if run.State != StateAwaitingReview {
+		t.Errorf("state = %q, want %q", run.State, StateAwaitingReview)
+	}
+	events := store.Events("run-1")
+	last := events[len(events)-1]
+	if last.DecisionOrStopCode == nil {
+		t.Error("denied merge transition must be logged with a decision code")
+	}
+	if err := store.VerifyChain("run-1"); err != nil {
+		t.Errorf("VerifyChain: %v", err)
+	}
+}
+
+func TestRecordMergeEligibilityRejectsSnapshotHeadMismatch(t *testing.T) {
+	store := NewEventStore()
+	run, _ := runningRun(t, store)
+	if err := run.SetPR("autofixer/task-1", "head222", "pr-42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Transition(StateAwaitingReview, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// a fully-green snapshot for a DIFFERENT head must not count
+	snap := baseSnapshot("oldhead")
+	snap.TaskID = run.TaskID
+	snap.RunID = run.RunID
+	res := run.RecordMergeEligibility(&snap)
+	if res.Eligible || res.Code != DenySnapshotHeadMismatch {
+		t.Fatalf("result = %+v, want deny %q", res, DenySnapshotHeadMismatch)
+	}
+	if run.State != StateAwaitingReview {
+		t.Errorf("state = %q, want %q", run.State, StateAwaitingReview)
+	}
+	if err := run.Transition(StateApprovedForMerge, ""); err == nil {
+		t.Error("mismatched snapshot must not authorize approved_for_merge")
+	}
+}
+
+func TestSetPRHeadChangeInvalidatesEligibility(t *testing.T) {
+	store := NewEventStore()
+	run, _ := runningRun(t, store)
+	if err := run.SetPR("autofixer/task-1", "head222", "pr-42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Transition(StateAwaitingReview, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := baseSnapshot("head222")
+	snap.TaskID = run.TaskID
+	snap.RunID = run.RunID
+	if res := run.RecordMergeEligibility(&snap); !res.Eligible {
+		t.Fatalf("initial eligibility = %+v, want eligible", res)
+	}
+
+	// a new commit invalidates the recorded eligibility
+	if err := run.SetPR("autofixer/task-1", "head333", "pr-42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Transition(StateApprovedForMerge, ""); err == nil {
+		t.Error("approved_for_merge after head change: err = nil, want error (eligibility invalidated)")
+	}
+
+	// the old snapshot no longer matches the bound head
+	stale := baseSnapshot("head222")
+	stale.TaskID = run.TaskID
+	stale.RunID = run.RunID
+	if res := run.RecordMergeEligibility(&stale); res.Code != DenySnapshotHeadMismatch {
+		t.Errorf("stale snapshot result = %+v, want %q", res, DenySnapshotHeadMismatch)
+	}
+
+	// a renewed snapshot for the new head restores eligibility
+	fresh := baseSnapshot("head333")
+	fresh.TaskID = run.TaskID
+	fresh.RunID = run.RunID
+	if res := run.RecordMergeEligibility(&fresh); !res.Eligible {
+		t.Fatalf("renewed eligibility = %+v, want eligible", res)
+	}
+	if err := run.Transition(StateApprovedForMerge, ""); err != nil {
+		t.Fatalf("approved_for_merge after renewal: %v", err)
+	}
+	if run.State != StateApprovedForMerge {
+		t.Errorf("state = %q, want %q", run.State, StateApprovedForMerge)
+	}
+}
+
+func TestIneligibleSnapshotClearsRecordedEligibility(t *testing.T) {
+	store := NewEventStore()
+	run, _ := runningRun(t, store)
+	if err := run.SetPR("autofixer/task-1", "head222", "pr-42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Transition(StateAwaitingReview, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	good := baseSnapshot("head222")
+	good.TaskID = run.TaskID
+	good.RunID = run.RunID
+	if res := run.RecordMergeEligibility(&good); !res.Eligible {
+		t.Fatalf("eligibility = %+v, want eligible", res)
+	}
+
+	// a later ineligible observation for the same head must fail closed
+	bad := baseSnapshot("head222")
+	bad.TaskID = run.TaskID
+	bad.RunID = run.RunID
+	bad.QA.Status = "pending"
+	if res := run.RecordMergeEligibility(&bad); res.Eligible {
+		t.Fatalf("ineligible snapshot accepted: %+v", res)
+	}
+	if err := run.Transition(StateApprovedForMerge, ""); err == nil {
+		t.Error("approved_for_merge after gates regressed: err = nil, want error")
+	}
+}
+
+func TestApproveRejectsMismatchedGrantLinkage(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*GrantParams)
+	}{
+		{"foreign repository", func(p *GrantParams) { p.RepositoryURL = "https://github.com/evil/attacker.git" }},
+		{"foreign base sha", func(p *GrantParams) { p.BaseSHA = "different-base" }},
+		{"foreign policy version", func(p *GrantParams) { p.PolicyVersion = "governance-9" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewEventStore()
+			run := mustRun(t, store, "task-1", "run-1", RiskLow)
+			issuedAt := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+			p := GrantParams{
+				TaskID: "task-1", RunID: "run-1",
+				IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(time.Hour),
+				CapabilityGrantVersion: "grant-1",
+				RepositoryURL:          "https://github.com/Luthiel/AutoFixer.git",
+				BaseSHA:                "abc123",
+				MaxWallClockSeconds:    600,
+			}
+			tc.mutate(&p)
+
+			if err := run.Approve(p); err == nil {
+				t.Fatal("Approve with mismatched linkage: err = nil, want error")
+			}
+			if run.State != StateRequested {
+				t.Errorf("state = %q, want %q", run.State, StateRequested)
+			}
+			events := store.Events("run-1")
+			if len(events) != 1 {
+				t.Fatalf("events = %d, want 1 refusal record", len(events))
+			}
+			code := ""
+			if events[0].DecisionOrStopCode != nil {
+				code = *events[0].DecisionOrStopCode
+			}
+			if code != DenyGrantLinkageMismatch {
+				t.Errorf("code = %q, want %q", code, DenyGrantLinkageMismatch)
+			}
+			if run.Grant != nil {
+				t.Error("refused grant must not be recorded")
+			}
+		})
+	}
+}
+
+func TestStopTransitionAuditFailureFailsClosed(t *testing.T) {
+	store := NewEventStore()
+	run, _ := runningRun(t, store)
+	// appends so far: approve, running. The tool-decision append is the 3rd
+	// (must succeed); the stop transition append is the 4th (must fail).
+	store.failAt = 4
+
+	d := run.EvaluateAndRecordAction(ActionRequest{
+		Tool: "rm-rf", Arguments: []string{"-rf"},
+		RepositoryURL: "https://github.com/Luthiel/AutoFixer.git", BaseSHA: "abc123",
+	})
+	if d.Allowed || d.Code != DenyAuditFailure || d.StopCode != StopCodeAuditFailure {
+		t.Errorf("decision = %+v, want deny %q + stop %q", d, DenyAuditFailure, StopCodeAuditFailure)
+	}
+	if run.State != StateRunning {
+		t.Errorf("state = %q, stop could not be evidenced so the run stays put", run.State)
+	}
+	if !run.Revoked {
+		t.Error("un-evidenced stop must still revoke dispatch")
+	}
+}
+
+func TestTransitionPreconditionDenialsUseSpecificCode(t *testing.T) {
+	store := NewEventStore()
+	run, _ := runningRun(t, store)
+
+	// awaiting_review without a PR binding: precondition, not a table violation
+	if err := run.Transition(StateAwaitingReview, ""); err == nil {
+		t.Fatal("awaiting_review without PR must be denied")
+	}
+	events := store.Events("run-1")
+	code := ""
+	if events[len(events)-1].DecisionOrStopCode != nil {
+		code = *events[len(events)-1].DecisionOrStopCode
+	}
+	if code != DenyTransitionPreconditionMissing {
+		t.Errorf("code = %q, want %q", code, DenyTransitionPreconditionMissing)
+	}
+
+	// merge transition without eligible snapshot: also precondition
+	if err := run.SetPR("autofixer/task-1", "head222", "pr-42"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Transition(StateAwaitingReview, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Transition(StateApprovedForMerge, ""); err == nil {
+		t.Fatal("approved_for_merge without eligible snapshot must be denied")
+	}
+	events = store.Events("run-1")
+	if code = ""; events[len(events)-1].DecisionOrStopCode != nil {
+		code = *events[len(events)-1].DecisionOrStopCode
+	}
+	if code != DenyTransitionPreconditionMissing {
+		t.Errorf("code = %q, want %q", code, DenyTransitionPreconditionMissing)
+	}
+}

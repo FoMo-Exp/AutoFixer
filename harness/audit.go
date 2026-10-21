@@ -111,6 +111,12 @@ func eventDigest(e ExecutionEvent) (string, error) {
 type EventStore struct {
 	mu     sync.Mutex
 	events []*ExecutionEvent
+
+	// appendAttempts and failAt form a test seam: when failAt is non-zero,
+	// the failAt-th Append call fails, letting tests exercise audit-write
+	// failure paths deterministically.
+	appendAttempts int
+	failAt         int
 }
 
 // NewEventStore creates an empty append-only store.
@@ -122,8 +128,11 @@ func (s *EventStore) Append(e ExecutionEvent) (ExecutionEvent, error) {
 	if e.EventType != EventTypeStateTransition && e.EventType != EventTypeToolInvocation {
 		return ExecutionEvent{}, errors.New("harness: unknown event_type")
 	}
-	if e.RunID == "" || e.TaskID == "" {
-		return ExecutionEvent{}, errors.New("harness: event is missing run or task identity")
+	if e.RunID == "" || e.TaskID == "" || e.IssueID == "" {
+		return ExecutionEvent{}, errors.New("harness: event is missing run, task, or issue identity")
+	}
+	if e.ActorIdentity == "" || e.ExecutionIdentity == "" || e.OccurredAt.IsZero() || e.ApprovalSnapshotRef == "" {
+		return ExecutionEvent{}, errors.New("harness: event is missing a required contract field")
 	}
 	if !IsValidState(e.PriorState) || !IsValidState(e.ResultingState) {
 		return ExecutionEvent{}, errors.New("harness: event carries an invented state value")
@@ -136,6 +145,11 @@ func (s *EventStore) Append(e ExecutionEvent) (ExecutionEvent, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	s.appendAttempts++
+	if s.failAt != 0 && s.appendAttempts == s.failAt {
+		return ExecutionEvent{}, errors.New("harness: simulated audit write failure (test seam)")
+	}
 
 	var previous *string
 	sequence := 1

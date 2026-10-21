@@ -211,3 +211,26 @@ func TestReturnedEventIsACopy(t *testing.T) {
 		t.Errorf("mutating returned copy must not affect stored log: %v", err)
 	}
 }
+
+func TestAppendRejectsMissingContractFields(t *testing.T) {
+	store := NewEventStore()
+	cases := []struct {
+		name   string
+		mutate func(*ExecutionEvent)
+	}{
+		{"zero occurred_at", func(e *ExecutionEvent) { e.OccurredAt = time.Time{} }},
+		{"empty actor_identity", func(e *ExecutionEvent) { e.ActorIdentity = "" }},
+		{"empty execution_identity", func(e *ExecutionEvent) { e.ExecutionIdentity = "" }},
+		{"empty approval_snapshot_ref", func(e *ExecutionEvent) { e.ApprovalSnapshotRef = "" }},
+		{"empty issue_id", func(e *ExecutionEvent) { e.IssueID = "" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := testEvent("run-1")
+			tc.mutate(&e)
+			if _, err := store.Append(e); err == nil {
+				t.Error("err = nil, want error")
+			}
+		})
+	}
+}

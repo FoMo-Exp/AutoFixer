@@ -153,3 +153,43 @@ func TestIssueGrantRejectsMalformedGrants(t *testing.T) {
 		})
 	}
 }
+
+func TestIssueGrantRequiresPolicyVersionAlignment(t *testing.T) {
+	issuedAt := time.Date(2026, 10, 21, 9, 1, 0, 0, time.UTC)
+	expiresAt := issuedAt.Add(time.Hour)
+
+	assessment, err := NewRiskAssessment(RiskAssessmentInput{
+		TaskID: "task-1", RunID: "run-1",
+		AssessedAt:         time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC),
+		AssessorIdentity:   "human:reviewer-1",
+		RationaleReference: "evidence://risk/task-1",
+		PolicyVersion:      "governance-2",
+	}, RiskLow, DecisionRiskLowApproved, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// a grant carrying a different policy version than the assessment is refused
+	p := validGrantParams(issuedAt, expiresAt)
+	p.PolicyVersion = "governance-9"
+	if _, err := IssueGrant(assessment, p); err == nil {
+		t.Error("policy version mismatch: err = nil, want error")
+	}
+
+	// empty grant policy version resolves to the default, which must also
+	// match the assessment
+	p = validGrantParams(issuedAt, expiresAt)
+	if _, err := IssueGrant(assessment, p); err == nil {
+		t.Error("default policy version vs governance-2 assessment: err = nil, want error")
+	}
+
+	p = validGrantParams(issuedAt, expiresAt)
+	p.PolicyVersion = "governance-2"
+	grant, err := IssueGrant(assessment, p)
+	if err != nil {
+		t.Fatalf("aligned policy version: %v", err)
+	}
+	if grant.PolicyVersion != "governance-2" {
+		t.Errorf("PolicyVersion = %q, want %q", grant.PolicyVersion, "governance-2")
+	}
+}

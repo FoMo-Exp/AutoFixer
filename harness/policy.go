@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"path"
 	"strings"
 	"time"
 )
@@ -20,6 +21,8 @@ const (
 	DenyBranchForbidden          = "deny_branch_forbidden"
 	DenyPathNotPermitted         = "deny_path_not_permitted"
 	DenyNetworkNotPermitted      = "deny_network_not_permitted"
+	DenyPatchNotPermitted        = "deny_patch_not_permitted"
+	DenyPRNotPermitted           = "deny_pr_not_permitted"
 
 	StopCodeOutOfGrant   = "stop_out_of_grant"
 	StopCodeGrantExpired = "stop_grant_expired"
@@ -45,6 +48,11 @@ type ActionRequest struct {
 	Branch              string
 	Paths               []string
 	NetworkDestinations []string
+
+	// Repository-mutation intents, evaluated against the grant's
+	// may_create_patch / may_create_or_update_pr scope bits.
+	WantsPatch       bool
+	WantsPROperation bool
 }
 
 // Decision is the FP-04-facing policy output: whether an action may proceed,
@@ -94,6 +102,12 @@ func EvaluateAction(ctx ActionContext, req ActionRequest) Decision {
 	if req.Branch != "" && !strings.HasPrefix(req.Branch, BranchPrefix) {
 		return deny(DenyBranchForbidden, StopCodeOutOfGrant)
 	}
+	if req.WantsPatch && !ctx.Grant.MayCreatePatch {
+		return deny(DenyPatchNotPermitted, StopCodeOutOfGrant)
+	}
+	if req.WantsPROperation && !ctx.Grant.MayCreateOrUpdatePR {
+		return deny(DenyPRNotPermitted, StopCodeOutOfGrant)
+	}
 	for _, path := range req.Paths {
 		if !pathWithinAny(ctx.Grant.PermittedPaths, path) {
 			return deny(DenyPathNotPermitted, StopCodeOutOfGrant)
@@ -129,18 +143,34 @@ func containsString(list []string, s string) bool {
 }
 
 // pathWithinAny reports whether path is the permitted root itself or lives
-// under it, respecting path-segment boundaries so "harness-evil" does not
-// match a grant for "harness".
-func pathWithinAny(permitted []string, path string) bool {
-	if path == "" {
+// under it. Requested paths are untrusted input, so they are lexically
+// normalized first: an absolute path, or one whose cleaned form escapes
+// every permitted root via ".." (for example "harness/../../.github"), is
+// denied. Roots and paths are compared on path-segment boundaries so
+// "harness-evil" does not match a grant for "harness".
+func pathWithinAny(permitted []string, requested string) bool {
+	if requested == "" {
+		return false
+	}
+	cleaned := path.Clean(requested)
+	if path.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, "../") || cleaned == "." {
 		return false
 	}
 	for _, root := range permitted {
 		if root == "" {
 			continue
 		}
-		trimmed := strings.TrimSuffix(root, "/")
-		if path == trimmed || strings.HasPrefix(path, trimmed+"/") {
+		trimmed := strings.TrimSuffix(path.Clean(root), "/")
+		if trimmed == "." {
+			trimmed = ""
+		}
+		if trimmed == "" {
+			// A grant for the repository root only admits paths that stay
+			// inside it after cleaning, which the escape checks above
+			// already guarantee.
+			return true
+		}
+		if cleaned == trimmed || strings.HasPrefix(cleaned, trimmed+"/") {
 			return true
 		}
 	}

@@ -16,9 +16,11 @@ import (
 const (
 	DecisionGrantIssued = "grant_issued"
 
-	DenyStateTransitionForbidden = "deny_state_transition_forbidden"
-	DenyStateNotAwaitingReview   = "deny_state_not_awaiting_review"
-	DenyAuditFailure             = "deny_audit_failure"
+	DenyStateTransitionForbidden      = "deny_state_transition_forbidden"
+	DenyStateNotAwaitingReview        = "deny_state_not_awaiting_review"
+	DenyAuditFailure                  = "deny_audit_failure"
+	DenyGrantLinkageMismatch          = "deny_grant_linkage_mismatch"
+	DenyTransitionPreconditionMissing = "deny_transition_precondition_missing"
 
 	StopCodeAuditFailure = "stop_audit_failure"
 )
@@ -58,6 +60,12 @@ type Run struct {
 	Branch     *string
 	HeadSHA    *string
 	PrID       *string
+
+	// mergeEligibleHead records the exact head whose approval snapshot was
+	// last observed eligible. It is cleared whenever the head changes or a
+	// later snapshot is not eligible, so approved_for_merge can only be
+	// reached with current-head evidence.
+	mergeEligibleHead *string
 
 	store *EventStore
 	now   func() time.Time
@@ -106,6 +114,17 @@ func (r *Run) Approve(p GrantParams) error {
 	if r.State != StateRequested && r.State != StateStopped {
 		return fmt.Errorf("harness: cannot issue a grant from state %q", r.State)
 	}
+	policyVersion := p.PolicyVersion
+	if policyVersion == "" {
+		policyVersion = DefaultPolicyVersion
+	}
+	if p.RepositoryURL != r.RepositoryURL || p.BaseSHA != r.BaseSHA ||
+		policyVersion != r.Assessment.PolicyVersion {
+		if err := r.recordRefusal(DenyGrantLinkageMismatch); err != nil {
+			return err
+		}
+		return fmt.Errorf("harness: capability grant repository, base SHA, and policy version must match the run and its assessment")
+	}
 	grant, err := IssueGrant(r.Assessment, p)
 	if err != nil {
 		return err
@@ -126,11 +145,13 @@ func (r *Run) Transition(to State, code string) error {
 	}
 	switch {
 	case to == StateApproved && (!r.grantReady || r.Grant == nil):
-		return r.denyTransition(errors.New("harness: approved requires a newly issued capability grant; stopped runs may reapprove only through Approve"))
+		return r.denyPrecondition(errors.New("harness: approved requires a newly issued capability grant; stopped runs may reapprove only through Approve"))
 	case to == StateRunning && r.Grant == nil:
-		return r.denyTransition(errors.New("harness: running requires a recorded capability grant"))
+		return r.denyPrecondition(errors.New("harness: running requires a recorded capability grant"))
 	case to == StateAwaitingReview && (r.PrID == nil || r.HeadSHA == nil):
-		return r.denyTransition(errors.New("harness: awaiting_review requires a PR bound to the current commit"))
+		return r.denyPrecondition(errors.New("harness: awaiting_review requires a PR bound to the current commit"))
+	case to == StateApprovedForMerge && !r.mergeEligibilityCurrent():
+		return r.denyPrecondition(errors.New("harness: approved_for_merge requires a recorded eligible approval snapshot for the current head"))
 	}
 
 	ev := r.baseEvent(EventTypeStateTransition, r.State, to)
@@ -153,16 +174,34 @@ func (r *Run) Transition(to State, code string) error {
 	return nil
 }
 
-// denyTransition records the refused attempt (best effort) and returns the
-// underlying reason unchanged when the record itself was stored.
+// denyTransition records a table-violation refusal and returns the underlying
+// reason unchanged when the record itself was stored.
 func (r *Run) denyTransition(reason error) error {
-	ev := r.baseEvent(EventTypeStateTransition, r.State, r.State)
-	code := DenyStateTransitionForbidden
-	ev.DecisionOrStopCode = &code
-	if _, err := r.store.Append(ev); err != nil {
-		return fmt.Errorf("harness: audit write failed while recording a denied transition: %w", err)
+	if err := r.recordRefusal(DenyStateTransitionForbidden); err != nil {
+		return err
 	}
 	return reason
+}
+
+// denyPrecondition records a guard failure: the transition exists in the ADR
+// table but its preconditions do not hold right now.
+func (r *Run) denyPrecondition(reason error) error {
+	if err := r.recordRefusal(DenyTransitionPreconditionMissing); err != nil {
+		return err
+	}
+	return reason
+}
+
+// recordRefusal appends a state-only event carrying a denial code for a
+// refused operation that did not change the run's state.
+func (r *Run) recordRefusal(code string) error {
+	ev := r.baseEvent(EventTypeStateTransition, r.State, r.State)
+	c := code
+	ev.DecisionOrStopCode = &c
+	if _, err := r.store.Append(ev); err != nil {
+		return fmt.Errorf("harness: audit write failed while recording a refusal: %w", err)
+	}
+	return nil
 }
 
 // SetPR binds the run to a PR opened from an autofixer/* branch.
@@ -173,10 +212,19 @@ func (r *Run) SetPR(branch, headSHA, prID string) error {
 	if headSHA == "" || prID == "" {
 		return errors.New("harness: PR binding requires a head SHA and a PR id")
 	}
+	// A new commit invalidates every prior QA/check/approval observation
+	// (FP-01 review/CI TOCTOU control).
+	if r.HeadSHA != nil && *r.HeadSHA != headSHA {
+		r.mergeEligibleHead = nil
+	}
 	r.Branch = &branch
 	r.HeadSHA = &headSHA
 	r.PrID = &prID
 	return nil
+}
+
+func (r *Run) mergeEligibilityCurrent() bool {
+	return r.HeadSHA != nil && r.mergeEligibleHead != nil && *r.mergeEligibleHead == *r.HeadSHA
 }
 
 // EvaluateAndRecordAction applies the policy executor, records the decision
@@ -208,9 +256,12 @@ func (r *Run) EvaluateAndRecordAction(req ActionRequest) Decision {
 	}
 
 	if d.StopCode != "" && CanTransition(r.State, StateStopped) {
-		// A stop that cannot be evidenced (or is refused by the state table)
-		// is already carried by the decision event above.
-		_ = r.Transition(StateStopped, d.StopCode)
+		if err := r.Transition(StateStopped, d.StopCode); err != nil {
+			// The stop could not be evidenced (audit failure): fail closed by
+			// revoking dispatch and surfacing the control failure.
+			r.Revoked = true
+			return Decision{Allowed: false, Code: DenyAuditFailure, StopCode: StopCodeAuditFailure}
+		}
 	}
 	return d
 }
@@ -230,6 +281,14 @@ func (r *Run) RecordMergeEligibility(snap *ApprovalSnapshot) EligibilityResult {
 		if _, err := r.store.Append(ev); err != nil {
 			return EligibilityResult{Eligible: false, Status: SnapshotStatusIneligible, Code: DenyAuditFailure}
 		}
+		// Only current-head eligible evidence keeps the merge gate open; any
+		// other outcome (ineligible, mismatched, unevaluated) fails closed.
+		if res.Eligible && r.HeadSHA != nil {
+			head := *r.HeadSHA
+			r.mergeEligibleHead = &head
+		} else {
+			r.mergeEligibleHead = nil
+		}
 		return res
 	}
 
@@ -238,6 +297,11 @@ func (r *Run) RecordMergeEligibility(snap *ApprovalSnapshot) EligibilityResult {
 	}
 	if r.State != StateAwaitingReview {
 		return record(EligibilityResult{Eligible: false, Status: SnapshotStatusIneligible, Code: DenyStateNotAwaitingReview})
+	}
+	// The snapshot must describe the run's currently bound head; a fully
+	// green snapshot for any other head is not evidence for this merge.
+	if snap.HeadSHA == nil || r.HeadSHA == nil || *snap.HeadSHA != *r.HeadSHA {
+		return record(EligibilityResult{Eligible: false, Status: SnapshotStatusIneligible, Code: DenySnapshotHeadMismatch})
 	}
 	return record(snap.Evaluate())
 }

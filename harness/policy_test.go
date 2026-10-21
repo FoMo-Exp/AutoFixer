@@ -67,6 +67,18 @@ func TestEvaluateActionAllowsNoBranchNoPathRequest(t *testing.T) {
 	}
 }
 
+func TestEvaluateActionAllowsLexicallyNormalizablePathsWithinGrant(t *testing.T) {
+	now := time.Date(2026, 10, 21, 9, 30, 0, 0, time.UTC)
+	for _, path := range []string{"harness/./state.go", "harness/sub/../state.go", "harness"} {
+		req := withinGrantRequest()
+		req.Paths = []string{path}
+		d := EvaluateAction(runningContext(now), req)
+		if !d.Allowed {
+			t.Errorf("path %q: Allowed = false, want true (code %q)", path, d.Code)
+		}
+	}
+}
+
 func TestEvaluateActionDeniesEachOutOfGrantRequest(t *testing.T) {
 	now := time.Date(2026, 10, 21, 9, 30, 0, 0, time.UTC)
 	cases := []struct {
@@ -88,6 +100,15 @@ func TestEvaluateActionDeniesEachOutOfGrantRequest(t *testing.T) {
 		{"write non-autofixer branch", func(r *ActionRequest) { r.Branch = "feature/x" }, DenyBranchForbidden, StopCodeOutOfGrant},
 		{"path outside grant", func(r *ActionRequest) { r.Paths = []string{"secrets/key"} }, DenyPathNotPermitted, StopCodeOutOfGrant},
 		{"sibling directory prefix confusion", func(r *ActionRequest) { r.Paths = []string{"harness-evil/x"} }, DenyPathNotPermitted, StopCodeOutOfGrant},
+		{"dot-dot traversal escaping the grant root", func(r *ActionRequest) {
+			r.Paths = []string{"harness/../../.github/workflows/ci.yml"}
+		}, DenyPathNotPermitted, StopCodeOutOfGrant},
+		{"dot-dot traversal to a sibling root", func(r *ActionRequest) {
+			r.Paths = []string{"harness/../policy.go"}
+		}, DenyPathNotPermitted, StopCodeOutOfGrant},
+		{"bare dot-dot escape", func(r *ActionRequest) { r.Paths = []string{"../secrets"} }, DenyPathNotPermitted, StopCodeOutOfGrant},
+		{"absolute path outside the checkout", func(r *ActionRequest) { r.Paths = []string{"/etc/passwd"} }, DenyPathNotPermitted, StopCodeOutOfGrant},
+		{"dot path resolving to the repo root", func(r *ActionRequest) { r.Paths = []string{"harness/.."} }, DenyPathNotPermitted, StopCodeOutOfGrant},
 		{"network destination not granted", func(r *ActionRequest) { r.NetworkDestinations = []string{"example.com"} }, DenyNetworkNotPermitted, StopCodeOutOfGrant},
 	}
 	for _, tc := range cases {
@@ -168,5 +189,36 @@ func TestEvaluateActionDeniesDeterministicallyOnFirstFailedCheck(t *testing.T) {
 	d := EvaluateAction(runningContext(now), req)
 	if d.Code != DenyRepositoryMismatch {
 		t.Errorf("Code = %q, want %q (repository checked before tool)", d.Code, DenyRepositoryMismatch)
+	}
+}
+
+func TestEvaluateActionEnforcesPatchAndPRScopeFlags(t *testing.T) {
+	now := time.Date(2026, 10, 21, 9, 30, 0, 0, time.UTC)
+
+	// testGrant defaults may_create_patch / may_create_or_update_pr to false
+	req := withinGrantRequest()
+	req.WantsPatch = true
+	d := EvaluateAction(runningContext(now), req)
+	if d.Allowed || d.Code != DenyPatchNotPermitted || d.StopCode != StopCodeOutOfGrant {
+		t.Errorf("patch intent without scope: decision = %+v, want deny %q + stop %q", d, DenyPatchNotPermitted, StopCodeOutOfGrant)
+	}
+
+	req = withinGrantRequest()
+	req.WantsPROperation = true
+	d = EvaluateAction(runningContext(now), req)
+	if d.Allowed || d.Code != DenyPRNotPermitted || d.StopCode != StopCodeOutOfGrant {
+		t.Errorf("PR intent without scope: decision = %+v, want deny %q + stop %q", d, DenyPRNotPermitted, StopCodeOutOfGrant)
+	}
+
+	// a grant that carries both scope bits admits both intents
+	ctx := runningContext(now)
+	ctx.Grant.MayCreatePatch = true
+	ctx.Grant.MayCreateOrUpdatePR = true
+	req = withinGrantRequest()
+	req.WantsPatch = true
+	req.WantsPROperation = true
+	d = EvaluateAction(ctx, req)
+	if !d.Allowed {
+		t.Errorf("intents within granted scope: decision = %+v, want allow", d)
 	}
 }
