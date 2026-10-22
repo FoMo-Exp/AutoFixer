@@ -13,18 +13,23 @@ const (
 const (
 	AllowMergeQueueEligible = "allow_merge_queue_eligible"
 
-	DenyApprovalNoHead                = "deny_approval_no_head"
-	DenyApprovalQANotPassed           = "deny_approval_qa_not_passed"
-	DenyApprovalQAStaleHead           = "deny_approval_qa_stale_head"
-	DenyApprovalChecksMissing         = "deny_approval_checks_missing"
-	DenyApprovalChecksNotPassed       = "deny_approval_checks_not_passed"
-	DenyApprovalChecksStaleHead       = "deny_approval_checks_stale_head"
-	DenyApprovalDiscussionsUnresolved = "deny_approval_discussions_unresolved"
-	DenyApprovalDiscussionsStaleHead  = "deny_approval_discussions_stale_head"
-	DenyApprovalQuorumIncomplete      = "deny_approval_quorum_incomplete"
-	DenyApprovalQuorumStaleHead       = "deny_approval_quorum_stale_head"
-	DenySnapshotRunMismatch           = "deny_snapshot_run_mismatch"
-	DenySnapshotHeadMismatch          = "deny_snapshot_head_mismatch"
+	DenyApprovalNoHead                     = "deny_approval_no_head"
+	DenyApprovalQANotPassed                = "deny_approval_qa_not_passed"
+	DenyApprovalQAStaleHead                = "deny_approval_qa_stale_head"
+	DenyApprovalChecksMissing              = "deny_approval_checks_missing"
+	DenyApprovalChecksNotPassed            = "deny_approval_checks_not_passed"
+	DenyApprovalChecksStaleHead            = "deny_approval_checks_stale_head"
+	DenyApprovalDiscussionsUnresolved      = "deny_approval_discussions_unresolved"
+	DenyApprovalDiscussionsStaleHead       = "deny_approval_discussions_stale_head"
+	DenyApprovalQuorumIncomplete           = "deny_approval_quorum_incomplete"
+	DenyApprovalQuorumStaleHead            = "deny_approval_quorum_stale_head"
+	DenyApprovalQAMetadataMissing          = "deny_approval_qa_metadata_missing"
+	DenyApprovalChecksMetadataMissing      = "deny_approval_checks_metadata_missing"
+	DenyApprovalDiscussionsMetadataMissing = "deny_approval_discussions_metadata_missing"
+	DenyApprovalMergeQueueUnavailable      = "deny_approval_merge_queue_unavailable"
+	DenyApprovalSnapshotMalformed          = "deny_approval_snapshot_malformed"
+	DenySnapshotRunMismatch                = "deny_snapshot_run_mismatch"
+	DenySnapshotHeadMismatch               = "deny_snapshot_head_mismatch"
 )
 
 // RequiredApprovers is the approval quorum from CONTEXT.md: simultaneous
@@ -71,18 +76,21 @@ type QuorumObservation struct {
 // ApprovalSnapshot is the contract's `approval_snapshot` record: GitHub's
 // merge boundary for one exact head, or why no approval was available.
 type ApprovalSnapshot struct {
-	ContractVersion        string                 `json:"contract_version"`
-	TaskID                 string                 `json:"task_id"`
-	RunID                  string                 `json:"run_id"`
-	ObservedAt             time.Time              `json:"observed_at"`
-	HeadSHA                *string                `json:"head_sha"`
-	QA                     QAObservation          `json:"qa"`
-	RequiredChecks         []CheckObservation     `json:"required_checks"`
-	ReviewDiscussions      DiscussionsObservation `json:"review_discussions"`
-	ApprovalQuorum         QuorumObservation      `json:"approval_quorum"`
-	MergeQueueEligible     bool                   `json:"merge_queue_eligible"`
-	ApprovalSnapshotStatus string                 `json:"approval_snapshot_status"`
-	EvidenceReference      string                 `json:"evidence_reference"`
+	ContractVersion    string                 `json:"contract_version"`
+	TaskID             string                 `json:"task_id"`
+	RunID              string                 `json:"run_id"`
+	ObservedAt         time.Time              `json:"observed_at"`
+	HeadSHA            *string                `json:"head_sha"`
+	QA                 QAObservation          `json:"qa"`
+	RequiredChecks     []CheckObservation     `json:"required_checks"`
+	ReviewDiscussions  DiscussionsObservation `json:"review_discussions"`
+	ApprovalQuorum     QuorumObservation      `json:"approval_quorum"`
+	MergeQueueEligible bool                   `json:"merge_queue_eligible"`
+	// MergeQueueAvailable is an observed provider capability, distinct from
+	// MergeQueueEligible, which is the result calculated by Evaluate.
+	MergeQueueAvailable    bool   `json:"merge_queue_available"`
+	ApprovalSnapshotStatus string `json:"approval_snapshot_status"`
+	EvidenceReference      string `json:"evidence_reference"`
 }
 
 // EligibilityResult is the outcome of evaluating a snapshot.
@@ -111,6 +119,9 @@ func (s *ApprovalSnapshot) evaluate() EligibilityResult {
 		return EligibilityResult{Eligible: false, Status: SnapshotStatusNotRequested, Code: DenyApprovalNoHead}
 	}
 	head := *s.HeadSHA
+	if s.ContractVersion != ContractVersion || s.TaskID == "" || s.RunID == "" || s.ObservedAt.IsZero() || s.EvidenceReference == "" {
+		return deny(DenyApprovalSnapshotMalformed)
+	}
 
 	// 1. QA must be passed for this exact head.
 	if s.QA.Status != "passed" {
@@ -119,6 +130,9 @@ func (s *ApprovalSnapshot) evaluate() EligibilityResult {
 	if s.QA.HeadSHA == nil || *s.QA.HeadSHA != head {
 		return deny(DenyApprovalQAStaleHead)
 	}
+	if s.QA.Identity == nil || *s.QA.Identity == "" || s.QA.ApprovedAt == nil || s.QA.ApprovedAt.IsZero() {
+		return deny(DenyApprovalQAMetadataMissing)
+	}
 
 	// 2. Every required check must be passed for this exact head; an empty
 	// list is fail-closed because no passing observation exists.
@@ -126,6 +140,9 @@ func (s *ApprovalSnapshot) evaluate() EligibilityResult {
 		return deny(DenyApprovalChecksMissing)
 	}
 	for _, c := range s.RequiredChecks {
+		if c.Name == "" || c.ObservedAt.IsZero() {
+			return deny(DenyApprovalChecksMetadataMissing)
+		}
 		if c.Status != "passed" {
 			return deny(DenyApprovalChecksNotPassed)
 		}
@@ -141,8 +158,20 @@ func (s *ApprovalSnapshot) evaluate() EligibilityResult {
 	if s.ReviewDiscussions.HeadSHA == nil || *s.ReviewDiscussions.HeadSHA != head {
 		return deny(DenyApprovalDiscussionsStaleHead)
 	}
+	if s.ReviewDiscussions.ObservedAt.IsZero() {
+		return deny(DenyApprovalDiscussionsMetadataMissing)
+	}
 
 	// 4. Both named approvers must have approved this exact head.
+	if s.ApprovalQuorum.Status != "satisfied" {
+		return deny(DenyApprovalQuorumIncomplete)
+	}
+	if s.ApprovalQuorum.HeadSHA == nil || *s.ApprovalQuorum.HeadSHA != head {
+		return deny(DenyApprovalQuorumStaleHead)
+	}
+	if !s.MergeQueueAvailable {
+		return deny(DenyApprovalMergeQueueUnavailable)
+	}
 	for _, required := range RequiredApprovers {
 		approvedCurrent := false
 		hasAny := false
@@ -152,6 +181,9 @@ func (s *ApprovalSnapshot) evaluate() EligibilityResult {
 			}
 			hasAny = true
 			if a.HeadSHA != nil && *a.HeadSHA == head {
+				if a.ApprovedAt.IsZero() {
+					return deny(DenyApprovalQuorumIncomplete)
+				}
 				approvedCurrent = true
 				break
 			}

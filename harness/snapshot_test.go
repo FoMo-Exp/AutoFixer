@@ -34,7 +34,8 @@ func baseSnapshot(head string) ApprovalSnapshot {
 				{Identity: "Ludwig-Planck", HeadSHA: strptr(head), ApprovedAt: observed.Add(-10 * time.Minute)},
 			},
 		},
-		EvidenceReference: "evidence://approvals/run-1/" + head,
+		MergeQueueAvailable: true,
+		EvidenceReference:   "evidence://approvals/run-1/" + head,
 	}
 }
 
