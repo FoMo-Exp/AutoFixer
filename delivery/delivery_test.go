@@ -432,3 +432,52 @@ func TestNotCreatedEvidenceBundleRequiresNullRevisionBindings(t *testing.T) {
 		t.Fatal("not_created bundle with a head-bound event: nil error, want rejection")
 	}
 }
+
+func TestEvidenceBundleAllowsPrePatchEventsAndBindsLaterEvents(t *testing.T) {
+	bundle := testEvidenceBundle(t, PatchProposed)
+	first := bundle.ExecutionEvents[0]
+	first.Branch = nil
+	first.HeadSHA = nil
+	second := first
+	second.EventID = "evt-run-173-2"
+	second.Sequence = 2
+	second.PreviousEventDigest = ptr(first.EventDigest)
+	second.EventDigest = "event-digest-2"
+	second.Branch = ptr("autofixer/task-173-abc1234")
+	second.HeadSHA = ptr("abc1234deadbeef")
+	bundle.ExecutionEvents = []harness.ExecutionEvent{first, second}
+
+	report := bundle.PatchReport
+	report.EvidenceReferences = []string{"evidence://events/run-173"}
+	report.Validation[0].EventReference = "evidence://events/run-173"
+	var err error
+	bundle.PatchReport, err = NewPatchReport(report)
+	if err != nil {
+		t.Fatalf("NewPatchReport with run-level event reference: %v", err)
+	}
+	bundle.EvidenceReferences = []string{"evidence://events/run-173", "evidence://risk/task-173", bundle.ApprovalSnapshot.EvidenceReference}
+	if err := bundle.Validate(); err != nil {
+		t.Fatalf("pre-patch null event followed by bound event: %v", err)
+	}
+
+	bundle.ExecutionEvents[1].HeadSHA = nil
+	if err := bundle.Validate(); err == nil {
+		t.Fatal("event that loses its head binding: nil error, want rejection")
+	}
+
+	bundle = testEvidenceBundle(t, PatchProposed)
+	first = bundle.ExecutionEvents[0]
+	first.Branch = nil
+	first.HeadSHA = nil
+	second = first
+	second.EventID = "evt-run-173-2"
+	second.Sequence = 2
+	second.PreviousEventDigest = ptr(first.EventDigest)
+	second.EventDigest = "event-digest-2"
+	second.Branch = ptr("autofixer/task-173-other")
+	second.HeadSHA = ptr("abc1234deadbeef")
+	bundle.ExecutionEvents = []harness.ExecutionEvent{first, second}
+	if err := bundle.Validate(); err == nil {
+		t.Fatal("event with a mismatched branch: nil error, want rejection")
+	}
+}

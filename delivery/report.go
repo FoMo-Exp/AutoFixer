@@ -137,7 +137,8 @@ func (r PatchReport) validate(requireDigest bool) error {
 		if v.Tool == "" || v.EventReference == "" || v.OutputDigest.Algorithm == "" || v.OutputDigest.Value == "" {
 			return fmt.Errorf("delivery: validation evidence %d is incomplete", i)
 		}
-		if !strings.HasPrefix(v.EventReference, "evidence://events/"+r.RunID+"/") {
+		eventReferencePrefix := "evidence://events/" + r.RunID
+		if v.EventReference != eventReferencePrefix && !strings.HasPrefix(v.EventReference, eventReferencePrefix+"/") {
 			return fmt.Errorf("delivery: validation evidence %d is not scoped to run %q", i, r.RunID)
 		}
 		if v.OutputDigest.Algorithm != harness.DigestAlgorithmSHA256 {

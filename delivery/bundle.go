@@ -88,6 +88,7 @@ func (b EvidenceBundle) Validate() error {
 	if len(b.ExecutionEvents) == 0 || len(b.EvidenceReferences) == 0 {
 		return errors.New("delivery: evidence bundle requires events and evidence references")
 	}
+	revisionBound := false
 	for i, event := range b.ExecutionEvents {
 		if event.ContractVersion != harness.ContractVersion || event.EventID == "" || event.Sequence != i+1 ||
 			(event.EventType != harness.EventTypeStateTransition && event.EventType != harness.EventTypeToolInvocation) ||
@@ -107,9 +108,14 @@ func (b EvidenceBundle) Validate() error {
 		} else if event.PreviousEventDigest == nil || *event.PreviousEventDigest != b.ExecutionEvents[i-1].EventDigest {
 			return fmt.Errorf("delivery: event %d chain link does not match its predecessor", i)
 		}
-		if err := validateEventRevision(event, b.PatchReport); err != nil {
+		bound, err := validateEventRevision(event, b.PatchReport, revisionBound)
+		if err != nil {
 			return fmt.Errorf("delivery: event %d is not bound to the patch revision: %w", i, err)
 		}
+		revisionBound = revisionBound || bound
+	}
+	if b.PatchReport.PatchStatus != PatchNotCreated && !revisionBound {
+		return errors.New("delivery: created-patch evidence requires a revision-bound event")
 	}
 	for _, reportReference := range b.PatchReport.EvidenceReferences {
 		if !b.referenceResolves(reportReference) {
@@ -190,20 +196,29 @@ func validateApprovalSnapshotHeadBindings(snapshot harness.ApprovalSnapshot, sta
 	return nil
 }
 
-func validateEventRevision(event harness.ExecutionEvent, report PatchReport) error {
+func validateEventRevision(event harness.ExecutionEvent, report PatchReport, revisionBound bool) (bool, error) {
 	if report.PatchStatus == PatchNotCreated {
 		if event.Branch != nil || event.HeadSHA != nil {
-			return errors.New("not_created evidence must have null branch and head")
+			return false, errors.New("not_created evidence must have null branch and head")
 		}
-		return nil
+		return false, nil
 	}
-	if report.Branch == nil || report.HeadSHA == nil || event.Branch == nil || event.HeadSHA == nil {
-		return errors.New("created-patch evidence requires branch and head")
+	if event.Branch == nil && event.HeadSHA == nil {
+		if revisionBound {
+			return false, errors.New("evidence lost its branch and head after the patch revision was bound")
+		}
+		return false, nil
+	}
+	if event.Branch == nil || event.HeadSHA == nil {
+		return false, errors.New("evidence must provide both branch and head when a revision is bound")
+	}
+	if report.Branch == nil || report.HeadSHA == nil {
+		return false, errors.New("created-patch report is missing branch and head")
 	}
 	if *event.Branch != *report.Branch || *event.HeadSHA != *report.HeadSHA {
-		return fmt.Errorf("event revision %s/%s differs from report %s/%s", *event.Branch, *event.HeadSHA, *report.Branch, *report.HeadSHA)
+		return false, fmt.Errorf("event revision %s/%s differs from report %s/%s", *event.Branch, *event.HeadSHA, *report.Branch, *report.HeadSHA)
 	}
-	return nil
+	return true, nil
 }
 
 func eventReferenceResolves(reference string, events []harness.ExecutionEvent) bool {
@@ -212,7 +227,8 @@ func eventReferenceResolves(reference string, events []harness.ExecutionEvent) b
 }
 
 func resolveEventReference(reference string, events []harness.ExecutionEvent) (harness.ExecutionEvent, bool) {
-	for _, event := range events {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
 		if reference == event.EventID || eventReferenceMatches(reference, event) {
 			return event, true
 		}
@@ -221,6 +237,9 @@ func resolveEventReference(reference string, events []harness.ExecutionEvent) (h
 }
 
 func eventReferenceMatches(reference string, event harness.ExecutionEvent) bool {
+	if reference == "evidence://events/"+event.RunID {
+		return true
+	}
 	prefix := "evidence://events/" + event.RunID + "/"
 	if !strings.HasPrefix(reference, prefix) {
 		return false
