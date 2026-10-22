@@ -44,13 +44,6 @@ func ValidateRepositoryURL(repositoryURL string) error {
 	return nil
 }
 
-func validateRepositoryURLExact(repositoryURL string) error {
-	if err := ValidateRepositoryURL(repositoryURL); err != nil {
-		return err
-	}
-	return nil
-}
-
 // ValidateBranch checks a Git ref before it is passed to an injected branch
 // writer. A prefix alone is not enough: traversal, ref syntax, and an empty
 // suffix are all rejected.
@@ -109,7 +102,7 @@ type PatchArtifact struct {
 
 // Validate checks all repository paths that a branch writer would mutate.
 func (p PatchArtifact) Validate() error {
-	if err := validateRepositoryURLExact(p.RepositoryURL); err != nil {
+	if err := ValidateRepositoryURL(p.RepositoryURL); err != nil {
 		return err
 	}
 	if p.TaskID == "" || p.BaseSHA == "" || p.HeadSHA == "" {
@@ -136,7 +129,7 @@ func ValidateTaskBranch(taskID, branch, headSHA string) error {
 	if err := ValidateBranch(branch); err != nil {
 		return err
 	}
-	if taskID == "" || headSHA == "" || len(headSHA) < 7 || strings.ContainsAny(taskID, "/\\ ") {
+	if taskID == "" || headSHA == "" || len(headSHA) < 7 || !isASCIIIdentifier(taskID) || strings.ContainsAny(taskID, "/\\ ") {
 		return ErrBranchNotAllowed
 	}
 	suffix := strings.TrimPrefix(branch, BranchPrefix)
@@ -156,6 +149,15 @@ func ValidateTaskBranch(taskID, branch, headSHA string) error {
 	return nil
 }
 
+func isASCIIIdentifier(value string) bool {
+	for _, r := range value {
+		if r > unicode.MaxASCII || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
 func validateWritablePath(filePath string) error {
 	if filePath == "" || strings.Contains(filePath, "\\") {
 		return fmt.Errorf("%w: empty or non-portable path", ErrResourceNotAllowed)
@@ -167,7 +169,8 @@ func validateWritablePath(filePath string) error {
 	lower := strings.ToLower(cleaned)
 	if lower == ".git" || strings.HasPrefix(lower, ".git/") ||
 		lower == ".github" || strings.HasPrefix(lower, ".github/") ||
-		lower == "docs/adr" || strings.HasPrefix(lower, "docs/adr/") {
+		lower == "docs/adr" || strings.HasPrefix(lower, "docs/adr/") ||
+		lower == "docs/contracts" || strings.HasPrefix(lower, "docs/contracts/") {
 		return fmt.Errorf("%w: path %q", ErrResourceNotAllowed, filePath)
 	}
 	for _, segment := range strings.Split(lower, "/") {

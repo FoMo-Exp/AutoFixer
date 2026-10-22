@@ -178,7 +178,7 @@ func validateDeliveryRequest(req DeliveryRequest) error {
 	if !issueKeyPattern.MatchString(req.IssueKey) {
 		return fmt.Errorf("delivery: invalid issue key %q", req.IssueKey)
 	}
-	if err := validateRepositoryURLExact(req.RepositoryURL); err != nil {
+	if err := ValidateRepositoryURL(req.RepositoryURL); err != nil {
 		return err
 	}
 	baseBranch := req.BaseBranch

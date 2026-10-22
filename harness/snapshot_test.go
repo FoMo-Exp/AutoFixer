@@ -81,11 +81,18 @@ func TestEvaluateDeniesFailingComponents(t *testing.T) {
 			s.QA.Identity = strptr("qa:team")
 		}, DenyApprovalQAStaleHead},
 		{"qa passed without head binding", func(s *ApprovalSnapshot) { s.QA.HeadSHA = nil }, DenyApprovalQAStaleHead},
+		{"qa passed without metadata", func(s *ApprovalSnapshot) { s.QA.Identity = nil }, DenyApprovalQAMetadataMissing},
 		{"no required checks observed", func(s *ApprovalSnapshot) { s.RequiredChecks = nil }, DenyApprovalChecksMissing},
 		{"required check failed", func(s *ApprovalSnapshot) { s.RequiredChecks[0].Status = "failed" }, DenyApprovalChecksNotPassed},
 		{"required check on old head", func(s *ApprovalSnapshot) { s.RequiredChecks[0].HeadSHA = strptr("oldhead") }, DenyApprovalChecksStaleHead},
+		{"required check without metadata", func(s *ApprovalSnapshot) { s.RequiredChecks[0].ObservedAt = time.Time{} }, DenyApprovalChecksMetadataMissing},
 		{"discussions open", func(s *ApprovalSnapshot) { s.ReviewDiscussions.Status = "open" }, DenyApprovalDiscussionsUnresolved},
 		{"discussions on old head", func(s *ApprovalSnapshot) { s.ReviewDiscussions.HeadSHA = strptr("oldhead") }, DenyApprovalDiscussionsStaleHead},
+		{"discussions without metadata", func(s *ApprovalSnapshot) { s.ReviewDiscussions.ObservedAt = time.Time{} }, DenyApprovalDiscussionsMetadataMissing},
+		{"quorum not satisfied", func(s *ApprovalSnapshot) { s.ApprovalQuorum.Status = "pending" }, DenyApprovalQuorumIncomplete},
+		{"quorum without current head", func(s *ApprovalSnapshot) { s.ApprovalQuorum.HeadSHA = nil }, DenyApprovalQuorumStaleHead},
+		{"merge queue unavailable", func(s *ApprovalSnapshot) { s.MergeQueueAvailable = false }, DenyApprovalMergeQueueUnavailable},
+		{"snapshot missing evidence metadata", func(s *ApprovalSnapshot) { s.EvidenceReference = "" }, DenyApprovalSnapshotMalformed},
 		{"only one approver", func(s *ApprovalSnapshot) {
 			s.ApprovalQuorum.Approvals = s.ApprovalQuorum.Approvals[:1]
 		}, DenyApprovalQuorumIncomplete},

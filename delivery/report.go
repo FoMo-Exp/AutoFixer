@@ -91,7 +91,7 @@ func (r PatchReport) validate(requireDigest bool) error {
 	if r.TaskID == "" || r.RunID == "" || r.IssuedAt.IsZero() || r.BaseSHA == "" || r.ChangeSummary == "" {
 		return errors.New("delivery: patch report is missing a required field")
 	}
-	if err := validateRepositoryURLExact(r.RepositoryURL); err != nil {
+	if err := ValidateRepositoryURL(r.RepositoryURL); err != nil {
 		return err
 	}
 	switch r.PatchStatus {
@@ -118,6 +118,9 @@ func (r PatchReport) validate(requireDigest bool) error {
 			return err
 		}
 	}
+	if r.PatchStatus != PatchNotCreated && len(r.Validation) == 0 {
+		return errors.New("delivery: patch report requires validation evidence for a created patch")
+	}
 	if r.DigestAlgorithm != harness.DigestAlgorithmSHA256 {
 		return fmt.Errorf("delivery: unsupported report digest algorithm %q", r.DigestAlgorithm)
 	}
@@ -133,6 +136,9 @@ func (r PatchReport) validate(requireDigest bool) error {
 		v := r.Validation[i]
 		if v.Tool == "" || v.EventReference == "" || v.OutputDigest.Algorithm == "" || v.OutputDigest.Value == "" {
 			return fmt.Errorf("delivery: validation evidence %d is incomplete", i)
+		}
+		if !strings.HasPrefix(v.EventReference, "evidence://events/"+r.RunID+"/") {
+			return fmt.Errorf("delivery: validation evidence %d is not scoped to run %q", i, r.RunID)
 		}
 		if v.OutputDigest.Algorithm != harness.DigestAlgorithmSHA256 {
 			return fmt.Errorf("delivery: validation evidence %d uses unsupported digest algorithm", i)
@@ -162,9 +168,6 @@ func dereference(value *string) string {
 func requireRevision(branch, head, pr *string) error {
 	if branch == nil || head == nil || *branch == "" || *head == "" {
 		return errors.New("delivery: patch report is missing a required revision")
-	}
-	if pr == nil && branch == nil {
-		return errors.New("delivery: patch report is missing a branch")
 	}
 	if pr != nil && *pr == "" {
 		return errors.New("delivery: patch report contains an empty PR id")
@@ -230,6 +233,9 @@ func NewPullRequestReport(patch PatchReport, risk harness.RiskAssessment, snapsh
 	if patch.HeadSHA == nil || *patch.HeadSHA == "" || snapshot.HeadSHA == nil || *snapshot.HeadSHA != *patch.HeadSHA {
 		return PullRequestReport{}, errors.New("delivery: approval snapshot must bind to the patch head")
 	}
+	if err := validateApprovalSnapshotHeadBindings(snapshot, patch.PatchStatus, *patch.HeadSHA); err != nil {
+		return PullRequestReport{}, err
+	}
 	return PullRequestReport{
 		ContractVersion:  harness.ContractVersion,
 		TaskID:           patch.TaskID,
@@ -265,6 +271,9 @@ func (r PullRequestReport) Validate() error {
 	if r.ApprovalSnapshot.ContractVersion != harness.ContractVersion || r.ApprovalSnapshot.TaskID != r.TaskID || r.ApprovalSnapshot.RunID != r.RunID || r.ApprovalSnapshot.ObservedAt.IsZero() || r.ApprovalSnapshot.EvidenceReference == "" ||
 		r.ApprovalSnapshot.HeadSHA == nil || *r.ApprovalSnapshot.HeadSHA != r.CurrentHeadSHA {
 		return errors.New("delivery: pull-request report has mismatched approval evidence")
+	}
+	if err := validateApprovalSnapshotHeadBindings(r.ApprovalSnapshot, r.PatchReport.PatchStatus, r.CurrentHeadSHA); err != nil {
+		return err
 	}
 	return nil
 }

@@ -46,7 +46,7 @@ func testPatchReport(t *testing.T, status PatchStatus) PatchReport {
 	t.Helper()
 	branch, head := "autofixer/task-173-abc1234", "abc1234deadbeef"
 	prID := "pr-17"
-	if status == PatchPreparedNoPR {
+	if status == PatchPreparedNoPR || status == PatchNotCreated {
 		prID = ""
 	}
 	var pr *string
@@ -168,7 +168,7 @@ func TestValidateProjectRepositoryAndProtectedScope(t *testing.T) {
 			t.Errorf("ValidateBranch(%q): nil, want rejection", branch)
 		}
 	}
-	for _, file := range []string{".github/workflows/ci.yml", ".env", "secrets/token", "docs/adr/new.md", "../main.go", "/tmp/file"} {
+	for _, file := range []string{".github/workflows/ci.yml", ".env", "secrets/token", "docs/adr/new.md", "docs/contracts/task-evidence-contract-v1.md", "../main.go", "/tmp/file"} {
 		if err := (PatchArtifact{
 			TaskID:        "task-173",
 			RepositoryURL: AllowedRepositoryURL,
@@ -196,6 +196,43 @@ func TestNewPatchReportRedactsAndVerifiesDigest(t *testing.T) {
 	report.ChangeSummary = "tampered"
 	if err := report.Validate(); err == nil {
 		t.Fatal("Validate tampered report: nil, want digest mismatch")
+	}
+}
+
+func TestPatchReportRequiresValidationForCreatedPatch(t *testing.T) {
+	created := testPatchReport(t, PatchProposed)
+	created.Validation = nil
+	created.ReportDigest = ""
+	if _, err := NewPatchReport(created); err == nil {
+		t.Fatal("created patch without validation: nil error, want rejection")
+	}
+
+	noPatch := testPatchReport(t, PatchNotCreated)
+	if len(noPatch.Validation) != 0 {
+		t.Fatalf("not_created validation = %d, want zero", len(noPatch.Validation))
+	}
+	if err := noPatch.Validate(); err != nil {
+		t.Fatalf("not_created without validation: %v", err)
+	}
+}
+
+func TestPullRequestReportRejectsUnboundApprovalSubobservations(t *testing.T) {
+	report := testPRReport(t)
+	report.ApprovalSnapshot.QA.HeadSHA = nil
+	if err := report.Validate(); err == nil {
+		t.Fatal("PR report with null QA head: nil error, want rejection")
+	}
+
+	report = testPRReport(t)
+	report.ApprovalSnapshot.ReviewDiscussions.HeadSHA = ptr("oldhead1234567")
+	if err := report.Validate(); err == nil {
+		t.Fatal("PR report with stale discussion head: nil error, want rejection")
+	}
+
+	report = testPRReport(t)
+	report.ApprovalSnapshot.ApprovalQuorum.HeadSHA = nil
+	if err := report.Validate(); err == nil {
+		t.Fatal("PR report with null quorum head: nil error, want rejection")
 	}
 }
 
@@ -290,5 +327,108 @@ func TestCheckMergeEligibilityRequiresEveryGate(t *testing.T) {
 	result, err = adapter.CheckMergeEligibility(report)
 	if err != nil || !result.Eligible || result.Code != harness.AllowMergeQueueEligible {
 		t.Fatalf("eligible result = %+v err=%v, want merge-queue eligibility", result, err)
+	}
+}
+
+func testEvidenceBundle(t *testing.T, status PatchStatus) EvidenceBundle {
+	t.Helper()
+	report := testPatchReport(t, status)
+	if status != PatchNotCreated {
+		report.EvidenceReferences = []string{"evidence://events/run-173/1"}
+		report.Validation[0].EventReference = "evidence://events/run-173/1"
+		var err error
+		report, err = NewPatchReport(report)
+		if err != nil {
+			t.Fatalf("NewPatchReport for bundle: %v", err)
+		}
+	}
+	snapshot := testSnapshot("abc1234deadbeef")
+	event := harness.ExecutionEvent{
+		ContractVersion:     harness.ContractVersion,
+		EventID:             "evt-run-173-1",
+		Sequence:            1,
+		EventType:           harness.EventTypeStateTransition,
+		RunID:               "run-173",
+		TaskID:              "task-173",
+		IssueID:             "issue-173",
+		ActorIdentity:       "agent:runner",
+		ExecutionIdentity:   "runtime:autofixer",
+		OccurredAt:          time.Date(2026, 10, 22, 2, 1, 0, 0, time.UTC),
+		PolicyVersion:       harness.DefaultPolicyVersion,
+		RepositoryURL:       AllowedRepositoryURL,
+		BaseSHA:             "base-123",
+		Branch:              ptr("autofixer/task-173-abc1234"),
+		HeadSHA:             ptr("abc1234deadbeef"),
+		ApprovalSnapshotRef: "evidence://approvals/run-173/abc1234deadbeef",
+		EventDigest:         "event-digest-1",
+		DigestAlgorithm:     harness.DigestAlgorithmSHA256,
+	}
+	if status == PatchNotCreated {
+		report.EvidenceReferences = []string{"evidence://events/run-173/1"}
+		var err error
+		report, err = NewPatchReport(report)
+		if err != nil {
+			t.Fatalf("NewPatchReport for no-patch bundle: %v", err)
+		}
+		snapshot.HeadSHA = nil
+		snapshot.QA.HeadSHA = nil
+		snapshot.ReviewDiscussions.HeadSHA = nil
+		snapshot.ApprovalQuorum.HeadSHA = nil
+		snapshot.EvidenceReference = "evidence://approvals/run-173/no-pr"
+		event.Branch = nil
+		event.HeadSHA = nil
+	}
+	return EvidenceBundle{
+		ContractVersion: harness.ContractVersion,
+		TaskInput: TaskInput{
+			ContractVersion: harness.ContractVersion,
+			TaskID:          "task-173",
+			IssueID:         "issue-173",
+			RequestedAt:     time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC),
+			Repository:      TaskRepository{URL: AllowedRepositoryURL, BaseSHA: "base-123"},
+			RequestedWork:   RequestedWork{Summary: "bounded remediation", SourceReference: "issue://issue-173"},
+		},
+		RiskAssessment:     testRisk(t),
+		ExecutionEvents:    []harness.ExecutionEvent{event},
+		PatchReport:        report,
+		ApprovalSnapshot:   snapshot,
+		EvidenceReferences: []string{"evidence://events/run-173/1", "evidence://risk/task-173", snapshot.EvidenceReference},
+	}
+}
+
+func TestEvidenceBundleBindsEventsAndReferencesToCurrentHead(t *testing.T) {
+	bundle := testEvidenceBundle(t, PatchProposed)
+	if err := bundle.Validate(); err != nil {
+		t.Fatalf("valid evidence bundle: %v", err)
+	}
+
+	bundle.ExecutionEvents[0].HeadSHA = ptr("deadbeef1234567")
+	if err := bundle.Validate(); err == nil {
+		t.Fatal("bundle with event on another head: nil error, want rejection")
+	}
+
+	bundle = testEvidenceBundle(t, PatchProposed)
+	report := bundle.PatchReport
+	report.Validation[0].EventReference = "evidence://events/run-173/99"
+	var err error
+	bundle.PatchReport, err = NewPatchReport(report)
+	if err != nil {
+		t.Fatalf("NewPatchReport with unresolved validation reference: %v", err)
+	}
+	if err := bundle.Validate(); err == nil {
+		t.Fatal("bundle with unresolved validation reference: nil error, want rejection")
+	}
+}
+
+func TestNotCreatedEvidenceBundleRequiresNullRevisionBindings(t *testing.T) {
+	bundle := testEvidenceBundle(t, PatchNotCreated)
+	if err := bundle.Validate(); err != nil {
+		t.Fatalf("valid not_created bundle: %v", err)
+	}
+
+	bundle = testEvidenceBundle(t, PatchNotCreated)
+	bundle.ExecutionEvents[0].HeadSHA = ptr("abc1234deadbeef")
+	if err := bundle.Validate(); err == nil {
+		t.Fatal("not_created bundle with a head-bound event: nil error, want rejection")
 	}
 }
