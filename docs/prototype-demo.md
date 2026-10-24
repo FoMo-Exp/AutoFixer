@@ -8,14 +8,16 @@ repository.
 The normative record shape is
 [`task-evidence-contract-v1`](contracts/task-evidence-contract-v1.md). The
 prototype applies that contract through the `harness`, `sandbox`, and
-`delivery` Go packages.
+`delivery` Go packages, composed by the `autofixer` CLI.
 
 ## What is available now
 
-The repository requires Go 1.25 (see `go.mod`). Its current entry point is the
-package test suite, which uses local fixtures and injected delivery clients.
-There is no compiled CLI, configuration file format, task submission endpoint,
-or report-export command in this revision.
+The repository requires Go 1.25 (see `go.mod`). Its user-facing entry point is
+the `autofixer` CLI, which runs one controlled task attempt offline: it
+assesses risk, plans deterministically, dispatches only allow-listed tools
+through the existing sandbox and harness policy, records an application
+timeline, and emits a delivery evidence bundle. There is no task submission
+endpoint or provider integration; operation is local CLI only.
 
 Run the complete offline verification suite from the repository root:
 
@@ -27,20 +29,79 @@ The tests do not open a real pull request, modify `main`, or require a GitHub
 credential. Sandbox fixture commands use local programs such as `/bin/sleep`
 and `/bin/sh`; their grants declare no network destinations.
 
-### Pending AFP-05 command integration
+## The golden-task demo command
 
-The user-facing command, its flags, task-input file location, and report
-output location are **pending AFP-05 integration**. In particular, neither of
-the following is a supported command today:
+The single documented demo is the golden task, an embedded offline fixture.
+It dispatches one allow-listed `echo hello` tool and produces a
+`not_created` evidence bundle bound to the terminal event:
 
-```text
-autofixer run ...
-autofixer demo ...
+```sh
+go run ./cmd/autofixer demo
 ```
 
-When AFP-05 has merged, replace this section only with commands confirmed by
-the implemented `--help` output and an observed local run. Until then, use the
-focused test commands below as the reproducible demo surface.
+Text output (from an observed local run):
+
+```text
+task_id: golden-localized-001
+run_id: run-57b43e101582156e
+outcome: completed
+terminal_state: stopped
+code: stop_local_review_required
+reason: task completed locally; no pull request is bound, human disposition required
+risk_class: low
+risk_decision_code: risk_low_approved
+actions_dispatched: 1
+events: 5
+timeline_events: 9
+patch_status: not_created
+evidence_references: 3
+exit_code: 0
+```
+
+The same composition runs any controlled task input file. The fixture is also
+a runnable input:
+
+```sh
+go run ./cmd/autofixer run --input cmd/autofixer/testdata/golden-task.json --format json
+```
+
+`--format json` emits the terminal `loop.Result`, the harness audit-event
+summaries, the application `timeline`, and the full `evidence_bundle`.
+`--timeout <duration>` overrides the input's task timeout. Commands and flags
+were confirmed against the implemented `--help` surface and an observed local
+run; the fixture lives at `cmd/autofixer/testdata/golden-task.json`.
+
+### Command surface
+
+```text
+usage: autofixer run --input <task.json|-> [--format text|json] [--timeout <duration>]
+       autofixer demo [--format text|json] [--timeout <duration>]
+```
+
+`run` reads the controlled task input from a file or stdin (`-`). `demo` runs
+the embedded golden-task fixture. Exit codes map the terminal outcome:
+`0` completed, `2` invalid input, `3` rejected (including prohibited risk and
+illegal plans), `4` cancelled, `5` timed out, `6` stopped (including denial),
+`1` control failure.
+
+### What the composition wires
+
+The CLI composes the seams defined by
+[ADR 0002](adr/0002-local-agent-prototype-composition.md):
+
+- `agent/planner`'s deterministic `FakePlanner` replays the input's scripted
+  `plan`; `planner.Validate` refuses an illegal plan before dispatch.
+- `agent/tools`' registry allow-list is a second, independent gate in front of
+  the harness grant. The composition owns the allow-list (`echo hello`,
+  `sleep 5`); the task input cannot widen it.
+- Dispatch goes registry → `sandbox.Runner` → harness FP-03 policy inside the
+  sandbox, so a tool must clear both gates.
+- `agent/session` and `agent/events` record the application timeline: the
+  immutable task input, the plan, and every state change and tool event
+  mirrored from the authoritative harness evidence as typed references.
+- `delivery` validates and assembles the evidence bundle. The local demo
+  produces a `not_created` patch report bound to the terminal event and a
+  `not_requested` approval snapshot with null head bindings.
 
 ## Sample task input
 
@@ -70,24 +131,31 @@ only: `52081eaddca099967fd8be13b3060337fde50d3f`.
 `task_input` identifies the requested work; it does not itself authorize a
 tool, path, network destination, patch, pull request, or merge. A real run
 also needs a matching risk assessment, and any allowed execution needs a
-time-bounded capability grant.
+time-bounded capability grant. The full CLI input additionally declares the
+capability grant scope and the scripted plan; see
+`cmd/autofixer/testdata/golden-task.json` for a complete example.
 
 ## Reproducible offline narratives
 
 Each command below runs an existing fixture in isolation. A passing test is
-the expected result. These fixtures retain evidence in an in-memory event
-store for assertions; they do not currently write a JSON evidence bundle to
-disk. The contract examples remain the inspectable serialized form.
+the expected result. The CLI fixtures retain evidence in an in-memory event
+store and emit it on stdout; the package fixtures retain evidence for
+assertions. The contract examples remain the inspectable serialized form.
 
 | Narrative | Run | Expected terminal result and audit evidence |
 | --- | --- | --- |
-| Success-path state machine | `go test ./harness -run '^TestFullHappyPathToMerged$' -count=1` | A low-risk fixture records seven chained events: grant issuance, `running`, allowed tool dispatch, `awaiting_review`, eligibility evaluation, `approved_for_merge`, and `merged`. The chain is verified by `VerifyChain`. This is a state-machine fixture, not a real GitHub merge. |
-| Prohibited request | `go test ./harness -run '^TestProhibitedRunRejectedWithQueryableEvidence$' -count=1` | A prohibited secret-access assessment refuses grant issuance, transitions to terminal `rejected`, and retains a queryable state-transition event with `prohibited_secret_access`. |
-| Cancellation during execution | `go test ./sandbox -run '^TestExecuteCancelTerminatesCleansAndPreservesEvidence$' -count=1` | A permitted local `/bin/sleep 10` is cancelled by its context. The run reaches terminal `cancelled`, appends cancellation outcome and transition evidence, verifies the digest chain, and removes the one-time workspace. |
+| Golden task end to end | `go run ./cmd/autofixer demo` | One allow-listed `echo hello` dispatch: `completed`/`stopped` with `stop_local_review_required`, 5 chained harness events, an application timeline, and a `not_created` evidence bundle. Offline; no provider write. |
+| Illegal plan | `go test ./cmd/autofixer -run '^TestE2EIllegalPlanIsRejectedTerminal$' -count=1` | A plan step naming an empty tool is refused by `planner.Validate` before dispatch: `rejected`/`invalid_plan`, no dispatch counted, and a `not_created` bundle with a null grant. |
+| Registry denial (unregistered tool) | `go test ./cmd/autofixer -run '^TestE2ERegistryDeniesUnregisteredTool$' -count=1` | The grant permits the tool but the allow-list does not: `denied`/`deny_tool_unregistered`, no dispatch, and no tool-invocation evidence — the second gate stopped it before any process ran. |
+| Grant denial (out of grant) | `go test ./cmd/autofixer -run '^TestE2EHarnessDeniesOutOfGrantTool$' -count=1` | The registry permits the tool but the capability grant does not name it: `denied`/`stop_out_of_grant`, with harness evidence recording the refusal. |
+| Prohibited request | `go test ./cmd/autofixer -run '^TestRunCommandRejectsProhibitedWork$' -count=1` | A prohibited secret-access assessment refuses grant issuance, ends terminal `rejected`, and retains a bundle with a `prohibited` risk class and a null grant. |
+| Timeout during dispatch | `go test ./cmd/autofixer -run '^TestE2ETimesOutDuringDispatch$' -count=1` | A permitted `/bin/sleep 5` exceeds a one-second task timeout: `timed_out`, with an auditable bundle. |
+| Cancellation during execution | `go test ./cmd/autofixer -run '^(TestE2ECancelDuringDispatch|TestCLISmokeCancel)$' -count=1` | A permitted sleep is cancelled (context cancel in-process, SIGINT at the binary level): terminal `cancelled` with an auditable bundle and no surviving sandbox workspace. |
 
-For delivery-linkage coverage, run:
+For the lower-level state-machine and delivery-linkage coverage, run:
 
 ```sh
+go test ./harness -run '^TestFullHappyPathToMerged$' -count=1
 go test ./delivery -run '^(TestEvidenceBundleBindsEventsAndReferencesToCurrentHead|TestNotCreatedEvidenceBundleRequiresNullRevisionBindings)$' -count=1
 ```
 
@@ -118,8 +186,8 @@ not-applicable value to imply it.
 
 ### Audit fields to check in each narrative
 
-For all three focused fixtures, inspect the test assertions and the contract
-for these fields:
+For all fixtures, inspect the test assertions and the contract for these
+fields:
 
 ```text
 contract_version, task_id, run_id, issue_id,
@@ -151,7 +219,9 @@ an elevated grant requires a recorded human approval that predates issuance.
 At dispatch time, missing/revoked/expired grants and mismatched repository,
 base SHA, tool arguments, branch, paths, network destinations, or patch/PR
 permissions are denied. Out-of-grant and expired dispatches stop or revoke the
-run and append evidence rather than running the requested tool.
+run and append evidence rather than running the requested tool. The registry
+allow-list is an independent second gate: a tool the grant permits but the
+allow-list does not is denied before any process runs.
 
 Several limits matter when interpreting a local demo:
 
@@ -170,6 +240,10 @@ Several limits matter when interpreting a local demo:
 - Event storage in this prototype is in memory. A complete retained,
   access-controlled production evidence store and a user-facing report export
   are not supplied by the current package surface.
+- The demo produces a `not_created` patch report: the golden task dispatches a
+  permitted tool but creates no repository patch. A patch-producing outcome
+  requires the protected delivery adapter and a real provider write, which are
+  out of scope for this local prototype.
 
 These boundaries are intentional. A demo should demonstrate the controls and
 evidence format, never be treated as authority to access credentials, mutate

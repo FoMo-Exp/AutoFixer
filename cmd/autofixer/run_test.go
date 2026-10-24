@@ -7,25 +7,35 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Luthiel/AutoFixer/delivery"
 )
 
 // baseInputJSON is the controlled task input for an offline echo run: low
-// risk, one permitted tool, no network, no provider credentials.
+// risk, one allow-listed tool, no network, no provider credentials. The
+// repository is the one delivery allows so the evidence bundle validates.
 func baseInputJSON() map[string]any {
 	return map[string]any{
 		"task_id":            "task-cli-1",
 		"issue_id":           "issue-cli-1",
-		"repository":         map[string]any{"url": "https://github.com/example/repo.git", "base_sha": "base111"},
+		"repository":         map[string]any{"url": delivery.AllowedRepositoryURL, "base_sha": "base111"},
 		"actor_identity":     "human:tester",
 		"execution_identity": "agent:runner",
 		"requested_work":     map[string]any{"localized_reversible_change": true},
+		"summary":            "CLI echo run over the allow-listed tool.",
+		"source_reference":   "issue://issue-cli-1",
 		"grant": map[string]any{
 			"capability_grant_version": "cg-1",
 			"permitted_paths":          []any{"."},
 			"permitted_tools":          []any{map[string]any{"identity": "echo", "allowed_arguments": []any{"hello"}}},
 			"max_wall_clock_seconds":   30,
 		},
-		"actions": []any{map[string]any{"tool": "echo", "arguments": []any{"hello"}}},
+		"plan": map[string]any{
+			"version":     "1",
+			"task_id":     "task-cli-1",
+			"disposition": "actions",
+			"steps":       []any{map[string]any{"tool": "echo", "arguments": []any{"hello"}}},
+		},
 	}
 }
 
@@ -76,6 +86,30 @@ func TestRunCommandCompletesTaskAndEmitsJSONResult(t *testing.T) {
 	if parsed["actions_dispatched"] != float64(1) {
 		t.Fatalf("actions_dispatched = %v, want 1", parsed["actions_dispatched"])
 	}
+	timeline, ok := parsed["timeline"].(map[string]any)
+	if !ok || timeline["task_id"] != "task-cli-1" {
+		t.Fatalf("timeline = %v, want a task-cli-1 application timeline", parsed["timeline"])
+	}
+	bundle, ok := parsed["evidence_bundle"].(map[string]any)
+	if !ok {
+		t.Fatalf("evidence_bundle = %v, want a delivery evidence bundle", parsed["evidence_bundle"])
+	}
+	if bundle["contract_version"] != "1.0.0" {
+		t.Fatalf("bundle contract_version = %v, want 1.0.0", bundle["contract_version"])
+	}
+	patch, ok := bundle["patch_report"].(map[string]any)
+	if !ok || patch["patch_status"] != "not_created" {
+		t.Fatalf("patch_report = %v, want not_created", bundle["patch_report"])
+	}
+	if bundle["capability_grant"] == nil {
+		t.Fatalf("capability_grant = nil, want the issued grant retained in the bundle")
+	}
+	if refs, ok := bundle["evidence_references"].([]any); !ok || len(refs) == 0 {
+		t.Fatalf("evidence_references = %v, want resolvable references", bundle["evidence_references"])
+	}
+	if parsed["bundle_error"] != nil {
+		t.Fatalf("bundle_error = %v, want no bundle error on the success path", parsed["bundle_error"])
+	}
 }
 
 func TestRunCommandRejectsInvalidInputWithNonZeroExit(t *testing.T) {
@@ -114,6 +148,17 @@ func TestRunCommandRejectsProhibitedWork(t *testing.T) {
 	}
 	if parsed["code"] != "prohibited_secret_access" {
 		t.Fatalf("code = %v, want prohibited_secret_access", parsed["code"])
+	}
+	bundle, ok := parsed["evidence_bundle"].(map[string]any)
+	if !ok {
+		t.Fatalf("evidence_bundle = %v, want an auditable bundle for the refusal", parsed["evidence_bundle"])
+	}
+	if bundle["capability_grant"] != nil {
+		t.Fatalf("capability_grant = %v, want null for a refused run", bundle["capability_grant"])
+	}
+	risk, ok := bundle["risk_assessment"].(map[string]any)
+	if !ok || risk["risk_class"] != "prohibited" {
+		t.Fatalf("risk_assessment = %v, want prohibited", bundle["risk_assessment"])
 	}
 }
 
@@ -172,6 +217,7 @@ func TestRunCommandPrintsHumanReadableText(t *testing.T) {
 		"outcome: completed",
 		"terminal_state: stopped",
 		"risk_class: low",
+		"patch_status: not_created",
 		"exit_code: 0",
 	} {
 		if !strings.Contains(stdout.String(), want) {

@@ -1,0 +1,38 @@
+{
+  "task_id": "golden-localized-001",
+  "issue_id": "DAT-182",
+  "repository": {
+    "url": "https://github.com/Luthiel/AutoFixer.git",
+    "base_sha": "52081eaddca099967fd8be13b3060337fde50d3f"
+  },
+  "actor_identity": "human:ludwig",
+  "execution_identity": "agent:autofixer",
+  "requested_work": {
+    "localized_reversible_change": true
+  },
+  "summary": "Golden task: dispatch one allow-listed echo and retain the offline evidence bundle.",
+  "source_reference": "issue://DAT-182",
+  "grant": {
+    "capability_grant_version": "cg-golden-1",
+    "permitted_paths": ["."],
+    "permitted_tools": [
+      {
+        "identity": "echo",
+        "allowed_arguments": ["hello"]
+      }
+    ],
+    "max_wall_clock_seconds": 30
+  },
+  "plan": {
+    "version": "1",
+    "task_id": "golden-localized-001",
+    "disposition": "actions",
+    "steps": [
+      {
+        "tool": "echo",
+        "arguments": ["hello"]
+      }
+    ]
+  },
+  "timeout": "30s"
+}

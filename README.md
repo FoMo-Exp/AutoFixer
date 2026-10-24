@@ -6,26 +6,42 @@ governance.
 
 ## Current developer entry point
 
-This revision provides Go packages and their offline test fixtures; it does
-**not** yet provide an `autofixer` executable, subcommands, or a supported
-end-user command line. The reproducible developer demo is therefore the test
-suite:
+This revision provides a Go CLI, `autofixer`, that composes the offline
+agent prototype end to end: controlled task input → deterministic plan →
+allow-listed tool dispatch through the existing sandbox and harness policy →
+application evidence timeline → delivery evidence bundle. The reproducible
+developer demo is the golden task:
+
+```sh
+go run ./cmd/autofixer demo
+```
+
+The same composition runs any controlled task input file:
+
+```sh
+go run ./cmd/autofixer run --input cmd/autofixer/testdata/golden-task.json --format json
+```
+
+Commands, flags, and output were confirmed against the implemented `--help`
+surface and an observed local run. For the focused demo paths (successful
+state-machine flow, refusal, and cancellation), the expected evidence fields,
+and the prototype's safety boundaries, see
+[the prototype demo guide](docs/prototype-demo.md).
+
+The full offline verification suite is:
 
 ```sh
 go test ./...
 ```
 
-For the three focused demo paths (successful state-machine flow, refusal, and
-cancellation), the expected evidence fields, and the prototype's safety
-boundaries, see [the prototype demo guide](docs/prototype-demo.md).
-
 The versioned record contract is in
 [`docs/contracts/task-evidence-contract-v1.md`](docs/contracts/task-evidence-contract-v1.md).
 
-## AFP-05 integration status
+## Safety boundaries
 
-Command syntax, input files, and emitted report locations remain **pending
-AFP-05 integration**. Do not infer or automate a command such as
-`autofixer run` from the packages or examples in this repository. Once AFP-05
-is merged, this README and the demo guide must be updated from its implemented
-`--help` surface and observed output.
+The demo is local and offline. It never opens a real pull request, modifies
+`main`, or requires a GitHub credential. The registry allow-list and the
+harness capability grant are independent deny-by-default gates; a tool must
+clear both before it runs. Terminal outcomes — completion, illegal plan,
+risk refusal, tool or grant denial, cancellation, and timeout — all leave an
+auditable evidence bundle with no bypass side effects.
