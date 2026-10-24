@@ -101,7 +101,12 @@ func TestCLISmokeCancel(t *testing.T) {
 		"permitted_tools":          []any{map[string]any{"identity": "sleep", "allowed_arguments": []any{"5"}}},
 		"max_wall_clock_seconds":   30,
 	}
-	input["actions"] = []any{map[string]any{"tool": "sleep", "arguments": []any{"5"}}}
+	input["plan"] = map[string]any{
+		"version":     "1",
+		"task_id":     "task-cli-cancel",
+		"disposition": "actions",
+		"steps":       []any{map[string]any{"tool": "sleep", "arguments": []any{"5"}}},
+	}
 	path := writeInput(t, input)
 
 	cmd := exec.Command(cliBinary, "run", "--input", path, "--format", "json")
@@ -129,5 +134,8 @@ func TestCLISmokeCancel(t *testing.T) {
 	}
 	if parsed["outcome"] != "cancelled" || parsed["terminal_state"] != "cancelled" {
 		t.Fatalf("outcome/terminal_state = %v/%v, want cancelled/cancelled", parsed["outcome"], parsed["terminal_state"])
+	}
+	if parsed["evidence_bundle"] == nil {
+		t.Fatalf("evidence_bundle = nil, want an auditable bundle for the cancellation")
 	}
 }
