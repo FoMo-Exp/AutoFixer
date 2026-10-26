@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "DSH_SCOPE_DENIED",
+    "details": {
+      "reason": "boot_token"
+    },
+    "message": "Local control token is missing or invalid.",
+    "request_id": "req_9",
+    "retryable": false
+  }
+}

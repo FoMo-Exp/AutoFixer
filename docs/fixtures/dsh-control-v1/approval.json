@@ -1,0 +1,22 @@
+{
+  "audit_event_reference": "evidence://events/run_0000000000000004/1",
+  "grant": {
+    "capability_grant_version": "dsh-grant-run_0000000000000004",
+    "expires_at": "2099-01-01T00:01:00.000000001Z",
+    "issued_at": "2099-01-01T00:00:00.000000001Z",
+    "max_wall_clock_seconds": 60,
+    "permitted_paths": [
+      "web/src/export"
+    ],
+    "permitted_tools": [
+      {
+        "allowed_arguments": [
+          "hello"
+        ],
+        "identity": "echo"
+      }
+    ],
+    "scope_digest": "sha256:407d244c55266fd9dc6ee03ce43a1418e1aa5d4ff098568b4fd5085b7daed2c7"
+  },
+  "state": "approved"
+}

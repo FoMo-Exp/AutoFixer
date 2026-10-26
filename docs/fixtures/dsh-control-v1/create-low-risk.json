@@ -1,0 +1,35 @@
+{
+  "grant": {
+    "capability_grant_version": "dsh-grant-run_0000000000000001",
+    "expires_at": "2099-01-01T00:01:00Z",
+    "issued_at": "2099-01-01T00:00:00Z",
+    "max_wall_clock_seconds": 60,
+    "permitted_paths": [
+      "web/src/export"
+    ],
+    "permitted_tools": [
+      {
+        "allowed_arguments": [
+          "hello"
+        ],
+        "identity": "echo"
+      }
+    ],
+    "scope_digest": "sha256:407d244c55266fd9dc6ee03ce43a1418e1aa5d4ff098568b4fd5085b7daed2c7"
+  },
+  "required_action": null,
+  "risk_assessment": {
+    "assessed_at": "2099-01-01T00:00:00Z",
+    "assessor_identity": "dsh",
+    "contract_version": "1.0.0",
+    "decision_code": "risk_low_approved",
+    "elevated_approval_reference": null,
+    "policy_version": "governance-1",
+    "rationale_reference": "evidence://risk/tsk_fixture_low",
+    "risk_class": "low",
+    "run_id": "run_0000000000000001",
+    "task_id": "tsk_fixture_low"
+  },
+  "run_id": "run_0000000000000001",
+  "state": "approved"
+}

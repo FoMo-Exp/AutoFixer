@@ -30,6 +30,8 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 		return runCommand(args[1:], stdout, stderr)
 	case "demo":
 		return demoCommand(args[1:], stdout, stderr)
+	case "dsh":
+		return dshCommand(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n", args[0])
 		printUsage(stderr)
@@ -40,4 +42,5 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: autofixer run --input <task.json|-> [--format text|json] [--timeout <duration>]")
 	fmt.Fprintln(w, "       autofixer demo [--format text|json] [--timeout <duration>]")
+	fmt.Fprintln(w, "       autofixer dsh serve --socket <path> [--approver <identity>]...")
 }
