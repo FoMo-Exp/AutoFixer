@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "TOOL_NOT_REGISTERED",
+    "details": {},
+    "message": "Tool \"sh\" is not registered.",
+    "request_id": "req_11",
+    "retryable": false
+  }
+}

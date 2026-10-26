@@ -1,0 +1,19 @@
+{
+  "capabilities": {
+    "event_read": true,
+    "evidence_bundle": true,
+    "execution_control": true,
+    "local_transport_only": true,
+    "provider_write": false
+  },
+  "contract_version": "1.0.0",
+  "policy_version": "dsh-policy-1",
+  "protocol": {
+    "default": "1",
+    "supported": [
+      "1"
+    ]
+  },
+  "service": "dsh",
+  "status": "ready"
+}

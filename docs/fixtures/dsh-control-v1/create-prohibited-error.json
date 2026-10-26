@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": "DSH_RISK_PROHIBITED",
+    "details": {
+      "decision_code": "prohibited_secret_access",
+      "evidence_bundle_available": true,
+      "run_id": "run_0000000000000003",
+      "state": "rejected"
+    },
+    "message": "Prohibited work is rejected rather than downgraded.",
+    "request_id": "req_4",
+    "retryable": false
+  }
+}

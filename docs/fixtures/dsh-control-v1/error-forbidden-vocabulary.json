@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "INVALID_REQUEST",
+    "details": {},
+    "message": "field \"risk_class\" is not permitted in a dsh-control/v1 request",
+    "request_id": "req_10",
+    "retryable": false
+  }
+}

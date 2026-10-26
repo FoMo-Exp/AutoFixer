@@ -1,0 +1,6 @@
+{
+  "accepted_tool_id": "echo",
+  "action_id": "act_fixture",
+  "audit_event_reference": "evidence://events/run_0000000000000001/4",
+  "state": "running"
+}

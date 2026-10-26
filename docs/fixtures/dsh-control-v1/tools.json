@@ -1,0 +1,38 @@
+[
+  {
+    "AllowedPaths": [
+      "."
+    ],
+    "Exec": "echo",
+    "ID": "echo",
+    "MinimumRisk": "low",
+    "Params": [
+      {
+        "enum": [
+          "hello"
+        ],
+        "name": "message",
+        "required": true,
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "AllowedPaths": [
+      "."
+    ],
+    "Exec": "sleep",
+    "ID": "sleep",
+    "MinimumRisk": "low",
+    "Params": [
+      {
+        "enum": [
+          "5"
+        ],
+        "name": "seconds",
+        "required": true,
+        "type": "string"
+      }
+    ]
+  }
+]
