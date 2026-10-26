@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -42,8 +43,12 @@ func dshCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "--socket is required")
 		return loop.ExitInvalidInput
 	}
+	// Approver identities are the authorization root for approvals and
+	// cancellations; there is no safe public default, so the server refuses
+	// to start without an explicit list.
 	if len(approvers) == 0 {
-		approvers = multiFlag{"github:aphrodite"}
+		fmt.Fprintln(stderr, "at least one --approver <identity> is required")
+		return loop.ExitInvalidInput
 	}
 
 	server, err := dsh.New(dsh.Config{
@@ -87,7 +92,7 @@ func dshCommand(args []string, stdout, stderr io.Writer) int {
 }
 
 func defaultSocketPath() string {
-	return fmt.Sprintf("%s/dsh-control.sock", os.TempDir())
+	return filepath.Join(dsh.DefaultRuntimeDir(), "dsh-control.sock")
 }
 
 type multiFlag []string

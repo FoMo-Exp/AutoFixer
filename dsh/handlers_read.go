@@ -333,7 +333,10 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 				"Artifact is not available for a non-terminal run.", nil)
 			return
 		}
-		writeError(w, r, http.StatusConflict, CodeArtifactNotFinalized,
+		// These artifacts are only produced by a delivery step outside the
+		// local control plane; a finalized run has simply never had one,
+		// so the contract's 404 ARTIFACT_NOT_FOUND is the truthful answer.
+		writeError(w, r, http.StatusNotFound, CodeArtifactNotFound,
 			fmt.Sprintf("Artifact %q is not produced by the local control plane.", artifactID), nil)
 		return
 	case "patch_report":

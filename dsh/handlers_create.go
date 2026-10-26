@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Luthiel/AutoFixer/delivery"
 	"github.com/Luthiel/AutoFixer/harness"
 )
 
@@ -95,7 +96,8 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	case harness.RiskProhibited, harness.RiskLow:
 		assessment, err = harness.NewRiskAssessment(assessmentInput, class, decisionCode, nil)
 		if err != nil {
-			writeError(w, r, http.StatusInternalServerError, CodeUnavailable, err.Error(), nil)
+			writeError(w, r, http.StatusInternalServerError, CodeUnavailable,
+				"Risk assessment could not be recorded.", nil)
 			return
 		}
 	case harness.RiskElevated:
@@ -152,12 +154,13 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		rec.mu.Unlock()
 		s.store.releaseTask(rec, terminal)
 		if transitionErr != nil {
-			writeError(w, r, http.StatusServiceUnavailable, CodeEvidenceStoreUnavailable,
+			writeError(w, r, http.StatusServiceUnavailable, CodeUnavailable,
 				"Prohibited work could not be evidenced as rejected.", nil)
 			return
 		}
 		if closeErr != nil {
-			writeError(w, r, http.StatusServiceUnavailable, CodeUnavailable, closeErr.Error(), nil)
+			writeError(w, r, http.StatusServiceUnavailable, CodeUnavailable,
+				"Run workspace could not be torn down.", nil)
 			return
 		}
 		writeError(w, r, http.StatusUnprocessableEntity, CodeRiskProhibited,
@@ -176,8 +179,8 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		rec.mu.Unlock()
 		s.store.releaseTask(rec, false)
 		if approveErr != nil {
-			writeError(w, r, http.StatusServiceUnavailable, CodeEvidenceStoreUnavailable,
-				"Capability grant could not be evidenced.", map[string]any{"reason": approveErr.Error()})
+			writeError(w, r, http.StatusServiceUnavailable, CodeUnavailable,
+				"Capability grant could not be evidenced.", nil)
 			return
 		}
 		rec.mu.Lock()
@@ -237,6 +240,13 @@ func validateCreateRequest(req *createRequest) *invalidFieldError {
 	if idMatch == nil || urlMatch == nil || idMatch[1] != urlMatch[1] || idMatch[2] != urlMatch[2] {
 		return fail(CodeInvalidRepositoryIdentity,
 			"repository.repository_id must be github:<owner>/<repo> matching repository.url")
+	}
+	// The pilot may only touch its own repository. Rejecting here keeps a
+	// foreign-repo run from being created only to fail evidence assembly
+	// (and the terminal-bundle promise) for the rest of its life.
+	if err := delivery.ValidateRepositoryURL(req.Repository.URL); err != nil {
+		return fail(CodeInvalidRepositoryIdentity,
+			"repository.url is not the allowed AutoFixer repository")
 	}
 	if !baseSHAPattern.MatchString(req.Repository.BaseSHA) {
 		return fail(CodeInvalidBaseSHA, "repository.base_sha must be a hexadecimal commit id")

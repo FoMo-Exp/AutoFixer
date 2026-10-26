@@ -13,6 +13,7 @@ package dsh
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
@@ -187,7 +188,9 @@ func (s *Server) SocketPath() string { return s.cfg.SocketPath }
 func (s *Server) TokenPath() string { return s.tokenPath }
 
 // Listen binds the local transport and writes the boot-token file. It is
-// idempotent.
+// idempotent. The socket's parent directory must be a private directory
+// owned by this user, so neither the socket nor the token can be planted or
+// swapped through a shared world-writable path.
 func (s *Server) Listen() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -196,6 +199,11 @@ func (s *Server) Listen() error {
 	}
 	if s.started {
 		return nil
+	}
+	// On unix the token sits beside the socket, so one directory check
+	// covers both; pipe mode derives its token path inside the runtime dir.
+	if err := ensureSecureDir(filepath.Dir(s.tokenPath)); err != nil {
+		return err
 	}
 	ln, err := listen(s.cfg.Network, s.cfg.SocketPath)
 	if err != nil {
@@ -355,9 +363,13 @@ type requestError struct {
 	details map[string]any
 }
 
-// serveIdempotent reads the request body once, replays a recorded response
-// for a repeated key, and records the response for later replays. Reusing a
-// key with a different payload is a conflict, never a second effect.
+// serveIdempotent reads the request body once, joins or claims the key
+// atomically, replays a recorded response for a completed key, and waits for
+// the owner when the same key is already in flight — so two concurrent
+// identical POSTs execute exactly once. Retryable failures (429/503) are
+// delivered to in-flight waiters but never frozen into the ledger: a client
+// following the standard retry pattern re-executes instead of replaying a
+// cached failure forever.
 func (s *Server) serveIdempotent(w http.ResponseWriter, r *http.Request, mux *http.ServeMux) {
 	key := r.Header.Get(HeaderIdempotency)
 	if key == "" || len(key) > 256 {
@@ -373,21 +385,41 @@ func (s *Server) serveIdempotent(w http.ResponseWriter, r *http.Request, mux *ht
 	r.Body = newReadCloser(body)
 
 	fingerprint := idempotencyFingerprint(r.Method, r.URL.Path, body)
-	if entry, ok := s.store.idempotencyKey(key); ok {
-		if entry.fingerprint != fingerprint {
-			writeError(w, r, http.StatusConflict, CodeIdempotencyConflict,
-				"Idempotency-Key was already used with a different payload.", nil)
-			return
-		}
+	entry, owner, conflict := s.store.beginIdempotent(key, fingerprint, s.cfg.Now().UTC())
+	if conflict {
+		writeError(w, r, http.StatusConflict, CodeIdempotencyConflict,
+			"Idempotency-Key was already used with a different payload.", nil)
+		return
+	}
+	if !owner {
+		<-entry.done
 		w.Header().Set(HeaderContentType, contentTypeJSON)
 		w.WriteHeader(entry.status)
 		_, _ = w.Write(entry.body)
 		return
 	}
 
+	finished := false
+	defer func() {
+		if !finished {
+			// A panic escaped the handler; release waiters with a
+			// non-recorded failure so their retry re-executes.
+			s.store.finishIdempotent(key, entry, http.StatusInternalServerError,
+				[]byte(`{"error":{"code":"DSH_UNAVAILABLE","message":"handler failed","request_id":"","retryable":true,"details":{}}}`),
+				false)
+		}
+	}()
 	capture := &captureWriter{ResponseWriter: w, status: http.StatusOK}
 	mux.ServeHTTP(capture, r)
-	s.store.rememberIdempotency(key, fingerprint, capture.status, capture.body.Bytes())
+	finished = true
+	s.store.finishIdempotent(key, entry, capture.status, capture.body.Bytes(),
+		!retryableStatus(capture.status))
+}
+
+// retryableStatus reports whether a response invites a same-key retry: the
+// classes writeError marks `retryable: true`.
+func retryableStatus(status int) bool {
+	return status == http.StatusServiceUnavailable || status == http.StatusTooManyRequests
 }
 
 // randomToken mints the ephemeral per-start boot token.
@@ -399,21 +431,61 @@ func randomToken() (string, error) {
 	return hex.EncodeToString(buf[:]), nil
 }
 
+// ensureSecureDir creates the private runtime directory on first use and
+// always verifies it: a shared or symlinked parent would let a stranger
+// plant the socket or the boot-token file.
+func ensureSecureDir(dir string) error {
+	if dir == "" || dir == "." {
+		return errors.New("dsh: runtime files must live in an explicit private directory")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("dsh: create runtime directory: %w", err)
+	}
+	return verifySecureDir(dir)
+}
+
+// writeTokenFile creates the boot-token file exclusively, so a pre-planted
+// regular file, symlink, or directory at the path is refused rather than
+// truncated or followed. A leftover regular file from a previous run of ours
+// (same owner, inside our private runtime directory) is reopened and
+// rewritten.
 func writeTokenFile(path, token string) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	file, err := openExclusive(path, 0o600)
 	if err != nil {
-		return fmt.Errorf("dsh: write boot token file: %w", err)
+		if !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("dsh: write boot token file: %w", err)
+		}
+		file, err = openOwned(path)
+		if err != nil {
+			return fmt.Errorf("dsh: boot token file %q already exists and is not a file this server may rewrite: %w", path, err)
+		}
 	}
 	defer func() { _ = file.Close() }()
+	if err := verifyOwnedFile(file); err != nil {
+		return err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		return fmt.Errorf("dsh: restrict boot token file permissions: %w", err)
+	}
 	if _, err := file.WriteString(token + "\n"); err != nil {
 		return fmt.Errorf("dsh: write boot token file: %w", err)
 	}
 	return nil
 }
 
+// DefaultRuntimeDir is the private per-user directory the CLI places the
+// default socket and token in, away from shared world-writable paths.
+func DefaultRuntimeDir() string {
+	return defaultRuntimeDir()
+}
+
 func tokenFilePath(network, socketPath string) string {
 	if network == NetworkPipe {
-		return filepath.Join(os.TempDir(), "dsh-control.token")
+		// The pipe name is attacker-visible, so the token file name is a
+		// digest of it inside our private runtime directory rather than a
+		// fixed shared path.
+		sum := sha256.Sum256([]byte(socketPath))
+		return filepath.Join(defaultRuntimeDir(), "dsh-token-"+hex.EncodeToString(sum[:8])+".token")
 	}
 	return socketPath + ".token"
 }

@@ -330,6 +330,12 @@ func TestInvalidToolArgumentsAndIntentAreRejected(t *testing.T) {
 	status, raw = env.do("POST", "/v1/runs/"+created.RunID+"/actions", escapingPath)
 	wantError(t, status, raw, http.StatusBadRequest, CodeInvalidActionIntent)
 
+	// Missing scope means denied: an empty path_scope never reaches policy.
+	emptyScope := echoAction("act_empty_scope")
+	emptyScope.Intent.PathScope = nil
+	status, raw = env.do("POST", "/v1/runs/"+created.RunID+"/actions", emptyScope)
+	wantError(t, status, raw, http.StatusBadRequest, CodeInvalidActionIntent)
+
 	// None of the refusals may have dispatched anything.
 	run := getRun(t, env, created.RunID)
 	if run.ExecutionCounts.ActionsTotal != 0 {
@@ -408,7 +414,7 @@ func TestArtifactsFollowRunLifecycle(t *testing.T) {
 	}
 
 	status, raw = env.do("GET", "/v1/runs/"+created.RunID+"/artifacts/patch_diff", nil)
-	wantError(t, status, raw, http.StatusConflict, CodeArtifactNotFinalized)
+	wantError(t, status, raw, http.StatusNotFound, CodeArtifactNotFound)
 }
 
 func TestGrantWallClockTimeoutEndsTheRun(t *testing.T) {

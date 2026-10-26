@@ -139,9 +139,19 @@ type createRequest struct {
 
 type idemEntry struct {
 	fingerprint string
-	status      int
-	body        []byte
+	created     time.Time
+	// done closes once status and body are final; in-flight waiters block
+	// on it before replaying.
+	done   chan struct{}
+	status int
+	body   []byte
 }
+
+// idempotencyTTL bounds how long a completed key stays replayable. The M0
+// contract promises "the evidence retention period" without fixing a
+// number; a day is long enough for any sane client retry window and keeps
+// the in-memory ledger from growing without bound.
+const idempotencyTTL = 24 * time.Hour
 
 // store holds every run and the idempotency ledger for one server process.
 // It is in-memory by design: M1 has no persistence, and evidence lives in the
@@ -150,14 +160,14 @@ type store struct {
 	mu           sync.Mutex
 	runs         map[string]*runRecord
 	activeByTask map[string]string
-	idempotency  map[string]idemEntry
+	idempotency  map[string]*idemEntry
 }
 
 func newStore() *store {
 	return &store{
 		runs:         map[string]*runRecord{},
 		activeByTask: map[string]string{},
-		idempotency:  map[string]idemEntry{},
+		idempotency:  map[string]*idemEntry{},
 	}
 }
 
@@ -199,23 +209,53 @@ func (s *store) releaseTask(rec *runRecord, terminal bool) {
 	}
 }
 
-func (s *store) idempotencyKey(key string) (idemEntry, bool) {
+// beginIdempotent atomically claims key for this request (owner=true), joins
+// an in-flight execution of the same key (owner=false, entry still open), or
+// reports a fingerprint conflict. Because the claim happens before the
+// handler runs, two concurrent identical POSTs cannot both execute.
+func (s *store) beginIdempotent(key, fingerprint string, now time.Time) (entry *idemEntry, owner, conflict bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	entry, ok := s.idempotency[key]
-	return entry, ok
+	s.evictIdempotencyLocked(now)
+	if existing, ok := s.idempotency[key]; ok {
+		if existing.fingerprint != fingerprint {
+			return nil, false, true
+		}
+		return existing, false, false
+	}
+	e := &idemEntry{
+		fingerprint: fingerprint,
+		created:     now,
+		done:        make(chan struct{}),
+	}
+	s.idempotency[key] = e
+	return e, true, false
 }
 
-func (s *store) rememberIdempotency(key, fingerprint string, status int, body []byte) {
+// finishIdempotent publishes the outcome to waiters. Retryable outcomes are
+// dropped from the ledger so a client's same-key retry re-executes instead of
+// replaying a cached failure; concurrent waiters still receive the outcome.
+func (s *store) finishIdempotent(key string, e *idemEntry, status int, body []byte, record bool) {
+	e.status = status
+	e.body = append([]byte{}, body...)
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.idempotency[key]; exists {
-		return
+	if !record && s.idempotency[key] == e {
+		delete(s.idempotency, key)
 	}
-	s.idempotency[key] = idemEntry{
-		fingerprint: fingerprint,
-		status:      status,
-		body:        append([]byte{}, body...),
+	s.mu.Unlock()
+	close(e.done)
+}
+
+func (s *store) evictIdempotencyLocked(now time.Time) {
+	for key, entry := range s.idempotency {
+		select {
+		case <-entry.done:
+		default:
+			continue // still in flight
+		}
+		if now.Sub(entry.created) > idempotencyTTL {
+			delete(s.idempotency, key)
+		}
 	}
 }
 
@@ -278,27 +318,20 @@ func (rec *runRecord) closeRunnerLocked() error {
 	return runner.Close()
 }
 
-func (rec *runRecord) markAction(actionID string) bool {
-	rec.mu.Lock()
-	defer rec.mu.Unlock()
-	if rec.actionIDs[actionID] {
-		return false
-	}
-	rec.actionIDs[actionID] = true
-	return true
-}
-
 // dispatchSlot acquires the right to run one action, or reports why it cannot
-// be taken. The busy flag is checked before waiting on `mu` so a second
-// action during an execution fails fast with DSH_RUN_BUSY instead of
-// blocking behind it.
-func (rec *runRecord) dispatchSlot() (release func(), busy bool) {
+// be taken. The cancel function is registered in the same critical section
+// that sets the busy flag, so a canceller racing the start of a dispatch can
+// never observe busy with a nil cancel and skip the interrupt. The busy flag
+// is checked before waiting on `mu` so a second action during an execution
+// fails fast with DSH_RUN_BUSY instead of blocking behind it.
+func (rec *runRecord) dispatchSlot(cancel context.CancelFunc) (release func(), busy bool) {
 	rec.ctl.Lock()
 	if rec.busy {
 		rec.ctl.Unlock()
 		return nil, true
 	}
 	rec.busy = true
+	rec.cancel = cancel
 	done := make(chan struct{})
 	rec.execDone = done
 	rec.ctl.Unlock()
@@ -313,16 +346,10 @@ func (rec *runRecord) dispatchSlot() (release func(), busy bool) {
 	}, false
 }
 
-// armCancellation registers the in-flight dispatch's cancel function.
-func (rec *runRecord) armCancellation(cancel context.CancelFunc) {
-	rec.ctl.Lock()
-	rec.cancel = cancel
-	rec.ctl.Unlock()
-}
-
 // interruptDispatch cancels an in-flight tool and waits for it to settle, so
 // the canceller can evidence the terminal state from the same chain the
-// dispatch wrote.
+// dispatch wrote. While the run is busy the cancel function is guaranteed
+// non-nil: it is armed atomically with the dispatch slot.
 func (rec *runRecord) interruptDispatch() {
 	rec.ctl.Lock()
 	cancel := rec.cancel

@@ -2,11 +2,15 @@ package dsh
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHealthNeedsNoCredentials(t *testing.T) {
@@ -197,6 +201,17 @@ func TestCreateValidatesRepositoryIdentityAndBaseSHA(t *testing.T) {
 	badSHA.Repository.BaseSHA = "not-a-sha"
 	status, raw = env.do("POST", "/v1/runs", badSHA)
 	wantError(t, status, raw, http.StatusBadRequest, CodeInvalidBaseSHA)
+
+	// A consistent but foreign repository is refused at the create boundary:
+	// evidence assembly could never succeed for it, so the run must not exist.
+	foreign := lowRiskCreate("tsk_foreign_repo")
+	foreign.Repository.RepositoryID = "github:acme/payments"
+	foreign.Repository.URL = "https://github.com/acme/payments.git"
+	status, raw = env.do("POST", "/v1/runs", foreign)
+	body := wantError(t, status, raw, http.StatusBadRequest, CodeInvalidRepositoryIdentity)
+	if !strings.Contains(body.Error.Message, "allowed AutoFixer repository") {
+		t.Fatalf("unexpected message %q", body.Error.Message)
+	}
 }
 
 func TestTaskCannotHaveTwoActiveRuns(t *testing.T) {
@@ -233,4 +248,123 @@ func TestUnknownArtifactIsNotFound(t *testing.T) {
 // ConnContext does, so a handler-level test can imitate a TCP origin.
 func stampConnContext(r *http.Request, network string) context.Context {
 	return context.WithValue(r.Context(), connNetworkKey{}, network)
+}
+
+// TestTokenFileRefusesSymlink plants a symlink at the token path pointing at
+// a victim file: Listen must refuse, and the victim must stay untouched.
+func TestTokenFileRefusesSymlink(t *testing.T) {
+	dir := filepath.Join(os.TempDir(), fmt.Sprintf("dsh-symlink-%d", os.Getpid()))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	victim := filepath.Join(dir, "victim.txt")
+	if err := os.WriteFile(victim, []byte("precious"), 0o600); err != nil {
+		t.Fatalf("write victim: %v", err)
+	}
+	socketPath := filepath.Join(dir, "dsh.sock")
+	tokenPath := socketPath + ".token"
+	if err := os.Symlink(victim, tokenPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	server, err := New(Config{
+		SocketPath: socketPath,
+		Approvers:  []string{"github:aphrodite"},
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	if err := server.Listen(); err == nil {
+		_ = server.Close()
+		t.Fatalf("Listen must refuse a pre-planted token symlink")
+	}
+	raw, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatalf("read victim: %v", err)
+	}
+	if string(raw) != "precious" {
+		t.Fatalf("victim file was modified through the symlink: %q", raw)
+	}
+}
+
+// TestConcurrentSameKeyExecutesOnce fires two identical POSTs with one
+// idempotency key; both must observe the same single run.
+func TestConcurrentSameKeyExecutesOnce(t *testing.T) {
+	env := startEnv(t)
+	body := lowRiskCreate("tsk_same_key")
+	key := strPtr("idem_same_key")
+
+	const workers = 2
+	type result struct {
+		status int
+		raw    []byte
+	}
+	results := make(chan result, workers)
+	start := make(chan struct{})
+	for i := 0; i < workers; i++ {
+		go func() {
+			<-start
+			status, raw := env.doWith("POST", "/v1/runs", body, map[string]*string{
+				HeaderIdempotency: key,
+			})
+			results <- result{status, raw}
+		}()
+	}
+	close(start)
+
+	var runID string
+	for i := 0; i < workers; i++ {
+		res := <-results
+		wantStatus(t, res.status, res.raw, http.StatusCreated)
+		created := decodeInto[createRunResponse](t, res.raw)
+		if runID == "" {
+			runID = created.RunID
+		} else if created.RunID != runID {
+			t.Fatalf("concurrent same-key creates diverged: %q vs %q", runID, created.RunID)
+		}
+	}
+	// Exactly one run exists for the task.
+	status, raw := env.do("GET", "/v1/runs/"+runID, nil)
+	wantStatus(t, status, raw, http.StatusOK)
+}
+
+// TestRetryableFailureIsNotFrozenIntoLedger proves a 429 is delivered but
+// not recorded: the same key retried after the busy window re-executes
+// (observing the run's new state) instead of replaying the cached 429.
+func TestRetryableFailureIsNotFrozenIntoLedger(t *testing.T) {
+	env := startEnv(t, func(cfg *Config) {
+		cfg.Now = time.Now
+	})
+	created := createRun(t, env, lowRiskCreate("tsk_retryable", "sleep"))
+
+	sleepAction := func(actionID string) actionRequest {
+		req := echoAction(actionID)
+		req.Intent.ToolID = "sleep"
+		req.Intent.Arguments = json.RawMessage(`{"seconds":"5"}`)
+		return req
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		env.do("POST", "/v1/runs/"+created.RunID+"/actions", sleepAction("act_holder"))
+	}()
+
+	time.Sleep(300 * time.Millisecond)
+	busyKey := strPtr("idem_busy_action")
+	status, raw := env.doWith("POST", "/v1/runs/"+created.RunID+"/actions",
+		sleepAction("act_retry"), map[string]*string{HeaderIdempotency: busyKey})
+	wantError(t, status, raw, http.StatusTooManyRequests, CodeRunBusy)
+
+	status, raw = cancelRun(t, env, created.RunID, "github:aphrodite")
+	wantStatus(t, status, raw, http.StatusAccepted)
+	<-done
+
+	// Same key, same payload: the ledger must not replay the cached 429.
+	// The run is now cancelled, so a re-execution answers 409.
+	status, raw = env.doWith("POST", "/v1/runs/"+created.RunID+"/actions",
+		sleepAction("act_retry"), map[string]*string{HeaderIdempotency: busyKey})
+	wantError(t, status, raw, http.StatusConflict, CodeTaskStateConflict)
 }

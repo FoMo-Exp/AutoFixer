@@ -36,10 +36,17 @@ func startEnv(t *testing.T, mods ...func(*Config)) *testEnv {
 	t.Helper()
 	var idSeq atomic.Int64
 	var socketSeq atomic.Int64
-	// The socket path stays short: sun_path caps Unix socket paths at 104
-	// bytes on macOS, which a nested t.TempDir() path can exceed.
+	// The socket and token live in a private per-test directory: the server
+	// refuses shared or world-accessible parents, and sun_path caps Unix
+	// socket paths at 104 bytes on macOS, which a nested t.TempDir() path
+	// can exceed — a short name under the system temp dir stays safe.
+	dir := filepath.Join(os.TempDir(), fmt.Sprintf("dsh-test-%d-%d", os.Getpid(), socketSeq.Add(1)))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create test runtime dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	cfg := Config{
-		SocketPath: filepath.Join(os.TempDir(), fmt.Sprintf("dsh-test-%d-%d.sock", os.Getpid(), socketSeq.Add(1))),
+		SocketPath: filepath.Join(dir, "dsh.sock"),
 		Approvers:  []string{"github:aphrodite"},
 		Now:        func() time.Time { return frozenClock() },
 		NewID: func(prefix string) string {

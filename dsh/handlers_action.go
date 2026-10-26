@@ -103,7 +103,12 @@ func (s *Server) handleSubmitAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	release, busy := rec.dispatchSlot()
+	// The cancel context is armed inside dispatchSlot, in the same critical
+	// section as the busy flag, so a cancel that lands the instant the slot
+	// is taken still interrupts the dispatch.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	release, busy := rec.dispatchSlot(cancel)
 	if busy {
 		writeError(w, r, http.StatusTooManyRequests, CodeRunBusy,
 			"Another action is still executing for this run.", nil)
@@ -111,19 +116,12 @@ func (s *Server) handleSubmitAction(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	// The action id is consumed only once this request owns the dispatch
-	// slot, so a busy rejection never burns a client's action_id.
-	if !rec.reserveAction(req.ActionID) {
-		writeError(w, r, http.StatusConflict, CodeActionAlreadySubmitted,
-			"action_id has already been submitted for this run.", nil)
-		return
-	}
-
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 
 	// Re-check under the run lock: an approval, cancellation, or stop may
 	// have landed between the fast path and acquiring the dispatch slot.
+	// No action id has been consumed yet, so nothing needs releasing.
 	switch rec.run.State {
 	case harness.StateApproved, harness.StateRunning:
 	default:
@@ -137,9 +135,20 @@ func (s *Server) handleSubmitAction(w http.ResponseWriter, r *http.Request) {
 	// is the independent allow-list gate that runs before harness policy.
 	executor, err := s.executorFor(rec)
 	if err != nil {
-		writeError(w, r, http.StatusServiceUnavailable, CodeSandboxUnavailable, err.Error(), nil)
+		writeError(w, r, http.StatusServiceUnavailable, CodeSandboxUnavailable,
+			"Sandbox workspace could not be prepared.", nil)
 		return
 	}
+
+	// The action id is consumed only once this request owns the dispatch
+	// slot and a runnable executor, so a busy or state rejection never
+	// burns a client's action_id. The caller holds rec.mu.
+	if rec.actionIDs[req.ActionID] {
+		writeError(w, r, http.StatusConflict, CodeActionAlreadySubmitted,
+			"action_id has already been submitted for this run.", nil)
+		return
+	}
+	rec.actionIDs[req.ActionID] = true
 
 	registryDecision := rec.registryAuthorize(spec, req, argv)
 	if !registryDecision.Allowed {
@@ -155,12 +164,6 @@ func (s *Server) handleSubmitAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	rec.ctl.Lock()
-	rec.cancel = cancel
-	rec.ctl.Unlock()
-
 	result, execErr := executor.Execute(ctx, sandbox.Spec{
 		Tool:                spec.Exec,
 		Arguments:           argv,
@@ -172,12 +175,12 @@ func (s *Server) handleSubmitAction(w http.ResponseWriter, r *http.Request) {
 
 	if execErr != nil {
 		writeError(w, r, http.StatusServiceUnavailable, CodeSandboxUnavailable,
-			"Tool dispatch failed before an outcome could be recorded.",
-			map[string]any{"reason": execErr.Error()})
+			"Tool dispatch failed before an outcome could be recorded.", nil)
 		return
 	}
 	if closeErr != nil {
-		writeError(w, r, http.StatusServiceUnavailable, CodeSandboxUnavailable, closeErr.Error(), nil)
+		writeError(w, r, http.StatusServiceUnavailable, CodeSandboxUnavailable,
+			"Sandbox workspace could not be torn down.", nil)
 		return
 	}
 	if !result.Decision.Allowed {
@@ -246,6 +249,13 @@ func validateIntent(req actionRequest) (map[string]any, *invalidIntentError) {
 	if req.Intent.ToolID == "" {
 		return fail(CodeInvalidActionIntent, "intent.tool_id is required")
 	}
+	// Missing scope means denied: an action must name the repository paths
+	// it touches, so an empty path_scope cannot slip past the grant's
+	// path checks by never being checked.
+	if len(req.Intent.PathScope) == 0 {
+		return fail(CodeInvalidActionIntent,
+			"intent.path_scope must name at least one repository-relative path")
+	}
 	arguments := map[string]any{}
 	if len(req.Intent.Arguments) > 0 && string(req.Intent.Arguments) != "null" {
 		if err := json.Unmarshal(req.Intent.Arguments, &arguments); err != nil {
@@ -293,16 +303,6 @@ func (s *Server) recordRegistryDenial(rec *runRecord, req actionRequest, argv []
 	})
 	s.store.releaseTask(rec, harness.IsTerminal(rec.run.State))
 	_ = rec.closeRunnerLocked()
-}
-
-func (rec *runRecord) reserveAction(actionID string) bool {
-	rec.mu.Lock()
-	defer rec.mu.Unlock()
-	if rec.actionIDs[actionID] {
-		return false
-	}
-	rec.actionIDs[actionID] = true
-	return true
 }
 
 // registryAuthorize is the independent allow-list gate in front of the
