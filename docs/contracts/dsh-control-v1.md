@@ -4,13 +4,20 @@
 
 This contract is the local Node-to-dsh control boundary. All record shapes
 which represent task evidence remain governed by
-[`task-evidence-contract-v1`](task-evidence-contract-v1.md).
+[`task-evidence-contract-v1`](task-evidence-contract-v1.md). Every response
+or event field named `state` uses exactly the state vocabulary in that
+contract's §5: `requested`, `approved`, `running`, `awaiting_review`,
+`approved_for_merge`, `stopped`, `timed_out`, `expired`, `rejected`,
+`cancelled`, or `merged`. No endpoint or client may invent another dsh state.
 
 ## Transport and common rules
 
 - Unix uses a UDS; Windows uses a Named Pipe. dsh MUST NOT bind a TCP port.
 - Every request except `/v1/health` sends `X-DSH-Protocol: 1`, an ephemeral
   `X-DSH-Boot-Token`, and `X-Request-Id`. Writes also send `Idempotency-Key`.
+  `/v1/health` uses no protocol header to discover supported versions; if a
+  caller optionally supplies an unsupported protocol value, it receives `426
+  PROTOCOL_VERSION_UNSUPPORTED`.
 - dsh retains each idempotency key for the evidence retention period. Reuse
   with a different payload returns `409 IDEMPOTENCY_CONFLICT`.
 - Node MUST NOT submit a risk class, capability grant, shell command, raw argv,

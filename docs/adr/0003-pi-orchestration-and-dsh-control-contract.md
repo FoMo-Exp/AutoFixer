@@ -57,12 +57,17 @@ allow-list, risk, capability-grant, path, network, and state checks.
 
 ## Migration plan
 
-1. Add the dsh control server without changing existing CLI semantics.
-2. Add Node/Pi orchestration and the minimal product API.
-3. Add durable projections and SSE replay.
-4. Add Electron/React on the merged OpenAPI baseline.
-5. Validate a real protected PR in an isolated repository before any claim of
-   production readiness.
+| Milestone | Tracking issue | Deliverable and dependency |
+| --- | --- | --- |
+| M1 | [DAT-186](mention://issue/01a177f1-52ad-71fe-b403-8c6f0822534b) / AFP-09 | Add the dsh control server without changing existing CLI semantics; depends on this ADR. |
+| M2 | [DAT-187](mention://issue/01a177f1-58c9-77b0-8c0c-a0bcb8d556f6) / AFP-10 | Add Node/Pi orchestration and the minimal product API; depends on M1. |
+| M3 | [DAT-188](mention://issue/01a177f1-5eae-7043-96bf-7b3025d206dd) / AFP-11 | Add durable projections and SSE replay; depends on M2. |
+| M4 | [DAT-189](mention://issue/01a177f1-67bf-79c0-a1ea-c109a0ee1a70) / AFP-12 | Add Electron/React on the merged OpenAPI baseline; depends on M2 and M3. |
+| M5 | [DAT-190](mention://issue/01a177f1-6dab-722c-ace7-0c852b7e88f2) / AFP-13 | Validate a real protected PR in an isolated repository before any claim of production readiness; depends on M3, M4, and the existing governance controls. |
+
+The issue identifiers above are the required M1–M5 delivery links for this
+decision. M4 consumes the generated `forgepilot-api/v1` from `main`; it must
+not create a substitute UI contract or fixture.
 
 ## Rejected alternatives
 

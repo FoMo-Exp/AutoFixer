@@ -11,6 +11,7 @@ tool output, or provider credentials.
 ```json
 {
   "id":"tsk_01J...","version":12,"created_at":"2026-10-26T12:00:00Z","updated_at":"2026-10-26T12:03:00Z",
+  "current_run_id":"run_01J...","run_history_url":"/api/v1/tasks/tsk_01J.../runs",
   "repository":{"id":"github:acme/payments","display_name":"acme/payments","base_ref":"main","base_sha":"ab12cd..."},
   "request":{"summary":"Fix export exception.","source_reference":"https://github.com/acme/payments/issues/1234"},
   "status":"executing","status_reason":null,
@@ -21,9 +22,31 @@ tool output, or provider credentials.
 ```
 
 The UI status enum is `queued`, `assessing_risk`, `awaiting_approval`,
-`planning`, `executing`, `validating`, `awaiting_review`, `stopped`,
-`rejected`, `cancelled`, `timed_out`, `failed`, or `merged`. It is a projection
-and cannot mutate dsh's state machine.
+`approved`, `planning`, `executing`, `validating`, `awaiting_review`,
+`approved_for_merge`, `stopped`, `rejected`, `cancelled`, `timed_out`,
+`expired`, or `merged`. It is a projection and cannot mutate dsh's state
+machine. `failed` is deliberately not a status: an execution failure is
+projected as its authoritative `stopped` or `timed_out` outcome.
+
+## Authoritative run-state projection
+
+The authoritative dsh value is exactly the state vocabulary in
+[`task-evidence-contract-v1` §5](task-evidence-contract-v1.md). UI status is
+allowed only the following mapping; no other dsh-to-UI mapping is valid.
+
+| UI status | Allowed dsh state | Meaning |
+|---|---|---|
+| `queued`, `assessing_risk`, `awaiting_approval` | `requested` | Request exists, risk/grant decision is incomplete. |
+| `approved` | `approved` | Grant is recorded but execution has not begun. |
+| `planning`, `executing`, `validating` | `running` | Display phases of one authoritative running state. |
+| `awaiting_review` | `awaiting_review` | Current-head PR exists; repository mutation has stopped. |
+| `approved_for_merge` | `approved_for_merge` | Current-head governance observations permit GitHub merge-queue admission only. |
+| `stopped` | `stopped` | A stop condition needs human disposition. |
+| `timed_out`, `expired`, `rejected`, `cancelled`, `merged` | Same-named dsh state | Terminal authoritative outcome. |
+
+`current_run_id` identifies the run from which the displayed state and evidence
+were derived. `GET /api/v1/tasks/{task_id}/runs` returns the ordered redacted
+run summaries for that task; terminal grants are never reused.
 
 ## Endpoints
 
@@ -32,6 +55,7 @@ and cannot mutate dsh's state machine.
 | `POST /api/v1/tasks` | `repository_id`, `base_ref`, `summary`, `source_reference`, `acceptance_criteria[]` | `201 Task` |
 | `GET /api/v1/tasks?cursor=&status=` | none | `200 {items: Task[], next_cursor}` |
 | `GET /api/v1/tasks/{task_id}` | none | `200 Task` |
+| `GET /api/v1/tasks/{task_id}/runs` | none | `200 {items: redacted RunSummary[]}` ordered by creation time |
 | `POST /api/v1/tasks/{task_id}/messages` | `{mode:"steer"|"follow_up",content:"..."}` | `202 {task_id, queued:true}` |
 | `POST /api/v1/tasks/{task_id}/approvals` | `{decision:"approve"|"reject",scope_digest:"sha256:..."}` | `200 Task` |
 | `POST /api/v1/tasks/{task_id}/cancel` | optional reason | `202 Task` |
