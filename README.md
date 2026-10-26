@@ -37,6 +37,21 @@ go test ./...
 The versioned record contract is in
 [`docs/contracts/task-evidence-contract-v1.md`](docs/contracts/task-evidence-contract-v1.md).
 
+## Node/Pi orchestration (M2)
+
+The `node/` package is the TypeScript orchestration service: it runs remediation
+tasks as Pi Agent SDK sessions whose only tool forwards action intents to the
+local dsh control plane, and it serves the minimal `forgepilot-api/v1` product
+API for the upcoming UI. Pi holds no shell, file-edit, or network capability;
+dsh independently checks every intent against the run's allow-list and
+capability grant. See [`node/README.md`](node/README.md) for setup and the
+generated UI contract baseline at
+[`web/src/api/contracts/openapi.json`](web/src/api/contracts/openapi.json).
+
+```sh
+cd node && npm install && npm test
+```
+
 ## Safety boundaries
 
 The demo is local and offline. It never opens a real pull request, modifies
