@@ -207,6 +207,8 @@ export interface components {
                 actions_completed: number;
                 actions_total: number | null;
             };
+            /** @description Display-safe summary of the latest settled Pi turn for the current run (DAT-191). Null until a Pi session exists for the task. The raw pi.text_delta stream is never the display source: text is exposed only through this fail-closed, Node-judged summary. */
+            pi_summary: components["schemas"]["PiSummary"] | null;
             /** @description GitHub merge-boundary projection for the current head. Approvals and checks observed against an older head are invalidated: observations_valid turns false and merge_queue_eligible turns false until dsh observes them against the current head. */
             governance: {
                 current_head_sha: string | null;
@@ -228,10 +230,26 @@ export interface components {
             task_id: string;
             task_version: number;
             /** @enum {string} */
-            type: "task.status_changed" | "pi.text_delta" | "pi.turn_settled" | "plan.updated" | "approval.required" | "approval.resolved" | "tool.requested" | "tool.completed" | "tool.denied" | "validation.completed" | "artifact.available" | "evidence.appended" | "task.terminal";
+            type: "task.status_changed" | "pi.text_delta" | "pi.turn_settled" | "pi.summary.updated" | "plan.updated" | "approval.required" | "approval.resolved" | "tool.requested" | "tool.completed" | "tool.denied" | "validation.completed" | "artifact.available" | "evidence.appended" | "task.terminal";
             data: {
                 [key: string]: unknown;
             };
+        };
+        /** @description A display-safe natural-language summary of the latest settled Pi turn for one task run. Source: the fully assembled assistant text of that turn, judged on the Node side by an ordered safety-rule table (secrets, raw commands, absolute workspace paths, unredacted logs, opaque high-entropy strings). Fail closed: text is exposed only when the entire turn passes every rule; any hit or a gate failure yields status=unavailable with text=null, never redacted or partial content. Lifecycle: null on the task until a Pi session exists; pending from session start (and at the start of every run) until a turn settles; then exactly one available/unavailable per settled turn, each replacing the previous summary. A pi.summary.updated event carries the same object on the SSE stream and in the timeline, replayable by Last-Event-ID like every other event. */
+        PiSummary: {
+            task_id: string;
+            /** @description The run whose Pi session produced this summary. */
+            run_id: string | null;
+            /** @description The Pi turn this summary describes; null while pending. */
+            turn_id: string | null;
+            /** @enum {string} */
+            status: "pending" | "available" | "unavailable";
+            /** @description The bounded excerpt of the validated turn text; non-null iff status is available. */
+            text: string | null;
+            /** @enum {string|null} */
+            unavailable_reason: "no_content" | "unsafe_content" | "gate_error" | null;
+            /** Format: date-time */
+            updated_at: string;
         };
         RunSummary: {
             run_id: string;

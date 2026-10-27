@@ -155,6 +155,35 @@ describe("durable task projection (M3 persistence)", () => {
     expect(restored?.terminalEventRecorded).toBe(false);
     expect(restored?.governanceValid).toBe(true);
     expect(restored?.artifactIndex).toEqual([]);
+    // Pre-DAT-191 documents predate the summary projection entirely.
+    expect(restored?.piSummary).toBeNull();
+  });
+
+  test("the projected Pi summary survives a restart with its event and id", () => {
+    const stateFile = path.join(tempDir(), "task-state.json");
+    const first = new TaskStore({ persistencePath: stateFile });
+    const record = makeRecord();
+    record.piSummary = {
+      task_id: record.id,
+      run_id: "run_persisted",
+      turn_id: "turn_1",
+      status: "available",
+      text: "Checked the echo tool and confirmed it prints hello.",
+      unavailable_reason: null,
+      updated_at: "2099-01-01T00:00:00.000Z",
+    };
+    first.put(record);
+    const publishedEvent = first.appendEvent(record, "pi.summary.updated", {
+      summary: { ...record.piSummary },
+    });
+    first.flushSync();
+
+    const second = new TaskStore({ persistencePath: stateFile });
+    const restored = second.get(record.id);
+    expect(restored?.piSummary).toEqual(record.piSummary);
+    const replayed = restored?.events.find((event) => event.type === "pi.summary.updated");
+    expect(replayed?.event_id).toBe(publishedEvent.event_id);
+    expect(replayed?.data["summary"]).toEqual(record.piSummary);
   });
 
   test("a future schema version refuses to load instead of guessing", () => {

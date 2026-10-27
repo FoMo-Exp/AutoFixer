@@ -21,14 +21,15 @@ const committedPath = path.join(repoRoot, "web", "src", "api", "contracts", "ope
 
 /** Pull every backtick-quoted SSE event type from the "Types are …" sentence. */
 function parseSseTypes(markdown: string): string[] {
-  // Event types contain dots (task.status_changed), so match up to the fixed
-  // ". Node replays" terminator rather than stopping at the first period.
+  // Event types contain dots (task.status_changed, pi.summary.updated), so
+  // match every dotted segment up to the fixed ". Node replays" terminator
+  // rather than stopping at the first period.
   const match = /Types are ([\s\S]*?)\. Node replays/.exec(markdown);
   const sentence = match?.[1];
   if (!sentence) {
     throw new Error("could not locate the SSE event type list in the M0 contract");
   }
-  return [...sentence.matchAll(/`([a-z_]+\.[a-z_]+)`/g)].flatMap((m) => (m[1] ? [m[1]] : []));
+  return [...sentence.matchAll(/`([a-z_]+(?:\.[a-z_]+)+)`/g)].flatMap((m) => (m[1] ? [m[1]] : []));
 }
 
 /** Pull the endpoint rows (`METHOD /path`) from the endpoints table. */
@@ -58,9 +59,9 @@ describe("independent conformance to the normative M0 contract", () => {
   const markdown = fs.readFileSync(contractPath, "utf8");
   const document = buildOpenApiDocument();
 
-  test("SSE event types match the contract exactly (all 13)", () => {
+  test("SSE event types match the contract exactly (all 14)", () => {
     const contractTypes = parseSseTypes(markdown);
-    expect(contractTypes).toHaveLength(13);
+    expect(contractTypes).toHaveLength(14);
     const eventSchema = document.components.schemas["TaskEvent"] as {
       properties: { type: { enum: string[] } };
     };
@@ -114,6 +115,39 @@ describe("independent conformance to the normative M0 contract", () => {
     expect(types).toContain("Task");
     expect(types).toContain("TaskEvent");
     expect(types).toContain("paths");
+  });
+
+  test("the contract's safe-summary section pins the fail-closed semantics", () => {
+    // Independent check: the normative markdown must document the DAT-191
+    // display contract — not just the implementation — so a client reading
+    // only the contract knows pi_summary is the sole display source and
+    // understands every unavailable reason.
+    const match = /## Safe Pi text summary([\s\S]*?)\n## /.exec(markdown);
+    const section = match?.[1];
+    expect(section, "missing '## Safe Pi text summary' section").toBeDefined();
+    for (const needle of [
+      "pi_summary",
+      "pi.summary.updated",
+      "unavailable_reason",
+      "unsafe_content",
+      "gate_error",
+      "no_content",
+      "Fail closed",
+      "raw assistant text",
+      "Last-Event-ID",
+    ]) {
+      expect(section, `contract section must document ${needle}`).toContain(needle);
+    }
+    // Every unavailable reason the OpenAPI enum exposes must be explained by
+    // the contract text.
+    const summary = document.components.schemas["PiSummary"] as {
+      properties: { unavailable_reason: { enum: Array<string | null> } };
+    };
+    for (const reason of summary.properties.unavailable_reason.enum) {
+      if (reason !== null) {
+        expect(section).toContain(reason);
+      }
+    }
   });
 
   test("the M0 contract itself specifies Bearer auth and the 401 response", () => {

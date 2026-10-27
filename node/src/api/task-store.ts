@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { DshState } from "../dsh/types.js";
+import type { PiSummary } from "./pi-summary.js";
 
 /** UI status enum from the M0 forgepilot-api/v1 contract. */
 export const UI_STATUSES = [
@@ -61,6 +62,7 @@ export const TASK_EVENT_TYPES = [
   "task.status_changed",
   "pi.text_delta",
   "pi.turn_settled",
+  "pi.summary.updated",
   "plan.updated",
   "approval.required",
   "approval.resolved",
@@ -107,6 +109,11 @@ export interface TaskResource {
   status_reason: string | null;
   risk: { class: string; decision_code: string; requires_human_approval: boolean } | null;
   progress: { phase: string | null; actions_completed: number; actions_total: number | null };
+  /**
+   * Display-safe summary of the latest settled Pi turn for the current run.
+   * Null until a Pi session exists for the task (forgepilot-api/v1).
+   */
+  pi_summary: PiSummary | null;
   governance: {
     current_head_sha: string | null;
     observations_valid: boolean;
@@ -203,6 +210,8 @@ export interface TaskRecord {
   /** Pi-side observation flags feeding the running display phase. */
   agentSettled: boolean;
   actionsInFlight: number;
+  /** Projected safe summary of the latest settled Pi turn; see pi-summary.ts. */
+  piSummary: PiSummary | null;
 }
 
 export function newTaskId(): string {
@@ -245,6 +254,7 @@ export function createTaskRecord(input: {
     terminalEventRecorded: false,
     agentSettled: false,
     actionsInFlight: 0,
+    piSummary: null,
   };
 }
 
@@ -270,6 +280,7 @@ export function toTaskResource(record: TaskRecord): TaskResource {
     status_reason: record.statusReason,
     risk: record.risk,
     progress: record.progress,
+    pi_summary: record.piSummary,
     governance: {
       current_head_sha: record.headSha,
       observations_valid: record.governanceValid,
@@ -506,5 +517,7 @@ function deserializeTask(serialized: PersistedTaskRecord): TaskRecord {
   record.terminal = record.terminal === true || isTerminalStatus(record.status);
   record.terminalEventRecorded = record.events.some((event) => event.type === "task.terminal");
   record.actionsInFlight = 0;
+  // Projections persisted before DAT-191 predate the summary field.
+  record.piSummary ??= null;
   return record;
 }

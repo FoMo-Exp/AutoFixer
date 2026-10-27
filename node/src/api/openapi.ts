@@ -1,4 +1,5 @@
 import { TASK_EVENT_TYPES, UI_STATUSES } from "./task-store.js";
+import { PI_SUMMARY_STATUSES, PI_SUMMARY_UNAVAILABLE_REASONS } from "./pi-summary.js";
 import { DSH_STATES } from "../dsh/types.js";
 
 type JsonObject = Record<string, unknown>;
@@ -63,6 +64,7 @@ const taskSchema: JsonObject = {
     "status_reason",
     "risk",
     "progress",
+    "pi_summary",
     "governance",
     "artifacts",
   ],
@@ -135,6 +137,14 @@ const taskSchema: JsonObject = {
         actions_total: { type: ["integer", "null"] },
       },
     },
+    pi_summary: {
+      description:
+        "Display-safe summary of the latest settled Pi turn for the current " +
+        "run (DAT-191). Null until a Pi session exists for the task. The " +
+        "raw pi.text_delta stream is never the display source: text is " +
+        "exposed only through this fail-closed, Node-judged summary.",
+      oneOf: [{ $ref: "#/components/schemas/PiSummary" }, { type: "null" }],
+    },
     governance: {
       type: "object",
       description:
@@ -189,6 +199,48 @@ const runSummarySchema: JsonObject = {
     run_id: { type: "string" },
     state: { type: "string", enum: [...DSH_STATES] },
     created_at: { type: "string", format: "date-time" },
+  },
+};
+
+const piSummarySchema: JsonObject = {
+  type: "object",
+  description:
+    "A display-safe natural-language summary of the latest settled Pi turn " +
+    "for one task run. Source: the fully assembled assistant text of that " +
+    "turn, judged on the Node side by an ordered safety-rule table " +
+    "(secrets, raw commands, absolute workspace paths, unredacted logs, " +
+    "opaque high-entropy strings). Fail closed: text is exposed only when " +
+    "the entire turn passes every rule; any hit or a gate failure yields " +
+    "status=unavailable with text=null, never redacted or partial content. " +
+    "Lifecycle: null on the task until a Pi session exists; pending from " +
+    "session start (and at the start of every run) until a turn settles; " +
+    "then exactly one available/unavailable per settled turn, each replacing " +
+    "the previous summary. A pi.summary.updated event carries the same " +
+    "object on the SSE stream and in the timeline, replayable by " +
+    "Last-Event-ID like every other event.",
+  required: ["task_id", "run_id", "turn_id", "status", "text", "unavailable_reason", "updated_at"],
+  properties: {
+    task_id: { type: "string" },
+    run_id: {
+      type: ["string", "null"],
+      description: "The run whose Pi session produced this summary.",
+    },
+    turn_id: {
+      type: ["string", "null"],
+      description: "The Pi turn this summary describes; null while pending.",
+    },
+    status: { type: "string", enum: [...PI_SUMMARY_STATUSES] },
+    text: {
+      type: ["string", "null"],
+      maxLength: 240,
+      description:
+        "The bounded excerpt of the validated turn text; non-null iff status is available.",
+    },
+    unavailable_reason: {
+      type: ["string", "null"],
+      enum: [...PI_SUMMARY_UNAVAILABLE_REASONS, null],
+    },
+    updated_at: { type: "string", format: "date-time" },
   },
 };
 
@@ -536,13 +588,15 @@ export function buildOpenApiDocument(): OpenApiDocument {
     openapi: "3.1.0",
     info: {
       title: "ForgePilot orchestrator API",
-      version: "0.2.0",
+      version: "0.3.0",
       description:
         "forgepilot-api/v1: the Node-to-UI contract of the ForgePilot pilot. " +
         "The UI calls Node only, at an ephemeral loopback address; it never sees " +
         "dsh sockets, boot tokens, Pi credentials, raw tool output, or provider " +
-        "credentials. Generated from the orchestrator implementation; shapes are " +
-        "defined by docs/contracts/forgepilot-api-v1.md.",
+        "credentials. Pi text is displayed only through the fail-closed " +
+        "pi_summary contract (DAT-191). Generated from the orchestrator " +
+        "implementation; shapes are defined by " +
+        "docs/contracts/forgepilot-api-v1.md.",
     },
     servers: [{ url: "http://127.0.0.1", description: "Ephemeral loopback bind" }],
     security: BEARER_SECURITY,
@@ -551,6 +605,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
       schemas: {
         Task: taskSchema,
         TaskEvent: taskEventSchema,
+        PiSummary: piSummarySchema,
         RunSummary: runSummarySchema,
         ArtifactMetadata: artifactMetadataSchema,
         Error: errorSchema,

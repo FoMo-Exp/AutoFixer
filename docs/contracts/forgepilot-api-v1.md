@@ -45,6 +45,7 @@ The OpenAPI document declares this as the `bearerAuth` security scheme
   "status":"executing","status_reason":null,
   "risk":{"class":"low","decision_code":"risk_low_approved","requires_human_approval":false},
   "progress":{"phase":"validating","actions_completed":2,"actions_total":3},
+  "pi_summary":{"task_id":"tsk_01J...","run_id":"run_01J...","turn_id":"turn_1","status":"available","text":"Checked the echo tool and confirmed it prints hello.","unavailable_reason":null,"updated_at":"2026-10-26T12:03:00Z"},
   "governance":{"current_head_sha":"9ef012...","observations_valid":true,"merge_queue_eligible":false},
   "artifacts":{"patch":null,"report":null,"evidence_bundle_available":false,"index":[{"artifact_id":"patch_report","available":true,"digest":"sha256:…","head_sha":"9ef012..."}]}
 }
@@ -69,6 +70,11 @@ The UI status enum is `queued`, `assessing_risk`, `awaiting_approval`,
 `expired`, or `merged`. It is a projection and cannot mutate dsh's state
 machine. `failed` is deliberately not a status: an execution failure is
 projected as its authoritative `stopped` or `timed_out` outcome.
+
+`pi_summary` is the display-safe summary of the latest settled Pi turn for
+the task's current run; its full semantics are specified in [Safe Pi text
+summary](#safe-pi-text-summary) below. It is `null` until a Pi session exists
+for the task.
 
 ## Authoritative run-state projection
 
@@ -107,10 +113,69 @@ run summaries for that task; terminal grants are never reused.
 
 SSE events contain `event_id`, `sequence`, `occurred_at`, `task_id`,
 `task_version`, `type`, and redacted `data`. Types are `task.status_changed`,
-`pi.text_delta`, `pi.turn_settled`, `plan.updated`, `approval.required`,
+`pi.text_delta`, `pi.turn_settled`, `pi.summary.updated`, `plan.updated`,
+`approval.required`,
 `approval.resolved`, `tool.requested`, `tool.completed`, `tool.denied`,
 `validation.completed`, `artifact.available`, `evidence.appended`, and
 `task.terminal`. Node replays by `Last-Event-ID` in sequence order.
+
+## Safe Pi text summary
+
+`pi.text_delta` carries raw assistant text and is **never** a display
+source: free-form model output can contain credentials, commands, absolute
+workspace paths, or unredacted logs, and client-side filtering cannot be
+the safety boundary. The product API exposes Pi text only as the fail-closed
+`pi_summary` projection, judged on the Node side by the ordered safety-rule
+table in `node/src/api/pi-summary.ts` — deterministic, reviewable, and free
+of any model call, network transfer, or widened permission.
+
+`GET /api/v1/tasks/{task_id}` (and every other Task response) carries the
+`pi_summary` field, and every change is recorded as a `pi.summary.updated`
+timeline/SSE event whose `data.summary` is the same object:
+
+```json
+{"task_id":"tsk_01J...","run_id":"run_01J...","turn_id":"turn_1","status":"available","text":"Checked the echo tool and confirmed it prints hello.","unavailable_reason":null,"updated_at":"2026-10-26T12:03:00Z"}
+```
+
+Contract semantics:
+
+- **Source.** The summary describes the fully assembled assistant text of
+  one settled Pi turn (`run_started` to settlement) of the run's Pi session.
+  Node performs the judging; the source is auditable in the orchestrator
+  code, not reconstructed by the client.
+- **Generation.** A turn that passes every safety rule is excerpted to its
+  first non-empty paragraph, single-spaced, bounded to 240 characters.
+- **Safety boundary.** The ordered rules keep out credential-shaped
+  material, raw command material (fenced code, command-shaped code spans,
+  shell prompts), absolute local filesystem paths, unredacted
+  log/diagnostic output (stack traces, log-level lines, ANSI escapes, log
+  timestamps), and opaque high-entropy strings (digests, hex/base64 blobs)
+  whose safety cannot be determined from the text. The complete turn text
+  is judged — never one fragment at a time — so material split across
+  `pi.text_delta` fragments is caught in its assembled form.
+- **Fail closed.** Any rule hit yields `status:"unavailable"` with
+  `unavailable_reason:"unsafe_content"`; a failure inside the gate itself
+  yields `"gate_error"`; a settled turn with no displayable text yields
+  `"no_content"`. An unavailable summary never carries the raw turn text —
+  in any field, event, or projection.
+- **Lifecycle and attribution.** `pi_summary` is `null` until a Pi session
+  exists for the task; `pending` from session start — and again at the
+  start of every new run, which resets any earlier run's summary to
+  `pending` — then exactly one `available`/`unavailable` per settled turn,
+  each replacing the previous summary. `task_id`, `run_id`, and `turn_id`
+  bind the summary to the producing task, run, and turn; a summary never
+  crosses task or run boundaries.
+- **Missing / unavailable semantics.** `text` is non-null if and only if
+  `status` is `"available"`; `unavailable_reason` is non-null if and only if
+  `status` is `"unavailable"`; both are null while `pending`. Clients render
+  unavailable states from the reason enum and must never fall back to
+  displaying the raw `pi.text_delta` stream.
+- **SSE and recovery.** `pi.summary.updated` is a durable timeline event: it
+  replays by `Last-Event-ID` in sequence order, survives an orchestrator
+  restart with its original `event_id`, and the `pi_summary` projection
+  field always equals the last published summary event. Pi sessions are not
+  resumed across restarts (see Durability), so a recovered task keeps the
+  last settled summary it actually produced.
 
 ## Error model
 

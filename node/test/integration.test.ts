@@ -101,6 +101,13 @@ async function createAndApprove(
   });
   expect(created.status).toBe(201);
   const taskId = created.body.id;
+  // Node's approved_at is millisecond-truncated while dsh stamps run
+  // creation with microsecond precision: approving within the same
+  // millisecond as creation would place the truncated approval timestamp
+  // before the run existed (DSH_APPROVAL_WINDOW_EXPIRED). Real approvals
+  // are human-paced; the helper reproduces that pacing so the boundary is
+  // deterministic on a hot test loop.
+  await new Promise((resolve) => setTimeout(resolve, 5));
   const required = (await timeline(base, taskId)).find(
     (event) => event.type === "approval.required",
   );
@@ -110,7 +117,7 @@ async function createAndApprove(
     decision: "approve",
     scope_digest: String(digest),
   });
-  expect(approved.status).toBe(200);
+  expect(approved.status, JSON.stringify(approved.body)).toBe(200);
   return approved.body;
 }
 
@@ -653,5 +660,224 @@ describe("PI_UNAVAILABLE at approval (QA round-1 blocker)", () => {
     });
     expect(approved.status).toBe(503);
     expect(approved.body.error.code).toBe("PI_UNAVAILABLE");
+  });
+});
+
+describe("safe Pi text summary contract (DAT-191)", () => {
+  test("a benign turn publishes an available, attributed summary on task and timeline", async () => {
+    const benignText = "Checked the echo tool and confirmed it prints hello.";
+    const { base } = await startApp([{ kind: "text", text: benignText }]);
+    const created = await createAndApprove(base);
+    const runId = requireRunId(created);
+
+    // The approval response already carries the session's pending summary.
+    expect(created.pi_summary).toMatchObject({
+      task_id: created.id,
+      run_id: runId,
+      turn_id: null,
+      status: "pending",
+      text: null,
+      unavailable_reason: null,
+    });
+
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
+          ?.status === "available",
+      "summary available after the turn settles",
+    );
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    expect(task.body.pi_summary).toMatchObject({
+      task_id: created.id,
+      run_id: runId,
+      turn_id: "turn_1",
+      status: "available",
+      text: benignText,
+      unavailable_reason: null,
+    });
+
+    // The lifecycle is durable on the timeline: pending first, then the
+    // evaluated settlement — both with full task/run attribution.
+    const summaryEvents = (await timeline(base, created.id)).filter(
+      (event) => event.type === "pi.summary.updated",
+    );
+    expect(
+      summaryEvents.map((event) => (event.data["summary"] as { status: string }).status),
+    ).toEqual(["pending", "available"]);
+    for (const event of summaryEvents) {
+      expect(event.task_id).toBe(created.id);
+      const published = event.data["summary"] as Record<string, unknown>;
+      expect(published["task_id"]).toBe(created.id);
+      expect(published["run_id"]).toBe(runId);
+    }
+  });
+
+  test("an unsafe turn fails closed and leaks nothing beyond the raw delta event", async () => {
+    const token = "ghp_abcdefghijklmnopqrstuvwx123456";
+    const { base } = await startApp([
+      { kind: "text", text: `The credential ${token} was exposed during the run.` },
+    ]);
+    const created = await createAndApprove(base);
+
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
+          ?.status === "unavailable",
+      "summary unavailable for the unsafe turn",
+    );
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    expect(task.body.pi_summary).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "unsafe_content",
+    });
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain(token);
+
+    // No surface except the untouched M0 pi.text_delta delta carries the raw
+    // token: every summary event fails closed with text null.
+    const events = await timeline(base, created.id);
+    const summaryEvents = events.filter((event) => event.type === "pi.summary.updated");
+    expect(summaryEvents.map((event) => event.data["summary"] as unknown)).toHaveLength(2);
+    for (const event of summaryEvents) {
+      expect(JSON.stringify(event.data)).not.toContain(token);
+      expect((event.data["summary"] as { text: unknown }).text).toBeNull();
+    }
+    // pi.text_delta keeps its M0 meaning: a raw stream, never a display source.
+    expect(
+      events.some(
+        (event) => event.type === "pi.text_delta" && String(event.data["delta"]).includes(token),
+      ),
+    ).toBe(true);
+  });
+
+  test("summaries never cross tasks", async () => {
+    const { base } = await startApp([
+      { kind: "text", text: "Alpha task verified the export path." },
+      { kind: "text", text: "Beta task verified the import path." },
+    ]);
+    const alpha = await createAndApprove(base);
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${alpha.id}`)).body.pi_summary
+          ?.status === "available",
+      "alpha summary",
+    );
+    const beta = await createAndApprove(base);
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${beta.id}`)).body.pi_summary?.status ===
+        "available",
+      "beta summary",
+    );
+
+    const alphaSummary = (await getJson<TaskResource>(`${base}/api/v1/tasks/${alpha.id}`)).body
+      .pi_summary;
+    const betaSummary = (await getJson<TaskResource>(`${base}/api/v1/tasks/${beta.id}`)).body
+      .pi_summary;
+    expect(alphaSummary).toMatchObject({
+      task_id: alpha.id,
+      run_id: alpha.current_run_id,
+      status: "available",
+      text: "Alpha task verified the export path.",
+    });
+    expect(betaSummary).toMatchObject({
+      task_id: beta.id,
+      run_id: beta.current_run_id,
+      status: "available",
+      text: "Beta task verified the import path.",
+    });
+    expect(JSON.stringify(alphaSummary)).not.toContain("Beta task");
+    expect(JSON.stringify(betaSummary)).not.toContain("Alpha task");
+  });
+
+  test("each settled turn replaces the projection while history keeps every summary", async () => {
+    const { base } = await startApp([
+      { kind: "text", text: "Working on the export fix." },
+      { kind: "text", text: "Plan B applied and verified." },
+    ]);
+    const created = await createAndApprove(base);
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
+          ?.text === "Working on the export fix.",
+      "first turn summary",
+    );
+
+    // The session is idle after settlement: a follow-up opens turn_2.
+    const followUp = await postJson<{ task_id: string; queued: boolean }>(
+      `${base}/api/v1/tasks/${created.id}/messages`,
+      { mode: "follow_up", content: "run one more check" },
+    );
+    expect(followUp.status).toBe(202);
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
+          ?.text === "Plan B applied and verified.",
+      "second turn summary replaces the projection",
+    );
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    expect(task.body.pi_summary?.turn_id).toBe("turn_2");
+    const summaryEvents = (await timeline(base, created.id)).filter(
+      (event) => event.type === "pi.summary.updated",
+    );
+    // Append-only history keeps both settled summaries; only the projection
+    // advances to the latest turn (pending carries text null).
+    expect(
+      summaryEvents.map((event) => (event.data["summary"] as { text: string | null }).text),
+    ).toEqual([null, "Working on the export fix.", "Plan B applied and verified."]);
+  });
+
+  test("SSE reconnect replays summary events exactly once and matches the projection", async () => {
+    const benignText = "Verified the echo configuration end to end.";
+    const { base } = await startApp([{ kind: "text", text: benignText }]);
+    const created = await createAndApprove(base);
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
+          ?.status === "available",
+      "summary available before replay",
+    );
+
+    // End the task so its stream closes after the replay.
+    const cancelled = await postJson<TaskResource>(`${base}/api/v1/tasks/${created.id}/cancel`, {
+      reason: "replay check",
+    });
+    expect(cancelled.status).toBe(202);
+
+    const frames = await readSse(`${base}/api/v1/tasks/${created.id}/stream`, {
+      untilType: "task.terminal",
+    });
+    const summaryFrames = frames.filter((frame) => frame.event === "pi.summary.updated");
+    expect(
+      summaryFrames.map((frame) => (frame.data?.data["summary"] as { status: string }).status),
+    ).toEqual(["pending", "available"]);
+
+    // Reconnect anchored at the pending summary: exactly the later summary
+    // replays once, and it equals the task projection byte for byte.
+    const anchor = summaryFrames[0];
+    if (!anchor?.id || typeof anchor.data?.sequence !== "number") {
+      throw new Error("expected a pending summary frame with an id and sequence");
+    }
+    const resumed = await readSse(`${base}/api/v1/tasks/${created.id}/stream`, {
+      lastEventId: anchor.id,
+      timeoutMs: 2_000,
+    });
+    const replayedSummaries = resumed.filter((frame) => frame.event === "pi.summary.updated");
+    expect(replayedSummaries).toHaveLength(1);
+    expect((replayedSummaries[0]?.data?.data["summary"] as { status: string }).status).toBe(
+      "available",
+    );
+    for (const frame of resumed) {
+      expect(Number(frame.data?.sequence)).toBeGreaterThan(Number(anchor.data.sequence));
+    }
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    expect(task.body.pi_summary).toEqual(
+      (replayedSummaries[0]?.data?.data as { summary: unknown }).summary,
+    );
+    expect(task.body.pi_summary?.text).toBe(benignText);
   });
 });

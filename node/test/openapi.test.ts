@@ -52,6 +52,48 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
     expect(task.properties.status.enum).toEqual([...UI_STATUSES]);
   });
 
+  test("Task carries the required pi_summary field with the PiSummary schema", () => {
+    const task = document.components.schemas["Task"] as {
+      required: string[];
+      properties: { pi_summary: { oneOf: Array<Record<string, unknown>> } };
+    };
+    expect(task.required).toContain("pi_summary");
+    expect(task.properties.pi_summary.oneOf).toEqual([
+      { $ref: "#/components/schemas/PiSummary" },
+      { type: "null" },
+    ]);
+
+    const summary = document.components.schemas["PiSummary"] as {
+      required: string[];
+      properties: {
+        status: { enum: string[] };
+        unavailable_reason: { enum: Array<string | null> };
+        text: { type: string[] };
+      };
+    };
+    // Copy before sorting: the toEqual below compares the very same document.
+    expect([...summary.required].sort()).toEqual(
+      ["task_id", "run_id", "turn_id", "status", "text", "unavailable_reason", "updated_at"].sort(),
+    );
+    expect(summary.properties.status.enum).toEqual(["pending", "available", "unavailable"]);
+    expect(summary.properties.unavailable_reason.enum).toEqual([
+      "no_content",
+      "unsafe_content",
+      "gate_error",
+      null,
+    ]);
+    // text can only be a string or null; never a non-string fallback.
+    expect(summary.properties.text.type).toEqual(["string", "null"]);
+  });
+
+  test("TaskEvent documents pi.summary.updated alongside the M0 types", () => {
+    const event = document.components.schemas["TaskEvent"] as {
+      properties: { type: { enum: string[] } };
+    };
+    expect(event.properties.type.enum).toContain("pi.summary.updated");
+    expect(event.properties.type.enum).toHaveLength(14);
+  });
+
   test("the error envelope carries the contract's required fields", () => {
     const error = document.components.schemas["Error"] as {
       properties: {
