@@ -43,7 +43,9 @@ export interface OrchestratorHandle {
  */
 export function createOrchestrator(options: OrchestratorOptions): OrchestratorHandle {
   const { config } = options;
-  const store = new TaskStore();
+  const store = new TaskStore(
+    config.taskStateFile ? { persistencePath: config.taskStateFile } : {},
+  );
   const dsh = new DshClient({
     socketPath: config.dshSocketPath,
     ...(config.dshTokenFile ? { tokenFile: config.dshTokenFile } : {}),
@@ -79,10 +81,21 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
         }
         resolve({ host: config.apiHost, port: address.port });
       });
-      return promise;
+      return promise.then(async (bound) => {
+        // Re-associate any persisted tasks with their dsh runs before the API
+        // serves reads, so the first GET after a restart already reflects the
+        // authoritative run state. Failures leave the projection as persisted:
+        // recovery never fabricates an outcome dsh did not report.
+        await service.recoverFromDsh().catch((error: unknown) => {
+          console.error("task recovery skipped:", error);
+        });
+        return bound;
+      });
     },
     stop: () => {
       service.disposeAll();
+      // Durability boundary: a clean shutdown must not lose projected events.
+      store.flushSync();
       const { promise, resolve, reject } = Promise.withResolvers<void>();
       server.close((error) => (error ? reject(error) : resolve()));
       return promise;

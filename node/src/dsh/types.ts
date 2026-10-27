@@ -159,6 +159,29 @@ export interface DshCancelResponse {
   audit_event_reference: string;
 }
 
+/**
+ * The subset of dsh's patch report Node projects onto the task resource.
+ * Only a finalized (stopped or terminal) run carries one, and its `head_sha`
+ * is the authoritative revision the run produced — null for the local
+ * control plane, which never binds a run to a head.
+ */
+export interface DshPatchReportSummary {
+  patch_status?: string;
+  base_sha?: string;
+  head_sha?: string | null;
+  report_digest?: string;
+}
+
+/**
+ * The subset of dsh's approval snapshot Node projects as governance: the
+ * GitHub merge-boundary observations bound to one exact head.
+ */
+export interface DshApprovalSnapshotSummary {
+  head_sha?: string | null;
+  merge_queue_eligible?: boolean;
+  approval_snapshot_status?: string;
+}
+
 export interface DshRunResponse {
   run_id: string;
   task_id: string;
@@ -175,8 +198,8 @@ export interface DshRunResponse {
     actions_allowed: number;
     actions_denied: number;
   };
-  patch_report: unknown | null;
-  approval_snapshot: unknown | null;
+  patch_report: DshPatchReportSummary | null;
+  approval_snapshot: DshApprovalSnapshotSummary | null;
   bundle_available: boolean;
   created_at: string;
 }

@@ -55,23 +55,60 @@ npm run build && npm start
 
 Configuration (environment):
 
-| Variable                                                | Default                              | Meaning                                                 |
-| ------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------- |
-| `FORGEPILOT_DSH_SOCKET`                                 | `$TMPDIR/dsh-<uid>/dsh-control.sock` | dsh control socket (or pipe name)                       |
-| `FORGEPILOT_DSH_TOKEN_FILE`                             | `<socket>.token`                     | dsh boot-token file                                     |
-| `FORGEPILOT_API_HOST` / `FORGEPILOT_API_PORT`           | `127.0.0.1` / `0`                    | loopback bind                                           |
-| `FORGEPILOT_REPOSITORY_ID`                              | `github:Luthiel/AutoFixer`           | only the pilot repository is accepted                   |
-| `FORGEPILOT_BASE_REF` / `FORGEPILOT_BASE_SHA`           | `main` / required                    | pinned base revision                                    |
-| `FORGEPILOT_ACTOR_ID` / `FORGEPILOT_ACTOR_DISPLAY_NAME` | local operator                       | identity recorded on runs                               |
-| `FORGEPILOT_APPROVER_IDENTITY`                          | `github:local-operator`              | must match a dsh `--approver`                           |
-| `FORGEPILOT_PATH_HINTS`                                 | `node`                               | comma-separated granted path roots                      |
-| `FORGEPILOT_TOOL_CAPABILITIES`                          | `echo,sleep`                         | dsh tools tasks may request                             |
-| `FORGEPILOT_MAX_WALL_CLOCK_SECONDS`                     | `120`                                | per-run wall clock                                      |
-| `FORGEPILOT_API_TOKEN_FILE`                             | `$TMPDIR/forgepilot-<uid>/api-token` | per-process API bearer-token file (0600)                |
-| `FORGEPILOT_PI_PROVIDER` / `FORGEPILOT_PI_MODEL`        | unset                                | Pi model; unset means approvals report `PI_UNAVAILABLE` |
+| Variable                                                | Default                                    | Meaning                                                                   |
+| ------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------- |
+| `FORGEPILOT_DSH_SOCKET`                                 | `$TMPDIR/dsh-<uid>/dsh-control.sock`       | dsh control socket (or pipe name)                                         |
+| `FORGEPILOT_DSH_TOKEN_FILE`                             | `<socket>.token`                           | dsh boot-token file                                                       |
+| `FORGEPILOT_API_HOST` / `FORGEPILOT_API_PORT`           | `127.0.0.1` / `0`                          | loopback bind                                                             |
+| `FORGEPILOT_REPOSITORY_ID`                              | `github:Luthiel/AutoFixer`                 | only the pilot repository is accepted                                     |
+| `FORGEPILOT_BASE_REF` / `FORGEPILOT_BASE_SHA`           | `main` / required                          | pinned base revision                                                      |
+| `FORGEPILOT_ACTOR_ID` / `FORGEPILOT_ACTOR_DISPLAY_NAME` | local operator                             | identity recorded on runs                                                 |
+| `FORGEPILOT_APPROVER_IDENTITY`                          | `github:local-operator`                    | must match a dsh `--approver`                                             |
+| `FORGEPILOT_PATH_HINTS`                                 | `node`                                     | comma-separated granted path roots                                        |
+| `FORGEPILOT_TOOL_CAPABILITIES`                          | `echo,sleep`                               | dsh tools tasks may request                                               |
+| `FORGEPILOT_MAX_WALL_CLOCK_SECONDS`                     | `120`                                      | per-run wall clock                                                        |
+| `FORGEPILOT_API_TOKEN_FILE`                             | `$TMPDIR/forgepilot-<uid>/api-token`       | per-process API bearer-token file (0600)                                  |
+| `FORGEPILOT_TASK_STATE_FILE`                            | `$TMPDIR/forgepilot-<uid>/task-state.json` | durable task projection (0600); restart re-associates tasks with dsh runs |
+| `FORGEPILOT_PI_PROVIDER` / `FORGEPILOT_PI_MODEL`        | unset                                      | Pi model; unset means approvals report `PI_UNAVAILABLE`                   |
 
 Provider API keys are resolved by pi-ai from the usual environment variables
 (for example `ANTHROPIC_API_KEY`).
+
+## Durability and restart recovery (M3)
+
+The orchestrator persists its task projection — statuses, the ordered event
+timeline, artifact metadata, and the create-idempotency ledger — to
+`FORGEPILOT_TASK_STATE_FILE` as one atomically replaced, schema-versioned,
+user-private (0600) JSON document. dsh remains the only fact source for runs
+and evidence: on startup the service re-reads run state from dsh and
+re-projects, without fabricating, overwriting, or reordering timeline events.
+After a restart:
+
+- tasks, timelines, and SSE `Last-Event-ID` replay resume exactly where they
+  stopped — same `event_id`s, same `sequence` numbers, no duplicated business
+  events; a terminal task's stream always closes after its replay, including
+  when the client's `Last-Event-ID` is already anchored at `task.terminal`;
+- a run that terminated while Node was down gains exactly one status
+  transition and one `task.terminal` event; a run dsh no longer knows is
+  projected `stopped` with a reason;
+- Pi sessions are not resumed: a mid-run task keeps its dsh-projected status
+  with a `status_reason` recording that the session was not resumed, and
+  stays cancellable through the product API.
+
+`POST /api/v1/tasks` additionally accepts an optional `Idempotency-Key`
+header (≤256 chars, enforced with `400 INVALID_REQUEST` when longer): same
+key + same payload replays the original task (including across restarts), the
+same key with a different payload is `409 IDEMPOTENCY_CONFLICT`, and
+concurrent same-key creates join one run.
+
+**Single instance per state file.** The projection has no cross-process lock:
+two orchestrators pointed at the same `FORGEPILOT_TASK_STATE_FILE` replace
+whole documents and would silently drop each other's tasks. Run one
+orchestrator per state file (the per-uid default assumes exactly that). The
+parent directory is created `0700`, but like the api-token directory pattern
+the mode only applies when Node creates it — on a shared `/tmp` another user
+could pre-create `$TMPDIR/forgepilot-<uid>/`; prefer an absolute private
+path under your home directory when that matters.
 
 ## Authentication and origin guards
 

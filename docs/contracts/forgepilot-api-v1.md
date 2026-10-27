@@ -40,12 +40,28 @@ The OpenAPI document declares this as the `bearerAuth` security scheme
   "current_run_id":"run_01J...","run_history_url":"/api/v1/tasks/tsk_01J.../runs",
   "repository":{"id":"github:acme/payments","display_name":"acme/payments","base_ref":"main","base_sha":"ab12cd..."},
   "request":{"summary":"Fix export exception.","source_reference":"https://github.com/acme/payments/issues/1234"},
+  "association":{"task_id":"tsk_01J...","run_id":"run_01J...","repository_id":"github:acme/payments","base_sha":"ab12cd...","head_sha":"9ef012..."},
+  "revision":{"base_sha":"ab12cd...","head_sha":"9ef012..."},
   "status":"executing","status_reason":null,
   "risk":{"class":"low","decision_code":"risk_low_approved","requires_human_approval":false},
   "progress":{"phase":"validating","actions_completed":2,"actions_total":3},
-  "artifacts":{"patch":null,"report":null,"evidence_bundle_available":false}
+  "governance":{"current_head_sha":"9ef012...","observations_valid":true,"merge_queue_eligible":false},
+  "artifacts":{"patch":null,"report":null,"evidence_bundle_available":false,"index":[{"artifact_id":"patch_report","available":true,"digest":"sha256:…","head_sha":"9ef012..."}]}
 }
 ```
+
+`association` and `revision` are the verifiable task/run/repository/base-SHA/
+head-SHA bindings. `run_id` and `head_sha` are projected from the
+authoritative dsh run (`head_sha` from its patch report, null until one
+exists); `task_id`, `repository_id`, and `base_sha` are the creation bindings
+dsh accepted and pinned for the run — Node records them at create time and
+never invents or re-derives them afterwards. `governance` projects the GitHub merge boundary for
+the current head: approvals and checks are observations of one exact head, so
+when dsh reports a newer head than the last approval snapshot, Node marks
+`observations_valid: false` and `merge_queue_eligible: false` until dsh
+observes them against the current head. `artifacts.index` lists artifact
+metadata (identifier, availability, digest, bound head) as reported by dsh;
+binary contents stay behind `GET /api/v1/tasks/{task_id}/artifacts/{artifact_id}`.
 
 The UI status enum is `queued`, `assessing_risk`, `awaiting_approval`,
 `approved`, `planning`, `executing`, `validating`, `awaiting_review`,
@@ -78,7 +94,7 @@ run summaries for that task; terminal grants are never reused.
 
 | Request | Request body | Response |
 |---|---|---|
-| `POST /api/v1/tasks` | `repository_id`, `base_ref`, `summary`, `source_reference`, `acceptance_criteria[]` | `201 Task` |
+| `POST /api/v1/tasks` | `repository_id`, `base_ref`, `summary`, `source_reference`, `acceptance_criteria[]`; optional `Idempotency-Key` header | `201 Task` |
 | `GET /api/v1/tasks?cursor=&status=` | none | `200 {items: Task[], next_cursor}` |
 | `GET /api/v1/tasks/{task_id}` | none | `200 Task` |
 | `GET /api/v1/tasks/{task_id}/runs` | none | `200 {items: redacted RunSummary[]}` ordered by creation time |
@@ -112,3 +128,40 @@ DSH_RISK_PROHIBITED`, and `428 DSH_APPROVAL_REQUIRED`.
 The implementation MUST generate an OpenAPI document and TypeScript client
 from this contract. UI work is blocked until that generated contract is merged
 to `main`; fixtures must match it exactly.
+
+## Idempotent task creation
+
+`POST /api/v1/tasks` accepts an optional `Idempotency-Key` header (≤256
+characters). Repeating a create with the same key and the same normalized
+payload returns the original `201 Task` — same `id`, same `current_run_id` —
+instead of minting a second run; concurrent creates with one key join the
+same run. The same key with a different payload is `409
+IDEMPOTENCY_CONFLICT`. Keys and their task bindings survive a process
+restart: replaying a pre-restart create after a restart still returns the
+pre-restart task. Requests without the header are never deduplicated.
+
+## Durability and restart recovery
+
+Node persists its task projection — statuses, the ordered event timeline,
+artifact metadata, and the idempotency ledger — as one atomically replaced,
+schema-versioned, user-private (0600) document. dsh remains the only fact
+source for runs and evidence: recovery re-reads run state from dsh and
+re-projects; it never fabricates, overwrites, or reorders timeline events.
+Consequences a client can rely on:
+
+- After a restart, `GET /tasks/{id}` and `GET /tasks/{id}/timeline` return
+  the same events, in the same order, with the same `event_id`s and
+  `sequence` numbers as before the restart.
+- `GET /tasks/{id}/stream` replays from the durable timeline, so a
+  `Last-Event-ID` captured before a restart resumes exactly after that event:
+  ordered, gap-free, and without repeating business events. A stream for a
+  terminal task always closes after its replay — including when the client's
+  `Last-Event-ID` is already anchored at `task.terminal` and the replay has
+  nothing left to write.
+- A task whose run reached a terminal dsh state while Node was down gains
+  exactly one new status transition and one `task.terminal` event at
+  recovery; a run dsh no longer knows is projected `stopped` with a reason,
+  never left silently running on a phantom association.
+- Pi sessions are not resumed across a restart. A task that was mid-run
+  keeps its dsh-projected status with a `status_reason` recording that the
+  session was not resumed; approvals and cancels remain available.

@@ -14,6 +14,12 @@ export interface OrchestratorConfig {
   apiPort: number;
   /** Per-process API bearer-token file (0600, user-private directory). */
   apiTokenFile: string;
+  /**
+   * Durable task-projection file (0600, user-private directory). Unset
+   * means a process-local store — tests use that; a real deployment sets it
+   * so a restart can re-associate tasks with their dsh runs.
+   */
+  taskStateFile?: string;
   /** Repository the pilot fronts; dsh only accepts the AutoFixer repository. */
   repositoryId: string;
   repositoryUrl: string;
@@ -70,6 +76,11 @@ function defaultApiTokenPath(): string {
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "api-token");
 }
 
+function defaultTaskStatePath(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "task-state.json");
+}
+
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): OrchestratorConfig {
   const repositoryId = env["FORGEPILOT_REPOSITORY_ID"] ?? "github:Luthiel/AutoFixer";
   const idMatch = /^github:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(repositoryId);
@@ -109,6 +120,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
       120,
       "FORGEPILOT_MAX_WALL_CLOCK_SECONDS",
     ),
+    taskStateFile: env["FORGEPILOT_TASK_STATE_FILE"] ?? defaultTaskStatePath(),
   };
   if (env["FORGEPILOT_DSH_TOKEN_FILE"]) {
     config.dshTokenFile = env["FORGEPILOT_DSH_TOKEN_FILE"];

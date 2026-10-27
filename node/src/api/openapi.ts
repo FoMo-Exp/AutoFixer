@@ -35,6 +35,17 @@ const errorSchema: JsonObject = {
   },
 };
 
+const artifactMetadataSchema: JsonObject = {
+  type: "object",
+  required: ["artifact_id", "available", "digest", "head_sha"],
+  properties: {
+    artifact_id: { type: "string", examples: ["evidence_bundle", "patch_report"] },
+    available: { type: "boolean" },
+    digest: { type: ["string", "null"], examples: ["sha256:…"] },
+    head_sha: { type: ["string", "null"] },
+  },
+};
+
 const taskSchema: JsonObject = {
   type: "object",
   required: [
@@ -46,10 +57,13 @@ const taskSchema: JsonObject = {
     "run_history_url",
     "repository",
     "request",
+    "association",
+    "revision",
     "status",
     "status_reason",
     "risk",
     "progress",
+    "governance",
     "artifacts",
   ],
   properties: {
@@ -77,6 +91,30 @@ const taskSchema: JsonObject = {
         source_reference: { type: ["string", "null"] },
       },
     },
+    association: {
+      type: "object",
+      description:
+        "Verifiable task/run/repository/revision binding. run_id and " +
+        "head_sha are projected from the authoritative dsh run; task_id, " +
+        "repository_id, and base_sha are the creation bindings dsh accepted " +
+        "and pinned for the run. Node never invents any of these values.",
+      required: ["task_id", "run_id", "repository_id", "base_sha", "head_sha"],
+      properties: {
+        task_id: { type: "string" },
+        run_id: { type: ["string", "null"] },
+        repository_id: { type: "string" },
+        base_sha: { type: "string" },
+        head_sha: { type: ["string", "null"] },
+      },
+    },
+    revision: {
+      type: "object",
+      required: ["base_sha", "head_sha"],
+      properties: {
+        base_sha: { type: "string" },
+        head_sha: { type: ["string", "null"] },
+      },
+    },
     status: { type: "string", enum: [...UI_STATUSES] },
     status_reason: { type: ["string", "null"] },
     risk: {
@@ -97,13 +135,31 @@ const taskSchema: JsonObject = {
         actions_total: { type: ["integer", "null"] },
       },
     },
+    governance: {
+      type: "object",
+      description:
+        "GitHub merge-boundary projection for the current head. Approvals " +
+        "and checks observed against an older head are invalidated: " +
+        "observations_valid turns false and merge_queue_eligible turns false " +
+        "until dsh observes them against the current head.",
+      required: ["current_head_sha", "observations_valid", "merge_queue_eligible"],
+      properties: {
+        current_head_sha: { type: ["string", "null"] },
+        observations_valid: { type: "boolean" },
+        merge_queue_eligible: { type: "boolean" },
+      },
+    },
     artifacts: {
       type: "object",
-      required: ["patch", "report", "evidence_bundle_available"],
+      required: ["patch", "report", "evidence_bundle_available", "index"],
       properties: {
         patch: { type: "null" },
         report: { type: "null" },
         evidence_bundle_available: { type: "boolean" },
+        index: {
+          type: "array",
+          items: { $ref: "#/components/schemas/ArtifactMetadata" },
+        },
       },
     },
   },
@@ -191,6 +247,19 @@ export function buildOpenApiDocument(): OpenApiDocument {
       post: {
         operationId: "createTask",
         summary: "Create a remediation task",
+        parameters: [
+          {
+            name: "Idempotency-Key",
+            in: "header",
+            required: false,
+            schema: { type: "string", maxLength: 256 },
+            description:
+              "Replay-safe create. Repeating the request with the same key " +
+              "and payload returns the original task instead of minting a " +
+              "second run; the same key with a different payload is 409 " +
+              "IDEMPOTENCY_CONFLICT.",
+          },
+        ],
         requestBody: {
           required: true,
           content: {
@@ -212,7 +281,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
         responses: {
           201: { description: "Task created", ...jsonRef("#/components/schemas/Task") },
           400: errorResponse("Invalid request"),
-          409: errorResponse("Task state conflict"),
+          409: errorResponse("Task state conflict or IDEMPOTENCY_CONFLICT"),
           422: errorResponse(
             "Prohibited work was rejected by dsh (details.task_id names the rejected task)",
           ),
@@ -425,7 +494,13 @@ export function buildOpenApiDocument(): OpenApiDocument {
     "/api/v1/tasks/{task_id}/stream": {
       get: {
         operationId: "streamTaskEvents",
-        summary: "SSE stream of task events; replays by Last-Event-ID in sequence order",
+        summary:
+          "SSE stream of task events; replays by Last-Event-ID in sequence order " +
+          "from the durable projection, so a reconnect after an orchestrator " +
+          "restart resumes exactly where the client stopped without duplicating " +
+          "business events. A terminal task's stream always closes after its " +
+          "replay, including when Last-Event-ID is already anchored at " +
+          "task.terminal and the replay has nothing left to write.",
         parameters: [
           { name: "task_id", in: "path", required: true, schema: { type: "string" } },
           {
@@ -477,6 +552,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
         Task: taskSchema,
         TaskEvent: taskEventSchema,
         RunSummary: runSummarySchema,
+        ArtifactMetadata: artifactMetadataSchema,
         Error: errorSchema,
       },
       securitySchemes: {
