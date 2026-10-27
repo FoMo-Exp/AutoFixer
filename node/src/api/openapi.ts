@@ -206,21 +206,26 @@ const piSummarySchema: JsonObject = {
   type: "object",
   description:
     "A display-safe natural-language summary of the latest settled Pi turn " +
-    "for one task run. Source: the fully assembled assistant text of that " +
-    "turn, judged on the Node side by an ordered fail-closed certification " +
-    "table (DAT-192): credentials, shell syntax, absolute workspace paths, " +
-    "command invocations, argument material, unredacted logs, and opaque " +
-    "high-entropy strings fail closed as unsafe_content; a report that " +
-    "something was executed, or a sentence/line opener the gate cannot " +
-    "recognise as narrative prose (capitalisation confers no exemption; " +
-    "every line start is judged), fails closed as undecidable. " +
-    "Certification is positive — only text recognised as ordinary " +
-    "narrative prose is exposed, the contract states that boundary's " +
-    "exact reach, and it never rests on enumerating command tools alone. " +
-    "Fail closed: " +
-    "text is exposed only when the entire turn passes every rule; any hit " +
-    "or a gate failure yields status=unavailable with text=null, never " +
-    "redacted or partial content. Lifecycle: null on the task until a Pi " +
+    "for one task run (DAT-191, classification boundary DAT-192, trust " +
+    "boundary DAT-193). Displayability comes from provenance, not text " +
+    "inspection: text is exposed only when it comes from an auditable " +
+    "trusted source whose composition is reviewable in the orchestrator, " +
+    "and free model output never has one — no rule table can prove that " +
+    "arbitrary free text contains no command — so a settled model turn is " +
+    "withheld in full. The Node-side fail-closed classifier still names " +
+    "why material is kept out: credentials, shell syntax, absolute " +
+    "workspace paths, command invocations, argument material, unredacted " +
+    "logs, and opaque high-entropy strings fail closed as unsafe_content; " +
+    "an execution report or a sentence/line opener it cannot recognise as " +
+    "narrative prose (capitalisation confers no exemption; every line " +
+    "start is judged) fails closed as undecidable; a turn no rule flags is " +
+    "withheld as untrusted_source — a pass of the rule table is a " +
+    "classification, not a certification. Fail closed: an unavailable " +
+    "summary always carries text=null, never redacted or partial content. " +
+    "available is reserved for a trusted-source summary; no such producer " +
+    "exists in this version (DAT-193 capability gap, escalated to the " +
+    "Architect), so new settlements are pending or unavailable only. " +
+    "Lifecycle: null on the task until a Pi " +
     "session exists; pending from " +
     "session start (and at the start of every run) until a turn settles; " +
     "then exactly one available/unavailable per settled turn, each replacing " +
@@ -247,7 +252,10 @@ const piSummarySchema: JsonObject = {
       type: ["string", "null"],
       maxLength: 240,
       description:
-        "The bounded excerpt of the validated turn text; non-null iff status is available.",
+        "The display text; non-null iff status is available. Reserved for a " +
+        "summary composed from an auditable trusted source; always null for " +
+        "free model turns (DAT-193). Bound to 240 characters when a trusted " +
+        "source produces it.",
     },
     unavailable_reason: {
       type: ["string", "null"],
@@ -255,11 +263,13 @@ const piSummarySchema: JsonObject = {
       description:
         "Why no text is exposed: no_content (the settled turn produced no " +
         "displayable text), unsafe_content (identified unsafe material), " +
-        "undecidable (the gate could not certify the turn: an execution " +
-        "report or an unrecognised sentence opener), gate_error (the gate " +
-        "itself failed). Null unless status is unavailable. The enum is " +
-        "additive: clients render an unknown reason as a plain unavailable " +
-        "state.",
+        "undecidable (the classifier could not recognise the turn: an " +
+        "execution report or an unrecognised sentence opener), gate_error " +
+        "(the classifier itself failed), untrusted_source (no rule flagged " +
+        "the text, but free model output has no auditable trusted source, " +
+        "so it is withheld in full). Null unless status is unavailable. " +
+        "The enum is additive: clients render an unknown reason — and an " +
+        "unknown status — as a plain unavailable state.",
     },
     updated_at: { type: "string", format: "date-time" },
   },
@@ -609,14 +619,15 @@ export function buildOpenApiDocument(): OpenApiDocument {
     openapi: "3.1.0",
     info: {
       title: "ForgePilot orchestrator API",
-      version: "0.4.0",
+      version: "0.5.0",
       description:
         "forgepilot-api/v1: the Node-to-UI contract of the ForgePilot pilot. " +
         "The UI calls Node only, at an ephemeral loopback address; it never sees " +
         "dsh sockets, boot tokens, Pi credentials, raw tool output, or provider " +
         "credentials. Pi text is displayed only through the fail-closed " +
-        "pi_summary contract (DAT-191), hardened by the certification " +
-        "boundary of DAT-192. Generated from the orchestrator " +
+        "pi_summary contract (DAT-191), whose classification boundary is " +
+        "DAT-192 and whose trusted-source display boundary is DAT-193. " +
+        "Generated from the orchestrator " +
         "implementation; shapes are defined by " +
         "docs/contracts/forgepilot-api-v1.md.",
     },

@@ -4,15 +4,25 @@
  * The raw `pi.text_delta` stream is free model text: it can interleave
  * secrets, commands, absolute workspace paths, or unredacted log output, and
  * the UI must never display it on the strength of client-side filtering
- * alone. This module is the Node-side, auditable summary source: it
- * accumulates the assistant text of one Pi turn, and at settlement runs the
- * whole assembled turn text through an ordered, reviewable certification
- * table before anything is exposed as a summary.
+ * alone. This module is the Node-side summary projection: it accumulates the
+ * assistant text of one Pi turn and, at settlement, decides what the task's
+ * `pi_summary` may expose.
  *
- * Security basis (DAT-192, QA round-1 hardening): certification is
- * positive, not a tool blacklist. Enumerating command tools can never be
- * the safety claim — the set of commands is open — so the decision
- * boundary is layered, and every layer only ever adds a rejection:
+ * Trust boundary (DAT-193): displayability comes from provenance, not from
+ * inspecting text. `available` requires an auditable trusted source —
+ * production code composing the displayed text from data whose origin and
+ * validation are reviewable in this repository — and the trust chain must
+ * be explainable. Free model output has no such provenance: any turn, in
+ * any wording, may carry commands, credentials, absolute paths, or raw
+ * logs, and no deterministic rule table can prove that arbitrary free text
+ * contains none (DAT-191/192 hardened the table across three QA rounds and
+ * QA still reproduced raw commands reaching `available`: `node app
+ * succeeded.`, `The team used poetry lock to pin versions.`). Therefore a
+ * settled model turn is never displayable, whatever the rule table says.
+ *
+ * The DAT-192 rule table stays in place as the *classifier*: it names why
+ * withheld material is unsafe or uncertifiable, so clients and operators
+ * can see what was kept out. Every layer only ever adds a rejection:
  * 1. Structural command material fails closed wherever it appears: shell
  *    syntax (fences, code spans, prompts, pipes, redirections, `$VAR`),
  *    argument material (flags, `./` paths, `//target` arguments,
@@ -23,45 +33,46 @@
  *    capitalisation confers no exemption, and every line start (not just
  *    paragraph and list starts) is judged. An opener that is a base
  *    command/speech verb (`Deploy…`, `Install…`, `Ensure…`) is an
- *    imperative and never certifies, whatever marker the sentence carries;
- *    any other opener — polysemous command heads included (QA round-2:
- *    `node app`, `echo hello` carry no structural evidence either) —
- *    certifies only when the same segment carries a narrative marker (a
+ *    imperative and never classifies as prose, whatever marker the sentence
+ *    carries; any other opener — polysemous command heads included —
+ *    classifies only when the same segment carries a narrative marker (a
  *    copula/auxiliary/modal token or a participial `-ed` verb form).
- *    Command lines carry no such marker, so an invocation — enumerated
- *    tool head or not — cannot be certified at a segment start.
  * 3. Execution reports ("I ran <something>") are undecidable: the text does
- *    not say what was executed, so the turn is not displayable.
+ *    not say what was executed.
  * 4. Command vocabularies are defence in depth on top: tokens with no
  *    ordinary prose use (`ls`, `cat`, `grep`, `sed`, …) fail on sight;
  *    polysemous heads (`git`, `make`, `node`, `find`, …) fail on structural
  *    evidence mid-sentence (`git status`, `node server.js`,
  *    `cat package.json`), and as segment openers they additionally need an
- *    in-segment narrative marker: `Node is fast.` and
- *    `git history is clean.` stay displayable, while `git history`,
- *    `make sense`, and `node app` fail closed as undecidable.
+ *    in-segment narrative marker.
  * Vocabularies only ever add rejections; they are not the safety claim.
- * Honest residual (stated in the contract): an unlisted tool invoked with
- * plain-English words in the *middle* of an otherwise certified narrative
- * sentence, carrying none of the structural markers above, is not
- * distinguishable from prose by a deterministic gate.
  *
- * Fail-closed posture (DAT-191/DAT-192 acceptance):
- * - A summary is `available` only when the entire settled turn text is
- *   certified by every rule; the displayed text is a bounded excerpt of
- *   that same validated text.
- * - Any rule hit — or a failure inside the gate itself — yields an explicit
- *   `unavailable` summary whose `text` is always null: identified unsafe
- *   material reports `unsafe_content`, anything the gate cannot certify
- *   reports `undecidable`. The turn's raw text is never copied into an
- *   unavailable summary, a timeline event, or the task projection, so no
- *   partial or transformed leak is possible.
+ * Fail-closed posture (DAT-191/DAT-192/DAT-193 acceptance):
+ * - Every settled turn publishes exactly one summary; `text` is non-null
+ *   only when `status` is `available`, which requires a trusted source.
+ *   For free model turns no trusted source exists, so a turn the classifier
+ *   does not flag is withheld as `untrusted_source`: the classifier's pass
+ *   can never certify displayability.
+ * - A rule hit reports `unsafe_content`; a turn the classifier cannot
+ *   certify reports `undecidable`; an empty turn reports `no_content`; a
+ *   failure inside the classifier reports `gate_error`. An unavailable
+ *   summary never carries the raw turn text — in any field, event, or
+ *   projection — so no partial or transformed leak is possible.
  * - An unsettled turn is `pending`, never a summary.
  *
- * The rule table is deliberately regex-based and deterministic: every accept
- * or reject decision can be traced to a named rule with a declared reason,
- * and no model, network call, or widening permission is involved in judging
- * the text.
+ * The classifier is deliberately regex-based and deterministic: every
+ * decision can be traced to a named rule with a declared reason, and no
+ * model, network call, or widening permission is involved in judging the
+ * text. Determinism is what makes the *classification* auditable; it is not
+ * what makes text displayable — only provenance does that.
+ *
+ * Capability gap (DAT-193, escalated to the Architect): Node holds no
+ * natural-language account of the agent's activity other than free model
+ * text, and state or activity-count projections are not natural-language
+ * summaries. Until an Architect-approved trusted source exists, no
+ * settlement produces `available`, and this issue does not claim the
+ * natural-language summary acceptance is met. `available` stays in the
+ * status enum as the reserved, forward-compatible slot for that source.
  */
 
 export const PI_SUMMARY_STATUSES = ["pending", "available", "unavailable"] as const;
@@ -74,14 +85,21 @@ export const PI_SUMMARY_UNAVAILABLE_REASONS = [
   /** At least one safety rule identified unsafe material; fail closed. */
   "unsafe_content",
   /**
-   * The gate could not positively certify the turn as displayable narrative
-   * prose (an execution report or an unrecognised sentence opener); fail
-   * closed. The reason enum is additive — clients render an unknown reason
-   * as a plain unavailable state.
+   * The classifier could not recognise the turn as narrative prose (an
+   * execution report or an unrecognised sentence opener); fail closed. The
+   * reason enum is additive — clients render an unknown reason as a plain
+   * unavailable state.
    */
   "undecidable",
   /** The safety gate itself could not complete a verdict; fail closed. */
   "gate_error",
+  /**
+   * The classifier found no flagged material, but the text is free model
+   * output with no auditable trusted source, so it is never displayable
+   * (DAT-193). A pass of the rule table is a classification, not a
+   * certification; fail closed without exposing any of the text.
+   */
+  "untrusted_source",
 ] as const;
 
 export type PiSummaryUnavailableReason = (typeof PI_SUMMARY_UNAVAILABLE_REASONS)[number];
@@ -108,15 +126,12 @@ export interface PiSummary {
   /** Pi turn whose text this summary describes; null before any turn opens. */
   turn_id: string | null;
   status: PiSummaryStatus;
-  /** The safe excerpt; non-null if and only if status is `available`. */
+  /** The display text; non-null if and only if status is `available`. Reserved for a trusted-source summary; always null for free model turns (DAT-193). */
   text: string | null;
   /** Why the summary is unavailable; non-null iff status is `unavailable`. */
   unavailable_reason: PiSummaryUnavailableReason | null;
   updated_at: string;
 }
-
-/** Upper bound for one summary; longer turns are excerpted, never streamed. */
-export const PI_SUMMARY_MAX_CHARS = 240;
 
 export interface PiSummarySafetyRule {
   /** Stable rule identifier; the audit trail behind one rejection. */
@@ -131,7 +146,7 @@ export interface PiSummarySafetyRule {
 /**
  * Command tokens with no ordinary prose use in this product's domain: any
  * occurrence fails closed, with or without arguments. Defence in depth —
- * the structural rules and the prose certification above already gate the
+ * the structural rules and the prose classification above already gate the
  * same turns; these tokens only ever add rejections.
  */
 export const PI_SUMMARY_UNAMBIGUOUS_COMMAND_TOKENS: readonly string[] = [
@@ -218,7 +233,7 @@ export const PI_SUMMARY_UNAMBIGUOUS_COMMAND_TOKENS: readonly string[] = [
  * subcommand, a file-like or quoted or path argument, or a `.` target —
  * so "the echo tool" stays prose while "git status", "make install",
  * "node server.js", and "find package.json" do not. As a sentence/line
- * opener they certify only when the segment carries a narrative marker
+ * opener they classify as prose only when the segment carries a narrative marker
  * (QA round-2): `Node is fast.` and `git history is clean.` stay
  * displayable on their copula, while segment-start `node app`,
  * `echo hello`, `python script`, and `git history` carry no marker and
@@ -367,7 +382,7 @@ const PACKAGE_SUBCOMMANDS: readonly string[] = [
 
 /**
  * Reviewed narrative sentence openers. Every sentence, paragraph, and list
- * item of a certifiable turn must begin with one of these (or a capitalised
+ * item of a turn the classifier accepts as prose must begin with one of these (or a capitalised
  * token, or a polysemous command head); anything else — an imperative
  * opener such as `install the dependencies` — is undecidable and fails
  * closed. Deliberately excluded: bare imperative verbs (`run`, `install`,
@@ -759,14 +774,14 @@ export const PI_SUMMARY_PROSE_STARTERS: readonly string[] = [
   "haven't",
   "hadn't",
   // Initials of sentence-leading abbreviations (`e.g.`); `i` covers `i.e.`
-  // above, and a dotted abbreviation is not a certifiable-sentence signal.
+  // above, and a dotted abbreviation is not a prose-starter signal.
   "e",
 ];
 
 /**
  * Base-form command and speech-act verbs. Two fail-closed uses:
- * - as a sentence/line opener it is an imperative and never certifies,
- *   even when the sentence carries a narrative marker (`Ensure the lockfile
+ * - as a sentence/line opener it is an imperative and never classifies as
+ *   prose, even when the sentence carries a narrative marker (`Ensure the lockfile
  *   is current.` stays unavailable);
  * - a non-starter word immediately followed by one of these verbs is an
  *   invocation shape (`Poetry install`, `Bazel build`, `vite build`),
@@ -882,13 +897,13 @@ const REDIRECTION = String.raw`(?:[\s)]|^)(?:>{1,2}|<{1,2})(?:[\s)]|$)|[\w)]>{1,
 
 /**
  * Subject + execution verb: a report that something was run. The text does
- * not say what was executed, so the turn cannot be certified — reason
+ * not say what was executed, so the turn cannot be classified as prose — reason
  * `undecidable`, not a tool-specific guess.
  */
 const EXECUTION_REPORT = String.raw`\b(?:i|we|you|they|he|she|it)\s+(?:just\s+|also\s+|then\s+|quickly\s+|manually\s+|successfully\s+)?(?:ran|run|running|executed|executing|invoked|invoking|called|calling|issued|issuing|typed|typing|launched|launching|started|starting|installed|installing|applied|applying|attempted|attempting|tried|trying|performed|performing)\b\s+\S`;
 
 /**
- * Segment positions at which a certifiable turn must open with a
+ * Segment positions at which a prose-classified turn must open with a
  * recognised narrative starter: the start of the turn, an inline sentence
  * end, and **every line start** — agent output commonly writes one action
  * per line, so a single newline opens a new segment (list/quote markers
@@ -915,18 +930,19 @@ const OPENER_SKIP = String.raw`[ \t]*(?:["'“‘(*_#~[\]][ \t]*)*`;
  */
 const NARRATIVE_MARKER = String.raw`\b(?:is|are|was|were|be|been|being|do|does|did|has|have|had|will|would|shall|should|can|could|may|might|must)\b|[A-Za-z]{2,}ed\b`;
 
-/** No marker may appear between an uncertified opener and the next segment. */
+/** No marker may appear between an unrecognised opener and the next segment. */
 const NO_MARKER_IN_SEGMENT = String.raw`(?!(?:(?!${SEGMENT_START})(?!${NARRATIVE_MARKER})[\s\S])*(?:${NARRATIVE_MARKER}))`;
 
 /**
- * Matches a *violation* of the positive prose certification. Capitalisation
+ * Matches an opener the positive prose classification rejects. Capitalisation
  * confers no exemption (case-insensitive): an opener that is a base
  * command/speech verb is an imperative and fails closed regardless of any
  * marker; any other opener outside the reviewed starter list and the
  * `-ed`/`-ing` participles — polysemous command heads included — fails
  * closed unless the same segment carries a narrative marker, so
- * `Node is fast.` certifies on `is` while `node app` and `git history`
- * do not.
+ * `Node is fast.` passes the classification on `is` while `node app` and
+ * `git history` do not. Passing the classification never makes text
+ * displayable; that needs a trusted source (DAT-193).
  */
 const PROSE_STARTER_VIOLATION = new RegExp(
   String.raw`(?:${SEGMENT_START})${OPENER_SKIP}` +
@@ -941,7 +957,7 @@ const PROSE_STARTER_VIOLATION = new RegExp(
 );
 
 /**
- * The ordered fail-closed certification table. Every rule is evaluated
+ * The ordered fail-closed classification table. Every rule is evaluated
  * against the fully assembled turn text, so material split across stream
  * fragments (a token broken between two deltas, a path broken across three)
  * is judged only in its assembled form and cannot slip through a
@@ -1053,17 +1069,17 @@ export const PI_SUMMARY_SAFETY_RULES: readonly PiSummarySafetyRule[] = [
     code: "execution_report",
     keepsOut:
       "reports that a subject ran/executed/invoked/… something unspecified: the text does not " +
-      "say what was executed, so the turn cannot be certified (fail closed as undecidable)",
+      "say what was executed, so the turn cannot be classified as prose (fail closed as undecidable)",
     reason: "undecidable",
     pattern: new RegExp(EXECUTION_REPORT, "i"),
   },
   {
     code: "prose_starter",
     keepsOut:
-      "sentence and line openers the gate does not recognise as narrative prose: capitalisation " +
+      "unrecognised sentence and line openers: capitalisation " +
       "confers no exemption, a base command/speech verb opener is an imperative that never " +
-      "certifies, and any other unrecognised opener certifies only with an in-segment narrative " +
-      "marker — an invocation of a tool no vocabulary lists still cannot be certified at a " +
+      "classifies as prose, and any other unrecognised opener classifies only with an in-segment narrative " +
+      "marker — an invocation of a tool no vocabulary lists still cannot classify at a " +
       "segment start",
     reason: "undecidable",
     pattern: PROSE_STARTER_VIOLATION,
@@ -1084,16 +1100,26 @@ export function firstSafetyViolation(
 }
 
 export type PiSummaryEvaluation =
+  /**
+   * Reserved for a summary composed from an auditable trusted source
+   * (DAT-193): no such producer exists in this version, so
+   * `evaluateTurnText` never returns it for free model turns.
+   */
   | { outcome: "available"; text: string }
   | { outcome: "unavailable"; reason: PiSummaryUnavailableReason };
 
 /**
- * Judge one fully assembled turn and produce the display-safe outcome.
+ * Judge one fully assembled model turn and produce the projection outcome.
  *
- * The gate certifies the complete turn text first; only a turn that passes
- * in full yields an excerpt, and that excerpt is re-validated before
- * release. Unavailable outcomes carry no text of any kind, whichever reason
- * the matched rule declares.
+ * Free model text is never displayable, so the outcome is always
+ * `unavailable`: a matched rule names the unsafe material it found
+ * (`unsafe_content`) or the turn it could not certify (`undecidable`), an
+ * empty turn reports `no_content`, a classifier failure reports
+ * `gate_error`, and a turn no rule flags still fails closed as
+ * `untrusted_source` — absence of a rule hit proves nothing about arbitrary
+ * free text, and no rule table can be the trust boundary (DAT-193).
+ * Unavailable outcomes carry no text of any kind, whichever reason the
+ * matched rule declares.
  */
 export function evaluateTurnText(
   turnText: string,
@@ -1109,42 +1135,14 @@ export function evaluateTurnText(
   if (violation !== null) {
     return { outcome: "unavailable", reason: violation.reason };
   }
-  let excerpt: string;
-  try {
-    excerpt = excerptTurnText(turnText);
-    // A turn that produced nothing displayable is explicitly unavailable,
-    // distinct from a rule hit.
-    if (excerpt.length === 0) {
-      return { outcome: "unavailable", reason: "no_content" };
-    }
-    // The excerpt derives from certified text, but never trust derivation:
-    // judge the exact bytes that will be exposed, one last time.
-    const excerptViolation = firstSafetyViolation(excerpt, rules);
-    if (excerptViolation !== null) {
-      return { outcome: "unavailable", reason: excerptViolation.reason };
-    }
-  } catch {
-    return { outcome: "unavailable", reason: "gate_error" };
+  // A turn that produced nothing at all is explicitly unavailable,
+  // distinct from a rule hit and distinct from the trust decision below.
+  if (turnText.trim().length === 0) {
+    return { outcome: "unavailable", reason: "no_content" };
   }
-  return { outcome: "available", text: excerpt };
-}
-
-/** First non-empty paragraph of a turn, single-spaced and length-bounded. */
-export function excerptTurnText(turnText: string, maxChars: number = PI_SUMMARY_MAX_CHARS): string {
-  const paragraph = turnText
-    .split(/\n\s*\n/)
-    .map((block) => block.trim())
-    .find((block) => block.length > 0);
-  if (paragraph === undefined) {
-    return "";
-  }
-  const single = paragraph.replace(/\s+/g, " ").trim();
-  if (single.length <= maxChars) {
-    return single;
-  }
-  const cut = single.slice(0, maxChars - 3); // reserve room for the ellipsis
-  const lastSpace = cut.lastIndexOf(" ");
-  return `${(lastSpace > cut.length / 2 ? cut.slice(0, lastSpace) : cut).trimEnd()}...`;
+  // The classifier passed, which is not certification: free model output
+  // has no auditable trusted source, so it is withheld in full (DAT-193).
+  return { outcome: "unavailable", reason: "untrusted_source" };
 }
 
 /**
@@ -1195,7 +1193,10 @@ export class PiSummaryTracker {
    * Evaluate the open turn and replace the projected summary. Returns null
    * when no turn is open — a duplicated settlement path (a provider error
    * emits `agent_error` and then `agent_settled`) must publish exactly one
-   * summary for the turn, so callers publish only real settlements.
+   * summary for the turn, so callers publish only real settlements. Under
+   * the DAT-193 trust boundary a free model turn always evaluates to
+   * `unavailable`; the `available` arm exists only for a future
+   * trusted-source producer.
    */
   settleTurn(): PiSummary | null {
     const turnId = this.openTurnId;

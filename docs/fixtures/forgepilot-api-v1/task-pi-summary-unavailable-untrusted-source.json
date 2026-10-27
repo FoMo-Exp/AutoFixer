@@ -42,9 +42,9 @@
     "task_id": "tsk_00000000000000000000000000000001",
     "run_id": "run_00000000000000000000000000000001",
     "turn_id": "turn_1",
-    "status": "available",
-    "text": "Checked the echo tool and confirmed it prints hello.",
-    "unavailable_reason": null,
+    "status": "unavailable",
+    "text": null,
+    "unavailable_reason": "untrusted_source",
     "updated_at": "2099-01-01T00:00:00.000Z"
   },
   "governance": {

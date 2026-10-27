@@ -159,10 +159,14 @@ describe("durable task projection (M3 persistence)", () => {
     expect(restored?.piSummary).toBeNull();
   });
 
-  test("the projected Pi summary survives a restart with its event and id", () => {
+  test("a recorded summary survives a restart unchanged with its event and id", () => {
     const stateFile = path.join(tempDir(), "task-state.json");
     const first = new TaskStore({ persistencePath: stateFile });
     const record = makeRecord();
+    // DAT-193 does not rewrite history: a summary recorded before the
+    // trust boundary (an `available` projection under the DAT-191/192
+    // contract) reloads byte-for-byte, event included. The trusted-source
+    // rule governs every settlement produced from this version forward.
     record.piSummary = {
       task_id: record.id,
       run_id: "run_persisted",

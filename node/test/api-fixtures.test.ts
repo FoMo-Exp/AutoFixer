@@ -16,7 +16,8 @@ import { scriptedStream, TEST_MODEL } from "./helpers/scripted-stream.js";
 import type { ScriptedTurn } from "./helpers/scripted-stream.js";
 
 /**
- * Real-response golden fixtures for the safe Pi summary contract (DAT-191).
+ * Real-response golden fixtures for the safe Pi summary contract (DAT-191,
+ * trust boundary DAT-193).
  *
  * These are captured from a live orchestrator + the real Go dsh control
  * plane, exactly like the client-facing API returns them, then normalized
@@ -171,8 +172,8 @@ function checkFixture(name: string, payload: unknown): void {
   ).toBe(encoded);
 }
 
-describe("real-response fixtures for pi_summary (DAT-191)", () => {
-  test("an available summary round-trips as a frozen live response", async () => {
+describe("real-response fixtures for pi_summary (DAT-191/193)", () => {
+  test("a benign turn round-trips as a withheld (untrusted_source) live response", async () => {
     const benignText = "Checked the echo tool and confirmed it prints hello.";
     const base = await startApp([{ kind: "text", text: benignText }]);
     const task = await createApprovedTask(base);
@@ -181,21 +182,28 @@ describe("real-response fixtures for pi_summary (DAT-191)", () => {
     await waitUntil(async () => {
       const current = await getJson<TaskResource>(`${base}/api/v1/tasks/${task.id}`);
       return (
-        current.body.pi_summary?.status === "available" &&
+        current.body.pi_summary?.status === "unavailable" &&
         current.body.progress.phase === "validating"
       );
-    }, "summary available and projection settled");
+    }, "summary withheld and projection settled");
 
     const resource = await getJson<TaskResource>(`${base}/api/v1/tasks/${task.id}`);
-    expect(resource.body.pi_summary?.text).toBe(benignText);
-    checkFixture("task-pi-summary-available.json", resource.body);
+    // DAT-193: free model text has no auditable trusted source, so even a
+    // turn that passes every classification rule is withheld in full.
+    expect(resource.body.pi_summary).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "untrusted_source",
+    });
+    expect(JSON.stringify(resource.body.pi_summary)).not.toContain(benignText);
+    checkFixture("task-pi-summary-unavailable-untrusted-source.json", resource.body);
 
     const events = await getJson<{ items: TimelineItem[] }>(
       `${base}/api/v1/tasks/${task.id}/timeline`,
     );
     const summaryEvents = events.body.items.filter((event) => event.type === "pi.summary.updated");
     expect(summaryEvents).toHaveLength(2);
-    checkFixture("pi-summary-events-available.json", summaryEvents);
+    checkFixture("pi-summary-events-unavailable-untrusted-source.json", summaryEvents);
   });
 
   test("an unavailable summary round-trips without its raw content", async () => {

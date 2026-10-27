@@ -663,8 +663,8 @@ describe("PI_UNAVAILABLE at approval (QA round-1 blocker)", () => {
   });
 });
 
-describe("safe Pi text summary contract (DAT-191)", () => {
-  test("a benign turn publishes an available, attributed summary on task and timeline", async () => {
+describe("safe Pi text summary contract (DAT-191/193)", () => {
+  test("a benign turn publishes an unavailable, attributed summary on task and timeline", async () => {
     const benignText = "Checked the echo tool and confirmed it prints hello.";
     const { base } = await startApp([{ kind: "text", text: benignText }]);
     const created = await createAndApprove(base);
@@ -683,19 +683,22 @@ describe("safe Pi text summary contract (DAT-191)", () => {
     await waitUntil(
       async () =>
         (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
-          ?.status === "available",
-      "summary available after the turn settles",
+          ?.status === "unavailable",
+      "summary withheld after the turn settles",
     );
 
     const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    // DAT-193: free model text has no auditable trusted source, so even a
+    // turn that passes every classification rule is withheld in full.
     expect(task.body.pi_summary).toMatchObject({
       task_id: created.id,
       run_id: runId,
       turn_id: "turn_1",
-      status: "available",
-      text: benignText,
-      unavailable_reason: null,
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "untrusted_source",
     });
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain(benignText);
 
     // The lifecycle is durable on the timeline: pending first, then the
     // evaluated settlement — both with full task/run attribution.
@@ -704,12 +707,14 @@ describe("safe Pi text summary contract (DAT-191)", () => {
     );
     expect(
       summaryEvents.map((event) => (event.data["summary"] as { status: string }).status),
-    ).toEqual(["pending", "available"]);
+    ).toEqual(["pending", "unavailable"]);
     for (const event of summaryEvents) {
       expect(event.task_id).toBe(created.id);
       const published = event.data["summary"] as Record<string, unknown>;
       expect(published["task_id"]).toBe(created.id);
       expect(published["run_id"]).toBe(runId);
+      expect(published["text"]).toBeNull();
+      expect(JSON.stringify(event.data)).not.toContain(benignText);
     }
   });
 
@@ -761,14 +766,18 @@ describe("safe Pi text summary contract (DAT-191)", () => {
     await waitUntil(
       async () =>
         (await getJson<TaskResource>(`${base}/api/v1/tasks/${alpha.id}`)).body.pi_summary
-          ?.status === "available",
+          ?.turn_id === "turn_1" &&
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${alpha.id}`)).body.pi_summary
+          ?.status === "unavailable",
       "alpha summary",
     );
     const beta = await createAndApprove(base);
     await waitUntil(
       async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${beta.id}`)).body.pi_summary
+          ?.turn_id === "turn_1" &&
         (await getJson<TaskResource>(`${base}/api/v1/tasks/${beta.id}`)).body.pi_summary?.status ===
-        "available",
+          "unavailable",
       "beta summary",
     );
 
@@ -779,15 +788,21 @@ describe("safe Pi text summary contract (DAT-191)", () => {
     expect(alphaSummary).toMatchObject({
       task_id: alpha.id,
       run_id: alpha.current_run_id,
-      status: "available",
-      text: "Alpha task verified the export path.",
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "untrusted_source",
     });
     expect(betaSummary).toMatchObject({
       task_id: beta.id,
       run_id: beta.current_run_id,
-      status: "available",
-      text: "Beta task verified the import path.",
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "untrusted_source",
     });
+    // Isolation holds with no text anywhere: neither projection or event
+    // surface may carry the other task's raw turn material or identifiers.
+    expect(JSON.stringify(alphaSummary)).not.toContain(beta.id);
+    expect(JSON.stringify(betaSummary)).not.toContain(alpha.id);
     expect(JSON.stringify(alphaSummary)).not.toContain("Beta task");
     expect(JSON.stringify(betaSummary)).not.toContain("Alpha task");
   });
@@ -801,7 +816,7 @@ describe("safe Pi text summary contract (DAT-191)", () => {
     await waitUntil(
       async () =>
         (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
-          ?.text === "Working on the export fix.",
+          ?.turn_id === "turn_1",
       "first turn summary",
     );
 
@@ -814,20 +829,28 @@ describe("safe Pi text summary contract (DAT-191)", () => {
     await waitUntil(
       async () =>
         (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
-          ?.text === "Plan B applied and verified.",
+          ?.turn_id === "turn_2",
       "second turn summary replaces the projection",
     );
 
     const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
     expect(task.body.pi_summary?.turn_id).toBe("turn_2");
+    expect(task.body.pi_summary?.status).toBe("unavailable");
+    expect(task.body.pi_summary?.text).toBeNull();
     const summaryEvents = (await timeline(base, created.id)).filter(
       (event) => event.type === "pi.summary.updated",
     );
-    // Append-only history keeps both settled summaries; only the projection
-    // advances to the latest turn (pending carries text null).
+    // Append-only history keeps one summary per settlement; only the
+    // projection advances to the latest turn (pending carries turn null).
+    expect(
+      summaryEvents.map((event) => (event.data["summary"] as { turn_id: string | null }).turn_id),
+    ).toEqual([null, "turn_1", "turn_2"]);
     expect(
       summaryEvents.map((event) => (event.data["summary"] as { text: string | null }).text),
-    ).toEqual([null, "Working on the export fix.", "Plan B applied and verified."]);
+    ).toEqual([null, null, null]);
+    // Withheld turns leave no trace of their raw text in any event.
+    expect(JSON.stringify(summaryEvents)).not.toContain("Working on the export fix.");
+    expect(JSON.stringify(summaryEvents)).not.toContain("Plan B applied and verified.");
   });
 
   test("a provider-error run publishes exactly one summary for its turn (QA B3)", async () => {
@@ -855,15 +878,18 @@ describe("safe Pi text summary contract (DAT-191)", () => {
     // per settled turn).
     expect(
       summaryEvents.map((event) => (event.data["summary"] as { status: string }).status),
-    ).toEqual(["pending", "available"]);
+    ).toEqual(["pending", "unavailable"]);
 
     const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    // DAT-193: even a partial turn that classifies cleanly is withheld —
+    // free model text has no auditable trusted source.
     expect(task.body.pi_summary).toMatchObject({
       turn_id: "turn_1",
-      status: "available",
-      text: partialText,
-      unavailable_reason: null,
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "untrusted_source",
     });
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain(partialText);
   });
 
   test("SSE reconnect replays summary events exactly once and matches the projection", async () => {
@@ -873,8 +899,8 @@ describe("safe Pi text summary contract (DAT-191)", () => {
     await waitUntil(
       async () =>
         (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
-          ?.status === "available",
-      "summary available before replay",
+          ?.status === "unavailable",
+      "summary withheld before replay",
     );
 
     // End the task so its stream closes after the replay.
@@ -889,7 +915,7 @@ describe("safe Pi text summary contract (DAT-191)", () => {
     const summaryFrames = frames.filter((frame) => frame.event === "pi.summary.updated");
     expect(
       summaryFrames.map((frame) => (frame.data?.data["summary"] as { status: string }).status),
-    ).toEqual(["pending", "available"]);
+    ).toEqual(["pending", "unavailable"]);
 
     // Reconnect anchored at the pending summary: exactly the later summary
     // replays once, and it equals the task projection byte for byte.
@@ -904,7 +930,7 @@ describe("safe Pi text summary contract (DAT-191)", () => {
     const replayedSummaries = resumed.filter((frame) => frame.event === "pi.summary.updated");
     expect(replayedSummaries).toHaveLength(1);
     expect((replayedSummaries[0]?.data?.data["summary"] as { status: string }).status).toBe(
-      "available",
+      "unavailable",
     );
     for (const frame of resumed) {
       expect(Number(frame.data?.sequence)).toBeGreaterThan(Number(anchor.data.sequence));
@@ -914,7 +940,8 @@ describe("safe Pi text summary contract (DAT-191)", () => {
     expect(task.body.pi_summary).toEqual(
       (replayedSummaries[0]?.data?.data as { summary: unknown }).summary,
     );
-    expect(task.body.pi_summary?.text).toBe(benignText);
+    expect(task.body.pi_summary?.text).toBeNull();
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain(benignText);
   });
 });
 
@@ -1066,6 +1093,81 @@ describe("command display boundary over the API (DAT-192)", () => {
     expect(
       events.some(
         (event) => event.type === "pi.text_delta" && String(event.data["delta"]).includes(command),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("trusted-source display boundary over the API (DAT-193)", () => {
+  test("the reproduced marker-rescued command never surfaces as displayable text", async () => {
+    const raw = "node app succeeded.";
+    const { base } = await startApp([{ kind: "text", text: raw }]);
+    const created = await createAndApprove(base);
+
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
+          ?.status === "unavailable",
+      "summary withheld for the reproduced example",
+    );
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    expect(task.body.pi_summary).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "untrusted_source",
+    });
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain(raw);
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain("node app");
+
+    const events = await timeline(base, created.id);
+    const summaryEvents = events.filter((event) => event.type === "pi.summary.updated");
+    expect(
+      summaryEvents.map((event) => (event.data["summary"] as { status: string }).status),
+    ).toEqual(["pending", "unavailable"]);
+    for (const event of summaryEvents) {
+      expect((event.data["summary"] as { text: unknown }).text).toBeNull();
+      expect(JSON.stringify(event.data)).not.toContain("node app");
+    }
+    // Only the M0 pi.text_delta stream keeps the model's raw text.
+    expect(
+      events.some(
+        (event) => event.type === "pi.text_delta" && String(event.data["delta"]).includes(raw),
+      ),
+    ).toBe(true);
+  });
+
+  test("the reproduced in-sentence command never surfaces as displayable text", async () => {
+    const raw = "The team used poetry lock to pin versions.";
+    const { base } = await startApp([{ kind: "text", text: raw }]);
+    const created = await createAndApprove(base);
+
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
+          ?.status === "unavailable",
+      "summary withheld for the plain-words command",
+    );
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    expect(task.body.pi_summary).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "untrusted_source",
+    });
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain(raw);
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain("poetry lock");
+
+    const events = await timeline(base, created.id);
+    const summaryEvents = events.filter((event) => event.type === "pi.summary.updated");
+    for (const event of summaryEvents) {
+      expect((event.data["summary"] as { text: unknown }).text).toBeNull();
+      expect(JSON.stringify(event.data)).not.toContain("poetry lock");
+      expect(JSON.stringify(event.data)).not.toContain("pin versions");
+    }
+    expect(
+      events.some(
+        (event) => event.type === "pi.text_delta" && String(event.data["delta"]).includes(raw),
       ),
     ).toBe(true);
   });
