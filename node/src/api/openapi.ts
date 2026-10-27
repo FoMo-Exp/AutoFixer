@@ -8,8 +8,13 @@ export interface OpenApiDocument {
   openapi: string;
   info: { title: string; version: string; description: string };
   servers: Array<{ url: string; description: string }>;
+  /** Global security requirement; every operation also carries it explicitly. */
+  security: Array<Record<string, string[]>>;
   paths: Record<string, Record<string, unknown>>;
-  components: { schemas: Record<string, unknown> };
+  components: {
+    schemas: Record<string, unknown>;
+    securitySchemes: Record<string, unknown>;
+  };
 }
 
 const errorSchema: JsonObject = {
@@ -143,6 +148,36 @@ function jsonRef(ref: string): JsonObject {
 }
 
 /**
+ * The single Bearer security requirement applied to every operation. The
+ * per-process token (see the M0 Authentication section) is what authorizes a
+ * caller — approvals included — so a client generated from this contract
+ * knows to send `Authorization: Bearer <token>` on every call.
+ */
+const BEARER_SECURITY: Array<Record<string, string[]>> = [{ bearerAuth: [] }];
+
+/** The 401 response every operation can return when the token is missing/wrong. */
+function unauthorizedResponse(): JsonObject {
+  return errorResponse("Missing or invalid Authorization: Bearer <token> header");
+}
+
+/**
+ * Stamp the security requirement and 401 response onto every operation in a
+ * paths object, so auth coverage cannot silently miss an endpoint.
+ */
+function stampAuth(paths: Record<string, Record<string, unknown>>): void {
+  for (const methods of Object.values(paths)) {
+    for (const operation of Object.values(methods)) {
+      if (operation === null || typeof operation !== "object") {
+        continue;
+      }
+      const op = operation as { security?: unknown; responses?: Record<string, unknown> };
+      op.security = BEARER_SECURITY;
+      op.responses = { ...op.responses, 401: unauthorizedResponse() };
+    }
+  }
+}
+
+/**
  * Build the OpenAPI 3.1 description of forgepilot-api/v1.
  *
  * Derived from the same route and schema vocabulary the HTTP server serves;
@@ -151,6 +186,277 @@ function jsonRef(ref: string): JsonObject {
  * forgepilot-api-v1.md (M0) exactly.
  */
 export function buildOpenApiDocument(): OpenApiDocument {
+  const paths: Record<string, Record<string, unknown>> = {
+    "/api/v1/tasks": {
+      post: {
+        operationId: "createTask",
+        summary: "Create a remediation task",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["repository_id", "base_ref", "summary"],
+                properties: {
+                  repository_id: { type: "string", examples: ["github:Luthiel/AutoFixer"] },
+                  base_ref: { type: "string", examples: ["main"] },
+                  summary: { type: "string" },
+                  source_reference: { type: "string" },
+                  acceptance_criteria: { type: "array", items: { type: "string" } },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: { description: "Task created", ...jsonRef("#/components/schemas/Task") },
+          400: errorResponse("Invalid request"),
+          409: errorResponse("Task state conflict"),
+          422: errorResponse(
+            "Prohibited work was rejected by dsh (details.task_id names the rejected task)",
+          ),
+          503: errorResponse("PI_UNAVAILABLE or DSH_UNAVAILABLE"),
+        },
+      },
+      get: {
+        operationId: "listTasks",
+        summary: "List tasks",
+        parameters: [
+          { name: "cursor", in: "query", schema: { type: "string" } },
+          { name: "status", in: "query", schema: { type: "string", enum: [...UI_STATUSES] } },
+        ],
+        responses: {
+          200: {
+            description: "Task page",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["items", "next_cursor"],
+                  properties: {
+                    items: { type: "array", items: { $ref: "#/components/schemas/Task" } },
+                    next_cursor: { type: ["string", "null"] },
+                  },
+                },
+              },
+            },
+          },
+          400: errorResponse("Invalid cursor or status"),
+        },
+      },
+    },
+    "/api/v1/tasks/{task_id}": {
+      get: {
+        operationId: "getTask",
+        summary: "Read one task",
+        parameters: [{ name: "task_id", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          200: { description: "Task", ...jsonRef("#/components/schemas/Task") },
+          404: errorResponse("Task not found"),
+        },
+      },
+    },
+    "/api/v1/tasks/{task_id}/runs": {
+      get: {
+        operationId: "getTaskRuns",
+        summary: "List the task's runs, ordered by creation time",
+        parameters: [{ name: "task_id", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          200: {
+            description: "Run summaries",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["items"],
+                  properties: {
+                    items: { type: "array", items: { $ref: "#/components/schemas/RunSummary" } },
+                  },
+                },
+              },
+            },
+          },
+          404: errorResponse("Task not found"),
+        },
+      },
+    },
+    "/api/v1/tasks/{task_id}/messages": {
+      post: {
+        operationId: "sendMessage",
+        summary: "Queue a steering or follow-up message for the task's Pi session",
+        parameters: [{ name: "task_id", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["mode", "content"],
+                properties: {
+                  mode: { type: "string", enum: ["steer", "follow_up"] },
+                  content: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          202: {
+            description: "Message queued",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["task_id", "queued"],
+                  properties: { task_id: { type: "string" }, queued: { type: "boolean" } },
+                },
+              },
+            },
+          },
+          400: errorResponse("Invalid request"),
+          404: errorResponse("Task not found"),
+          409: errorResponse("Task state conflict"),
+        },
+      },
+    },
+    "/api/v1/tasks/{task_id}/approvals": {
+      post: {
+        operationId: "approveTask",
+        summary: "Record the pre-grant approval decision for an elevated task",
+        parameters: [{ name: "task_id", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["decision", "scope_digest"],
+                properties: {
+                  decision: { type: "string", enum: ["approve", "reject"] },
+                  scope_digest: { type: "string", examples: ["sha256:…"] },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Task after the decision",
+            ...jsonRef("#/components/schemas/Task"),
+          },
+          400: errorResponse("Invalid request"),
+          404: errorResponse("Task not found"),
+          409: errorResponse("Task state conflict"),
+          403: errorResponse("FORBIDDEN or a dsh policy denial"),
+          503: errorResponse("PI_UNAVAILABLE or DSH_UNAVAILABLE"),
+        },
+      },
+    },
+    "/api/v1/tasks/{task_id}/cancel": {
+      post: {
+        operationId: "cancelTask",
+        summary: "Cancel a task",
+        parameters: [{ name: "task_id", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: { reason: { type: "string" } },
+              },
+            },
+          },
+        },
+        responses: {
+          202: { description: "Cancellation requested", ...jsonRef("#/components/schemas/Task") },
+          404: errorResponse("Task not found"),
+          409: errorResponse("The task cannot be cancelled in its terminal state."),
+        },
+      },
+    },
+    "/api/v1/tasks/{task_id}/timeline": {
+      get: {
+        operationId: "getTaskTimeline",
+        summary: "Read the task's redacted event timeline",
+        parameters: [{ name: "task_id", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          200: {
+            description: "Timeline items",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["items"],
+                  properties: {
+                    items: { type: "array", items: { $ref: "#/components/schemas/TaskEvent" } },
+                  },
+                },
+              },
+            },
+          },
+          404: errorResponse("Task not found"),
+        },
+      },
+    },
+    "/api/v1/tasks/{task_id}/artifacts/{artifact_id}": {
+      get: {
+        operationId: "getTaskArtifact",
+        summary: "Read one redacted artifact for the task's current run",
+        parameters: [
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "artifact_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: {
+            description: "Redacted artifact, already redacted by dsh",
+            content: {
+              "application/json": { schema: { type: "object", additionalProperties: true } },
+            },
+          },
+          403: errorResponse("Artifact access denied"),
+          404: errorResponse("Task or artifact not found"),
+          409: errorResponse("Artifact not finalized"),
+          410: errorResponse("Artifact expired"),
+        },
+      },
+    },
+    "/api/v1/tasks/{task_id}/stream": {
+      get: {
+        operationId: "streamTaskEvents",
+        summary: "SSE stream of task events; replays by Last-Event-ID in sequence order",
+        parameters: [
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+          {
+            name: "Last-Event-ID",
+            in: "header",
+            required: false,
+            schema: { type: "string" },
+            description: "Replay events after this event_id; unknown ids replay from the start.",
+          },
+        ],
+        responses: {
+          200: {
+            description:
+              "text/event-stream. Each event carries id (event_id), the event type, " +
+              "and data: the TaskEvent envelope. The stream ends after task.terminal.",
+            content: {
+              "text/event-stream": {
+                schema: { $ref: "#/components/schemas/TaskEvent" },
+              },
+            },
+          },
+          404: errorResponse("Task not found"),
+        },
+      },
+    },
+  };
+
+  // Stamp the security requirement and 401 response onto every operation so
+  // auth coverage cannot silently miss an endpoint.
+  stampAuth(paths);
+
   return {
     openapi: "3.1.0",
     info: {
@@ -164,278 +470,25 @@ export function buildOpenApiDocument(): OpenApiDocument {
         "defined by docs/contracts/forgepilot-api-v1.md.",
     },
     servers: [{ url: "http://127.0.0.1", description: "Ephemeral loopback bind" }],
-    paths: {
-      "/api/v1/tasks": {
-        post: {
-          operationId: "createTask",
-          summary: "Create a remediation task",
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  required: ["repository_id", "base_ref", "summary"],
-                  properties: {
-                    repository_id: { type: "string", examples: ["github:Luthiel/AutoFixer"] },
-                    base_ref: { type: "string", examples: ["main"] },
-                    summary: { type: "string" },
-                    source_reference: { type: "string" },
-                    acceptance_criteria: { type: "array", items: { type: "string" } },
-                  },
-                },
-              },
-            },
-          },
-          responses: {
-            201: { description: "Task created", ...jsonRef("#/components/schemas/Task") },
-            400: errorResponse("Invalid request"),
-            409: errorResponse("Task state conflict"),
-            422: errorResponse(
-              "Prohibited work was rejected by dsh (details.task_id names the rejected task)",
-            ),
-            503: errorResponse("PI_UNAVAILABLE or DSH_UNAVAILABLE"),
-          },
-        },
-        get: {
-          operationId: "listTasks",
-          summary: "List tasks",
-          parameters: [
-            { name: "cursor", in: "query", schema: { type: "string" } },
-            { name: "status", in: "query", schema: { type: "string", enum: [...UI_STATUSES] } },
-          ],
-          responses: {
-            200: {
-              description: "Task page",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    required: ["items", "next_cursor"],
-                    properties: {
-                      items: { type: "array", items: { $ref: "#/components/schemas/Task" } },
-                      next_cursor: { type: ["string", "null"] },
-                    },
-                  },
-                },
-              },
-            },
-            400: errorResponse("Invalid cursor or status"),
-          },
-        },
-      },
-      "/api/v1/tasks/{task_id}": {
-        get: {
-          operationId: "getTask",
-          summary: "Read one task",
-          parameters: [{ name: "task_id", in: "path", required: true, schema: { type: "string" } }],
-          responses: {
-            200: { description: "Task", ...jsonRef("#/components/schemas/Task") },
-            404: errorResponse("Task not found"),
-          },
-        },
-      },
-      "/api/v1/tasks/{task_id}/runs": {
-        get: {
-          operationId: "getTaskRuns",
-          summary: "List the task's runs, ordered by creation time",
-          parameters: [{ name: "task_id", in: "path", required: true, schema: { type: "string" } }],
-          responses: {
-            200: {
-              description: "Run summaries",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    required: ["items"],
-                    properties: {
-                      items: { type: "array", items: { $ref: "#/components/schemas/RunSummary" } },
-                    },
-                  },
-                },
-              },
-            },
-            404: errorResponse("Task not found"),
-          },
-        },
-      },
-      "/api/v1/tasks/{task_id}/messages": {
-        post: {
-          operationId: "sendMessage",
-          summary: "Queue a steering or follow-up message for the task's Pi session",
-          parameters: [{ name: "task_id", in: "path", required: true, schema: { type: "string" } }],
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  required: ["mode", "content"],
-                  properties: {
-                    mode: { type: "string", enum: ["steer", "follow_up"] },
-                    content: { type: "string" },
-                  },
-                },
-              },
-            },
-          },
-          responses: {
-            202: {
-              description: "Message queued",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    required: ["task_id", "queued"],
-                    properties: { task_id: { type: "string" }, queued: { type: "boolean" } },
-                  },
-                },
-              },
-            },
-            400: errorResponse("Invalid request"),
-            404: errorResponse("Task not found"),
-            409: errorResponse("Task state conflict"),
-          },
-        },
-      },
-      "/api/v1/tasks/{task_id}/approvals": {
-        post: {
-          operationId: "approveTask",
-          summary: "Record the pre-grant approval decision for an elevated task",
-          parameters: [{ name: "task_id", in: "path", required: true, schema: { type: "string" } }],
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  required: ["decision", "scope_digest"],
-                  properties: {
-                    decision: { type: "string", enum: ["approve", "reject"] },
-                    scope_digest: { type: "string", examples: ["sha256:…"] },
-                  },
-                },
-              },
-            },
-          },
-          responses: {
-            200: {
-              description: "Task after the decision",
-              ...jsonRef("#/components/schemas/Task"),
-            },
-            400: errorResponse("Invalid request"),
-            404: errorResponse("Task not found"),
-            409: errorResponse("Task state conflict"),
-            403: errorResponse("FORBIDDEN or a dsh policy denial"),
-            503: errorResponse("PI_UNAVAILABLE or DSH_UNAVAILABLE"),
-          },
-        },
-      },
-      "/api/v1/tasks/{task_id}/cancel": {
-        post: {
-          operationId: "cancelTask",
-          summary: "Cancel a task",
-          parameters: [{ name: "task_id", in: "path", required: true, schema: { type: "string" } }],
-          requestBody: {
-            required: false,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  properties: { reason: { type: "string" } },
-                },
-              },
-            },
-          },
-          responses: {
-            202: { description: "Cancellation requested", ...jsonRef("#/components/schemas/Task") },
-            404: errorResponse("Task not found"),
-            409: errorResponse("The task cannot be cancelled in its terminal state."),
-          },
-        },
-      },
-      "/api/v1/tasks/{task_id}/timeline": {
-        get: {
-          operationId: "getTaskTimeline",
-          summary: "Read the task's redacted event timeline",
-          parameters: [{ name: "task_id", in: "path", required: true, schema: { type: "string" } }],
-          responses: {
-            200: {
-              description: "Timeline items",
-              content: {
-                "application/json": {
-                  schema: {
-                    type: "object",
-                    required: ["items"],
-                    properties: {
-                      items: { type: "array", items: { $ref: "#/components/schemas/TaskEvent" } },
-                    },
-                  },
-                },
-              },
-            },
-            404: errorResponse("Task not found"),
-          },
-        },
-      },
-      "/api/v1/tasks/{task_id}/artifacts/{artifact_id}": {
-        get: {
-          operationId: "getTaskArtifact",
-          summary: "Read one redacted artifact for the task's current run",
-          parameters: [
-            { name: "task_id", in: "path", required: true, schema: { type: "string" } },
-            { name: "artifact_id", in: "path", required: true, schema: { type: "string" } },
-          ],
-          responses: {
-            200: {
-              description: "Redacted artifact, already redacted by dsh",
-              content: {
-                "application/json": { schema: { type: "object", additionalProperties: true } },
-              },
-            },
-            403: errorResponse("Artifact access denied"),
-            404: errorResponse("Task or artifact not found"),
-            409: errorResponse("Artifact not finalized"),
-            410: errorResponse("Artifact expired"),
-          },
-        },
-      },
-      "/api/v1/tasks/{task_id}/stream": {
-        get: {
-          operationId: "streamTaskEvents",
-          summary: "SSE stream of task events; replays by Last-Event-ID in sequence order",
-          parameters: [
-            { name: "task_id", in: "path", required: true, schema: { type: "string" } },
-            {
-              name: "Last-Event-ID",
-              in: "header",
-              required: false,
-              schema: { type: "string" },
-              description: "Replay events after this event_id; unknown ids replay from the start.",
-            },
-          ],
-          responses: {
-            200: {
-              description:
-                "text/event-stream. Each event carries id (event_id), the event type, " +
-                "and data: the TaskEvent envelope. The stream ends after task.terminal.",
-              content: {
-                "text/event-stream": {
-                  schema: { $ref: "#/components/schemas/TaskEvent" },
-                },
-              },
-            },
-            404: errorResponse("Task not found"),
-          },
-        },
-      },
-    },
+    security: BEARER_SECURITY,
+    paths,
     components: {
       schemas: {
         Task: taskSchema,
         TaskEvent: taskEventSchema,
         RunSummary: runSummarySchema,
         Error: errorSchema,
+      },
+      securitySchemes: {
+        bearerAuth: {
+          type: "http",
+          scheme: "bearer",
+          description:
+            "Per-process API bearer token, minted at orchestrator start and written " +
+            "0600 to the API token file. The UI reads that file and sends it as " +
+            "Authorization: Bearer <token> on every request; possession of the token " +
+            "authorizes acting as the local operator, approvals included.",
+        },
       },
     },
   };

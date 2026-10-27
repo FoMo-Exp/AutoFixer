@@ -2,3 +2,7 @@ dist
 node_modules
 coverage
 package-lock.json
+
+# Normative contract documents are hand-authored; formatting them would
+# reflow tables and compact JSON examples and bury real edits in churn.
+../docs/contracts

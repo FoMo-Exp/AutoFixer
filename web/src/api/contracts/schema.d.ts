@@ -274,6 +274,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     createTask: {
@@ -308,6 +317,15 @@ export interface operations {
             };
             /** @description Invalid request */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -364,6 +382,15 @@ export interface operations {
                     "application/json": components["schemas"]["Task"];
                 };
             };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description Task not found */
             404: {
                 headers: {
@@ -395,6 +422,15 @@ export interface operations {
                     "application/json": {
                         items: components["schemas"]["RunSummary"][];
                     };
+                };
+            };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             /** @description Task not found */
@@ -441,6 +477,15 @@ export interface operations {
             };
             /** @description Invalid request */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -499,6 +544,15 @@ export interface operations {
             };
             /** @description Invalid request */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -570,6 +624,15 @@ export interface operations {
                     "application/json": components["schemas"]["Task"];
                 };
             };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description Task not found */
             404: {
                 headers: {
@@ -612,6 +675,15 @@ export interface operations {
                     };
                 };
             };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description Task not found */
             404: {
                 headers: {
@@ -644,6 +716,15 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             /** @description Artifact access denied */
@@ -705,6 +786,15 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": components["schemas"]["TaskEvent"];
+                };
+            };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             /** @description Task not found */

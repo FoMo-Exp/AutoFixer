@@ -115,4 +115,53 @@ describe("independent conformance to the normative M0 contract", () => {
     expect(types).toContain("TaskEvent");
     expect(types).toContain("paths");
   });
+
+  test("the M0 contract itself specifies Bearer auth and the 401 response", () => {
+    // Independent check: the normative markdown must document the auth the
+    // server enforces, so a client generated from the contract sends the
+    // credential (QA round-2 blocker).
+    expect(markdown).toMatch(/## Authentication/);
+    expect(markdown).toContain("Authorization: Bearer <token>");
+    expect(markdown).toContain("401 UNAUTHENTICATED");
+    expect(markdown).toContain("bearerAuth");
+  });
+
+  test("the OpenAPI document declares the bearerAuth security scheme", () => {
+    const scheme = document.components.securitySchemes["bearerAuth"] as {
+      type: string;
+      scheme: string;
+    };
+    expect(scheme, "missing components.securitySchemes.bearerAuth").toBeDefined();
+    expect(scheme.type).toBe("http");
+    expect(scheme.scheme).toBe("bearer");
+  });
+
+  test("every operation requires the bearer scheme and documents a 401", () => {
+    expect(document.security).toContainEqual({ bearerAuth: [] });
+    const operations: string[] = [];
+    for (const [docPath, methods] of Object.entries(document.paths)) {
+      for (const [method, operation] of Object.entries(methods)) {
+        operations.push(`${method.toUpperCase()} ${docPath}`);
+        const op = operation as {
+          security?: Array<Record<string, string[]>>;
+          responses?: Record<string, unknown>;
+        };
+        expect(op.security, `missing security on ${method} ${docPath}`).toContainEqual({
+          bearerAuth: [],
+        });
+        expect(op.responses?.["401"], `missing 401 on ${method} ${docPath}`).toBeDefined();
+      }
+    }
+    // Sanity: the full endpoint set is actually being checked.
+    expect(operations).toHaveLength(10);
+  });
+
+  test("the committed openapi.json also carries the auth scheme", () => {
+    const committed = JSON.parse(fs.readFileSync(committedPath, "utf8")) as {
+      components: { securitySchemes: Record<string, unknown> };
+      security: Array<Record<string, string[]>>;
+    };
+    expect(committed.components.securitySchemes["bearerAuth"]).toBeDefined();
+    expect(committed.security).toContainEqual({ bearerAuth: [] });
+  });
 });

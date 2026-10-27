@@ -11,6 +11,11 @@
       "description": "Ephemeral loopback bind"
     }
   ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
   "paths": {
     "/api/v1/tasks": {
       "post": {
@@ -78,6 +83,16 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid Authorization: Bearer <token> header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Task state conflict",
             "content": {
@@ -108,7 +123,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       },
       "get": {
         "operationId": "listTasks",
@@ -184,8 +204,23 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid Authorization: Bearer <token> header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/api/v1/tasks/{task_id}": {
@@ -213,6 +248,16 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid Authorization: Bearer <token> header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Task not found",
             "content": {
@@ -223,7 +268,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/api/v1/tasks/{task_id}/runs": {
@@ -262,6 +312,16 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid Authorization: Bearer <token> header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Task not found",
             "content": {
@@ -272,7 +332,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/api/v1/tasks/{task_id}/messages": {
@@ -348,6 +413,16 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid Authorization: Bearer <token> header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Task not found",
             "content": {
@@ -368,7 +443,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/api/v1/tasks/{task_id}/approvals": {
@@ -435,6 +515,16 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid Authorization: Bearer <token> header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "403": {
             "description": "FORBIDDEN or a dsh policy denial",
             "content": {
@@ -475,7 +565,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/api/v1/tasks/{task_id}/cancel": {
@@ -518,6 +613,16 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid Authorization: Bearer <token> header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Task not found",
             "content": {
@@ -538,7 +643,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/api/v1/tasks/{task_id}/timeline": {
@@ -577,6 +687,16 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid Authorization: Bearer <token> header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Task not found",
             "content": {
@@ -587,7 +707,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/api/v1/tasks/{task_id}/artifacts/{artifact_id}": {
@@ -620,6 +745,16 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid Authorization: Bearer <token> header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
@@ -664,7 +799,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/api/v1/tasks/{task_id}/stream": {
@@ -701,6 +841,16 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid Authorization: Bearer <token> header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Task not found",
             "content": {
@@ -711,7 +861,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     }
   },
@@ -1018,6 +1173,13 @@
             }
           }
         }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Per-process API bearer token, minted at orchestrator start and written 0600 to the API token file. The UI reads that file and sends it as Authorization: Bearer <token> on every request; possession of the token authorizes acting as the local operator, approvals included."
       }
     }
   }
