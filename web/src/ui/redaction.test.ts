@@ -36,7 +36,7 @@ describe("redaction", () => {
     expect(redactText("echo hello")).toBe("[command redacted]");
   });
 
-  it("redacts sensitive values split across Pi text events", () => {
+  it("never renders raw Pi text while a sensitive value is still streaming", () => {
     const first = {
       event_id: "evt_1",
       sequence: 1,
@@ -54,8 +54,9 @@ describe("redaction", () => {
     } as TaskEvent;
     const [combined] = collapsePiTextDeltas([first, second]);
 
-    expect(combined && redactText(eventSummary(combined))).toBe(
-      "Output: Bearer [redacted] and [path redacted]",
-    );
+    const summary = combined && eventSummary(combined);
+    expect(summary).toContain("hidden for safety");
+    expect(summary).not.toContain("ghp_");
+    expect(summary).not.toContain("/sec");
   });
 });

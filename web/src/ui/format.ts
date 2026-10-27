@@ -73,8 +73,7 @@ export function eventLabel(type: TaskEvent["type"]): string {
 export function eventSummary(event: TaskEvent): string {
   const data = event.data;
   if (event.type === "pi.text_delta") {
-    const text = typeof data["delta"] === "string" ? data["delta"] : "Pi provided an update.";
-    return text;
+    return "Pi output is hidden for safety; review a redacted artifact for details.";
   }
   if (event.type === "task.status_changed") {
     const status = data["to"] ?? data["status"];
@@ -99,27 +98,16 @@ export function eventSummary(event: TaskEvent): string {
 }
 
 export function collapsePiTextDeltas(events: TaskEvent[]): TaskEvent[] {
-  const deltaEvents = events.filter((event) => event.type === "pi.text_delta");
-  if (deltaEvents.length < 2) return events;
-
-  const firstDelta = deltaEvents[0];
-  if (!firstDelta) return events;
-  const combinedText = deltaEvents
-    .map((event) => event.data["delta"])
-    .filter((delta): delta is string => typeof delta === "string")
-    .join("");
-  let inserted = false;
-  const combinedEvent: TaskEvent = {
-    ...firstDelta,
-    data: { ...firstDelta.data, delta: combinedText },
-  };
-
-  return events.flatMap((event) => {
-    if (event.type !== "pi.text_delta") return [event];
-    if (inserted) return [];
-    inserted = true;
-    return [combinedEvent];
-  });
+  const collapsed: TaskEvent[] = [];
+  for (const event of events) {
+    if (event.type === "pi.text_delta") {
+      if (collapsed.at(-1)?.type === "pi.text_delta") continue;
+      collapsed.push({ ...event, data: { ...event.data, delta: "" } });
+    } else {
+      collapsed.push(event);
+    }
+  }
+  return collapsed;
 }
 
 export function approvalScopeDigest(events: TaskEvent[], taskId: string): string | undefined {

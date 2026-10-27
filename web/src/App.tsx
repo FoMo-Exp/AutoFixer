@@ -958,7 +958,10 @@ function splitCriteria(value: string): string[] {
 
 function errorMessage(caught: unknown): string {
   if (caught instanceof ApiConfigurationError)
-    return "Configure the loopback Node service in the Electron launch environment.";
+    return (
+      window.forgePilotConfig?.startupError ||
+      "Configure the loopback Node service; default startup requires FORGEPILOT_BASE_SHA."
+    );
   if (caught instanceof ApiError) return `${caught.code}: ${redactText(caught.message)}`;
   return caught instanceof Error
     ? redactText(caught.message)

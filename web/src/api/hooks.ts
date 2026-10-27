@@ -3,6 +3,11 @@ import type { ForgePilotClient, TaskEvent } from "./client";
 
 export type StreamConnection = "idle" | "connecting" | "connected" | "reconnecting" | "offline";
 
+export function sanitizeStreamEvent(event: TaskEvent): TaskEvent {
+  if (event.type !== "pi.text_delta") return event;
+  return { ...event, data: { ...event.data, delta: "" } };
+}
+
 export function useTaskStream(
   client: ForgePilotClient,
   taskId: string | undefined,
@@ -29,8 +34,9 @@ export function useTaskStream(
     let lastEventId: string | undefined;
     let delay = 1000;
 
-    const addEvent = (event: TaskEvent): void => {
+    const addEvent = (incoming: TaskEvent): void => {
       if (stopped) return;
+      const event = sanitizeStreamEvent(incoming);
       lastEventId = event.event_id;
       setEvents((current) => {
         if (current.some((item) => item.event_id === event.event_id)) return current;

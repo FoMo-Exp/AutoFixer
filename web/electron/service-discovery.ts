@@ -37,10 +37,17 @@ export function parseNodeServiceLine(line: string): {
 } {
   const listening = /forgepilot-api\/v1 listening on (https?:\/\/\S+)/i.exec(line);
   const tokenFile = /API token file .*:\s*(\S.*)$/i.exec(line);
+  const apiBaseUrl = listening ? normalizeUnbracketedIpv6Url(listening[1]) : undefined;
   return {
-    ...(listening && isLoopbackApiUrl(listening[1]) ? { apiBaseUrl: listening[1] } : {}),
+    ...(apiBaseUrl && isLoopbackApiUrl(apiBaseUrl) ? { apiBaseUrl } : {}),
     ...(tokenFile ? { apiTokenFile: tokenFile[1].trim() } : {}),
   };
+}
+
+function normalizeUnbracketedIpv6Url(value: string): string {
+  const match = /^http:\/\/(::1):(\d+)(\/.*)?$/i.exec(value);
+  if (!match) return value;
+  return `http://[${match[1]}]:${match[2]}${match[3] ?? ""}`;
 }
 
 export function resolveNodeExecutable(env: NodeJS.ProcessEnv = process.env): string {
@@ -65,6 +72,11 @@ export async function discoverNodeService(
   );
   const nodeEntry = env["FORGEPILOT_NODE_ENTRY"]?.trim() || defaultEntry;
   if (!existsSync(nodeEntry)) return { apiBaseUrl: "" };
+  if (!/^[0-9a-fA-F]{7,40}$/.test(env["FORGEPILOT_BASE_SHA"] ?? "")) {
+    throw new Error(
+      "Set FORGEPILOT_BASE_SHA to the repository base commit (7–40 hexadecimal characters) before starting the local Node service.",
+    );
+  }
   return spawnAndDiscover(nodeEntry, env);
 }
 

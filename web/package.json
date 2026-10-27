@@ -5,13 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && tsc -p tsconfig.electron.json",
+    "build": "vite build && tsc -p tsconfig.electron.json && esbuild electron/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/preload.cjs",
     "start": "electron dist-electron/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "lint": "eslint .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "test:electron-node": "ELECTRON_RUN_AS_NODE=1 electron scripts/electron-node-smoke.mjs"
+    "test:electron-node": "ELECTRON_RUN_AS_NODE=1 electron scripts/electron-node-smoke.mjs",
+    "test:electron-window": "node scripts/electron-window-smoke.mjs"
   },
   "dependencies": {
     "react": "^19.1.1",
