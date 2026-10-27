@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import type { StreamFn } from "@mariozechner/pi-agent-core";
 import type { Api, Model } from "@mariozechner/pi-ai";
@@ -7,13 +7,21 @@ import { getEnvApiKey } from "@mariozechner/pi-ai";
 import type { OrchestratorConfig } from "../config.js";
 import { DshError } from "../dsh/client.js";
 import type { DshClient } from "../dsh/client.js";
-import type { DshGrantSummary, DshProposedWork, DshState } from "../dsh/types.js";
+import type { DshGrantSummary, DshProposedWork, DshRunResponse, DshState } from "../dsh/types.js";
 import { createDshRequestActionTool } from "../pi/dsh-request-action-tool.js";
 import { piSystemPrompt, taskPrompt } from "../pi/prompts.js";
 import type { PiSessionOptions } from "../pi/session.js";
 import { PiSession } from "../pi/session.js";
 import { ApiError, apiErrorFromDsh } from "./errors.js";
-import type { TaskRecord, TaskEvent, TaskResource, TimelineItem, TaskStore } from "./task-store.js";
+import type {
+  TaskRecord,
+  TaskEvent,
+  TaskResource,
+  TimelineItem,
+  TaskStore,
+  ArtifactMetadata,
+  UiStatus,
+} from "./task-store.js";
 import {
   UI_STATUSES,
   createTaskRecord,
@@ -30,6 +38,16 @@ export interface CreateTaskInput {
   summary: string;
   source_reference?: string;
   acceptance_criteria?: string[];
+}
+
+export interface CreateTaskOptions {
+  /**
+   * Client-supplied replay key for POST /api/v1/tasks. Repeating a create
+   * with the same key and payload returns the original task instead of
+   * minting a second dsh run; the same key with a different payload is a
+   * 409 IDEMPOTENCY_CONFLICT.
+   */
+  idempotencyKey?: string;
 }
 
 export interface ApproveTaskInput {
@@ -108,6 +126,91 @@ function externalIdFrom(sourceReference: string | null | undefined, taskId: stri
 }
 
 /**
+ * Project one authoritative dsh run read onto the task's durable fields:
+ * head-SHA binding, governance validity, and the artifact index.
+ *
+ * Governance observations (QA, checks, quorum) only describe the exact head
+ * they were taken against: when dsh reports a current head that differs from
+ * the head of the last approval snapshot, the old head's approvals and checks
+ * are invalidated (`observations_valid: false`) and the task is no longer
+ * projected merge-queue eligible, no matter what the stale snapshot said.
+ */
+export function applyRunFacts(record: TaskRecord, run: DshRunResponse): void {
+  const head = run.patch_report?.head_sha ?? null;
+  if (head !== null) {
+    record.headSha = head;
+  }
+  const snapshotHead = run.approval_snapshot?.head_sha ?? null;
+  record.approvalSnapshotHeadSha = snapshotHead;
+  if (record.headSha !== null && snapshotHead !== null) {
+    record.governanceValid = snapshotHead === record.headSha;
+    record.mergeQueueEligible =
+      record.governanceValid && run.approval_snapshot?.merge_queue_eligible === true;
+  } else {
+    // No head has been observed for this run: nothing can be stale, and
+    // merge-queue admission is impossible without an exact head binding.
+    record.governanceValid = true;
+    record.mergeQueueEligible = false;
+  }
+  // The index lists artifacts dsh actually reports; availability flips are
+  // reflected by later reads, not pre-listed as unavailable placeholders.
+  if (run.patch_report) {
+    upsertArtifactMetadata(record, {
+      artifact_id: "patch_report",
+      available: true,
+      digest: run.patch_report.report_digest ?? null,
+      head_sha: run.patch_report.head_sha ?? null,
+    });
+  }
+  if (run.bundle_available) {
+    upsertArtifactMetadata(record, {
+      artifact_id: "evidence_bundle",
+      available: true,
+      digest: null,
+      head_sha: record.headSha,
+    });
+  }
+}
+
+function upsertArtifactMetadata(record: TaskRecord, entry: ArtifactMetadata): void {
+  const existing = record.artifactIndex.find(
+    (artifact) => artifact.artifact_id === entry.artifact_id,
+  );
+  if (existing) {
+    Object.assign(existing, entry);
+    return;
+  }
+  record.artifactIndex.push(entry);
+}
+
+/** Statuses whose display implies a live Pi session drove the run. */
+const SESSION_BEARING_STATUSES: ReadonlySet<UiStatus> = new Set<UiStatus>([
+  "approved",
+  "planning",
+  "executing",
+  "validating",
+]);
+
+/**
+ * Stable fingerprint of a create request, keyed on the fields that define a
+ * task's identity. Normalization mirrors what createTask trims, so two
+ * byte-different but semantically equal bodies share one idempotency slot.
+ */
+function createTaskFingerprint(input: CreateTaskInput): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        input.repository_id,
+        input.base_ref,
+        input.summary.trim(),
+        input.source_reference?.trim() || null,
+        (input.acceptance_criteria ?? []).filter((criterion) => criterion.trim().length > 0),
+      ]),
+    )
+    .digest("hex");
+}
+
+/**
  * Orchestration core behind forgepilot-api/v1.
  *
  * Owns the task registry, the dsh-control conversation, and the Pi sessions.
@@ -125,6 +228,14 @@ export class TaskService {
    * absorbing terminal statuses, a stale read can never revive a task.
    */
   private readonly refreshQueues = new Map<string, Promise<void>>();
+  /**
+   * In-flight creates keyed by Idempotency-Key (M3): two concurrent creates
+   * with the same key join one dsh run instead of racing two.
+   */
+  private readonly pendingCreates = new Map<
+    string,
+    { fingerprint: string; promise: Promise<TaskResource> }
+  >();
 
   constructor(deps: TaskServiceDeps) {
     this.deps = deps;
@@ -134,7 +245,7 @@ export class TaskService {
     return this.deps.store;
   }
 
-  async createTask(input: CreateTaskInput): Promise<TaskResource> {
+  async createTask(input: CreateTaskInput, options: CreateTaskOptions = {}): Promise<TaskResource> {
     if (input.repository_id !== this.deps.config.repositoryId) {
       throw new ApiError(
         400,
@@ -155,41 +266,135 @@ export class TaskService {
     if (summary.length === 0) {
       throw new ApiError(400, "INVALID_REQUEST", "summary is required");
     }
-    const acceptanceCriteria = (input.acceptance_criteria ?? []).filter(
-      (criterion) => criterion.trim().length > 0,
-    );
+    const normalized: CreateTaskInput = {
+      repository_id: input.repository_id,
+      base_ref: input.base_ref,
+      summary,
+      ...(input.source_reference?.trim()
+        ? { source_reference: input.source_reference.trim() }
+        : {}),
+      acceptance_criteria: (input.acceptance_criteria ?? []).filter(
+        (criterion) => criterion.trim().length > 0,
+      ),
+    };
 
-    const taskId = newTaskId();
-    const sourceReference = input.source_reference?.trim() || null;
+    const key = options.idempotencyKey?.trim();
+    if (!key) {
+      return this.executeCreate(normalized);
+    }
+    // The dsh run is bound to the client key too: even if Node's own ledger
+    // were bypassed, dsh replays the recorded response instead of minting a
+    // second run for the same logical create.
+    const dshIdempotencyKey = `task-create-${createHash("sha256").update(key).digest("hex")}`;
+    const fingerprint = createTaskFingerprint(normalized);
+    const pending = this.pendingCreates.get(key);
+    if (pending) {
+      if (pending.fingerprint !== fingerprint) {
+        throw new ApiError(
+          409,
+          "IDEMPOTENCY_CONFLICT",
+          `Idempotency-Key ${JSON.stringify(key)} was already used with a different payload.`,
+          { idempotency_key: key },
+        );
+      }
+      return pending.promise;
+    }
+    let existing: TaskRecord | null = null;
     try {
-      const created = await this.deps.dsh.createRun({
-        task_id: taskId,
-        issue: {
-          provider: "github",
-          external_id: externalIdFrom(sourceReference, taskId),
-          source_reference: sourceReference ?? `forgepilot://tasks/${taskId}`,
+      existing = this.store.getIdempotentTask(key, fingerprint);
+    } catch {
+      throw new ApiError(
+        409,
+        "IDEMPOTENCY_CONFLICT",
+        `Idempotency-Key ${JSON.stringify(key)} was already used with a different payload.`,
+        { idempotency_key: key },
+      );
+    }
+    if (existing) {
+      return this.replayCreatedTask(existing);
+    }
+    const promise = this.executeCreate(normalized, dshIdempotencyKey)
+      .then((resource) => {
+        this.store.rememberIdempotentTask(key, fingerprint, resource.id);
+        return resource;
+      })
+      .catch((error: unknown) => {
+        // A prohibited create still materialized a rejected task; remember it
+        // so a retry replays the same refusal instead of minting a new run.
+        if (
+          error instanceof ApiError &&
+          error.code === "DSH_RISK_PROHIBITED" &&
+          typeof error.details["task_id"] === "string"
+        ) {
+          this.store.rememberIdempotentTask(key, fingerprint, error.details["task_id"]);
+        }
+        throw error;
+      })
+      .finally(() => {
+        this.pendingCreates.delete(key);
+      });
+    this.pendingCreates.set(key, { fingerprint, promise });
+    return promise;
+  }
+
+  /** Replay a remembered create; prohibited outcomes re-refuse identically. */
+  private replayCreatedTask(record: TaskRecord): TaskResource {
+    if (record.status === "rejected" && record.risk?.class === "prohibited") {
+      throw new ApiError(
+        422,
+        "DSH_RISK_PROHIBITED",
+        "dsh rejected the requested work as prohibited",
+        {
+          ...Object.fromEntries(
+            Object.entries(record.risk).map(([field, value]) => [`risk_${field}`, value]),
+          ),
+          task_id: record.id,
         },
-        repository: {
-          repository_id: this.deps.config.repositoryId,
-          url: this.deps.config.repositoryUrl,
-          base_ref: this.deps.config.baseRef,
-          base_sha: this.deps.config.baseSha,
-        },
-        request: {
-          summary,
-          acceptance_criteria: acceptanceCriteria,
-          requested_by: {
-            actor_id: this.deps.config.actorId,
-            display_name: this.deps.config.actorDisplayName,
+      );
+    }
+    return toTaskResource(record);
+  }
+
+  private async executeCreate(
+    input: CreateTaskInput,
+    dshIdempotencyKey?: string,
+  ): Promise<TaskResource> {
+    const summary = input.summary;
+    const acceptanceCriteria = input.acceptance_criteria ?? [];
+    const taskId = newTaskId();
+    const sourceReference = input.source_reference ?? null;
+    try {
+      const created = await this.deps.dsh.createRun(
+        {
+          task_id: taskId,
+          issue: {
+            provider: "github",
+            external_id: externalIdFrom(sourceReference, taskId),
+            source_reference: sourceReference ?? `forgepilot://tasks/${taskId}`,
+          },
+          repository: {
+            repository_id: this.deps.config.repositoryId,
+            url: this.deps.config.repositoryUrl,
+            base_ref: this.deps.config.baseRef,
+            base_sha: this.deps.config.baseSha,
+          },
+          request: {
+            summary,
+            acceptance_criteria: acceptanceCriteria,
+            requested_by: {
+              actor_id: this.deps.config.actorId,
+              display_name: this.deps.config.actorDisplayName,
+            },
+          },
+          proposed_work: neutralProposedWork(),
+          requested_scope: {
+            path_hints: [...this.deps.config.pathHints],
+            tool_capabilities: [...this.deps.config.toolCapabilities],
+            max_wall_clock_seconds: this.deps.config.maxWallClockSeconds,
           },
         },
-        proposed_work: neutralProposedWork(),
-        requested_scope: {
-          path_hints: [...this.deps.config.pathHints],
-          tool_capabilities: [...this.deps.config.toolCapabilities],
-          max_wall_clock_seconds: this.deps.config.maxWallClockSeconds,
-        },
-      });
+        dshIdempotencyKey,
+      );
       const record = this.materializeCreatedTask(
         taskId,
         summary,
@@ -512,15 +717,16 @@ export class TaskService {
     };
     this.deps.store.put(record);
     this.store.setStatus(record, "rejected", "dsh rejected the requested work as prohibited");
-    this.store.appendEvent(record, "task.terminal", { status: "rejected" });
-    record.terminal = true;
+    // setStatus already flagged the record terminal; this records the single
+    // terminal event and marks it so recovery can never append a second one.
+    this.finalizeIfTerminal(record);
     return record;
   }
 
   private startPi(record: TaskRecord, grant: DshGrantSummary): void {
     if (!this.deps.model || !record.runId) {
       this.store.setStatus(record, "stopped", "PI_UNAVAILABLE: no Pi model configured");
-      this.store.appendEvent(record, "task.terminal", { status: "stopped" });
+      this.finalizeIfTerminal(record);
       return;
     }
     const sessionId = `pis_${randomUUID().replaceAll("-", "")}`;
@@ -730,6 +936,9 @@ export class TaskService {
       return;
     }
     this.updateRunSummary(record, run.run_id, run.state);
+    // Head-SHA binding, governance validity, and artifact index all follow
+    // the authoritative run read — never a Node-side inference.
+    applyRunFacts(record, run);
     // Emit artifact.available exactly on the unavailable→available edge so
     // the UI learns about a finalized evidence bundle without polling dsh.
     if (run.bundle_available && !record.evidenceBundleAvailable) {
@@ -755,6 +964,7 @@ export class TaskService {
       actions_total: null,
     };
     this.projectDshState(record, run.state, null);
+    this.store.save(record);
   }
 
   private updateRunSummary(record: TaskRecord, runId: string, state: DshState): void {
@@ -778,10 +988,54 @@ export class TaskService {
   }
 
   private finalizeIfTerminal(record: TaskRecord): void {
-    if (!record.terminal) {
+    if (!record.terminal || record.terminalEventRecorded) {
       return;
     }
+    record.terminalEventRecorded = true;
     this.store.appendEvent(record, "task.terminal", { status: record.status });
     this.disposeRuntime(record.id);
+  }
+
+  /**
+   * Re-associate every persisted non-terminal task with its dsh run after a
+   * restart (M3).
+   *
+   * dsh stays the fact source: recovery only re-reads run state and
+   * re-projects. It never fabricates, overwrites, or reorders timeline
+   * events — a task that was already terminal before the restart keeps its
+   * recorded history byte-for-byte, and a run that reached a terminal dsh
+   * state while Node was down gets exactly one new status transition and one
+   * terminal event at recovery time.
+   *
+   * Pi sessions are deliberately not resumed: a model loop cannot be
+   * reconstructed from the projection, and silently restarting agent work
+   * under a grant the operator approved for a different session would
+   * fabricate execution. A task stuck mid-run surfaces its dsh-projected
+   * status with a recovery reason; the operator cancels it or dsh's own stop
+   * conditions end the run.
+   */
+  async recoverFromDsh(): Promise<void> {
+    for (const record of this.deps.store.list()) {
+      if (record.terminal) {
+        continue;
+      }
+      if (!record.runId) {
+        // Created before dsh answered: nothing to re-associate. Leave the
+        // projection untouched rather than inventing an outcome.
+        continue;
+      }
+      if (SESSION_BEARING_STATUSES.has(record.status)) {
+        // The Pi session died with the previous process; say so instead of
+        // pretending the run is still progressing.
+        record.agentSettled = false;
+        this.store.setStatus(
+          record,
+          record.status,
+          "recovered after orchestrator restart; the Pi session was not resumed",
+        );
+      }
+      await this.refreshRunState(record);
+    }
+    this.store.flushSync();
   }
 }

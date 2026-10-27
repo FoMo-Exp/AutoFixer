@@ -21,6 +21,18 @@
       "post": {
         "operationId": "createTask",
         "summary": "Create a remediation task",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "description": "Replay-safe create. Repeating the request with the same key and payload returns the original task instead of minting a second run; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT."
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -94,7 +106,7 @@
             }
           },
           "409": {
-            "description": "Task state conflict",
+            "description": "Task state conflict or IDEMPOTENCY_CONFLICT",
             "content": {
               "application/json": {
                 "schema": {
@@ -810,7 +822,7 @@
     "/api/v1/tasks/{task_id}/stream": {
       "get": {
         "operationId": "streamTaskEvents",
-        "summary": "SSE stream of task events; replays by Last-Event-ID in sequence order",
+        "summary": "SSE stream of task events; replays by Last-Event-ID in sequence order from the durable projection, so a reconnect after an orchestrator restart resumes exactly where the client stopped without duplicating business events. A replay that reaches task.terminal closes the stream.",
         "parameters": [
           {
             "name": "task_id",
@@ -883,10 +895,13 @@
           "run_history_url",
           "repository",
           "request",
+          "association",
+          "revision",
           "status",
           "status_reason",
           "risk",
           "progress",
+          "governance",
           "artifacts"
         ],
         "properties": {
@@ -947,6 +962,58 @@
                 "type": "string"
               },
               "source_reference": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "association": {
+            "type": "object",
+            "description": "Verifiable task/run/repository/revision binding. Every field is projected from the authoritative dsh run, never inferred by Node.",
+            "required": [
+              "task_id",
+              "run_id",
+              "repository_id",
+              "base_sha",
+              "head_sha"
+            ],
+            "properties": {
+              "task_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "base_sha": {
+                "type": "string"
+              },
+              "head_sha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "revision": {
+            "type": "object",
+            "required": [
+              "base_sha",
+              "head_sha"
+            ],
+            "properties": {
+              "base_sha": {
+                "type": "string"
+              },
+              "head_sha": {
                 "type": [
                   "string",
                   "null"
@@ -1032,12 +1099,36 @@
               }
             }
           },
+          "governance": {
+            "type": "object",
+            "description": "GitHub merge-boundary projection for the current head. Approvals and checks observed against an older head are invalidated: observations_valid turns false and merge_queue_eligible turns false until dsh observes them against the current head.",
+            "required": [
+              "current_head_sha",
+              "observations_valid",
+              "merge_queue_eligible"
+            ],
+            "properties": {
+              "current_head_sha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "observations_valid": {
+                "type": "boolean"
+              },
+              "merge_queue_eligible": {
+                "type": "boolean"
+              }
+            }
+          },
           "artifacts": {
             "type": "object",
             "required": [
               "patch",
               "report",
-              "evidence_bundle_available"
+              "evidence_bundle_available",
+              "index"
             ],
             "properties": {
               "patch": {
@@ -1048,6 +1139,12 @@
               },
               "evidence_bundle_available": {
                 "type": "boolean"
+              },
+              "index": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ArtifactMetadata"
+                }
               }
             }
           }
@@ -1135,6 +1232,42 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "ArtifactMetadata": {
+        "type": "object",
+        "required": [
+          "artifact_id",
+          "available",
+          "digest",
+          "head_sha"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "examples": [
+              "evidence_bundle",
+              "patch_report"
+            ]
+          },
+          "available": {
+            "type": "boolean"
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "examples": [
+              "sha256:…"
+            ]
+          },
+          "head_sha": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

@@ -38,10 +38,14 @@ export interface JsonResponse<T = unknown> {
   body: T;
 }
 
-export async function postJson<T = unknown>(url: string, body: unknown): Promise<JsonResponse<T>> {
+export async function postJson<T = unknown>(
+  url: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<JsonResponse<T>> {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
+    headers: { "Content-Type": "application/json", ...authHeaders(), ...headers },
     body: JSON.stringify(body),
   });
   return { status: response.status, body: (await response.json()) as T };

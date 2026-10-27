@@ -146,15 +146,19 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
       // POST /api/v1/tasks
       if (req.method === "POST" && segments.length === 3) {
         const body = await readJsonBody(req);
-        const created = await service.createTask({
-          repository_id: requireString(body, "repository_id"),
-          base_ref: requireString(body, "base_ref"),
-          summary: requireString(body, "summary"),
-          ...(typeof body["source_reference"] === "string"
-            ? { source_reference: body["source_reference"] }
-            : {}),
-          acceptance_criteria: optionalStringArray(body, "acceptance_criteria"),
-        });
+        const idempotencyKey = req.headers["idempotency-key"];
+        const created = await service.createTask(
+          {
+            repository_id: requireString(body, "repository_id"),
+            base_ref: requireString(body, "base_ref"),
+            summary: requireString(body, "summary"),
+            ...(typeof body["source_reference"] === "string"
+              ? { source_reference: body["source_reference"] }
+              : {}),
+            acceptance_criteria: optionalStringArray(body, "acceptance_criteria"),
+          },
+          typeof idempotencyKey === "string" && idempotencyKey.length > 0 ? { idempotencyKey } : {},
+        );
         writeJson(res, 201, created);
         return;
       }
@@ -246,10 +250,21 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
           // history for a reconnecting client.
           lastSequence = known?.sequence ?? 0;
         }
+        let ended = false;
         for (const item of service.getTimeline(taskId)) {
           if (item.sequence > lastSequence) {
             writeSseEvent(res, item);
+            if (item.type === "task.terminal") {
+              // The replay itself closed the task: a reconnecting client gets
+              // the terminal frame and a completed stream, never a dangling
+              // subscription on a dead task.
+              ended = true;
+            }
           }
+        }
+        if (ended) {
+          res.end();
+          return;
         }
         const unsubscribe = service.subscribe(taskId, (event) => {
           writeSseEvent(res, event);

@@ -148,7 +148,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** SSE stream of task events; replays by Last-Event-ID in sequence order */
+        /** SSE stream of task events; replays by Last-Event-ID in sequence order from the durable projection, so a reconnect after an orchestrator restart resumes exactly where the client stopped without duplicating business events. A replay that reaches task.terminal closes the stream. */
         get: operations["streamTaskEvents"];
         put?: never;
         post?: never;
@@ -181,6 +181,18 @@ export interface components {
                 summary: string;
                 source_reference: string | null;
             };
+            /** @description Verifiable task/run/repository/revision binding. Every field is projected from the authoritative dsh run, never inferred by Node. */
+            association: {
+                task_id: string;
+                run_id: string | null;
+                repository_id: string;
+                base_sha: string;
+                head_sha: string | null;
+            };
+            revision: {
+                base_sha: string;
+                head_sha: string | null;
+            };
             /** @enum {string} */
             status: "queued" | "assessing_risk" | "awaiting_approval" | "approved" | "planning" | "executing" | "validating" | "awaiting_review" | "approved_for_merge" | "stopped" | "rejected" | "cancelled" | "timed_out" | "expired" | "merged";
             status_reason: string | null;
@@ -195,10 +207,17 @@ export interface components {
                 actions_completed: number;
                 actions_total: number | null;
             };
+            /** @description GitHub merge-boundary projection for the current head. Approvals and checks observed against an older head are invalidated: observations_valid turns false and merge_queue_eligible turns false until dsh observes them against the current head. */
+            governance: {
+                current_head_sha: string | null;
+                observations_valid: boolean;
+                merge_queue_eligible: boolean;
+            };
             artifacts: {
                 patch: null;
                 report: null;
                 evidence_bundle_available: boolean;
+                index: components["schemas"]["ArtifactMetadata"][];
             };
         };
         TaskEvent: {
@@ -220,6 +239,17 @@ export interface components {
             state: "requested" | "approved" | "running" | "awaiting_review" | "approved_for_merge" | "stopped" | "timed_out" | "expired" | "rejected" | "cancelled" | "merged";
             /** Format: date-time */
             created_at: string;
+        };
+        ArtifactMetadata: {
+            /**
+             * @example evidence_bundle
+             * @example patch_report
+             */
+            artifact_id: string;
+            available: boolean;
+            /** @example sha256:… */
+            digest: string | null;
+            head_sha: string | null;
         };
         Error: {
             error: {
@@ -288,7 +318,10 @@ export interface operations {
     createTask: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Replay-safe create. Repeating the request with the same key and payload returns the original task instead of minting a second run; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. */
+                "Idempotency-Key"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -333,7 +366,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Task state conflict */
+            /** @description Task state conflict or IDEMPOTENCY_CONFLICT */
             409: {
                 headers: {
                     [name: string]: unknown;
