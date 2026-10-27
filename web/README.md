@@ -57,10 +57,16 @@ replays the durable timeline without duplicate events, and shows a visible
 offline/reconnecting state while the Node service is unavailable.
 
 Raw Pi text deltas are hidden as they arrive because a secret or command can be
-split across events and cannot be safely classified mid-stream. Instead the
-timeline shows a Pi summary derived only from contract-typed fields: one row per
-contiguous Pi turn (update count and whether the turn settled) plus a task-wide
-summary of turns, text updates, and action/validation outcomes. Every other
-event keeps its own row, so actions and approvals appear between the turns that
-produced them. Natural-language Pi output is never rendered; inspect the
-redacted artifact view for the server-redacted detail.
+split across events and cannot be safely classified mid-stream; the workbench
+strips them before they enter UI state and never renders them. Pi text is read
+only from the contract's fail-closed `pi_summary` projection (`Task.pi_summary`
+and `pi.summary.updated` events), which the workbench renders as a state card:
+`pending`, `available`, or `unavailable` with its reason code. Unknown reasons
+and unknown statuses render as a plain unavailable state.
+
+This build withholds `pi_summary.text` even when Node certifies it as
+`available`, because the merged contract's documented residual admits
+command-shaped text such as `node app succeeded.` as available, and DAT-189
+forbids displaying raw commands. The card states that the text is withheld
+pending the contract ruling; no frontend re-judging of the certified text is
+attempted. See `CONTRACT.md` for the baseline and the exact rules.

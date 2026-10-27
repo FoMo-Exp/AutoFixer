@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TaskEvent } from "../api/client";
-import {
-  buildTimelineRows,
-  eventSummary,
-  piActivityText,
-  piTurnSummary,
-  summarizePiActivity,
-} from "./format";
+import { buildTimelineRows, eventSummary, piTurnSummary } from "./format";
 import type { PiTurnRow } from "./format";
 
 function piDelta(delta: string, sequence: number): TaskEvent {
@@ -21,7 +15,11 @@ function piDelta(delta: string, sequence: number): TaskEvent {
   };
 }
 
-function event(type: TaskEvent["type"], sequence: number): TaskEvent {
+function event(
+  type: TaskEvent["type"],
+  sequence: number,
+  data: Record<string, unknown> = {},
+): TaskEvent {
   return {
     event_id: `evt_${sequence}`,
     sequence,
@@ -29,7 +27,7 @@ function event(type: TaskEvent["type"], sequence: number): TaskEvent {
     task_id: "tsk_1",
     task_version: sequence,
     type,
-    data: {},
+    data,
   };
 }
 
@@ -40,7 +38,7 @@ describe("timeline summaries", () => {
     const summary = eventSummary(piDelta(secretFragment, 1));
     expect(summary).not.toContain(secretFragment);
     expect(summary).not.toContain("ghp_");
-    expect(summary).toBe("Pi summary recorded.");
+    expect(summary).toBe("Pi text (withheld) recorded.");
   });
 
   it("groups a Pi turn but keeps actions in their original position", () => {
@@ -66,42 +64,41 @@ describe("timeline summaries", () => {
     expect(second.settled).toBe(true);
   });
 
-  it("summarizes a Pi turn and activity without reading raw text", () => {
+  it("summarizes a Pi turn as counts only and never reads raw text", () => {
     const events = [
       piDelta("run git status in /srv/forgepilot", 1),
       piDelta("Bearer ghp_secret", 2),
       event("pi.turn_settled", 3),
-      event("tool.requested", 4),
-      event("tool.completed", 5),
-      event("tool.requested", 6),
-      event("tool.denied", 7),
-      piDelta("follow-up turn", 8),
     ];
 
     const [turn] = buildTimelineRows(events);
-    expect(turn?.kind).toBe("pi_turn");
     if (turn?.kind !== "pi_turn") throw new Error("expected a Pi turn row");
-    expect(piTurnSummary(turn)).toBe("2 Pi text updates · turn settled");
-
-    const activity = summarizePiActivity(events);
-    expect(activity).toEqual({
-      turns: 2,
-      updates: 3,
-      requested: 2,
-      completed: 1,
-      denied: 1,
-    });
-    expect(piActivityText(activity)).toBe(
-      "2 Pi turns · 3 text updates · actions 2 requested, 1 completed, 1 denied.",
-    );
-    expect(JSON.stringify([piTurnSummary(turn), piActivityText(activity)])).not.toMatch(
-      /git|ghp_|\/srv/,
-    );
+    expect(piTurnSummary(turn)).toBe("2 Pi text updates · turn settled · text withheld");
+    expect(piTurnSummary(turn)).not.toMatch(/git|ghp_|\/srv/);
   });
 
-  it("reports an empty Pi summary before any Pi output arrives", () => {
-    expect(piActivityText(summarizePiActivity([]))).toBe(
-      "No Pi output recorded for this task yet.",
+  it("describes pi.summary.updated events without echoing summary text", () => {
+    const summaryEvent = event("pi.summary.updated", 9, {
+      summary: {
+        task_id: "tsk_1",
+        run_id: "run_1",
+        turn_id: "turn_1",
+        status: "available",
+        text: "node app succeeded.",
+        unavailable_reason: null,
+        updated_at: "2026-10-27T00:00:00Z",
+      },
+    });
+
+    const summary = eventSummary(summaryEvent);
+    expect(summary).toBe("Pi published a certified summary for this turn.");
+    expect(summary).not.toContain("node app");
+
+    const unavailable = eventSummary(
+      event("pi.summary.updated", 10, {
+        summary: { status: "unavailable", unavailable_reason: "unsafe_content", text: null },
+      }),
     );
+    expect(unavailable).toBe("Pi summary unavailable (unsafe_content).");
   });
 });

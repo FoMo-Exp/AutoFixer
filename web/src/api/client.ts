@@ -2,6 +2,7 @@ import type { components, operations } from "./contracts/schema";
 
 export type Task = components["schemas"]["Task"];
 export type TaskEvent = components["schemas"]["TaskEvent"];
+export type PiSummary = components["schemas"]["PiSummary"];
 export type RunSummary = components["schemas"]["RunSummary"];
 export type ArtifactMetadata = components["schemas"]["ArtifactMetadata"];
 export type TaskStatus = Task["status"];

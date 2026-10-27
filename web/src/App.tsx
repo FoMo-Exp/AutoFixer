@@ -12,14 +12,13 @@ import {
   eventSummary,
   formatDate,
   formatStatus,
-  piActivityText,
   piTurnSummary,
   progressPercent,
   shortId,
-  summarizePiActivity,
   TERMINAL_STATUSES,
 } from "./ui/format";
 import type { PiTurnRow } from "./ui/format";
+import { piSummaryHeadline, piSummaryStateLabel, resolvePiSummary } from "./ui/pi-summary";
 import { redactText, sanitizeValue } from "./ui/redaction";
 
 const STATUS_FILTERS: Array<"all" | TaskStatus> = [
@@ -469,7 +468,7 @@ function TaskDetail({
   const [messageSent, setMessageSent] = useState(false);
   const digest = approvalScopeDigest(events, task.id);
   const timelineRows = buildTimelineRows(events);
-  const piActivity = summarizePiActivity(events);
+  const piSummary = resolvePiSummary(task, events);
   const percentage = progressPercent(task.progress.actions_completed, task.progress.actions_total);
   const canCancel = !TERMINAL_STATUSES.has(task.status);
 
@@ -598,6 +597,27 @@ function TaskDetail({
             </div>
           </section>
 
+          <section className="card pi-summary-card">
+            <div className="card-heading">
+              <div>
+                <span className="eyebrow">Pi</span>
+                <h3>Pi summary</h3>
+              </div>
+              <span className={`pi-summary-state pi-summary-${piSummary.state}`}>
+                {piSummaryStateLabel(piSummary)}
+              </span>
+            </div>
+            <p className="pi-summary-copy">{piSummaryHeadline(piSummary)}</p>
+            <div className="pi-summary-meta">
+              {piSummary.runId && <span>run {shortId(piSummary.runId, 12)}</span>}
+              {piSummary.turnId && <span>{piSummary.turnId}</span>}
+              {piSummary.updatedAt && <span>{formatDate(piSummary.updatedAt)}</span>}
+            </div>
+            <span className="pi-summary-note">
+              Raw Pi text is never displayed. The Node-side summary is the only Pi text source.
+            </span>
+          </section>
+
           <section className="card timeline-card">
             <div className="card-heading">
               <div>
@@ -609,24 +629,15 @@ function TaskDetail({
             {events.length === 0 ? (
               <div className="card-empty">Waiting for the first task event.</div>
             ) : (
-              <>
-                <div className="pi-summary">
-                  <strong>Pi summary</strong>
-                  <p>{piActivityText(piActivity)}</p>
-                  <span>
-                    Natural-language Pi output stays hidden; open a redacted artifact for details.
-                  </span>
-                </div>
-                <div className="timeline">
-                  {timelineRows.map((row) =>
-                    row.kind === "pi_turn" ? (
-                      <PiTurnEvent key={row.key} row={row} />
-                    ) : (
-                      <TimelineEvent key={row.key} event={row.event} />
-                    ),
-                  )}
-                </div>
-              </>
+              <div className="timeline">
+                {timelineRows.map((row) =>
+                  row.kind === "pi_turn" ? (
+                    <PiTurnEvent key={row.key} row={row} />
+                  ) : (
+                    <TimelineEvent key={row.key} event={row.event} />
+                  ),
+                )}
+              </div>
             )}
           </section>
 

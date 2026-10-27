@@ -791,32 +791,50 @@ p {
   padding: 4px 7px;
 }
 
-.pi-summary {
-  background: rgba(240, 182, 107, 0.06);
-  border: 1px solid var(--line);
-  border-radius: 7px;
+.pi-summary-state {
+  background: var(--panel-raised);
+  border-radius: 5px;
   color: var(--muted);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-bottom: 17px;
-  padding: 10px 12px;
+  font-family: "DM Mono", ui-monospace, monospace;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  padding: 4px 7px;
+  text-transform: uppercase;
 }
 
-.pi-summary strong {
-  color: var(--text);
-  font-size: 11px;
+.pi-summary-available {
+  color: var(--green);
 }
 
-.pi-summary p {
+.pi-summary-pending {
+  color: var(--amber);
+}
+
+.pi-summary-unavailable {
+  color: var(--faint);
+}
+
+.pi-summary-copy {
   color: #b7c5da;
   font-size: 11px;
+  line-height: 1.6;
 }
 
-.pi-summary span {
+.pi-summary-meta {
   color: var(--faint);
+  display: flex;
+  font-family: "DM Mono", ui-monospace, monospace;
+  font-size: 9px;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.pi-summary-note {
+  color: var(--faint);
+  display: block;
   font-size: 10px;
   line-height: 1.5;
+  margin-top: 8px;
 }
 
 .timeline-pi-turn .timeline-marker {

@@ -52,8 +52,9 @@ export function progressPercent(completed: number, total: number | null): number
 
 const EVENT_LABELS: Record<TaskEvent["type"], string> = {
   "task.status_changed": "Status updated",
-  "pi.text_delta": "Pi summary",
+  "pi.text_delta": "Pi text (withheld)",
   "pi.turn_settled": "Pi turn settled",
+  "pi.summary.updated": "Pi summary updated",
   "plan.updated": "Plan updated",
   "approval.required": "Approval requested",
   "approval.resolved": "Approval recorded",
@@ -85,6 +86,17 @@ export function eventSummary(event: TaskEvent): string {
     return typeof decision === "string"
       ? `Approval decision: ${decision}.`
       : "Approval decision recorded.";
+  }
+  if (event.type === "pi.summary.updated") {
+    const summary = data["summary"] as { status?: unknown; unavailable_reason?: unknown } | null;
+    if (summary?.status === "available") return "Pi published a certified summary for this turn.";
+    if (summary?.status === "unavailable") {
+      return typeof summary.unavailable_reason === "string"
+        ? `Pi summary unavailable (${summary.unavailable_reason}).`
+        : "Pi summary unavailable.";
+    }
+    if (summary?.status === "pending") return "Pi summary is pending for the current turn.";
+    return "Pi summary updated.";
   }
   if (event.type === "tool.denied") return "An action was denied by the task policy.";
   if (event.type === "tool.completed") return "A policy-approved action completed.";
@@ -149,52 +161,8 @@ export function buildTimelineRows(events: TaskEvent[]): TimelineRow[] {
 
 export function piTurnSummary(row: PiTurnRow): string {
   const updates = `${row.updates} Pi text ${row.updates === 1 ? "update" : "updates"}`;
-  return row.settled ? `${updates} · turn settled` : `${updates} · turn in progress`;
-}
-
-export interface PiActivitySummary {
-  turns: number;
-  updates: number;
-  requested: number;
-  completed: number;
-  denied: number;
-}
-
-/** Summarize Pi activity from typed timeline fields; raw Pi text is never read. */
-export function summarizePiActivity(events: TaskEvent[]): PiActivitySummary {
-  const summary: PiActivitySummary = {
-    turns: 0,
-    updates: 0,
-    requested: 0,
-    completed: 0,
-    denied: 0,
-  };
-  let inTurn = false;
-  for (const event of events) {
-    if (event.type === "pi.text_delta") {
-      summary.updates += 1;
-      if (!inTurn) summary.turns += 1;
-      inTurn = true;
-      continue;
-    }
-    if (event.type === "tool.requested") summary.requested += 1;
-    else if (event.type === "tool.completed") summary.completed += 1;
-    else if (event.type === "tool.denied") summary.denied += 1;
-    if (event.type === "pi.turn_settled") inTurn = false;
-  }
-  return summary;
-}
-
-export function piActivityText(summary: PiActivitySummary): string {
-  if (summary.turns === 0) return "No Pi output recorded for this task yet.";
-  const turns = `${summary.turns} Pi ${summary.turns === 1 ? "turn" : "turns"}`;
-  const updates = `${summary.updates} text ${summary.updates === 1 ? "update" : "updates"}`;
-  const actions = [
-    `${summary.requested} requested`,
-    `${summary.completed} completed`,
-    ...(summary.denied > 0 ? [`${summary.denied} denied`] : []),
-  ].join(", ");
-  return `${turns} · ${updates} · actions ${actions}.`;
+  const state = row.settled ? "turn settled" : "turn in progress";
+  return `${updates} · ${state} · text withheld`;
 }
 
 export function approvalScopeDigest(events: TaskEvent[], taskId: string): string | undefined {

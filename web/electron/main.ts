@@ -100,6 +100,9 @@ function runWindowSmoke(window: BrowserWindow): void {
             throw new Error("real Node task creation failed: " + created.status + " " + (created.body || ""));
           }
           const task = JSON.parse(created.body || "{}");
+          if (!Object.prototype.hasOwnProperty.call(task, "pi_summary")) {
+            throw new Error("real Node Task response is missing the contract pi_summary field");
+          }
           const requestId = "00000000-0000-4000-8000-000000000003";
           let unsubscribe = () => {};
           const firstChunk = new Promise((resolve, reject) => {
@@ -127,12 +130,16 @@ function runWindowSmoke(window: BrowserWindow): void {
           if (!eventText.includes("data:")) throw new Error("Node SSE event frame was empty");
           const expectPiSummary = ${JSON.stringify(process.env["FORGEPILOT_ELECTRON_EXPECT_PI_SUMMARY"] ?? "")};
           if (expectPiSummary === "1") {
-            const summary = await waitFor(() => document.querySelector(".pi-summary")?.innerText, 8000);
-            if (!summary) throw new Error("Pi summary did not render for the selected task timeline");
-            if (!summary.includes("Pi summary")) throw new Error("Pi summary card is missing its label");
-            const renderedEvents = document.querySelectorAll(".timeline-event").length;
-            if (renderedEvents === 0) throw new Error("Selected task timeline rendered no events");
-            return { mode: "electron-node-rest-sse", status: list.status, taskId: task.id, sse: true, piSummary: summary.replaceAll("\\n", " | "), renderedEvents };
+            const renderedEvents = await waitFor(
+              () => document.querySelectorAll(".timeline-event").length,
+              8000
+            );
+            if (!renderedEvents) throw new Error("Selected task timeline rendered no events");
+            const card = await waitFor(() => document.querySelector(".pi-summary-card")?.innerText, 8000);
+            if (!card) throw new Error("Pi summary card did not render for the selected task");
+            if (!card.includes("Pi summary")) throw new Error("Pi summary card is missing its label");
+            if (!card.includes("No Pi summary yet.")) throw new Error("Pi summary card did not render the real projection state: " + card);
+            return { mode: "electron-node-rest-sse", status: list.status, taskId: task.id, sse: true, piSummary: card.replaceAll("\\n", " | "), renderedEvents };
           }
           return { mode: "electron-node-rest-sse", status: list.status, taskId: task.id, sse: true };
         })()`,
