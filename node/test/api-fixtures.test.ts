@@ -221,4 +221,28 @@ describe("real-response fixtures for pi_summary (DAT-191)", () => {
     expect(JSON.stringify(resource.body.pi_summary)).not.toContain(secret);
     checkFixture("task-pi-summary-unavailable.json", resource.body);
   });
+
+  test("a command-shaped turn round-trips as an unavailable real response", async () => {
+    const command = "cat package.json";
+    const base = await startApp([
+      { kind: "text", text: "I ran cat package.json to inspect the manifest." },
+    ]);
+    const task = await createApprovedTask(base);
+    await waitUntil(async () => {
+      const current = await getJson<TaskResource>(`${base}/api/v1/tasks/${task.id}`);
+      return (
+        current.body.pi_summary?.status === "unavailable" &&
+        current.body.progress.phase === "validating"
+      );
+    }, "summary unavailable and projection settled");
+
+    const resource = await getJson<TaskResource>(`${base}/api/v1/tasks/${task.id}`);
+    expect(resource.body.pi_summary).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "unsafe_content",
+    });
+    expect(JSON.stringify(resource.body.pi_summary)).not.toContain(command);
+    checkFixture("task-pi-summary-unavailable-command.json", resource.body);
+  });
 });

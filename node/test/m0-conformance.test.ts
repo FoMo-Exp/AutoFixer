@@ -130,6 +130,7 @@ describe("independent conformance to the normative M0 contract", () => {
       "pi.summary.updated",
       "unavailable_reason",
       "unsafe_content",
+      "undecidable",
       "gate_error",
       "no_content",
       "Fail closed",

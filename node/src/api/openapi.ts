@@ -207,12 +207,18 @@ const piSummarySchema: JsonObject = {
   description:
     "A display-safe natural-language summary of the latest settled Pi turn " +
     "for one task run. Source: the fully assembled assistant text of that " +
-    "turn, judged on the Node side by an ordered safety-rule table " +
-    "(secrets, raw commands, absolute workspace paths, unredacted logs, " +
-    "opaque high-entropy strings). Fail closed: text is exposed only when " +
-    "the entire turn passes every rule; any hit or a gate failure yields " +
-    "status=unavailable with text=null, never redacted or partial content. " +
-    "Lifecycle: null on the task until a Pi session exists; pending from " +
+    "turn, judged on the Node side by an ordered fail-closed certification " +
+    "table (DAT-192): credentials, shell syntax, absolute workspace paths, " +
+    "command invocations, argument material, unredacted logs, and opaque " +
+    "high-entropy strings fail closed as unsafe_content; a report that " +
+    "something was executed, or a sentence opener the gate cannot recognise " +
+    "as narrative prose, fails closed as undecidable. Certification is " +
+    "positive — only text recognised as ordinary narrative prose is exposed " +
+    "— and never rests on enumerating command tools alone. Fail closed: " +
+    "text is exposed only when the entire turn passes every rule; any hit " +
+    "or a gate failure yields status=unavailable with text=null, never " +
+    "redacted or partial content. Lifecycle: null on the task until a Pi " +
+    "session exists; pending from " +
     "session start (and at the start of every run) until a turn settles; " +
     "then exactly one available/unavailable per settled turn, each replacing " +
     "the previous summary — a turn settles (and publishes) exactly once, " +
@@ -243,6 +249,14 @@ const piSummarySchema: JsonObject = {
     unavailable_reason: {
       type: ["string", "null"],
       enum: [...PI_SUMMARY_UNAVAILABLE_REASONS, null],
+      description:
+        "Why no text is exposed: no_content (the settled turn produced no " +
+        "displayable text), unsafe_content (identified unsafe material), " +
+        "undecidable (the gate could not certify the turn: an execution " +
+        "report or an unrecognised sentence opener), gate_error (the gate " +
+        "itself failed). Null unless status is unavailable. The enum is " +
+        "additive: clients render an unknown reason as a plain unavailable " +
+        "state.",
     },
     updated_at: { type: "string", format: "date-time" },
   },
@@ -592,13 +606,14 @@ export function buildOpenApiDocument(): OpenApiDocument {
     openapi: "3.1.0",
     info: {
       title: "ForgePilot orchestrator API",
-      version: "0.3.0",
+      version: "0.4.0",
       description:
         "forgepilot-api/v1: the Node-to-UI contract of the ForgePilot pilot. " +
         "The UI calls Node only, at an ephemeral loopback address; it never sees " +
         "dsh sockets, boot tokens, Pi credentials, raw tool output, or provider " +
         "credentials. Pi text is displayed only through the fail-closed " +
-        "pi_summary contract (DAT-191). Generated from the orchestrator " +
+        "pi_summary contract (DAT-191), hardened by the certification " +
+        "boundary of DAT-192. Generated from the orchestrator " +
         "implementation; shapes are defined by " +
         "docs/contracts/forgepilot-api-v1.md.",
     },
