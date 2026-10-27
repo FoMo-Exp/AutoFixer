@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
 import { ApiConfigurationError, ApiError, ForgePilotClient } from "./api/client";
 import type { ArtifactMetadata, RunSummary, Task, TaskEvent, TaskStatus } from "./api/client";
 import { resolveApiConfig } from "./api/config";
 import { useTaskStream } from "./api/hooks";
+import { CreateIdempotencyKeys } from "./api/idempotency";
 import {
   approvalScopeDigest,
+  collapsePiTextDeltas,
   eventLabel,
   eventSummary,
   formatDate,
@@ -47,9 +49,12 @@ type ServiceStatus = "connecting" | "connected" | "offline";
 export default function App(): ReactElement {
   const client = useMemo(() => new ForgePilotClient(resolveApiConfig()), []);
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [selectedId, setSelectedId] = useState<string>();
+  const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
+  const selectedIdRef = useRef<string | undefined>(undefined);
   const [selectedTask, setSelectedTask] = useState<Task>();
   const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus>("connecting");
   const [serviceError, setServiceError] = useState<string>();
   const [filter, setFilter] = useState<"all" | TaskStatus>("all");
@@ -58,41 +63,79 @@ export default function App(): ReactElement {
   const [isCreating, setIsCreating] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const [actionBusy, setActionBusy] = useState<string>();
+  const createKeyRef = useRef(new CreateIdempotencyKeys());
+  const listRequestRef = useRef(0);
+
+  const selectTask = useCallback((taskId: string | undefined): void => {
+    selectedIdRef.current = taskId;
+    setSelectedId(taskId);
+    setSelectedTask(undefined);
+    setRuns([]);
+    setActionError(undefined);
+    setActionBusy(undefined);
+  }, []);
 
   const loadTasks = useCallback(async (): Promise<void> => {
+    const requestId = ++listRequestRef.current;
     setServiceStatus("connecting");
     try {
       const page = await client.listTasks();
+      if (requestId !== listRequestRef.current) return;
       setTasks(page.items);
+      setNextCursor(page.next_cursor);
       setServiceStatus("connected");
       setServiceError(undefined);
-      setSelectedId((current) => current ?? page.items[0]?.id);
+      if (!selectedIdRef.current && page.items[0]) selectTask(page.items[0].id);
     } catch (caught) {
+      if (requestId !== listRequestRef.current) return;
       setServiceStatus("offline");
       setServiceError(errorMessage(caught));
     }
-  }, [client]);
+  }, [client, selectTask]);
+
+  const loadMoreTasks = useCallback(async (): Promise<void> => {
+    if (!nextCursor || isLoadingMore) return;
+    const cursor = nextCursor;
+    const listRequestId = listRequestRef.current;
+    setIsLoadingMore(true);
+    try {
+      const page = await client.listTasks(undefined, cursor);
+      if (listRequestId !== listRequestRef.current) return;
+      setTasks((current) => {
+        const knownIds = new Set(current.map((task) => task.id));
+        return [...current, ...page.items.filter((task) => !knownIds.has(task.id))];
+      });
+      setNextCursor(page.next_cursor);
+    } catch (caught) {
+      if (listRequestId === listRequestRef.current) setActionError(errorMessage(caught));
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [client, isLoadingMore, nextCursor]);
 
   useEffect(() => {
     void loadTasks();
   }, [loadTasks]);
 
   const refreshSelectedTask = useCallback(async (): Promise<void> => {
-    if (!selectedId) return;
+    const requestedId = selectedIdRef.current;
+    if (!requestedId) return;
     try {
       const [task, taskRuns] = await Promise.all([
-        client.getTask(selectedId),
-        client.getRuns(selectedId),
+        client.getTask(requestedId),
+        client.getRuns(requestedId),
       ]);
+      if (selectedIdRef.current !== requestedId) return;
       setSelectedTask(task);
       setRuns(taskRuns);
       setTasks((current) => current.map((entry) => (entry.id === task.id ? task : entry)));
       setServiceStatus("connected");
       setServiceError(undefined);
     } catch (caught) {
+      if (selectedIdRef.current !== requestedId) return;
       setActionError(errorMessage(caught));
     }
-  }, [client, selectedId]);
+  }, [client]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -127,19 +170,19 @@ export default function App(): ReactElement {
     setIsCreating(true);
     setActionError(undefined);
     try {
-      const task = await client.createTask(
-        {
-          repository_id: form.repositoryId.trim(),
-          base_ref: form.baseRef.trim(),
-          summary: form.summary.trim(),
-          ...(form.sourceReference.trim() ? { source_reference: form.sourceReference.trim() } : {}),
-          ...(form.acceptanceCriteria.trim()
-            ? { acceptance_criteria: splitCriteria(form.acceptanceCriteria) }
-            : {}),
-        },
-        `forgepilot-ui-${crypto.randomUUID()}`,
-      );
-      setSelectedId(task.id);
+      const input = {
+        repository_id: form.repositoryId.trim(),
+        base_ref: form.baseRef.trim(),
+        summary: form.summary.trim(),
+        ...(form.sourceReference.trim() ? { source_reference: form.sourceReference.trim() } : {}),
+        ...(form.acceptanceCriteria.trim()
+          ? { acceptance_criteria: splitCriteria(form.acceptanceCriteria) }
+          : {}),
+      };
+      const idempotencyKey = createKeyRef.current.forInput(input);
+      const task = await client.createTask(input, idempotencyKey);
+      createKeyRef.current.complete(input);
+      selectTask(task.id);
       setSelectedTask(task);
       setShowCreate(false);
       setForm(INITIAL_FORM);
@@ -156,23 +199,24 @@ export default function App(): ReactElement {
     digest?: string,
   ): Promise<void> {
     if (!selectedTask) return;
+    const taskId = selectedTask.id;
     setActionBusy(action);
     setActionError(undefined);
     try {
       const task =
         action === "cancel"
-          ? await client.cancelTask(selectedTask.id)
-          : await client.approveTask(selectedTask.id, {
+          ? await client.cancelTask(taskId)
+          : await client.approveTask(taskId, {
               decision: action,
               scope_digest: digest ?? "",
             });
-      setSelectedTask(task);
+      if (selectedIdRef.current === taskId) setSelectedTask(task);
       await loadTasks();
-      await refreshSelectedTask();
+      if (selectedIdRef.current === taskId) await refreshSelectedTask();
     } catch (caught) {
-      setActionError(errorMessage(caught));
+      if (selectedIdRef.current === taskId) setActionError(errorMessage(caught));
     } finally {
-      setActionBusy(undefined);
+      if (selectedIdRef.current === taskId) setActionBusy(undefined);
     }
   }
 
@@ -238,9 +282,18 @@ export default function App(): ReactElement {
                   key={task.id}
                   task={task}
                   selected={task.id === selectedId}
-                  onClick={() => setSelectedId(task.id)}
+                  onClick={() => selectTask(task.id)}
                 />
               ))
+            )}
+            {nextCursor && (
+              <button
+                className="button button-quiet button-small"
+                onClick={() => void loadMoreTasks()}
+                disabled={isLoadingMore}
+              >
+                {isLoadingMore ? "Loading…" : "Load more tasks"}
+              </button>
             )}
           </div>
           <div className="sidebar-footer">
@@ -411,6 +464,7 @@ function TaskDetail({
   const [messageMode, setMessageMode] = useState<"steer" | "follow_up">("steer");
   const [messageSent, setMessageSent] = useState(false);
   const digest = approvalScopeDigest(events, task.id);
+  const timelineEvents = collapsePiTextDeltas(events);
   const percentage = progressPercent(task.progress.actions_completed, task.progress.actions_total);
   const canCancel = !TERMINAL_STATUSES.has(task.status);
 
@@ -551,7 +605,7 @@ function TaskDetail({
               <div className="card-empty">Waiting for the first task event.</div>
             ) : (
               <div className="timeline">
-                {events.map((event) => (
+                {timelineEvents.map((event) => (
                   <TimelineEvent key={event.event_id} event={event} />
                 ))}
               </div>
@@ -874,7 +928,7 @@ function CreateTaskDialog({
           </label>
           <div className="modal-footer">
             <span className="field-hint">
-              A fresh idempotency key protects against duplicate task creation.
+              Retrying unchanged details reuses the same idempotency key.
             </span>
             <div className="modal-actions">
               <button className="button button-secondary" type="button" onClick={onClose}>

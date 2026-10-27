@@ -43,6 +43,10 @@ export function parseNodeServiceLine(line: string): {
   };
 }
 
+export function resolveNodeExecutable(env: NodeJS.ProcessEnv = process.env): string {
+  return env["FORGEPILOT_NODE_EXECUTABLE"]?.trim() || "node";
+}
+
 export async function discoverNodeService(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<DiscoveredNodeService> {
@@ -100,7 +104,7 @@ function spawnAndDiscover(
   nodeEntry: string,
   env: NodeJS.ProcessEnv,
 ): Promise<DiscoveredNodeService> {
-  const child = spawn(process.execPath, [nodeEntry], {
+  const child = spawn(resolveNodeExecutable(env), [nodeEntry], {
     cwd: env["FORGEPILOT_NODE_WORKDIR"] || path.dirname(nodeEntry),
     env,
     stdio: ["ignore", "pipe", "pipe"],

@@ -8,7 +8,7 @@ export type TaskStatus = Task["status"];
 export type TaskPage = operations["listTasks"]["responses"][200]["content"]["application/json"];
 
 type ErrorPayload = components["schemas"]["Error"];
-type JsonFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+export type JsonFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 export class ApiError extends Error {
   readonly status: number;
@@ -86,9 +86,12 @@ export class ForgePilotClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  async listTasks(status?: TaskStatus): Promise<TaskPage> {
-    const params = status ? `?status=${encodeURIComponent(status)}` : "";
-    return this.request<TaskPage>(`/api/v1/tasks${params}`);
+  async listTasks(status?: TaskStatus, cursor?: string): Promise<TaskPage> {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (cursor) params.set("cursor", cursor);
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    return this.request<TaskPage>(`/api/v1/tasks${query}`);
   }
 
   async createTask(input: CreateTaskInput, idempotencyKey: string): Promise<Task> {
@@ -175,7 +178,7 @@ export class ForgePilotClient {
       while (true) {
         const chunk = await reader.read();
         buffer += decoder.decode(chunk.value, { stream: !chunk.done });
-        const parsed = takeSseFrames(buffer);
+        const parsed = takeSseFrames(buffer, chunk.done);
         buffer = parsed.rest;
         for (const frame of parsed.frames) {
           const event = parseSseFrame(frame);
@@ -238,8 +241,9 @@ interface SseFrame {
   data: string;
 }
 
-export function takeSseFrames(input: string): { frames: string[]; rest: string } {
-  let remainder = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+export function takeSseFrames(input: string, flush = false): { frames: string[]; rest: string } {
+  const hasPendingCarriageReturn = !flush && input.endsWith("\r");
+  let remainder = input.slice(0, hasPendingCarriageReturn ? -1 : undefined).replace(/\r\n?/g, "\n");
   const frames: string[] = [];
   let boundary = remainder.indexOf("\n\n");
   while (boundary >= 0) {
@@ -247,7 +251,10 @@ export function takeSseFrames(input: string): { frames: string[]; rest: string }
     remainder = remainder.slice(boundary + 2);
     boundary = remainder.indexOf("\n\n");
   }
-  return { frames, rest: remainder };
+  return {
+    frames,
+    rest: remainder + (hasPendingCarriageReturn ? "\r" : ""),
+  };
 }
 
 export function parseSseFrame(frame: string): TaskEvent | undefined {

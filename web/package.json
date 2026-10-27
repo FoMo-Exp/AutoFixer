@@ -10,7 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "lint": "eslint .",
     "format:check": "prettier --check .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:electron-node": "ELECTRON_RUN_AS_NODE=1 electron scripts/electron-node-smoke.mjs"
   },
   "dependencies": {
     "react": "^19.1.1",

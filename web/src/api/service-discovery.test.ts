@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isLoopbackApiUrl, parseNodeServiceLine } from "../../electron/service-discovery";
+import {
+  isLoopbackApiUrl,
+  parseNodeServiceLine,
+  resolveNodeExecutable,
+} from "../../electron/service-discovery";
 
 describe("Electron Node service discovery", () => {
   it("extracts the ephemeral URL and token file from Node startup output", () => {
@@ -18,5 +22,12 @@ describe("Electron Node service discovery", () => {
     expect(isLoopbackApiUrl("http://[::1]:4321")).toBe(true);
     expect(isLoopbackApiUrl("https://example.com")).toBe(false);
     expect(isLoopbackApiUrl("http://127.0.0.1.evil:4321")).toBe(false);
+  });
+
+  it("uses a Node runtime executable instead of Electron's process executable", () => {
+    expect(resolveNodeExecutable({})).toBe("node");
+    expect(resolveNodeExecutable({ FORGEPILOT_NODE_EXECUTABLE: "/opt/node/bin/node" })).toBe(
+      "/opt/node/bin/node",
+    );
   });
 });

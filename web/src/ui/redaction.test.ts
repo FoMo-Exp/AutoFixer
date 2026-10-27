@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import type { TaskEvent } from "../api/client";
+import { collapsePiTextDeltas, eventSummary } from "./format";
 import { redactText, sanitizeValue } from "./redaction";
 
 describe("redaction", () => {
@@ -29,6 +31,31 @@ describe("redaction", () => {
   it("redacts generic Unix paths and shell commands", () => {
     expect(redactText("run git status in /etc/example and /srv/forgepilot")).toBe(
       "run [command redacted]",
+    );
+    expect(redactText("/secret")).toBe("[path redacted]");
+    expect(redactText("echo hello")).toBe("[command redacted]");
+  });
+
+  it("redacts sensitive values split across Pi text events", () => {
+    const first = {
+      event_id: "evt_1",
+      sequence: 1,
+      occurred_at: "2026-10-27T00:00:00Z",
+      task_id: "tsk_1",
+      task_version: 1,
+      type: "pi.text_delta",
+      data: { delta: "Output: Bearer ghp_" },
+    } as TaskEvent;
+    const second = {
+      ...first,
+      event_id: "evt_2",
+      sequence: 2,
+      data: { delta: "secret123 and /sec" },
+    } as TaskEvent;
+    const [combined] = collapsePiTextDeltas([first, second]);
+
+    expect(combined && redactText(eventSummary(combined))).toBe(
+      "Output: Bearer [redacted] and [path redacted]",
     );
   });
 });
