@@ -25,6 +25,7 @@ function isLoopbackApiUrl(value: string): boolean {
 
 contextBridge.exposeInMainWorld("forgePilotConfig", {
   apiBaseUrl: resolveApiBaseUrl(),
+  startupError: process.env["FORGEPILOT_API_STARTUP_ERROR"] ?? "",
 });
 
 contextBridge.exposeInMainWorld("forgePilotApi", {

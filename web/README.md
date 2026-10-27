@@ -28,15 +28,29 @@ never exposed to renderer JavaScript. `VITE_FORGEPILOT_API_URL` and
 development with the Node API, open the Vite server through Electron so the
 IPC bridge is active.
 
-The Electron/Node transport smoke check starts the real Node service with
-temporary state and token files, then calls it through the Electron main-process
-proxy:
+The default Node auto-start requires `FORGEPILOT_BASE_SHA`, a 7–40 character
+hexadecimal commit id for the repository base. If it is missing, the
+workbench displays this setting in an actionable startup error instead of
+silently retrying an unusable service.
+
+The Electron window smoke starts an isolated real dsh and Node service, opens
+the production `BrowserWindow` with the packaged preload and `file://` assets,
+then verifies REST and SSE through the renderer IPC bridge. It also checks the
+missing-base-SHA startup guidance. Build the Node service first:
 
 ```sh
 cd node && npm run build
-cd ../web && npm run build && npm run test:electron-node
+cd ../web && npm run build && npm run test:electron-window
 ```
+
+If Electron is installed outside this package's local binary path, set
+`ELECTRON_BINARY` to its executable for the window smoke. The faster
+`npm run test:electron-node` transport-only check remains available too.
 
 The workbench reconnects its authenticated SSE stream with `Last-Event-ID`,
 replays the durable timeline without duplicate events, and shows a visible
 offline/reconnecting state while the Node service is unavailable.
+
+Raw Pi text deltas are hidden as they arrive because a secret or command can
+be split across events and cannot be safely classified mid-stream. The timeline
+shows a fixed safety summary; inspect the redacted artifact view for details.

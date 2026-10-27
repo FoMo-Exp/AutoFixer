@@ -3,6 +3,7 @@
 interface Window {
   forgePilotConfig?: {
     apiBaseUrl: string;
+    startupError?: string;
   };
   forgePilotApi?: {
     request: (request: {
