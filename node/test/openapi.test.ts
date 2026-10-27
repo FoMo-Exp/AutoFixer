@@ -79,6 +79,7 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
     expect(summary.properties.unavailable_reason.enum).toEqual([
       "no_content",
       "unsafe_content",
+      "undecidable",
       "gate_error",
       null,
     ]);

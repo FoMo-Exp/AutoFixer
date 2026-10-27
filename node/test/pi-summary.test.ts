@@ -4,7 +4,9 @@ import {
   evaluateTurnText,
   excerptTurnText,
   firstSafetyViolation,
+  PI_SUMMARY_COMMAND_VERBS,
   PI_SUMMARY_MAX_CHARS,
+  PI_SUMMARY_PROSE_STARTERS,
   PI_SUMMARY_SAFETY_RULES,
   PI_SUMMARY_UNAVAILABLE_REASONS,
   PiSummaryTracker,
@@ -109,22 +111,14 @@ describe("safety gate: fail-closed rules", () => {
     ],
     ["bearer header", "secret_material", "Sent Authorization: Bearer abcdef123456 upstream."],
     ["credential assignment", "secret_material", "The env showed api_key=supersecretvalue123."],
-    ["fenced code block", "shell_command", "Summary:\n```sh\nnpm run build\n```\ndone."],
-    [
-      "command code span",
-      "shell_command",
-      "Ran `git status --porcelain` and `ls | wc -l` earlier.",
-    ],
-    ["executable code span", "shell_command", "The step `npm ci --no-audit` completed."],
-    [
-      "shell prompt line",
-      "shell_command",
-      "Output was:\n$ sudo rm -rf /var/cache\nfollowed by ok.",
-    ],
-    ["plain command", "shell_command", "You should curl https://example.invalid for details."],
-    ["git subcommand in prose", "shell_command", "I ran git status in the repository."],
-    ["npm subcommand in prose", "shell_command", "I ran npm test after the change."],
-    ["rm invocation in prose", "shell_command", "I ran rm -rf node_modules and rebuilt."],
+    ["fenced code block", "shell_syntax", "Summary:\n```sh\nnpm run build\n```\ndone."],
+    ["command code span", "shell_syntax", "Ran `git status --porcelain` and `ls | wc -l` earlier."],
+    ["executable code span", "shell_syntax", "The step `npm ci --no-audit` completed."],
+    ["shell prompt line", "shell_syntax", "Output was:\n$ sudo rm -rf /var/cache\nfollowed by ok."],
+    ["plain command", "tool_invocation", "You should curl https://example.invalid for details."],
+    ["git subcommand in prose", "tool_invocation", "I ran git status in the repository."],
+    ["npm subcommand in prose", "tool_invocation", "I ran npm test after the change."],
+    ["rm invocation in prose", "tool_invocation", "I ran rm -rf node_modules and rebuilt."],
     [
       "macOS absolute path",
       "absolute_path",
@@ -198,6 +192,7 @@ describe("safety gate: fail-closed rules", () => {
     const exploding: PiSummarySafetyRule = {
       code: "boom",
       keepsOut: "always throws",
+      reason: "unsafe_content",
       pattern: {
         test() {
           throw new Error("gate exploded");
@@ -227,15 +222,334 @@ describe("safety gate: fail-closed rules", () => {
   test("the gate verdict depends only on the rule table", () => {
     expect(PI_SUMMARY_SAFETY_RULES.map((rule) => rule.code)).toEqual([
       "secret_material",
-      "shell_command",
+      "shell_syntax",
       "absolute_path",
+      "tool_invocation",
+      "command_material",
       "raw_log",
       "high_entropy",
+      "execution_report",
+      "prose_starter",
     ]);
     const evaluation = evaluateTurnText("mentions ghp_abcdefghijklmnopqrstuvwx123456 inline");
     expect(evaluation).toEqual({ outcome: "unavailable", reason: "unsafe_content" });
     if (evaluation.outcome === "unavailable") {
       expect(PI_SUMMARY_UNAVAILABLE_REASONS).toContain(evaluation.reason);
+    }
+    // Each rule declares the reason it yields; undecidable rules are exactly
+    // the two certification rules (DAT-192).
+    expect(
+      PI_SUMMARY_SAFETY_RULES.filter((rule) => rule.reason === "undecidable").map(
+        (rule) => rule.code,
+      ),
+    ).toEqual(["execution_report", "prose_starter"]);
+    expect(PI_SUMMARY_UNAVAILABLE_REASONS).toContain("undecidable");
+  });
+});
+
+describe("DAT-192: command display boundary", () => {
+  const QA_EXAMPLES: Array<[label: string, text: string]> = [
+    ["I ran cat package.json", "I ran cat package.json to inspect the manifest."],
+    ["I ran git submodule update --init", "I ran git submodule update --init before the build."],
+  ];
+
+  for (const [label, text] of QA_EXAMPLES) {
+    test(`QA's reproduced example (${label}) fails closed as tool material`, () => {
+      const evaluation = evaluateTurnText(text);
+      expect(evaluation).toEqual({ outcome: "unavailable", reason: "unsafe_content" });
+      expect(firstSafetyViolation(text)?.code).toBe("tool_invocation");
+      // Neither the command nor its argument may appear in any exposed field.
+      expect(JSON.stringify(evaluation)).not.toContain("cat package.json");
+      expect(JSON.stringify(evaluation)).not.toContain("package.json");
+      expect(JSON.stringify(evaluation)).not.toContain("git submodule update");
+    });
+  }
+
+  const commandForms: Array<[label: string, rule: string, text: string]> = [
+    ["ls with flags", "tool_invocation", "The run left ls -la output on the console."],
+    ["grep with recursive flag", "tool_invocation", "A grep -rn pass covered src."],
+    ["sed in-place edit", "tool_invocation", "A sed -i pass rewrote the file."],
+    ["git subcommand", "tool_invocation", "A git status check passed."],
+    ["package-manager subcommand", "tool_invocation", "An npm ci run installed everything."],
+    ["build subcommand", "tool_invocation", "A make install step completed."],
+    ["container command", "tool_invocation", "The docker compose up finished."],
+    ["permission change", "tool_invocation", "A chmod +x change allowed the script."],
+    ["interpreter with flags", "tool_invocation", "python3 -m http.server served the files."],
+    ["bare working-directory command", "tool_invocation", "pwd finished."],
+    ["unknown file argument", "tool_invocation", "find package.json matched."],
+    ["dot target", "tool_invocation", "find . -name scan matched nothing."],
+    [
+      "file argument after a polysemous head",
+      "tool_invocation",
+      "node server.js restarted cleanly.",
+    ],
+    [
+      "quoted argument after a polysemous head",
+      "tool_invocation",
+      "date '2026-10-27' is recorded.",
+    ],
+    ["pipe between commands", "shell_syntax", "Output of cat main.go | wc -l follows."],
+    ["redirection to a file", "shell_syntax", "The step echo hello > out.txt ran."],
+    ["fenced command block", "shell_syntax", "Summary:\n```sh\nnpm run build\n```\ndone."],
+    ["flag without a known tool", "command_material", "The flag --force was required."],
+    ["unspaced assignment", "command_material", "The shell showed KEY=value inline."],
+    ["relative path invocation", "tool_invocation", "The script ran ./deploy.sh tonight."],
+    ["absolute system path", "absolute_path", "The path /bin/sh."],
+  ];
+
+  for (const [label, rule, text] of commandForms) {
+    test(`${label} fails closed as ${rule}`, () => {
+      const evaluation = evaluateTurnText(text);
+      expect(evaluation).toEqual({ outcome: "unavailable", reason: "unsafe_content" });
+      expect(firstSafetyViolation(text)?.code).toBe(rule);
+      expect(JSON.stringify(evaluation)).not.toContain("package.json");
+    });
+  }
+
+  test("a command assembled across delta fragments is caught once assembled", () => {
+    const raw = "I ran cat package.json to inspect it.";
+    const tracker = new PiSummaryTracker("tsk_unit");
+    tracker.beginRun("run_a");
+    tracker.beginTurn("turn_1");
+    for (const fragment of ["I ran ", "cat pack", "age.json to inspect it."]) {
+      tracker.appendText(fragment);
+    }
+    const summary = tracker.settleTurn();
+    expect(summary).toMatchObject({ status: "unavailable", unavailable_reason: "unsafe_content" });
+    expect(JSON.stringify(summary)).not.toContain("cat package.json");
+    expect(JSON.stringify(summary)).not.toContain("package.json");
+    expect(JSON.stringify(summary)).not.toContain(raw);
+  });
+});
+
+describe("DAT-192: undecidable turns fail closed without a guess", () => {
+  const undecidableTurns: Array<[label: string, rule: string, text: string]> = [
+    [
+      "execution report with no command evidence",
+      "execution_report",
+      "I ran the linter over the tree.",
+    ],
+    ["first-person execution report", "execution_report", "We executed the verification pass."],
+    ["unrecognised imperative opener", "prose_starter", "install the dependencies today."],
+    ["unknown-tool imperative opener", "prose_starter", "deploy the new version now."],
+    ["imperative verb opener", "prose_starter", "update the lockfile after review."],
+    ["imperative list item", "prose_starter", "Summary:\n- install the dependencies"],
+  ];
+
+  for (const [label, rule, text] of undecidableTurns) {
+    test(`${label} is unavailable with reason undecidable (${rule})`, () => {
+      const evaluation = evaluateTurnText(text);
+      expect(evaluation).toEqual({ outcome: "unavailable", reason: "undecidable" });
+      expect(firstSafetyViolation(text)?.code).toBe(rule);
+      // Undecidable is still fail-closed: no text of any kind is exposed.
+      expect(JSON.stringify(evaluation)).not.toContain("install the dependencies");
+      expect(JSON.stringify(evaluation)).not.toContain("deploy the new version");
+      expect(JSON.stringify(evaluation)).not.toContain("ran the linter");
+    });
+  }
+
+  test("an undecidable settlement projects text null like every failure", () => {
+    const tracker = new PiSummaryTracker("tsk_unit");
+    tracker.beginRun("run_a");
+    tracker.beginTurn("turn_1");
+    tracker.appendText("install the dependencies today.");
+    const summary = tracker.settleTurn();
+    expect(summary).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "undecidable",
+      turn_id: "turn_1",
+      run_id: "run_a",
+    });
+    expect(JSON.stringify(summary)).not.toContain("install the dependencies");
+  });
+});
+
+describe("DAT-192: positive prose certification keeps narrative turns displayable", () => {
+  const certifiedTurns: Array<[label: string, text: string]> = [
+    ["capitalised prose word (QA baseline)", "Node is fast"],
+    ["polysemous head + copula marker (QA contrast)", "Node is fast."],
+    ["polysemous head + copula in prose (QA contrast)", "git history is clean."],
+    ["plain narrative sentence", "The manifest lists three dependencies and no secrets."],
+    ["first-person analysis", "I inspected the manifest and found no issues."],
+    ["narrative list", "- Checked the manifest.\n- Confirmed the lockfile."],
+    ["lowercase result fragment", "works as expected after the run."],
+    ["lowercase gerund bullet", "- verified the manifest."],
+    ["abbreviation-led sentence", "e.g. the manifest lists three entries."],
+    ["repository-relative paths stay allowed", "Updated node/src/api/task-service.ts in place."],
+    ["participle opener (former poly baseline)", "Finding the bug before the release."],
+    ["conjunction opener", "but the export check still passed."],
+  ];
+
+  for (const [label, text] of certifiedTurns) {
+    test(`${label} stays available`, () => {
+      // Excerpting collapses soft line breaks to single spaces; everything
+      // else about the certified turn is exposed unchanged.
+      expect(evaluateTurnText(text)).toEqual({
+        outcome: "available",
+        text: text.replace(/\s+/g, " "),
+      });
+    });
+  }
+
+  test("available prose carries the actual Pi content, unchanged", () => {
+    const text =
+      "Checked the echo tool and confirmed it prints hello. The patch is ready for review.";
+    expect(evaluateTurnText(text)).toEqual({ outcome: "available", text });
+  });
+});
+
+describe("DAT-192 QA round-1: capitalised and line-start commands fail closed", () => {
+  // Every row QA reproduced on head b38cf9c must now be unavailable; the
+  // expectation names the rule that certifies (or rejects) it.
+  const qaRows: Array<[label: string, rule: string, reason: string, text: string]> = [
+    [
+      "capitalised unknown-tool target",
+      "tool_invocation",
+      "unsafe_content",
+      "Bazel build //app:server",
+    ],
+    ["capitalised tool + subcommand", "tool_invocation", "unsafe_content", "Poetry install"],
+    ["capitalised tool + build verb", "tool_invocation", "unsafe_content", "Swift build"],
+    ["capitalised runner + verb", "tool_invocation", "unsafe_content", "Bunx vite build"],
+    ["capitalised installer", "tool_invocation", "unsafe_content", "Mise install"],
+    [
+      "lowercase command on its own line",
+      "tool_invocation",
+      "unsafe_content",
+      "The plan is ready\nbazel build //app:server",
+    ],
+    [
+      "lowercase command after a label line",
+      "tool_invocation",
+      "unsafe_content",
+      "Summary:\npoetry install",
+    ],
+    [
+      "lowercase command with a prose opener",
+      "tool_invocation",
+      "unsafe_content",
+      "The plan is ready\npoetry install",
+    ],
+    [
+      "capitalised imperative with a determiner",
+      "prose_starter",
+      "undecidable",
+      "Deploy the new version.",
+    ],
+    [
+      "capitalised imperative + object",
+      "prose_starter",
+      "undecidable",
+      "Update the lockfile after review.",
+    ],
+    [
+      "in-sentence command behind a modal",
+      "tool_invocation",
+      "unsafe_content",
+      "We should run bazel build //app:server",
+    ],
+    ["imperative speech verb opener", "prose_starter", "undecidable", "Note the caveat."],
+    [
+      "imperative opener with a narrative marker",
+      "prose_starter",
+      "undecidable",
+      "Ensure the lockfile is current.",
+    ],
+    ["capitalised install imperative", "prose_starter", "undecidable", "Install the dependencies."],
+    ["capitalised run imperative", "prose_starter", "undecidable", "Run the tests."],
+    ["base verb opener without a marker", "prose_starter", "undecidable", "Check the manifest."],
+  ];
+
+  for (const [label, rule, reason, text] of qaRows) {
+    test(`${label} fails closed as ${reason} (${rule})`, () => {
+      const evaluation = evaluateTurnText(text);
+      expect(evaluation).toEqual({ outcome: "unavailable", reason });
+      expect(firstSafetyViolation(text)?.code).toBe(rule);
+      // No command material may appear in any exposed byte.
+      expect(JSON.stringify(evaluation)).not.toContain("bazel build");
+      expect(JSON.stringify(evaluation)).not.toContain("poetry install");
+      expect(JSON.stringify(evaluation)).not.toContain("//app:server");
+      expect(JSON.stringify(evaluation)).not.toContain("Deploy the new version");
+    });
+  }
+
+  test("QA's imperative speech verbs are out of the starter list and in the verb list", () => {
+    for (const verb of [
+      "please",
+      "let",
+      "consider",
+      "keep",
+      "ensure",
+      "avoid",
+      "note",
+      "remember",
+    ]) {
+      expect(PI_SUMMARY_PROSE_STARTERS).not.toContain(verb);
+      expect(PI_SUMMARY_COMMAND_VERBS).toContain(verb);
+    }
+  });
+
+  test("capitalisation confers no exemption for any certified-listed opener", () => {
+    // Same words lower-case and capitalised must take the same decision;
+    // only reviewed starters, polysemous heads, and participles certify.
+    for (const word of ["deploy", "poetry", "bazel", "mise"]) {
+      expect(evaluateTurnText(`${word} the tool now.`).outcome).toBe("unavailable");
+      expect(
+        evaluateTurnText(`${word.charAt(0).toUpperCase()}${word.slice(1)} the tool now.`).outcome,
+      ).toBe("unavailable");
+    }
+  });
+
+  test("a soft-wrapped lowercase command line is a segment start", () => {
+    const raw = "The plan is ready\nbazel build //app:server";
+    expect(firstSafetyViolation(raw)?.code).toBe("tool_invocation");
+    expect(evaluateTurnText(raw)).toEqual({ outcome: "unavailable", reason: "unsafe_content" });
+  });
+});
+
+describe("DAT-192 QA round-2: segment-start polysemous heads need a narrative marker", () => {
+  // QA reproduced these on head 51ae7f7: a polysemous command head with a
+  // plain-word argument carries no structural evidence, so it must fail
+  // closed at a segment start unless the segment has narrative evidence.
+  const qaRows: Array<[label: string, text: string]> = [
+    ["echo + plain argument", "echo hello"],
+    ["node + plain argument", "node app"],
+    ["python + plain argument", "python script"],
+    ["head + plain argument", "head notes"],
+    ["tail + plain argument", "tail notes"],
+    ["sort + plain argument", "sort files"],
+    ["kill + numeric argument", "kill 1234"],
+    ["date + plain argument", "date today"],
+    ["man + plain argument", "man pages"],
+    ["source + plain argument", "source env"],
+    ["poly head on its own line", "The tool is ready.\nnode app"],
+    ["poly head after a certified line", "Verified the fix.\npython script"],
+  ];
+
+  for (const [label, text] of qaRows) {
+    test(`${label} fails closed as undecidable (prose_starter)`, () => {
+      const evaluation = evaluateTurnText(text);
+      expect(evaluation).toEqual({ outcome: "unavailable", reason: "undecidable" });
+      expect(firstSafetyViolation(text)?.code).toBe("prose_starter");
+      // No command material may appear in any exposed byte.
+      expect(JSON.stringify(evaluation)).not.toContain("echo hello");
+      expect(JSON.stringify(evaluation)).not.toContain("node app");
+      expect(JSON.stringify(evaluation)).not.toContain("python script");
+    });
+  }
+
+  test("a narrative marker keeps a polysemous opener displayable (QA contrast)", () => {
+    for (const text of ["Node is fast.", "git history is clean."]) {
+      expect(evaluateTurnText(text)).toEqual({ outcome: "available", text });
+    }
+  });
+
+  test("marker-less poly openers are over-rejected as undecidable (accepted cost)", () => {
+    for (const text of ["git history", "make sense of this.", "find the bug before the release."]) {
+      const evaluation = evaluateTurnText(text);
+      expect(evaluation).toEqual({ outcome: "unavailable", reason: "undecidable" });
+      expect(firstSafetyViolation(text)?.code).toBe("prose_starter");
     }
   });
 });
@@ -335,11 +649,11 @@ describe("PiSummaryTracker lifecycle and attribution", () => {
       text: "First settled turn.",
     });
     tracker.beginTurn("turn_2");
-    tracker.appendText("Turn two mentions nothing sensitive.");
+    tracker.appendText("The second turn mentions nothing sensitive.");
     expect(tracker.settleTurn()).toMatchObject({
       turn_id: "turn_2",
       status: "available",
-      text: "Turn two mentions nothing sensitive.",
+      text: "The second turn mentions nothing sensitive.",
     });
     expect(JSON.stringify(tracker.snapshot())).not.toContain("First settled turn.");
   });
@@ -347,7 +661,7 @@ describe("PiSummaryTracker lifecycle and attribution", () => {
   test("an unsafe turn replaces a previously available summary without leaking", () => {
     const tracker = newTracker();
     tracker.beginTurn("turn_1");
-    tracker.appendText("Clean first summary.");
+    tracker.appendText("The first summary was clean.");
     tracker.settleTurn();
     tracker.beginTurn("turn_2");
     tracker.appendText("Now I echo password=hunter2secret here.");
@@ -360,7 +674,7 @@ describe("PiSummaryTracker lifecycle and attribution", () => {
   test("a new run resets to pending and never inherits the earlier run's text", () => {
     const tracker = newTracker();
     tracker.beginTurn("turn_1");
-    tracker.appendText("Run A summary that must not survive.");
+    tracker.appendText("The run summary that must not survive.");
     tracker.settleTurn();
 
     const reset = tracker.beginRun("run_b");
@@ -371,17 +685,17 @@ describe("PiSummaryTracker lifecycle and attribution", () => {
       text: null,
       unavailable_reason: null,
     });
-    expectNoLeak(JSON.stringify(tracker.snapshot()), "Run A summary that must not survive.");
+    expectNoLeak(JSON.stringify(tracker.snapshot()), "The run summary that must not survive.");
   });
 
   test("summaries never cross task trackers", () => {
     const a = newTracker("tsk_a", "run_a");
     a.beginTurn("turn_1");
-    a.appendText("Task A content.");
+    a.appendText("Task A returned content.");
     a.settleTurn();
     const b = newTracker("tsk_b", "run_b");
     expect(b.snapshot().task_id).toBe("tsk_b");
-    expect(JSON.stringify(b.snapshot())).not.toContain("Task A content.");
+    expect(JSON.stringify(b.snapshot())).not.toContain("Task A returned content.");
   });
 
   test("snapshots are copies, not live state", () => {

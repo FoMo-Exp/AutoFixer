@@ -125,9 +125,10 @@ SSE events contain `event_id`, `sequence`, `occurred_at`, `task_id`,
 source: free-form model output can contain credentials, commands, absolute
 workspace paths, or unredacted logs, and client-side filtering cannot be
 the safety boundary. The product API exposes Pi text only as the fail-closed
-`pi_summary` projection, judged on the Node side by the ordered safety-rule
-table in `node/src/api/pi-summary.ts` — deterministic, reviewable, and free
-of any model call, network transfer, or widened permission.
+`pi_summary` projection, judged on the Node side by the ordered fail-closed
+certification table in `node/src/api/pi-summary.ts` (DAT-192) —
+deterministic, reviewable, and free of any model call, network transfer, or
+widened permission.
 
 `GET /api/v1/tasks/{task_id}` (and every other Task response) carries the
 `pi_summary` field, and every change is recorded as a `pi.summary.updated`
@@ -143,43 +144,125 @@ Contract semantics:
   one settled Pi turn (`run_started` to settlement) of the run's Pi session.
   Node performs the judging; the source is auditable in the orchestrator
   code, not reconstructed by the client.
-- **Generation.** A turn that passes every safety rule is excerpted to its
+- **Generation.** A turn the gate certifies in full is excerpted to its
   first non-empty paragraph, single-spaced, bounded to 240 characters.
-- **Safety boundary.** The ordered rules keep out exactly these five
-  classes; `available` means the whole turn passed all five, nothing more:
-  - *credential-shaped material*: provider prefixes `sk-`, `sk_live_` /
+- **Security basis.** Certification is positive, not a tool blacklist: the
+  set of possible commands is open, so extending a tool list can never be
+  the safety claim. The gate only ever exposes text it positively
+  recognises as ordinary narrative prose: every segment — turn start,
+  inline sentence end, and every single-newline line start — must open
+  with a reviewed narrative starter (case-insensitive; **capitalisation
+  confers no exemption**) or an `-ed`/`-ing` participle/gerund form, or
+  with a polysemous command head **plus an in-segment narrative marker**;
+  any other opener needs that narrative marker too — a base command-verb
+  opener never certifies — and command lines carry none: segment-start
+  `node app`, `echo hello`, `python script`, `Deploy the new version.`
+  are unavailable, while `Node is fast.` and `git history is clean.`
+  certify on their copula. Structural command material, execution
+  reports, and unrecognised openers all fail closed. The command
+  vocabularies named below are defence in depth layered on top: they can
+  only add
+  rejections and never create an allowance. The exact reach of the
+  deterministic boundary — including what it deliberately does not
+  claim — is stated after the classes.
+- **Safety boundary.** The ordered rules keep out exactly these classes;
+  `available` means the whole turn was certified under all of them,
+  nothing more. Each class names its rule and the reason a hit yields:
+  - *credential-shaped material* (`secret_material` → `unsafe_content`):
+    provider prefixes `sk-`, `sk_live_` /
     `sk_test_`, `ghp_` / `gho_` / `ghs_` / `ghu_` / `ghr_`, `github_pat_`,
     `AKIA` / `ASIA`, `xox*`, `glpat-`, `AIza`, `npm_`, `SG.`, `dop_v1_`,
     `SK`+32 hex, PEM private-key blocks, `Bearer …` headers, and
     `authorization` / `api_key` / `password` / … assignments;
-  - *raw command material*: fenced code blocks, inline code spans containing
-    shell metacharacters or a command executable, `$ ` prompt lines, bare
-    invocations of shell utilities (sudo, su, chmod, chown, rm, mv, cp,
-    curl, wget, ssh, scp, rsync, sh/bash/zsh, docker, kubectl, systemctl,
-    launchctl), interpreter invocations with a flag or file argument
-    (python, node, java, ruby, perl, php, deno), and git / npm / pnpm /
-    yarn / bun / deno / pip / cargo / make / go invocations with a
-    subcommand or flag;
-  - *absolute local filesystem paths* at the roots `Users`, `home`, `root`,
+  - *shell syntax* (`shell_syntax` → `unsafe_content`): fenced code
+    blocks, code spans containing shell metacharacters or a command
+    executable, `$ ` prompt lines, pipes, `&` sequences, `;` before a
+    command, redirections (`>`, `>>`, `<`), and `$VAR` / `$(…)` references;
+  - *absolute local filesystem paths* (`absolute_path` → `unsafe_content`)
+    at the roots `Users`, `home`, `root`,
     `tmp`, `var`, `private`, `etc`, `opt`, `mnt`, `media`, `srv`, `proc`,
     `usr`, `bin`, `sbin`, `Library`, `System`, `Applications`, `Volumes`,
     `workspace`, `workdir`, plus Windows drive letters;
-  - *unredacted log / diagnostic output*: stack frames, log-level lines,
+  - *command invocations* (`tool_invocation` → `unsafe_content`): any
+    occurrence of a command token with no ordinary prose use (`ls`, `cat`,
+    `grep`, `sed`, `awk`, `chmod`, `curl`, `docker`, `npm`, … — the
+    authoritative list is the exported `PI_SUMMARY_UNAMBIGUOUS_COMMAND_TOKENS`
+    table); a polysemous head (`git`, `make`, `node`, `go`, `find`,
+    `python`, `echo`, … — `PI_SUMMARY_POLYSEMOUS_COMMAND_TOKENS`) followed
+    by a known subcommand (`git status`, `git submodule`, `npm ci`,
+    `make install`), a file-like argument (`cat package.json`,
+    `node server.js`), a quoted argument, a path argument, or a `.` target;
+    and a **non-starter word immediately followed by a base command verb**
+    (`Poetry install`, `Bazel build`, `vite build`, `Mise install`,
+    `git submodule update`) — the base verbs are the exported
+    `PI_SUMMARY_COMMAND_VERBS` table; grammatical English only uses bare
+    base verbs after auxiliaries, modals, or `to`, all of which are prose
+    starters and therefore exempt heads, so this pair shape is an
+    invocation rather than narrative;
+  - *argument material* (`command_material` → `unsafe_content`): flag-shaped
+    tokens (`-la`, `--init`, `-name`) wherever they appear, `./` `../` `~/`
+    relative paths, `//target` arguments (`//app:server`), and unspaced
+    `NAME=value` assignments;
+  - *unredacted log / diagnostic output* (`raw_log` → `unsafe_content`):
+    stack frames, log-level lines,
     `fatal:` / `error:` / `warning:` / `critical:` markers, ANSI escapes,
     and log timestamps;
-  - *opaque high-entropy strings*: hex runs of 32+ characters and
+  - *opaque high-entropy strings* (`high_entropy` → `unsafe_content`):
+    hex runs of 32+ characters and
     base64-shaped runs of 32+ characters (digests, API keys, auth blobs)
-    whose safety cannot be determined from the text.
+    whose safety cannot be determined from the text;
+  - *execution reports* (`execution_report` → `undecidable`): a subject
+    reporting that it ran / executed / invoked / … something unspecified —
+    the text does not say what was executed, so the turn is not
+    certifiable and no guess is made;
+  - *unrecognised sentence and line openers* (`prose_starter` →
+    `undecidable`): every segment of a certifiable turn — turn start,
+    inline sentence end, and **every line start** (single newlines are
+    judged; list and quote markers after them are skipped) — must open
+    with a reviewed narrative starter (`PI_SUMMARY_PROSE_STARTERS`:
+    pronouns, determiners, conjunctions, prepositions, auxiliaries,
+    adverbs, result participles; matched case-insensitively, so
+    capitalisation is no exemption), or an `-ed`/`-ing`
+    participle/gerund form, or a polysemous command head **with an
+    in-segment narrative marker**. An opener that is a base form of
+    `PI_SUMMARY_COMMAND_VERBS` is an imperative and never certifies, even
+    when the sentence carries a narrative marker (`Note the caveat.`,
+    `Ensure the lockfile is current.`, `Deploy the new version.`,
+    `Update the lockfile after review.`). Any other unrecognised opener
+    certifies only when the same segment carries a narrative marker — a
+    copula/auxiliary/modal token or a participial `-ed` verb form —
+    narrative like `Alpha task verified the export path.` has one, while
+    command lines (`Bazel build //app:server`, `Poetry install`,
+    `poetry install` on its own line) do not. A polysemous head without
+    a marker is likewise undecidable (QA round-2): segment-start
+    `node app`, `echo hello`, `python script`, `head notes`,
+    `sort files`, `kill 1234`, `date today`, `man pages`, `source env`,
+    and `git history` fail closed, while `Node is fast.` and
+    `git history is clean.` certify on their copula.
 
   The complete turn text is judged — never one fragment at a time — so
   material split across `pi.text_delta` fragments is caught in its
-  assembled form. `available` asserts only non-membership in these five
-  classes; it is not a general claim that the text is harmless.
+  assembled form. `available` asserts certification under exactly these
+  classes; it is not a general claim that the text is harmless, and
+  client-side filtering is still not the boundary.
+  **Honest residual.** Segment starts are covered as described above;
+  *inside* an already-certified narrative sentence — where prose like
+  `the echo tool` must stay displayable — an invocation shape written in
+  plain-English words and carrying none of the structural material above
+  (no flag, path, quote, `//target`, subcommand, or non-starter +
+  base-verb pair), whether or not its head is a listed tool word (for
+  example `We saw node app run`), is not distinguishable from prose by a
+  deterministic gate; such text is only excluded when one of the listed
+  classes matches. This is the exact reach of `available`, and no
+  stronger boundary is claimed.
 - **Fail closed.** Any rule hit yields `status:"unavailable"` with
-  `unavailable_reason:"unsafe_content"`; a failure inside the gate itself
-  yields `"gate_error"`; a settled turn with no displayable text yields
-  `"no_content"`. An unavailable summary never carries the raw turn text —
-  in any field, event, or projection.
+  `unavailable_reason` set to that rule's reason — `"unsafe_content"` for
+  identified unsafe material, `"undecidable"` when the gate could not
+  certify the turn; a failure inside the gate itself yields
+  `"gate_error"`; a settled turn with no displayable text yields
+  `"no_content"`. The reason enum is additive: clients MUST render an
+  unknown reason as a plain unavailable state. An unavailable summary
+  never carries the raw turn text — in any field, event, or projection.
 - **Lifecycle and attribution.** `pi_summary` is `null` until a Pi session
   exists for the task; `pending` from session start — and again at the
   start of every new run, which resets any earlier run's summary to

@@ -831,7 +831,7 @@ describe("safe Pi text summary contract (DAT-191)", () => {
   });
 
   test("a provider-error run publishes exactly one summary for its turn (QA B3)", async () => {
-    const partialText = "Partial analysis of the export flow.";
+    const partialText = "Partial analysis completed for the export flow.";
     const { base } = await startApp([
       { kind: "error", text: partialText, message: "provider exploded" },
     ]);
@@ -915,5 +915,158 @@ describe("safe Pi text summary contract (DAT-191)", () => {
       (replayedSummaries[0]?.data?.data as { summary: unknown }).summary,
     );
     expect(task.body.pi_summary?.text).toBe(benignText);
+  });
+});
+
+describe("command display boundary over the API (DAT-192)", () => {
+  test("a command-shaped turn fails closed; only the raw delta keeps the command", async () => {
+    const command = "cat package.json";
+    const raw = "I ran cat package.json to inspect the manifest.";
+    const { base } = await startApp([{ kind: "text", text: raw }]);
+    const created = await createAndApprove(base);
+
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
+          ?.status === "unavailable",
+      "summary unavailable for the command-shaped turn",
+    );
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    expect(task.body.pi_summary).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "unsafe_content",
+    });
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain(command);
+
+    // Every summary surface fails closed; the M0 pi.text_delta stream keeps
+    // its raw meaning and is never the display source.
+    const events = await timeline(base, created.id);
+    const summaryEvents = events.filter((event) => event.type === "pi.summary.updated");
+    expect(
+      summaryEvents.map((event) => (event.data["summary"] as { status: string }).status),
+    ).toEqual(["pending", "unavailable"]);
+    for (const event of summaryEvents) {
+      expect(JSON.stringify(event.data)).not.toContain(command);
+      expect((event.data["summary"] as { text: unknown }).text).toBeNull();
+    }
+    expect(
+      events.some(
+        (event) => event.type === "pi.text_delta" && String(event.data["delta"]).includes(command),
+      ),
+    ).toBe(true);
+  });
+
+  test("an execution report the gate cannot certify publishes undecidable", async () => {
+    const raw = "I ran the linter over the tree.";
+    const { base } = await startApp([{ kind: "text", text: raw }]);
+    const created = await createAndApprove(base);
+
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
+          ?.status === "unavailable",
+      "summary unavailable for the undecidable turn",
+    );
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    expect(task.body.pi_summary).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "undecidable",
+    });
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain("ran the linter");
+
+    const events = await timeline(base, created.id);
+    const summaryEvents = events.filter((event) => event.type === "pi.summary.updated");
+    expect(
+      summaryEvents.map(
+        (event) =>
+          (event.data["summary"] as { unavailable_reason: string | null }).unavailable_reason,
+      ),
+    ).toEqual([null, "undecidable"]);
+    for (const event of summaryEvents) {
+      expect(JSON.stringify(event.data)).not.toContain("ran the linter");
+    }
+  });
+
+  test("a line-start command turn fails closed end to end (QA round-1)", async () => {
+    const command = "bazel build //app:server";
+    const raw = "The plan is ready\nbazel build //app:server";
+    const { base } = await startApp([{ kind: "text", text: raw }]);
+    const created = await createAndApprove(base);
+
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
+          ?.status === "unavailable",
+      "summary unavailable for the line-start command turn",
+    );
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    expect(task.body.pi_summary).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "unsafe_content",
+    });
+    // Neither the command nor its target may appear on any summary surface;
+    // only the M0 pi.text_delta stream keeps the model's raw text.
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain(command);
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain("//app:server");
+
+    const events = await timeline(base, created.id);
+    const summaryEvents = events.filter((event) => event.type === "pi.summary.updated");
+    expect(
+      summaryEvents.map((event) => (event.data["summary"] as { status: string }).status),
+    ).toEqual(["pending", "unavailable"]);
+    for (const event of summaryEvents) {
+      expect(JSON.stringify(event.data)).not.toContain(command);
+      expect((event.data["summary"] as { text: unknown }).text).toBeNull();
+    }
+    expect(
+      events.some(
+        (event) => event.type === "pi.text_delta" && String(event.data["delta"]).includes(command),
+      ),
+    ).toBe(true);
+  });
+
+  test("a segment-start polysemous command projects text null everywhere (QA round-2)", async () => {
+    const command = "node app";
+    const raw = "The tool is ready.\nnode app";
+    const { base } = await startApp([{ kind: "text", text: raw }]);
+    const created = await createAndApprove(base);
+
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
+          ?.status === "unavailable",
+      "summary unavailable for the segment-start polysemous command turn",
+    );
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    expect(task.body.pi_summary).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "undecidable",
+    });
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain(command);
+
+    const events = await timeline(base, created.id);
+    const summaryEvents = events.filter((event) => event.type === "pi.summary.updated");
+    expect(
+      summaryEvents.map((event) => (event.data["summary"] as { status: string }).status),
+    ).toEqual(["pending", "unavailable"]);
+    // Projection and every pi.summary.updated frame carry text null and no
+    // trace of the command; only the M0 delta keeps the model's raw text.
+    for (const event of summaryEvents) {
+      expect((event.data["summary"] as { text: unknown }).text).toBeNull();
+      expect(JSON.stringify(event.data)).not.toContain(command);
+    }
+    expect(
+      events.some(
+        (event) => event.type === "pi.text_delta" && String(event.data["delta"]).includes(command),
+      ),
+    ).toBe(true);
   });
 });
