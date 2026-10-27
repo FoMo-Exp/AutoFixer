@@ -823,3 +823,104 @@ describe("DAT-193: acceptance coverage over the trust boundary", () => {
     expect(PI_SUMMARY_UNAVAILABLE_REASONS).toContain("untrusted_source");
   });
 });
+
+describe("DAT-193: the structured report is the turn's display source", () => {
+  const REPORT = {
+    areas: ["manifest", "lockfile"],
+    activities: ["inspected", "updated"],
+    outcome: "ready_for_review",
+  } as const;
+  const RENDERED =
+    "Pi reported that it inspected and updated the package manifest and the lockfile and that the change is ready for review.";
+
+  test("a turn with a validated report publishes the fixed wording, not the free text", () => {
+    const tracker = new PiSummaryTracker("tsk_unit");
+    tracker.beginRun("run_a");
+    tracker.beginTurn("turn_1");
+    // Free text that would never be displayable on its own: the report is
+    // the display source, so none of it may appear anywhere.
+    tracker.appendText("Ran `npm test` and patched /Users/ludwig/repo/node/x.ts after ghp_abc.");
+    tracker.recordReport({
+      ...REPORT,
+      areas: [...REPORT.areas],
+      activities: [...REPORT.activities],
+    });
+    const summary = tracker.settleTurn();
+    expect(summary).toMatchObject({
+      status: "available",
+      text: RENDERED,
+      unavailable_reason: null,
+      turn_id: "turn_1",
+      run_id: "run_a",
+    });
+    // No slice of the withheld free text may appear in any exposed byte.
+    expect(JSON.stringify(summary)).not.toContain("npm test");
+    expect(JSON.stringify(summary)).not.toContain("/Users/ludwig/repo/node/x.ts");
+    expect(JSON.stringify(summary)).not.toContain("ghp_abc");
+  });
+
+  test("a report recorded with no open turn is dropped, not judged", () => {
+    const tracker = new PiSummaryTracker("tsk_unit");
+    tracker.beginRun("run_a");
+    tracker.recordReport({
+      areas: ["tests"],
+      activities: ["verified"],
+      outcome: "completed",
+    });
+    expect(tracker.settleTurn()).toBeNull();
+    expect(tracker.snapshot().status).toBe("pending");
+    // The next turn starts without that dropped report and fails closed.
+    tracker.beginTurn("turn_1");
+    tracker.appendText("The tests were checked.");
+    expect(tracker.settleTurn()).toMatchObject({
+      status: "unavailable",
+      unavailable_reason: "untrusted_source",
+      text: null,
+    });
+  });
+
+  test("a new turn does not inherit the previous turn's report", () => {
+    const tracker = new PiSummaryTracker("tsk_unit");
+    tracker.beginRun("run_a");
+    tracker.beginTurn("turn_1");
+    tracker.recordReport({
+      areas: ["tests"],
+      activities: ["verified"],
+      outcome: "completed",
+    });
+    expect(tracker.settleTurn()).toMatchObject({ turn_id: "turn_1", status: "available" });
+    tracker.beginTurn("turn_2");
+    tracker.appendText("A second turn without any structured report.");
+    const second = tracker.settleTurn();
+    expect(second).toMatchObject({
+      turn_id: "turn_2",
+      status: "unavailable",
+      unavailable_reason: "untrusted_source",
+      text: null,
+    });
+    expect(JSON.stringify(second)).not.toContain(RENDERED);
+  });
+
+  test("a new run clears any unsettled report before it can be published", () => {
+    const tracker = new PiSummaryTracker("tsk_unit");
+    tracker.beginRun("run_a");
+    tracker.beginTurn("turn_1");
+    tracker.recordReport({
+      areas: ["tests"],
+      activities: ["verified"],
+      outcome: "completed",
+    });
+    const reset = tracker.beginRun("run_b");
+    expect(reset).toMatchObject({ run_id: "run_b", status: "pending", text: null });
+    expect(tracker.settleTurn()).toBeNull();
+    tracker.beginTurn("turn_1");
+    tracker.appendText("A second run settled cleanly.");
+    expect(tracker.settleTurn()).toMatchObject({
+      run_id: "run_b",
+      status: "unavailable",
+      unavailable_reason: "untrusted_source",
+      text: null,
+    });
+    expect(JSON.stringify(tracker.snapshot())).not.toContain("verified the tests");
+  });
+});

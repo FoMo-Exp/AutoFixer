@@ -9,19 +9,23 @@
  * `pi_summary` may expose.
  *
  * Trust boundary (DAT-193): displayability comes from provenance, not from
- * inspecting text. `available` requires an auditable trusted source —
- * production code composing the displayed text from data whose origin and
- * validation are reviewable in this repository — and the trust chain must
- * be explainable. Free model output has no such provenance: any turn, in
- * any wording, may carry commands, credentials, absolute paths, or raw
- * logs, and no deterministic rule table can prove that arbitrary free text
- * contains none (DAT-191/192 hardened the table across three QA rounds and
- * QA still reproduced raw commands reaching `available`: `node app
- * succeeded.`, `The team used poetry lock to pin versions.`). Therefore a
- * settled model turn is never displayable, whatever the rule table says.
+ * inspecting text. `available` requires an auditable trusted source, and
+ * this version has exactly one: the structured Pi turn report channel
+ * (`node/src/pi/turn-report.ts`), where the model labels a turn's work
+ * through a strict closed-enum schema, Node validates that report
+ * server-side, and Node itself composes the displayed sentence from fixed
+ * phrases framed as Pi's own report. Free model output has no such
+ * provenance: any turn, in any wording, may carry commands, credentials,
+ * absolute paths, or raw logs, and no deterministic rule table can prove
+ * that arbitrary free text contains none (DAT-191/192 hardened the table
+ * across three QA rounds and QA still reproduced raw commands reaching
+ * `available`: `node app succeeded.`,
+ * `The team used poetry lock to pin versions.`). Therefore a settled
+ * model turn's free text is never displayable, whatever the rule table
+ * says: without a valid structured report the turn fails closed.
  *
  * The DAT-192 rule table stays in place as the *classifier*: it names why
- * withheld material is unsafe or uncertifiable, so clients and operators
+ * withheld free text is unsafe or uncertifiable, so clients and operators
  * can see what was kept out. Every layer only ever adds a rejection:
  * 1. Structural command material fails closed wherever it appears: shell
  *    syntax (fences, code spans, prompts, pipes, redirections, `$VAR`),
@@ -49,15 +53,20 @@
  *
  * Fail-closed posture (DAT-191/DAT-192/DAT-193 acceptance):
  * - Every settled turn publishes exactly one summary; `text` is non-null
- *   only when `status` is `available`, which requires a trusted source.
- *   For free model turns no trusted source exists, so a turn the classifier
- *   does not flag is withheld as `untrusted_source`: the classifier's pass
- *   can never certify displayability.
- * - A rule hit reports `unsafe_content`; a turn the classifier cannot
- *   certify reports `undecidable`; an empty turn reports `no_content`; a
- *   failure inside the classifier reports `gate_error`. An unavailable
- *   summary never carries the raw turn text — in any field, event, or
- *   projection — so no partial or transformed leak is possible.
+ *   only when `status` is `available`, which requires the validated
+ *   structured report of that turn. A turn without one — the model never
+ *   called the tool, called it with an invalid report, or the turn
+ *   produced nothing displayable — fails closed: a rule hit reports
+ *   `unsafe_content`, a turn the classifier cannot recognise as prose
+ *   reports `undecidable`, an empty turn reports `no_content`, a failure
+ *   inside the classifier reports `gate_error`, and a turn whose only
+ *   content is free text reports `untrusted_source`. The classifier's
+ *   pass can never certify displayability.
+ * - The rendered report text is itself run through the classifier before
+ *   release (defence in depth; in this direction the classifier only ever
+ *   adds a rejection, never an allowance). An unavailable summary never
+ *   carries the raw turn text — in any field, event, or projection — so no
+ *   partial or transformed leak is possible.
  * - An unsettled turn is `pending`, never a summary.
  *
  * The classifier is deliberately regex-based and deterministic: every
@@ -66,14 +75,18 @@
  * text. Determinism is what makes the *classification* auditable; it is not
  * what makes text displayable — only provenance does that.
  *
- * Capability gap (DAT-193, escalated to the Architect): Node holds no
- * natural-language account of the agent's activity other than free model
- * text, and state or activity-count projections are not natural-language
- * summaries. Until an Architect-approved trusted source exists, no
- * settlement produces `available`, and this issue does not claim the
- * natural-language summary acceptance is met. `available` stays in the
- * status enum as the reserved, forward-compatible slot for that source.
+ * Scope note (DAT-193, per the Architect's ruling on this issue): the
+ * structured report channel is the available path for a real task's
+ * natural-language summary — closed enums only, server-side validation,
+ * fixed wording labelled as Pi's report rather than verified fact, no
+ * additional model, external network, or widened permission, and unknown,
+ * missing, or invalid reports fail closed. The free-text gap stays
+ * recorded: no free model sentence can be certified displayable, and this
+ * module never claims rules can prove arbitrary free text safe.
  */
+
+import { renderTurnReport, validateTurnReport } from "../pi/turn-report.js";
+import type { TurnReport } from "../pi/turn-report.js";
 
 export const PI_SUMMARY_STATUSES = ["pending", "available", "unavailable"] as const;
 
@@ -94,10 +107,10 @@ export const PI_SUMMARY_UNAVAILABLE_REASONS = [
   /** The safety gate itself could not complete a verdict; fail closed. */
   "gate_error",
   /**
-   * The classifier found no flagged material, but the text is free model
-   * output with no auditable trusted source, so it is never displayable
-   * (DAT-193). A pass of the rule table is a classification, not a
-   * certification; fail closed without exposing any of the text.
+   * The content has no auditable trusted source: free model output (or a
+   * structured report that fails server-side validation), so it is never
+   * displayable (DAT-193). A pass of the rule table is a classification,
+   * not a certification; fail closed without exposing any of the text.
    */
   "untrusted_source",
 ] as const;
@@ -123,10 +136,14 @@ export type PiSummaryRuleReason = Extract<
 export interface PiSummary {
   task_id: string;
   run_id: string | null;
-  /** Pi turn whose text this summary describes; null before any turn opens. */
+  /** Pi turn this summary describes; null before any turn opens. */
   turn_id: string | null;
   status: PiSummaryStatus;
-  /** The display text; non-null if and only if status is `available`. Reserved for a trusted-source summary; always null for free model turns (DAT-193). */
+  /**
+   * The display text: the fixed-wording rendering of the turn's validated
+   * structured Pi report (DAT-193). Non-null if and only if status is
+   * `available`; never free model text.
+   */
   text: string | null;
   /** Why the summary is unavailable; non-null iff status is `unavailable`. */
   unavailable_reason: PiSummaryUnavailableReason | null;
@@ -1101,9 +1118,10 @@ export function firstSafetyViolation(
 
 export type PiSummaryEvaluation =
   /**
-   * Reserved for a summary composed from an auditable trusted source
-   * (DAT-193): no such producer exists in this version, so
-   * `evaluateTurnText` never returns it for free model turns.
+   * A displayable summary from the turn's auditable trusted source
+   * (DAT-193): only `evaluateTurnReport` produces it, from the validated
+   * structured Pi report. `evaluateTurnText` never returns it for free
+   * model turns.
    */
   | { outcome: "available"; text: string }
   | { outcome: "unavailable"; reason: PiSummaryUnavailableReason };
@@ -1146,14 +1164,49 @@ export function evaluateTurnText(
 }
 
 /**
+ * Produce the projection outcome from one validated structured Pi report.
+ *
+ * The report is the turn's trusted display source (DAT-193): Node renders
+ * the fixed wording itself, so no model-supplied words can reach `text`.
+ * The report is re-validated here — a report outside the closed vocabulary
+ * fails closed as `untrusted_source`, whatever produced it. Defence in
+ * depth: the rendered sentence still goes through the classifier before
+ * release — in this direction the classifier can only withhold, never
+ * create an allowance. A renderer or classifier failure fails closed as
+ * `gate_error`.
+ */
+export function evaluateTurnReport(
+  report: TurnReport,
+  rules: readonly PiSummarySafetyRule[] = PI_SUMMARY_SAFETY_RULES,
+): PiSummaryEvaluation {
+  try {
+    if (validateTurnReport(report) === null) {
+      return { outcome: "unavailable", reason: "untrusted_source" };
+    }
+    const text = renderTurnReport(report);
+    if (text.trim().length === 0) {
+      return { outcome: "unavailable", reason: "no_content" };
+    }
+    const violation = firstSafetyViolation(text, rules);
+    if (violation !== null) {
+      return { outcome: "unavailable", reason: violation.reason };
+    }
+    return { outcome: "available", text };
+  } catch {
+    return { outcome: "unavailable", reason: "gate_error" };
+  }
+}
+
+/**
  * Accumulates one task's Pi turns into the projected summary.
  *
  * One tracker belongs to one task's session lifecycle: `beginRun` opens the
  * run's summary (resetting any previous run's text), `beginTurn` /
- * `appendText` accumulate the streaming deltas of one turn, and `settleTurn`
- * evaluates and closes it. The tracker never retains the raw text of a
- * settled turn after evaluation, so an unavailable turn leaves no copy of
- * its content anywhere in Node.
+ * `appendText` accumulate the streaming deltas of one turn, `recordReport`
+ * attaches the turn's validated structured report (its display source), and
+ * `settleTurn` evaluates and closes it. The tracker never retains the raw
+ * text of a settled turn after evaluation, so an unavailable turn leaves no
+ * copy of its content anywhere in Node.
  */
 export class PiSummaryTracker {
   private readonly taskId: string;
@@ -1161,6 +1214,8 @@ export class PiSummaryTracker {
   private summary: PiSummary;
   private openTurnId: string | null = null;
   private buffer: string[] = [];
+  /** Validated structured report of the open turn; its display source. */
+  private openReport: TurnReport | null = null;
 
   constructor(taskId: string, options: { now?: () => Date } = {}) {
     this.taskId = taskId;
@@ -1172,14 +1227,16 @@ export class PiSummaryTracker {
   beginRun(runId: string | null): PiSummary {
     this.openTurnId = null;
     this.buffer = [];
+    this.openReport = null;
     this.summary = this.pendingSummary(runId);
     return this.snapshot();
   }
 
-  /** Open one turn; deltas appended before this are dropped, not judged. */
+  /** Open one turn; deltas and reports appended before this are dropped. */
   beginTurn(turnId: string): void {
     this.openTurnId = turnId;
     this.buffer = [];
+    this.openReport = null;
   }
 
   /** Accumulate one streamed delta of the open turn. */
@@ -1190,13 +1247,25 @@ export class PiSummaryTracker {
   }
 
   /**
+   * Record one validated structured report as the open turn's display
+   * source (DAT-193). A report arriving with no open turn is dropped,
+   * exactly like a delta appended before a turn opens; a later valid
+   * report in the same turn replaces an earlier one.
+   */
+  recordReport(report: TurnReport): void {
+    if (this.openTurnId !== null) {
+      this.openReport = report;
+    }
+  }
+
+  /**
    * Evaluate the open turn and replace the projected summary. Returns null
    * when no turn is open — a duplicated settlement path (a provider error
    * emits `agent_error` and then `agent_settled`) must publish exactly one
-   * summary for the turn, so callers publish only real settlements. Under
-   * the DAT-193 trust boundary a free model turn always evaluates to
-   * `unavailable`; the `available` arm exists only for a future
-   * trusted-source producer.
+   * summary for the turn, so callers publish only real settlements. A turn
+   * with a validated structured report publishes that report's fixed
+   * wording; a turn without one evaluates its free text, which under the
+   * DAT-193 trust boundary always resolves to `unavailable`.
    */
   settleTurn(): PiSummary | null {
     const turnId = this.openTurnId;
@@ -1204,9 +1273,11 @@ export class PiSummaryTracker {
       return null;
     }
     const turnText = this.buffer.join("");
+    const report = this.openReport;
     this.openTurnId = null;
     this.buffer = [];
-    const evaluation = evaluateTurnText(turnText);
+    this.openReport = null;
+    const evaluation = report !== null ? evaluateTurnReport(report) : evaluateTurnText(turnText);
     this.summary = {
       task_id: this.taskId,
       run_id: this.summary.run_id,

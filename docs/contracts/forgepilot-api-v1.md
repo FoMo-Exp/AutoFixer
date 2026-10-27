@@ -73,8 +73,9 @@ projected as its authoritative `stopped` or `timed_out` outcome.
 
 `pi_summary` is the display-safe projection for the latest settled Pi turn
 of the task's current run; free model turn text is never displayable
-(DAT-193 trust boundary), and its full semantics are specified in [Safe Pi
-text summary](#safe-pi-text-summary) below. It is `null` until a Pi session
+(DAT-193 trust boundary) and the available path is the turn's validated
+structured Pi report (see [Safe Pi text
+summary](#safe-pi-text-summary) below). It is `null` until a Pi session
 exists for the task.
 
 ## Authoritative run-state projection
@@ -142,34 +143,44 @@ deterministic rule table can prove that arbitrary free text contains none.
 DAT-191/DAT-192 hardened the table across three QA rounds, and QA still
 reproduced raw commands reaching `available` on the merged baseline
 (`node app succeeded.`, `The team used poetry lock to pin versions.`).
-A settled model turn is therefore never displayable, whatever the table
-says: the DAT-192 rule table remains only as the *classifier* that names
-why material is kept out, and a pass of that table is a classification,
-not a certification.
+A settled model turn's free text is therefore never displayable,
+whatever the table says: the DAT-192 rule table remains only as the
+*classifier* that names why material is kept out, and a pass of that
+table is a classification, not a certification. The one displayable
+source this version has is the structured Pi report channel described
+below.
 
 `GET /api/v1/tasks/{task_id}` (and every other Task response) carries the
 `pi_summary` field, and every change is recorded as a `pi.summary.updated`
 timeline/SSE event whose `data.summary` is the same object:
 
 ```json
-{"task_id":"tsk_01J...","run_id":"run_01J...","turn_id":"turn_1","status":"unavailable","text":null,"unavailable_reason":"untrusted_source","updated_at":"2026-10-26T12:03:00Z"}
+{"task_id":"tsk_01J...","run_id":"run_01J...","turn_id":"turn_1","status":"available","text":"Pi reported that it inspected and updated the package manifest and the lockfile and that the change is ready for review.","unavailable_reason":null,"updated_at":"2026-10-26T12:03:00Z"}
 ```
 
 Contract semantics:
 
-- **Source and trust chain.** `text`, when present, is composed by Node
-  from an auditable trusted source and describes one settled Pi turn
-  (`run_started` to settlement) of the run's Pi session; the source and
-  its composition are reviewable in the orchestrator code, not
-  reconstructed by the client. For free model turn text — the only
-  natural-language material a turn produces in this version — no such
-  source exists: Node holds no other natural-language account of the
-  agent's activity, and state or activity-count projections are not
-  natural-language summaries. That is the DAT-193 capability gap,
-  escalated to the Architect: until an Architect-approved trusted source
-  exists, no settlement produces `available`, and DAT-193 does not claim
-  the natural-language summary acceptance is met. `available` stays in the
-  status enum as the reserved, forward-compatible slot for that source.
+- **Source and trust chain: the structured Pi report (DAT-193).** `text`,
+  when present, is the fixed-wording rendering of one settled Pi turn's
+  validated structured report. The model labels the turn's work through
+  the `report_turn_summary` tool, whose parameters are closed enums
+  (`areas`, `activities`, `outcome`) with no free-text field and no
+  argument that could carry a command, token, path, or log; Node
+  validates the report against that vocabulary server-side (the
+  provider-side schema is descriptive only) and records it only when it
+  is valid; Node itself composes every displayed word from fixed phrases
+  (`node/src/pi/turn-report.ts`), framed as Pi's own report — "Pi reported that it …" — not as an independently verified fact, and it
+  conveys the turn's concrete work (what was done, to which parts, with
+  which outcome), never run status or action counts. The tool executes
+  nothing: no additional model, external network, widened permission, or
+  dsh action is involved. A turn whose report is missing, unknown, or
+  invalid fails closed exactly like a turn with no report. Free model
+  text has no such source and is never displayable — no rule table can
+  prove arbitrary free text safe, and DAT-193 claims no such proof — so a
+  free-text-only turn always settles `unavailable`. The rendered report
+  text is additionally run through the DAT-192 classifier before
+  release (defence in depth; in that direction the classifier can only
+  withhold, never allow).
 - **Classification (DAT-192): why material is kept out.** The ordered
   rules keep out exactly these classes; a hit yields `unavailable` with
   that class's reason. The table only ever adds rejections and never
@@ -264,14 +275,16 @@ Contract semantics:
   not recognise the turn as narrative prose; a failure inside the
   classifier itself yields `"gate_error"`; a settled turn with no content
   yields `"no_content"`; a turn no rule flags still yields
-  `"untrusted_source"`, because free model text has no auditable trusted
-  source. The reason enum is additive: clients MUST render an unknown
+  `"untrusted_source"`, because its content has no auditable trusted
+  source — free model text, or a structured report that failed
+  server-side validation. The reason enum is additive: clients MUST render an unknown
   reason — and an unknown status — as a plain unavailable state. An
   unavailable summary never carries the raw turn text — in any field,
   event, or projection.
 - **Compatibility with recorded history (DAT-193).** Fields, event type,
   lifecycle, and attribution are unchanged, so DAT-191/192 clients keep
-  working: every new settlement carries `text:null`, the reason enum only
+  working: a settlement is either `available` with the report-rendered
+  `text` above or `unavailable` with `text:null`, the reason enum only
   grows, and an unknown reason or status renders as a plain unavailable
   state. No persisted projection and no recorded timeline event is
   rewritten: summaries settled before DAT-193 remain exactly as recorded,

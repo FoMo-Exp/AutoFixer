@@ -1172,3 +1172,98 @@ describe("trusted-source display boundary over the API (DAT-193)", () => {
     ).toBe(true);
   });
 });
+
+describe("structured Pi report channel over the API (DAT-193)", () => {
+  const RENDERED =
+    "Pi reported that it inspected and updated the package manifest and the lockfile and that the change is ready for review.";
+
+  test("a validated report publishes an available summary with the fixed wording", async () => {
+    const freeText = "Ran the checks and patched the manifest after review.";
+    const { base } = await startApp([
+      {
+        kind: "report",
+        areas: ["manifest", "lockfile"],
+        activities: ["inspected", "updated"],
+        outcome: "ready_for_review",
+      },
+      { kind: "text", text: freeText },
+    ]);
+    const created = await createAndApprove(base);
+
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
+          ?.status === "available",
+      "summary available from the structured report",
+    );
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    // The display source is the validated report rendered by Node with
+    // fixed wording framed as Pi's report — never the turn's free text.
+    expect(task.body.pi_summary).toMatchObject({
+      turn_id: "turn_1",
+      status: "available",
+      text: RENDERED,
+      unavailable_reason: null,
+    });
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain(freeText);
+
+    const events = await timeline(base, created.id);
+    const summaryEvents = events.filter((event) => event.type === "pi.summary.updated");
+    expect(
+      summaryEvents.map((event) => (event.data["summary"] as { status: string }).status),
+    ).toEqual(["pending", "available"]);
+    for (const event of summaryEvents) {
+      const published = event.data["summary"] as { text: string | null };
+      if (published.text !== null) {
+        expect(published.text).toBe(RENDERED);
+      }
+      expect(JSON.stringify(event.data)).not.toContain(freeText);
+    }
+    // Only the M0 pi.text_delta stream keeps the model's raw text.
+    expect(
+      events.some(
+        (event) => event.type === "pi.text_delta" && String(event.data["delta"]).includes(freeText),
+      ),
+    ).toBe(true);
+  });
+
+  test("an invalid report fails closed end to end", async () => {
+    const { base } = await startApp([
+      {
+        kind: "report",
+        areas: ["kernel"],
+        activities: ["deployed"],
+        outcome: "shipped",
+      },
+      { kind: "text", text: "The work is complete." },
+    ]);
+    const created = await createAndApprove(base);
+
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
+          ?.status === "unavailable",
+      "summary withheld for the invalid report",
+    );
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    // The invalid report never reaches the tracker: the turn settles on its
+    // free text, which has no trusted source (DAT-193).
+    expect(task.body.pi_summary).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "untrusted_source",
+    });
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain("kernel");
+
+    const events = await timeline(base, created.id);
+    const summaryEvents = events.filter((event) => event.type === "pi.summary.updated");
+    expect(
+      summaryEvents.map((event) => (event.data["summary"] as { status: string }).status),
+    ).toEqual(["pending", "unavailable"]);
+    for (const event of summaryEvents) {
+      expect((event.data["summary"] as { text: unknown }).text).toBeNull();
+    }
+  });
+});

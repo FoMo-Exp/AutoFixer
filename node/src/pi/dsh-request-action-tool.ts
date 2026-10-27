@@ -84,7 +84,7 @@ export function createDshRequestActionTool(
     label: "Request a dsh action",
     description:
       "Request one allow-listed remediation action through the dsh control plane. " +
-      "This is the only capability you have: you cannot run commands, edit files, or " +
+      "This is your only action capability: you cannot run commands, edit files, or " +
       "reach the network directly. dsh independently checks the run's allow-list and " +
       "capability grant, then executes the action in an isolated sandbox. A denied " +
       "request is final for that intent; adapt and continue or stop.",

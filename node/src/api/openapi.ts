@@ -222,9 +222,13 @@ const piSummarySchema: JsonObject = {
     "withheld as untrusted_source — a pass of the rule table is a " +
     "classification, not a certification. Fail closed: an unavailable " +
     "summary always carries text=null, never redacted or partial content. " +
-    "available is reserved for a trusted-source summary; no such producer " +
-    "exists in this version (DAT-193 capability gap, escalated to the " +
-    "Architect), so new settlements are pending or unavailable only. " +
+    "The one available path (DAT-193) is the turn's validated structured " +
+    "Pi report: closed-enum parameters on the report_turn_summary tool, " +
+    "server-side validation, and fixed wording composed by Node and framed " +
+    "as Pi's own report — never free model text, never run status or " +
+    "activity counts, and no additional model, network, or permission. A " +
+    "missing, unknown, or invalid report fails closed exactly like a turn " +
+    "with no report. " +
     "Lifecycle: null on the task until a Pi " +
     "session exists; pending from " +
     "session start (and at the start of every run) until a turn settles; " +
@@ -252,10 +256,9 @@ const piSummarySchema: JsonObject = {
       type: ["string", "null"],
       maxLength: 240,
       description:
-        "The display text; non-null iff status is available. Reserved for a " +
-        "summary composed from an auditable trusted source; always null for " +
-        "free model turns (DAT-193). Bound to 240 characters when a trusted " +
-        "source produces it.",
+        "The fixed-wording rendering of the turn's validated structured Pi " +
+        "report (DAT-193), framed as Pi's own report; non-null iff status is " +
+        "available. Never free model text. Bound to 240 characters.",
     },
     unavailable_reason: {
       type: ["string", "null"],
@@ -266,8 +269,9 @@ const piSummarySchema: JsonObject = {
         "undecidable (the classifier could not recognise the turn: an " +
         "execution report or an unrecognised sentence opener), gate_error " +
         "(the classifier itself failed), untrusted_source (no rule flagged " +
-        "the text, but free model output has no auditable trusted source, " +
-        "so it is withheld in full). Null unless status is unavailable. " +
+        "the content, but it has no auditable trusted source: free model " +
+        "text, or a structured report that failed server-side validation). " +
+        "Null unless status is unavailable. " +
         "The enum is additive: clients render an unknown reason — and an " +
         "unknown status — as a plain unavailable state.",
     },

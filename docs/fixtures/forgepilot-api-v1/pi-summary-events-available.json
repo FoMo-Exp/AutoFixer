@@ -1,0 +1,40 @@
+[
+  {
+    "event_id": "evt_00000000000000000000000000000001",
+    "sequence": 5,
+    "occurred_at": "2099-01-01T00:00:00.000Z",
+    "task_id": "tsk_00000000000000000000000000000001",
+    "task_version": 6,
+    "type": "pi.summary.updated",
+    "data": {
+      "summary": {
+        "task_id": "tsk_00000000000000000000000000000001",
+        "run_id": "run_00000000000000000000000000000001",
+        "turn_id": null,
+        "status": "pending",
+        "text": null,
+        "unavailable_reason": null,
+        "updated_at": "2099-01-01T00:00:00.000Z"
+      }
+    }
+  },
+  {
+    "event_id": "evt_00000000000000000000000000000002",
+    "sequence": 8,
+    "occurred_at": "2099-01-01T00:00:00.000Z",
+    "task_id": "tsk_00000000000000000000000000000001",
+    "task_version": 9,
+    "type": "pi.summary.updated",
+    "data": {
+      "summary": {
+        "task_id": "tsk_00000000000000000000000000000001",
+        "run_id": "run_00000000000000000000000000000001",
+        "turn_id": "turn_1",
+        "status": "available",
+        "text": "Pi reported that it inspected and updated the package manifest and the lockfile and that the change is ready for review.",
+        "unavailable_reason": null,
+        "updated_at": "2099-01-01T00:00:00.000Z"
+      }
+    }
+  }
+]

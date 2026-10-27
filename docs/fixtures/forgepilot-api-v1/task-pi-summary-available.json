@@ -1,0 +1,61 @@
+{
+  "id": "tsk_00000000000000000000000000000001",
+  "version": 9,
+  "created_at": "2099-01-01T00:00:00.000Z",
+  "updated_at": "2099-01-01T00:00:00.000Z",
+  "current_run_id": "run_00000000000000000000000000000001",
+  "run_history_url": "/api/v1/tasks/tsk_00000000000000000000000000000001/runs",
+  "repository": {
+    "id": "github:Luthiel/AutoFixer",
+    "display_name": "Luthiel/AutoFixer",
+    "base_ref": "main",
+    "base_sha": "52081eaddca099967fd8be13b3060337fde50d3f"
+  },
+  "request": {
+    "summary": "Verify the echo tool works",
+    "source_reference": "https://github.com/Luthiel/AutoFixer/issues/42"
+  },
+  "association": {
+    "task_id": "tsk_00000000000000000000000000000001",
+    "run_id": "run_00000000000000000000000000000001",
+    "repository_id": "github:Luthiel/AutoFixer",
+    "base_sha": "52081eaddca099967fd8be13b3060337fde50d3f",
+    "head_sha": null
+  },
+  "revision": {
+    "base_sha": "52081eaddca099967fd8be13b3060337fde50d3f",
+    "head_sha": null
+  },
+  "status": "approved",
+  "status_reason": null,
+  "risk": {
+    "class": "elevated",
+    "decision_code": "elevated_requires_approval",
+    "requires_human_approval": false
+  },
+  "progress": {
+    "phase": "validating",
+    "actions_completed": 0,
+    "actions_total": null
+  },
+  "pi_summary": {
+    "task_id": "tsk_00000000000000000000000000000001",
+    "run_id": "run_00000000000000000000000000000001",
+    "turn_id": "turn_1",
+    "status": "available",
+    "text": "Pi reported that it inspected and updated the package manifest and the lockfile and that the change is ready for review.",
+    "unavailable_reason": null,
+    "updated_at": "2099-01-01T00:00:00.000Z"
+  },
+  "governance": {
+    "current_head_sha": null,
+    "observations_valid": true,
+    "merge_queue_eligible": false
+  },
+  "artifacts": {
+    "patch": null,
+    "report": null,
+    "evidence_bundle_available": false,
+    "index": []
+  }
+}

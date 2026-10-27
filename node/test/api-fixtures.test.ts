@@ -206,6 +206,47 @@ describe("real-response fixtures for pi_summary (DAT-191/193)", () => {
     checkFixture("pi-summary-events-unavailable-untrusted-source.json", summaryEvents);
   });
 
+  test("a verified Pi report round-trips as an available real response", async () => {
+    const freeText = "Ran the checks and patched the manifest after review.";
+    const rendered =
+      "Pi reported that it inspected and updated the package manifest and the lockfile and that the change is ready for review.";
+    const base = await startApp([
+      {
+        kind: "report",
+        areas: ["manifest", "lockfile"],
+        activities: ["inspected", "updated"],
+        outcome: "ready_for_review",
+      },
+      { kind: "text", text: freeText },
+    ]);
+    const task = await createApprovedTask(base);
+    await waitUntil(async () => {
+      const current = await getJson<TaskResource>(`${base}/api/v1/tasks/${task.id}`);
+      return (
+        current.body.pi_summary?.status === "available" &&
+        current.body.progress.phase === "validating"
+      );
+    }, "summary available from the structured report and projection settled");
+
+    const resource = await getJson<TaskResource>(`${base}/api/v1/tasks/${task.id}`);
+    // The trusted source is the validated structured report; the displayed
+    // sentence is Node's fixed wording, framed as Pi's own report.
+    expect(resource.body.pi_summary).toMatchObject({
+      status: "available",
+      text: rendered,
+      unavailable_reason: null,
+    });
+    expect(JSON.stringify(resource.body.pi_summary)).not.toContain(freeText);
+    checkFixture("task-pi-summary-available.json", resource.body);
+
+    const events = await getJson<{ items: TimelineItem[] }>(
+      `${base}/api/v1/tasks/${task.id}/timeline`,
+    );
+    const summaryEvents = events.body.items.filter((event) => event.type === "pi.summary.updated");
+    expect(summaryEvents).toHaveLength(2);
+    checkFixture("pi-summary-events-available.json", summaryEvents);
+  });
+
   test("an unavailable summary round-trips without its raw content", async () => {
     const secret = "ghp_abcdefghijklmnopqrstuvwx123456";
     const base = await startApp([
