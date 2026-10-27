@@ -13,6 +13,8 @@ import { piSystemPrompt, taskPrompt } from "../pi/prompts.js";
 import type { PiSessionOptions } from "../pi/session.js";
 import { PiSession } from "../pi/session.js";
 import { ApiError, apiErrorFromDsh } from "./errors.js";
+import { PiSummaryTracker } from "./pi-summary.js";
+import type { PiSummary } from "./pi-summary.js";
 import type {
   TaskRecord,
   TaskEvent,
@@ -65,6 +67,8 @@ interface TaskRuntime {
   session: PiSession;
   observedToolCalls: Set<string>;
   watchdog: NodeJS.Timeout;
+  /** Accumulates the session's streamed text into the safe summary. */
+  summaryTracker: PiSummaryTracker;
 }
 
 export interface TaskServiceDeps {
@@ -741,6 +745,10 @@ export class TaskService {
     }
     const sessionId = `pis_${randomUUID().replaceAll("-", "")}`;
     const observedToolCalls = new Set<string>();
+    // The summary lifecycle starts with the run: pending until the first
+    // turn settles, then one evaluated summary per settled turn (DAT-191).
+    const summaryTracker = new PiSummaryTracker(record.id);
+    this.publishSummary(record, summaryTracker.beginRun(record.runId));
     let sessionRef: PiSession | null = null;
     const tool = createDshRequestActionTool({
       client: this.deps.dsh,
@@ -792,6 +800,9 @@ export class TaskService {
         switch (event.type) {
           case "text_delta":
             this.store.appendEvent(record, "pi.text_delta", { delta: event.delta });
+            // The safe summary is judged on the fully assembled turn at
+            // settlement; fragments are accumulated, never judged alone.
+            summaryTracker.appendText(event.delta);
             break;
           case "tool_started":
             if (event.toolName === "dsh_request_action") {
@@ -824,14 +835,19 @@ export class TaskService {
           case "agent_settled":
             record.agentSettled = true;
             this.store.appendEvent(record, "pi.turn_settled", {});
+            this.settleSummary(record, summaryTracker);
             this.queueRefresh(record);
             break;
           case "agent_error":
             record.agentSettled = true;
             this.store.appendEvent(record, "pi.turn_settled", { error: event.message });
+            // The partial turn text is judged exactly like a clean one: the
+            // gate fails closed, so an error cannot launder raw content.
+            this.settleSummary(record, summaryTracker);
             this.queueRefresh(record);
             break;
           case "run_started":
+            summaryTracker.beginTurn(sessionRef?.currentTurnId() ?? "turn_0");
             break;
         }
       },
@@ -871,7 +887,7 @@ export class TaskService {
       this.deps.config.maxWallClockSeconds * 1000 + 2000,
     );
     watchdog.unref();
-    const runtime: TaskRuntime = { session, observedToolCalls, watchdog };
+    const runtime: TaskRuntime = { session, observedToolCalls, watchdog, summaryTracker };
     this.runtimes.set(record.id, runtime);
 
     this.runPromptSafely(
@@ -897,7 +913,32 @@ export class TaskService {
       this.store.appendEvent(record, "pi.turn_settled", {
         error: error instanceof Error ? error.message : String(error),
       });
+      this.settleSummary(record, runtime.summaryTracker);
     });
+  }
+
+  /**
+   * Project one evaluated Pi summary onto the task and record it as the
+   * contract's `pi.summary.updated` event. Only evaluated summaries are
+   * published: the raw turn text lives nowhere in the event or the record.
+   */
+  private publishSummary(record: TaskRecord, summary: PiSummary): void {
+    record.piSummary = summary;
+    this.store.appendEvent(record, "pi.summary.updated", { summary: { ...summary } });
+  }
+
+  /**
+   * Close the open turn through the safety gate and publish the outcome.
+   * A settlement with no open turn (the `agent_error` then `agent_settled`
+   * double emission of one run) publishes nothing: each turn yields exactly
+   * one pi.summary.updated, as the contract promises.
+   */
+  private settleSummary(record: TaskRecord, tracker: PiSummaryTracker): void {
+    const settled = tracker.settleTurn();
+    if (settled === null) {
+      return;
+    }
+    this.publishSummary(record, settled);
   }
 
   /**

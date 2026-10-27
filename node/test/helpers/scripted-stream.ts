@@ -37,6 +37,13 @@ export function makeGate(): Gate {
 
 export type ScriptedTurn =
   | { kind: "text"; text: string }
+  /**
+   * Provider failure: optional text deltas, then an error event that ends
+   * the turn with an errorMessage on the assistant message. Reproduces the
+   * run path where the session emits `agent_error` and then
+   * `agent_settled` for one turn (DAT-191 QA B3).
+   */
+  | { kind: "error"; text?: string; message: string }
   | {
       kind: "tool";
       text?: string;
@@ -91,7 +98,7 @@ export function scriptedStream(turns: ScriptedTurn[]): ScriptedStream {
     const turn = turns[index];
     index += 1;
 
-    const emitText = (text: string, stopReason: "stop" | "toolUse"): void => {
+    const emitText = (text: string, stopReason: "stop" | "toolUse" | "error"): void => {
       const content: TextContent[] = [{ type: "text", text }];
       stream.push({ type: "start", partial: { ...assistantBase(), content: [], stopReason } });
       stream.push({
@@ -153,6 +160,22 @@ export function scriptedStream(turns: ScriptedTurn[]): ScriptedStream {
             stopReason: "stop",
           },
         });
+      });
+      return stream;
+    }
+
+    if (turn.kind === "error") {
+      const errorMessage: AssistantMessage = {
+        ...assistantBase(),
+        content: turn.text ? [{ type: "text", text: turn.text }] : [],
+        stopReason: "error",
+        errorMessage: turn.message,
+      };
+      queueMicrotask(() => {
+        if (turn.text) {
+          emitText(turn.text, "error");
+        }
+        stream.push({ type: "error", reason: "error", error: errorMessage });
       });
       return stream;
     }
