@@ -34,11 +34,13 @@ function event(type: TaskEvent["type"], sequence: number): TaskEvent {
 }
 
 describe("timeline summaries", () => {
-  it("never renders raw Pi stream text before it can be classified", () => {
+  it("never exposes Pi stream text through a row summary", () => {
     const secretFragment = "ghp_sensitive-secret-fragment";
 
-    expect(eventSummary(piDelta(secretFragment, 1))).not.toContain(secretFragment);
-    expect(eventSummary(piDelta(secretFragment, 1))).toContain("hidden for safety");
+    const summary = eventSummary(piDelta(secretFragment, 1));
+    expect(summary).not.toContain(secretFragment);
+    expect(summary).not.toContain("ghp_");
+    expect(summary).toBe("Pi summary recorded.");
   });
 
   it("groups a Pi turn but keeps actions in their original position", () => {
