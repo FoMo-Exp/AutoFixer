@@ -98,6 +98,30 @@ export function eventSummary(event: TaskEvent): string {
   return `${eventLabel(event.type)} recorded.`;
 }
 
+export function collapsePiTextDeltas(events: TaskEvent[]): TaskEvent[] {
+  const deltaEvents = events.filter((event) => event.type === "pi.text_delta");
+  if (deltaEvents.length < 2) return events;
+
+  const firstDelta = deltaEvents[0];
+  if (!firstDelta) return events;
+  const combinedText = deltaEvents
+    .map((event) => event.data["delta"])
+    .filter((delta): delta is string => typeof delta === "string")
+    .join("");
+  let inserted = false;
+  const combinedEvent: TaskEvent = {
+    ...firstDelta,
+    data: { ...firstDelta.data, delta: combinedText },
+  };
+
+  return events.flatMap((event) => {
+    if (event.type !== "pi.text_delta") return [event];
+    if (inserted) return [];
+    inserted = true;
+    return [combinedEvent];
+  });
+}
+
 export function approvalScopeDigest(events: TaskEvent[], taskId: string): string | undefined {
   const approval = [...events]
     .reverse()

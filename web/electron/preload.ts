@@ -1,19 +1,4 @@
-import { contextBridge } from "electron";
-import fs from "node:fs";
-
-function readApiToken(): string {
-  const directToken = process.env["FORGEPILOT_API_TOKEN"];
-  if (directToken) return directToken;
-
-  const tokenFile = process.env["FORGEPILOT_API_TOKEN_FILE"];
-  if (!tokenFile) return "";
-
-  try {
-    return fs.readFileSync(tokenFile, "utf8").trim();
-  } catch {
-    return "";
-  }
-}
+import { contextBridge, ipcRenderer } from "electron";
 
 function resolveApiBaseUrl(): string {
   const configuredUrl = process.env["FORGEPILOT_API_URL"]?.trim();
@@ -40,5 +25,17 @@ function isLoopbackApiUrl(value: string): boolean {
 
 contextBridge.exposeInMainWorld("forgePilotConfig", {
   apiBaseUrl: resolveApiBaseUrl(),
-  token: readApiToken(),
+});
+
+contextBridge.exposeInMainWorld("forgePilotApi", {
+  request: (request: unknown) => ipcRenderer.invoke("forgepilot:api-request", request),
+  abort: (requestId: string) => ipcRenderer.send("forgepilot:api-abort", requestId),
+  onStream: (requestId: string, callback: (message: unknown) => void) => {
+    const channel = `forgepilot:api-stream:${requestId}`;
+    const listener = (_event: Electron.IpcRendererEvent, message: unknown): void => {
+      callback(message);
+    };
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
+  },
 });

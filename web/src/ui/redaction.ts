@@ -1,12 +1,12 @@
 const BEARER_TOKEN = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
 const SECRET_VALUE = /\b(?:sk|ghp|github_pat|xoxb|xoxp)[_-][A-Za-z0-9_-]+\b/g;
-const ABSOLUTE_PATH = /(^|[\s("'`])\/(?:[A-Za-z0-9._~-]+\/)+[A-Za-z0-9._~-]+/g;
+const ABSOLUTE_PATH = /(^|[\s("'`=:])\/(?!\/)[^\s,;"'`<>]*/g;
 const WINDOWS_PATH = /\b[A-Z]:\\[^\s,;"'`]+/g;
 const KEY_VALUE_SECRET = /\b(token|secret|password|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi;
 const SENSITIVE_KEY =
   /\b(?:command|cmd|argv|stdout|stderr|logs?|output|raw[_-]?(?:log|output)|token|secret|password|api[_-]?key)\b/i;
 const SHELL_COMMAND =
-  /\b(?:sudo\s+)?(?:bash|sh|zsh|fish|node|npm|npx|pnpm|yarn|go|git|curl|wget|rm|mv|cp|chmod|chown|python3?|make|docker|find|grep|sed|cat|touch|mkdir|tar|ssh|scp)\s+[^\n]+/gi;
+  /\b(?:sudo\s+)?(?:bash|sh|zsh|fish|node|npm|npx|pnpm|yarn|go|git|curl|wget|rm|mv|cp|chmod|chown|python3?|make|docker|find|grep|sed|cat|touch|mkdir|tar|ssh|scp|echo|printf|pwd|ls|cd|env|which|whoami|uname|head|tail|awk|xargs|sleep|date|hostname|printenv|test|kill|ps|open|export|source)\s+[^\n]+/gi;
 
 export function redactText(value: string): string {
   return value

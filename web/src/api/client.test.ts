@@ -85,4 +85,20 @@ describe("ForgePilotClient", () => {
     await expect(client.getTask("tsk_1")).rejects.toBeInstanceOf(ApiConfigurationError);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it("uses the contract cursor when loading another task page", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(response({ items: [], next_cursor: null }));
+    const client = new ForgePilotClient({
+      baseUrl: "http://127.0.0.1:4567",
+      token: "token",
+      fetchImpl,
+    });
+
+    await client.listTasks(undefined, "tsk_after_50");
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://127.0.0.1:4567/api/v1/tasks?cursor=tsk_after_50",
+      expect.any(Object),
+    );
+  });
 });
