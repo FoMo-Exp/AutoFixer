@@ -149,10 +149,18 @@ Contract semantics:
 - **Security basis.** Certification is positive, not a tool blacklist: the
   set of possible commands is open, so extending a tool list can never be
   the safety claim. The gate only ever exposes text it positively
-  recognises as ordinary narrative prose — structural command material,
-  execution reports, and unrecognised sentence openers all fail closed.
-  The command vocabularies named below are defence in depth layered on
-  top: they can only add rejections and never create an allowance.
+  recognises as ordinary narrative prose: every segment — turn start,
+  inline sentence end, and every single-newline line start — must open
+  with a reviewed narrative starter (case-insensitive; **capitalisation
+  confers no exemption**), a polysemous command head, or a participle /
+  gerund form, unless a base command-verb opener (an imperative that
+  never certifies) or an in-segment narrative marker settles the
+  verdict. Structural command material, execution reports, and
+  unrecognised openers all fail closed. The command vocabularies named
+  below are defence in depth layered on top: they can only add
+  rejections and never create an allowance. The exact reach of the
+  deterministic boundary — including what it deliberately does not
+  claim — is stated after the classes.
 - **Safety boundary.** The ordered rules keep out exactly these classes;
   `available` means the whole turn was certified under all of them,
   nothing more. Each class names its rule and the reason a hit yields:
@@ -175,14 +183,22 @@ Contract semantics:
     occurrence of a command token with no ordinary prose use (`ls`, `cat`,
     `grep`, `sed`, `awk`, `chmod`, `curl`, `docker`, `npm`, … — the
     authoritative list is the exported `PI_SUMMARY_UNAMBIGUOUS_COMMAND_TOKENS`
-    table) and a polysemous head (`git`, `make`, `node`, `go`, `find`,
+    table); a polysemous head (`git`, `make`, `node`, `go`, `find`,
     `python`, `echo`, … — `PI_SUMMARY_POLYSEMOUS_COMMAND_TOKENS`) followed
     by a known subcommand (`git status`, `git submodule`, `npm ci`,
     `make install`), a file-like argument (`cat package.json`,
     `node server.js`), a quoted argument, a path argument, or a `.` target;
+    and a **non-starter word immediately followed by a base command verb**
+    (`Poetry install`, `Bazel build`, `vite build`, `Mise install`,
+    `git submodule update`) — the base verbs are the exported
+    `PI_SUMMARY_COMMAND_VERBS` table; grammatical English only uses bare
+    base verbs after auxiliaries, modals, or `to`, all of which are prose
+    starters and therefore exempt heads, so this pair shape is an
+    invocation rather than narrative;
   - *argument material* (`command_material` → `unsafe_content`): flag-shaped
     tokens (`-la`, `--init`, `-name`) wherever they appear, `./` `../` `~/`
-    relative paths, and unspaced `NAME=value` assignments;
+    relative paths, `//target` arguments (`//app:server`), and unspaced
+    `NAME=value` assignments;
   - *unredacted log / diagnostic output* (`raw_log` → `unsafe_content`):
     stack frames, log-level lines,
     `fatal:` / `error:` / `warning:` / `critical:` markers, ANSI escapes,
@@ -195,21 +211,38 @@ Contract semantics:
     reporting that it ran / executed / invoked / … something unspecified —
     the text does not say what was executed, so the turn is not
     certifiable and no guess is made;
-  - *unrecognised sentence openers* (`prose_starter` → `undecidable`):
-    every sentence, paragraph, and list item of a certifiable turn opens
-    with a reviewed narrative starter (pronouns, determiners,
-    conjunctions, prepositions, auxiliaries, adverbs, result participles —
-    the exported `PI_SUMMARY_PROSE_STARTERS` table), a capitalised token,
-    or a polysemous command head. Imperative and otherwise unrecognised
-    openers (`install the dependencies`, `deploy the new version`) fail
-    closed, so an invocation of a tool no vocabulary lists still cannot be
-    certified.
+  - *unrecognised sentence and line openers* (`prose_starter` →
+    `undecidable`): every segment of a certifiable turn — turn start,
+    inline sentence end, and **every line start** (single newlines are
+    judged; list and quote markers after them are skipped) — must open
+    with a reviewed narrative starter (`PI_SUMMARY_PROSE_STARTERS`:
+    pronouns, determiners, conjunctions, prepositions, auxiliaries,
+    adverbs, result participles; matched case-insensitively, so
+    capitalisation is no exemption), a polysemous command head, or an
+    `-ed`/`-ing` participle/gerund form. An opener that is a base form of
+    `PI_SUMMARY_COMMAND_VERBS` is an imperative and never certifies, even
+    when the sentence carries a narrative marker (`Note the caveat.`,
+    `Ensure the lockfile is current.`, `Deploy the new version.`,
+    `Update the lockfile after review.`). Any other unrecognised opener
+    certifies only when the same segment carries a narrative marker — a
+    copula/auxiliary/modal token or a participial `-ed` verb form —
+    narrative like `Alpha task verified the export path.` has one, while
+    command lines (`Bazel build //app:server`, `Poetry install`,
+    `poetry install` on its own line) do not, so an invocation of a tool
+    no vocabulary lists still cannot be certified at a segment start.
 
   The complete turn text is judged — never one fragment at a time — so
   material split across `pi.text_delta` fragments is caught in its
   assembled form. `available` asserts certification under exactly these
   classes; it is not a general claim that the text is harmless, and
   client-side filtering is still not the boundary.
+  **Honest residual.** Inside an already-certified narrative sentence, an
+  invocation of a tool no vocabulary lists, written in plain-English
+  words and carrying none of the structural material above (no flag,
+  path, quote, `//target`, subcommand, or non-starter + base-verb pair),
+  is not distinguishable from prose by a deterministic gate; such text is
+  only excluded when one of the listed classes matches. This is the exact
+  reach of `available`, and no stronger boundary is claimed.
 - **Fail closed.** Any rule hit yields `status:"unavailable"` with
   `unavailable_reason` set to that rule's reason — `"unsafe_content"` for
   identified unsafe material, `"undecidable"` when the gate could not

@@ -211,10 +211,13 @@ const piSummarySchema: JsonObject = {
     "table (DAT-192): credentials, shell syntax, absolute workspace paths, " +
     "command invocations, argument material, unredacted logs, and opaque " +
     "high-entropy strings fail closed as unsafe_content; a report that " +
-    "something was executed, or a sentence opener the gate cannot recognise " +
-    "as narrative prose, fails closed as undecidable. Certification is " +
-    "positive — only text recognised as ordinary narrative prose is exposed " +
-    "— and never rests on enumerating command tools alone. Fail closed: " +
+    "something was executed, or a sentence/line opener the gate cannot " +
+    "recognise as narrative prose (capitalisation confers no exemption; " +
+    "every line start is judged), fails closed as undecidable. " +
+    "Certification is positive — only text recognised as ordinary " +
+    "narrative prose is exposed, the contract states that boundary's " +
+    "exact reach, and it never rests on enumerating command tools alone. " +
+    "Fail closed: " +
     "text is exposed only when the entire turn passes every rule; any hit " +
     "or a gate failure yields status=unavailable with text=null, never " +
     "redacted or partial content. Lifecycle: null on the task until a Pi " +

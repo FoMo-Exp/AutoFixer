@@ -831,7 +831,7 @@ describe("safe Pi text summary contract (DAT-191)", () => {
   });
 
   test("a provider-error run publishes exactly one summary for its turn (QA B3)", async () => {
-    const partialText = "Partial analysis of the export flow.";
+    const partialText = "Partial analysis completed for the export flow.";
     const { base } = await startApp([
       { kind: "error", text: partialText, message: "provider exploded" },
     ]);
@@ -989,5 +989,45 @@ describe("command display boundary over the API (DAT-192)", () => {
     for (const event of summaryEvents) {
       expect(JSON.stringify(event.data)).not.toContain("ran the linter");
     }
+  });
+
+  test("a line-start command turn fails closed end to end (QA round-1)", async () => {
+    const command = "bazel build //app:server";
+    const raw = "The plan is ready\nbazel build //app:server";
+    const { base } = await startApp([{ kind: "text", text: raw }]);
+    const created = await createAndApprove(base);
+
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
+          ?.status === "unavailable",
+      "summary unavailable for the line-start command turn",
+    );
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    expect(task.body.pi_summary).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "unsafe_content",
+    });
+    // Neither the command nor its target may appear on any summary surface;
+    // only the M0 pi.text_delta stream keeps the model's raw text.
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain(command);
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain("//app:server");
+
+    const events = await timeline(base, created.id);
+    const summaryEvents = events.filter((event) => event.type === "pi.summary.updated");
+    expect(
+      summaryEvents.map((event) => (event.data["summary"] as { status: string }).status),
+    ).toEqual(["pending", "unavailable"]);
+    for (const event of summaryEvents) {
+      expect(JSON.stringify(event.data)).not.toContain(command);
+      expect((event.data["summary"] as { text: unknown }).text).toBeNull();
+    }
+    expect(
+      events.some(
+        (event) => event.type === "pi.text_delta" && String(event.data["delta"]).includes(command),
+      ),
+    ).toBe(true);
   });
 });

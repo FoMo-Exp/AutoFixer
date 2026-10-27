@@ -9,20 +9,26 @@
  * whole assembled turn text through an ordered, reviewable certification
  * table before anything is exposed as a summary.
  *
- * Security basis (DAT-192): certification is positive, not a tool
- * blacklist. Enumerating command tools can never be the safety claim — the
- * set of commands is open — so the decision boundary is layered, and every
- * layer only ever adds a rejection:
+ * Security basis (DAT-192, QA round-1 hardening): certification is
+ * positive, not a tool blacklist. Enumerating command tools can never be
+ * the safety claim — the set of commands is open — so the decision
+ * boundary is layered, and every layer only ever adds a rejection:
  * 1. Structural command material fails closed wherever it appears: shell
  *    syntax (fences, code spans, prompts, pipes, redirections, `$VAR`),
- *    argument material (flags, `./` paths, `NAME=value` assignments), and
- *    invocation shapes (polysemous head + subcommand / file / quoted /
- *    path argument).
- * 2. Sentence openers must be recognised narrative prose: every sentence,
- *    paragraph, and list item opens with a reviewed prose starter, a
- *    capitalised token, or a polysemous command head. Imperative or
- *    otherwise unrecognised openers are undecidable, so an invocation of a
- *    tool nobody enumerated still cannot be certified.
+ *    argument material (flags, `./` paths, `//target` arguments,
+ *    `NAME=value` assignments), and invocation shapes (polysemous head +
+ *    subcommand / file / quoted / path argument, plus a non-starter word
+ *    immediately followed by a base command verb).
+ * 2. Sentence and line openers must be recognised narrative prose:
+ *    capitalisation confers no exemption, and every line start (not just
+ *    paragraph and list starts) is judged. An opener that is a base
+ *    command/speech verb (`Deploy…`, `Install…`, `Ensure…`) is an
+ *    imperative and never certifies, whatever marker the sentence carries;
+ *    any other unrecognised opener certifies only when the same segment
+ *    carries a narrative marker (copula/auxiliary/modal or a participial /
+ *    gerund verb form). Command lines carry no such marker, so an
+ *    invocation of a tool nobody enumerated still cannot be certified at
+ *    a segment start.
  * 3. Execution reports ("I ran <something>") are undecidable: the text does
  *    not say what was executed, so the turn is not displayable.
  * 4. Command vocabularies are defence in depth on top: tokens with no
@@ -31,6 +37,11 @@
  *    evidence only, keeping ordinary prose such as "git history" and
  *    "make sense" displayable while "git status" and "cat package.json"
  *    are not.
+ * Vocabularies only ever add rejections; they are not the safety claim.
+ * Honest residual (stated in the contract): an unlisted tool invoked with
+ * plain-English words in the *middle* of an otherwise certified narrative
+ * sentence, carrying none of the structural markers above, is not
+ * distinguishable from prose by a deterministic gate.
  *
  * Fail-closed posture (DAT-191/DAT-192 acceptance):
  * - A summary is `available` only when the entire settled turn text is
@@ -725,15 +736,8 @@ export const PI_SUMMARY_PROSE_STARTERS: readonly string[] = [
   "executing",
   "invoking",
   "calling",
-  // Polite and negative openers that read as prose, not commands.
-  "please",
-  "let",
-  "consider",
-  "keep",
-  "ensure",
-  "avoid",
-  "note",
-  "remember",
+  // Negative contractions (auxiliary + negation), not imperative openers:
+  // base-form imperatives are rejected by PI_SUMMARY_COMMAND_VERBS below.
   "don't",
   "doesn't",
   "isn't",
@@ -753,6 +757,83 @@ export const PI_SUMMARY_PROSE_STARTERS: readonly string[] = [
   "e",
 ];
 
+/**
+ * Base-form command and speech-act verbs. Two fail-closed uses:
+ * - as a sentence/line opener it is an imperative and never certifies,
+ *   even when the sentence carries a narrative marker (`Ensure the lockfile
+ *   is current.` stays unavailable);
+ * - a non-starter word immediately followed by one of these verbs is an
+ *   invocation shape (`Poetry install`, `Bazel build`, `vite build`),
+ *   wherever it appears — grammatical English only uses bare base verbs
+ *   after auxiliaries, modals, or `to`, all of which are prose starters and
+ *   therefore exempt heads. Polysemous heads are never listed here: they
+ *   keep their structural-evidence rules (`git history` stays displayable).
+ * Deliberately excluded: ambiguous nouns that also name commands (`check`,
+ * `review`, `list`) so noun compounds like "the export checks" stay prose.
+ */
+export const PI_SUMMARY_COMMAND_VERBS: readonly string[] = [
+  "add",
+  "approve",
+  "avoid",
+  "build",
+  "bundle",
+  "cancel",
+  "checkout",
+  "clean",
+  "clone",
+  "commit",
+  "compile",
+  "consider",
+  "create",
+  "debug",
+  "delete",
+  "deploy",
+  "ensure",
+  "exec",
+  "execute",
+  "export",
+  "format",
+  "generate",
+  "init",
+  "install",
+  "keep",
+  "let",
+  "lint",
+  "migrate",
+  "merge",
+  "note",
+  "package",
+  "patch",
+  "please",
+  "prune",
+  "publish",
+  "pull",
+  "push",
+  "rebase",
+  "refactor",
+  "reject",
+  "release",
+  "remember",
+  "remove",
+  "rename",
+  "reset",
+  "restart",
+  "restore",
+  "retry",
+  "run",
+  "start",
+  "stop",
+  "sync",
+  "tag",
+  "test",
+  "try",
+  "uninstall",
+  "upgrade",
+  "update",
+  "use",
+  "verify",
+];
+
 const alternation = (words: readonly string[]): string => words.join("|");
 
 const COMMAND_TOKENS = alternation([
@@ -762,6 +843,9 @@ const COMMAND_TOKENS = alternation([
 
 /** `NAME=value` with no spaces around `=` — shell/flag assignment material. */
 const ASSIGNMENT = String.raw`\b[A-Za-z_][A-Za-z0-9_]{1,}=[^\s]`;
+
+/** `//target` argument material (bazel-style targets, comment-style paths). */
+const COMMAND_TARGET = String.raw`(?:^|[\s("'` + "`" + String.raw`])//[\w.:@+-]+`;
 
 /** Flag-shaped tokens (`-la`, `--init`) wherever they appear. */
 const FLAG = String.raw`(?:^|[\s("'` + "`" + String.raw`])-{1,2}[A-Za-z][\w-]*`;
@@ -798,30 +882,55 @@ const REDIRECTION = String.raw`(?:[\s)]|^)(?:>{1,2}|<{1,2})(?:[\s)]|$)|[\w)]>{1,
 const EXECUTION_REPORT = String.raw`\b(?:i|we|you|they|he|she|it)\s+(?:just\s+|also\s+|then\s+|quickly\s+|manually\s+|successfully\s+)?(?:ran|run|running|executed|executing|invoked|invoking|called|calling|issued|issuing|typed|typing|launched|launching|started|starting|installed|installing|applied|applying|attempted|attempting|tried|trying|performed|performing)\b\s+\S`;
 
 /**
- * Sentence/list positions at which a certifiable turn must open with a
- * recognised narrative starter. Soft line wraps do not open a sentence;
- * sentence ends preceded by an abbreviation dot (`e.g.`, `i.e.`) do not
- * split either.
+ * Segment positions at which a certifiable turn must open with a
+ * recognised narrative starter: the start of the turn, an inline sentence
+ * end, and **every line start** — agent output commonly writes one action
+ * per line, so a single newline opens a new segment (list/quote markers
+ * after it are skipped). Sentence ends preceded by an abbreviation dot
+ * (`e.g.`, `i.e.`) do not split.
  */
 const SEGMENT_START = [
   String.raw`^[\s]*(?:[-*•][ \t]+|>[ \t]+)?`,
   String.raw`(?<!\.[A-Za-z])[.!?…]["')\]]*[ \t]+`,
-  String.raw`(?<!\.[A-Za-z])[.!?…]["')\]]*\n{2,}[ \t]*`,
-  String.raw`\n[ \t]*[-*•][ \t]+`,
-  String.raw`\n[ \t]*>[ \t]+`,
+  String.raw`\n[ \t]*(?:[-*•][ \t]+|>[ \t]+)?`,
 ].join("|");
 
+/** Emphasis, heading, and quote noise skipped before a segment opener. */
+const OPENER_SKIP = String.raw`[ \t]*(?:["'“‘(*_#~[\]][ \t]*)*`;
+
 /**
- * Matches a *violation*: a segment that opens with a lowercase token which
- * is neither a reviewed prose starter nor a polysemous command head.
- * Case-sensitive by design — a capitalised opener reads as a proper noun or
- * a normal sentence start and is exempt.
+ * Narrative markers: a copula/auxiliary/modal token, or a participial `-ed`
+ * verb form. Only these rescue an otherwise unrecognised opener — a
+ * command line (`Bazel build //app:server`, `Deploy the new version.`)
+ * carries none, while narrative like `Alpha task verified the export
+ * path.` does. Bare `-ing` words are deliberately not markers: English is
+ * full of `-ing` nouns (`nothing`, `building`), and progressive `-ing`
+ * verbs always follow a copula/auxiliary, which is already a marker.
+ */
+const NARRATIVE_MARKER = String.raw`\b(?:is|are|was|were|be|been|being|do|does|did|has|have|had|will|would|shall|should|can|could|may|might|must)\b|[A-Za-z]{2,}ed\b`;
+
+/** No marker may appear between an uncertified opener and the next segment. */
+const NO_MARKER_IN_SEGMENT = String.raw`(?!(?:(?!${SEGMENT_START})(?!${NARRATIVE_MARKER})[\s\S])*(?:${NARRATIVE_MARKER}))`;
+
+/**
+ * Matches a *violation* of the positive prose certification. Capitalisation
+ * confers no exemption (case-insensitive): an opener that is a base
+ * command/speech verb is an imperative and fails closed regardless of any
+ * marker; any other opener outside the reviewed starter list, the
+ * polysemous heads, and the participles/gerunds fails closed unless the
+ * same segment carries a narrative marker.
  */
 const PROSE_STARTER_VIOLATION = new RegExp(
-  String.raw`(?:${SEGMENT_START})(?:["'“‘(*_[\]]*)` +
+  String.raw`(?:${SEGMENT_START})${OPENER_SKIP}` +
     String.raw`(?!(?:${alternation(PI_SUMMARY_PROSE_STARTERS)})\b)` +
     String.raw`(?!(?:${alternation(PI_SUMMARY_POLYSEMOUS_COMMAND_TOKENS)})\b)` +
-    String.raw`[a-z][\w'-]*`,
+    String.raw`(?!(?:[A-Za-z]{4,}(?:ed|ing)\b))` +
+    String.raw`(?:` +
+    String.raw`(?=(?:${alternation(PI_SUMMARY_COMMAND_VERBS)})\b)[A-Za-z][\w'-]*` +
+    String.raw`|` +
+    String.raw`[A-Za-z][\w'-]*${NO_MARKER_IN_SEGMENT}` +
+    String.raw`)`,
+  "i",
 );
 
 /**
@@ -882,9 +991,11 @@ export const PI_SUMMARY_SAFETY_RULES: readonly PiSummarySafetyRule[] = [
     code: "tool_invocation",
     keepsOut:
       "command invocations: any occurrence of a command token with no ordinary prose use " +
-      "(ls, cat, grep, sed, awk, chmod, curl, docker, …), and a polysemous head (git, make, " +
+      "(ls, cat, grep, sed, awk, chmod, curl, docker, …), a polysemous head (git, make, " +
       "node, go, find, python, …) followed by a known subcommand, a file-like argument, a " +
-      "quoted argument, a path argument, or a `.` target",
+      "quoted argument, a path argument, or a `.` target, and a non-starter word immediately " +
+      "followed by a base command verb (Poetry install, Bazel build, vite build) wherever it " +
+      "appears",
     reason: "unsafe_content",
     pattern: new RegExp(
       [
@@ -895,6 +1006,10 @@ export const PI_SUMMARY_SAFETY_RULES: readonly PiSummarySafetyRule[] = [
         String.raw`\b(?:${alternation(PI_SUMMARY_POLYSEMOUS_COMMAND_TOKENS)})\s+\.(?=\s|$|[|;&])`,
         String.raw`\bgit\s+(?:${alternation(GIT_SUBCOMMANDS)})\b`,
         String.raw`\b(?:npm|pnpm|yarn|bun|deno|pip3?|cargo|make|go)\s+(?:${alternation(PACKAGE_SUBCOMMANDS)})\b`,
+        // Non-starter head + base command verb: bare base verbs only occur
+        // after auxiliaries/modals/`to` (all prose starters, exempt heads),
+        // so this shape is an invocation, not grammatical narrative.
+        String.raw`(?!(?:${alternation(PI_SUMMARY_PROSE_STARTERS)})\b)\b[A-Za-z][\w'-]*\s+(?:${alternation(PI_SUMMARY_COMMAND_VERBS)})\b`,
       ].join("|"),
       "i",
     ),
@@ -903,9 +1018,9 @@ export const PI_SUMMARY_SAFETY_RULES: readonly PiSummarySafetyRule[] = [
     code: "command_material",
     keepsOut:
       "argument material wherever it appears: flag-shaped tokens (-la, --init), ./ ../ ~/ " +
-      "relative paths, and unspaced NAME=value assignments",
+      "relative paths, //target arguments, and unspaced NAME=value assignments",
     reason: "unsafe_content",
-    pattern: new RegExp([FLAG, RELATIVE_PATH, ASSIGNMENT].join("|")),
+    pattern: new RegExp([FLAG, RELATIVE_PATH, ASSIGNMENT, COMMAND_TARGET].join("|")),
   },
   {
     code: "raw_log",
@@ -938,9 +1053,11 @@ export const PI_SUMMARY_SAFETY_RULES: readonly PiSummarySafetyRule[] = [
   {
     code: "prose_starter",
     keepsOut:
-      "sentence, paragraph, and list-item openers the gate does not recognise as narrative prose: " +
-      "imperative or otherwise unrecognised openers fail closed as undecidable, so an invocation " +
-      "of a tool no vocabulary lists still cannot be certified",
+      "sentence and line openers the gate does not recognise as narrative prose: capitalisation " +
+      "confers no exemption, a base command/speech verb opener is an imperative that never " +
+      "certifies, and any other unrecognised opener certifies only with an in-segment narrative " +
+      "marker — an invocation of a tool no vocabulary lists still cannot be certified at a " +
+      "segment start",
     reason: "undecidable",
     pattern: PROSE_STARTER_VIOLATION,
   },

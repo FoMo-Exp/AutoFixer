@@ -4,7 +4,9 @@ import {
   evaluateTurnText,
   excerptTurnText,
   firstSafetyViolation,
+  PI_SUMMARY_COMMAND_VERBS,
   PI_SUMMARY_MAX_CHARS,
+  PI_SUMMARY_PROSE_STARTERS,
   PI_SUMMARY_SAFETY_RULES,
   PI_SUMMARY_UNAVAILABLE_REASONS,
   PiSummaryTracker,
@@ -397,6 +399,115 @@ describe("DAT-192: positive prose certification keeps narrative turns displayabl
   });
 });
 
+describe("DAT-192 QA round-1: capitalised and line-start commands fail closed", () => {
+  // Every row QA reproduced on head b38cf9c must now be unavailable; the
+  // expectation names the rule that certifies (or rejects) it.
+  const qaRows: Array<[label: string, rule: string, reason: string, text: string]> = [
+    [
+      "capitalised unknown-tool target",
+      "tool_invocation",
+      "unsafe_content",
+      "Bazel build //app:server",
+    ],
+    ["capitalised tool + subcommand", "tool_invocation", "unsafe_content", "Poetry install"],
+    ["capitalised tool + build verb", "tool_invocation", "unsafe_content", "Swift build"],
+    ["capitalised runner + verb", "tool_invocation", "unsafe_content", "Bunx vite build"],
+    ["capitalised installer", "tool_invocation", "unsafe_content", "Mise install"],
+    [
+      "lowercase command on its own line",
+      "tool_invocation",
+      "unsafe_content",
+      "The plan is ready\nbazel build //app:server",
+    ],
+    [
+      "lowercase command after a label line",
+      "tool_invocation",
+      "unsafe_content",
+      "Summary:\npoetry install",
+    ],
+    [
+      "lowercase command with a prose opener",
+      "tool_invocation",
+      "unsafe_content",
+      "The plan is ready\npoetry install",
+    ],
+    [
+      "capitalised imperative with a determiner",
+      "prose_starter",
+      "undecidable",
+      "Deploy the new version.",
+    ],
+    [
+      "capitalised imperative + object",
+      "prose_starter",
+      "undecidable",
+      "Update the lockfile after review.",
+    ],
+    [
+      "in-sentence command behind a modal",
+      "tool_invocation",
+      "unsafe_content",
+      "We should run bazel build //app:server",
+    ],
+    ["imperative speech verb opener", "prose_starter", "undecidable", "Note the caveat."],
+    [
+      "imperative opener with a narrative marker",
+      "prose_starter",
+      "undecidable",
+      "Ensure the lockfile is current.",
+    ],
+    ["capitalised install imperative", "prose_starter", "undecidable", "Install the dependencies."],
+    ["capitalised run imperative", "prose_starter", "undecidable", "Run the tests."],
+    ["base verb opener without a marker", "prose_starter", "undecidable", "Check the manifest."],
+  ];
+
+  for (const [label, rule, reason, text] of qaRows) {
+    test(`${label} fails closed as ${reason} (${rule})`, () => {
+      const evaluation = evaluateTurnText(text);
+      expect(evaluation).toEqual({ outcome: "unavailable", reason });
+      expect(firstSafetyViolation(text)?.code).toBe(rule);
+      // No command material may appear in any exposed byte.
+      expect(JSON.stringify(evaluation)).not.toContain("bazel build");
+      expect(JSON.stringify(evaluation)).not.toContain("poetry install");
+      expect(JSON.stringify(evaluation)).not.toContain("//app:server");
+      expect(JSON.stringify(evaluation)).not.toContain("Deploy the new version");
+    });
+  }
+
+  test("QA's imperative speech verbs are out of the starter list and in the verb list", () => {
+    for (const verb of [
+      "please",
+      "let",
+      "consider",
+      "keep",
+      "ensure",
+      "avoid",
+      "note",
+      "remember",
+    ]) {
+      expect(PI_SUMMARY_PROSE_STARTERS).not.toContain(verb);
+      expect(PI_SUMMARY_COMMAND_VERBS).toContain(verb);
+    }
+  });
+
+  test("capitalisation confers no exemption for any certified-listed opener", () => {
+    // Same words lower-case and capitalised must take the same decision;
+    // only reviewed starters, polysemous heads, and participles certify.
+    for (const word of ["deploy", "poetry", "bazel", "mise"]) {
+      expect(evaluateTurnText(`${word} the tool now.`).outcome).toBe("unavailable");
+      expect(
+        evaluateTurnText(`${word.charAt(0).toUpperCase()}${word.slice(1)} the tool now.`).outcome,
+      ).toBe("unavailable");
+    }
+  });
+
+  test("a soft-wrapped lowercase command line is a segment start", () => {
+    const raw = "The plan is ready\nbazel build //app:server";
+    expect(firstSafetyViolation(raw)?.code).toBe("tool_invocation");
+    expect(evaluateTurnText(raw)).toEqual({ outcome: "unavailable", reason: "unsafe_content" });
+  });
+});
+
 describe("safety gate: cross-fragment assembly", () => {
   test("a token split across deltas is caught once assembled", () => {
     const tracker = new PiSummaryTracker("tsk_unit");
@@ -492,11 +603,11 @@ describe("PiSummaryTracker lifecycle and attribution", () => {
       text: "First settled turn.",
     });
     tracker.beginTurn("turn_2");
-    tracker.appendText("Turn two mentions nothing sensitive.");
+    tracker.appendText("The second turn mentions nothing sensitive.");
     expect(tracker.settleTurn()).toMatchObject({
       turn_id: "turn_2",
       status: "available",
-      text: "Turn two mentions nothing sensitive.",
+      text: "The second turn mentions nothing sensitive.",
     });
     expect(JSON.stringify(tracker.snapshot())).not.toContain("First settled turn.");
   });
@@ -504,7 +615,7 @@ describe("PiSummaryTracker lifecycle and attribution", () => {
   test("an unsafe turn replaces a previously available summary without leaking", () => {
     const tracker = newTracker();
     tracker.beginTurn("turn_1");
-    tracker.appendText("Clean first summary.");
+    tracker.appendText("The first summary was clean.");
     tracker.settleTurn();
     tracker.beginTurn("turn_2");
     tracker.appendText("Now I echo password=hunter2secret here.");
@@ -517,7 +628,7 @@ describe("PiSummaryTracker lifecycle and attribution", () => {
   test("a new run resets to pending and never inherits the earlier run's text", () => {
     const tracker = newTracker();
     tracker.beginTurn("turn_1");
-    tracker.appendText("Run A summary that must not survive.");
+    tracker.appendText("The run summary that must not survive.");
     tracker.settleTurn();
 
     const reset = tracker.beginRun("run_b");
@@ -528,17 +639,17 @@ describe("PiSummaryTracker lifecycle and attribution", () => {
       text: null,
       unavailable_reason: null,
     });
-    expectNoLeak(JSON.stringify(tracker.snapshot()), "Run A summary that must not survive.");
+    expectNoLeak(JSON.stringify(tracker.snapshot()), "The run summary that must not survive.");
   });
 
   test("summaries never cross task trackers", () => {
     const a = newTracker("tsk_a", "run_a");
     a.beginTurn("turn_1");
-    a.appendText("Task A content.");
+    a.appendText("Task A returned content.");
     a.settleTurn();
     const b = newTracker("tsk_b", "run_b");
     expect(b.snapshot().task_id).toBe("tsk_b");
-    expect(JSON.stringify(b.snapshot())).not.toContain("Task A content.");
+    expect(JSON.stringify(b.snapshot())).not.toContain("Task A returned content.");
   });
 
   test("snapshots are copies, not live state", () => {
