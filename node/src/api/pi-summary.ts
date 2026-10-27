@@ -24,19 +24,22 @@
  *    paragraph and list starts) is judged. An opener that is a base
  *    command/speech verb (`Deploy…`, `Install…`, `Ensure…`) is an
  *    imperative and never certifies, whatever marker the sentence carries;
- *    any other unrecognised opener certifies only when the same segment
- *    carries a narrative marker (copula/auxiliary/modal or a participial /
- *    gerund verb form). Command lines carry no such marker, so an
- *    invocation of a tool nobody enumerated still cannot be certified at
- *    a segment start.
+ *    any other opener — polysemous command heads included (QA round-2:
+ *    `node app`, `echo hello` carry no structural evidence either) —
+ *    certifies only when the same segment carries a narrative marker (a
+ *    copula/auxiliary/modal token or a participial `-ed` verb form).
+ *    Command lines carry no such marker, so an invocation — enumerated
+ *    tool head or not — cannot be certified at a segment start.
  * 3. Execution reports ("I ran <something>") are undecidable: the text does
  *    not say what was executed, so the turn is not displayable.
  * 4. Command vocabularies are defence in depth on top: tokens with no
  *    ordinary prose use (`ls`, `cat`, `grep`, `sed`, …) fail on sight;
  *    polysemous heads (`git`, `make`, `node`, `find`, …) fail on structural
- *    evidence only, keeping ordinary prose such as "git history" and
- *    "make sense" displayable while "git status" and "cat package.json"
- *    are not.
+ *    evidence mid-sentence (`git status`, `node server.js`,
+ *    `cat package.json`), and as segment openers they additionally need an
+ *    in-segment narrative marker: `Node is fast.` and
+ *    `git history is clean.` stay displayable, while `git history`,
+ *    `make sense`, and `node app` fail closed as undecidable.
  * Vocabularies only ever add rejections; they are not the safety claim.
  * Honest residual (stated in the contract): an unlisted tool invoked with
  * plain-English words in the *middle* of an otherwise certified narrative
@@ -211,12 +214,15 @@ export const PI_SUMMARY_UNAMBIGUOUS_COMMAND_TOKENS: readonly string[] = [
 
 /**
  * Polysemous command heads: words that are both commands and ordinary
- * English. They fail only on structural evidence — a known subcommand, a
- * file-like or quoted or path argument, or a `.` target — so prose like
- * "git history", "make sense", "Node is fast", and "find the bug" stays
- * displayable while "git status", "make install", "node server.js", and
- * "find package.json" do not. They are also exempt from the sentence-opener
- * certification exactly because they are legitimate prose words there.
+ * English. Mid-sentence they fail on structural evidence — a known
+ * subcommand, a file-like or quoted or path argument, or a `.` target —
+ * so "the echo tool" stays prose while "git status", "make install",
+ * "node server.js", and "find package.json" do not. As a sentence/line
+ * opener they certify only when the segment carries a narrative marker
+ * (QA round-2): `Node is fast.` and `git history is clean.` stay
+ * displayable on their copula, while segment-start `node app`,
+ * `echo hello`, `python script`, and `git history` carry no marker and
+ * fail closed as undecidable.
  */
 export const PI_SUMMARY_POLYSEMOUS_COMMAND_TOKENS: readonly string[] = [
   "bun",
@@ -916,14 +922,15 @@ const NO_MARKER_IN_SEGMENT = String.raw`(?!(?:(?!${SEGMENT_START})(?!${NARRATIVE
  * Matches a *violation* of the positive prose certification. Capitalisation
  * confers no exemption (case-insensitive): an opener that is a base
  * command/speech verb is an imperative and fails closed regardless of any
- * marker; any other opener outside the reviewed starter list, the
- * polysemous heads, and the participles/gerunds fails closed unless the
- * same segment carries a narrative marker.
+ * marker; any other opener outside the reviewed starter list and the
+ * `-ed`/`-ing` participles — polysemous command heads included — fails
+ * closed unless the same segment carries a narrative marker, so
+ * `Node is fast.` certifies on `is` while `node app` and `git history`
+ * do not.
  */
 const PROSE_STARTER_VIOLATION = new RegExp(
   String.raw`(?:${SEGMENT_START})${OPENER_SKIP}` +
     String.raw`(?!(?:${alternation(PI_SUMMARY_PROSE_STARTERS)})\b)` +
-    String.raw`(?!(?:${alternation(PI_SUMMARY_POLYSEMOUS_COMMAND_TOKENS)})\b)` +
     String.raw`(?!(?:[A-Za-z]{4,}(?:ed|ing)\b))` +
     String.raw`(?:` +
     String.raw`(?=(?:${alternation(PI_SUMMARY_COMMAND_VERBS)})\b)[A-Za-z][\w'-]*` +

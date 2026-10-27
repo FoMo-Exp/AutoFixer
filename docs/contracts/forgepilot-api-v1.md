@@ -152,12 +152,16 @@ Contract semantics:
   recognises as ordinary narrative prose: every segment — turn start,
   inline sentence end, and every single-newline line start — must open
   with a reviewed narrative starter (case-insensitive; **capitalisation
-  confers no exemption**), a polysemous command head, or a participle /
-  gerund form, unless a base command-verb opener (an imperative that
-  never certifies) or an in-segment narrative marker settles the
-  verdict. Structural command material, execution reports, and
-  unrecognised openers all fail closed. The command vocabularies named
-  below are defence in depth layered on top: they can only add
+  confers no exemption**) or an `-ed`/`-ing` participle/gerund form, or
+  with a polysemous command head **plus an in-segment narrative marker**;
+  any other opener needs that narrative marker too — a base command-verb
+  opener never certifies — and command lines carry none: segment-start
+  `node app`, `echo hello`, `python script`, `Deploy the new version.`
+  are unavailable, while `Node is fast.` and `git history is clean.`
+  certify on their copula. Structural command material, execution
+  reports, and unrecognised openers all fail closed. The command
+  vocabularies named below are defence in depth layered on top: they can
+  only add
   rejections and never create an allowance. The exact reach of the
   deterministic boundary — including what it deliberately does not
   claim — is stated after the classes.
@@ -218,8 +222,9 @@ Contract semantics:
     with a reviewed narrative starter (`PI_SUMMARY_PROSE_STARTERS`:
     pronouns, determiners, conjunctions, prepositions, auxiliaries,
     adverbs, result participles; matched case-insensitively, so
-    capitalisation is no exemption), a polysemous command head, or an
-    `-ed`/`-ing` participle/gerund form. An opener that is a base form of
+    capitalisation is no exemption), or an `-ed`/`-ing`
+    participle/gerund form, or a polysemous command head **with an
+    in-segment narrative marker**. An opener that is a base form of
     `PI_SUMMARY_COMMAND_VERBS` is an imperative and never certifies, even
     when the sentence carries a narrative marker (`Note the caveat.`,
     `Ensure the lockfile is current.`, `Deploy the new version.`,
@@ -228,21 +233,28 @@ Contract semantics:
     copula/auxiliary/modal token or a participial `-ed` verb form —
     narrative like `Alpha task verified the export path.` has one, while
     command lines (`Bazel build //app:server`, `Poetry install`,
-    `poetry install` on its own line) do not, so an invocation of a tool
-    no vocabulary lists still cannot be certified at a segment start.
+    `poetry install` on its own line) do not. A polysemous head without
+    a marker is likewise undecidable (QA round-2): segment-start
+    `node app`, `echo hello`, `python script`, `head notes`,
+    `sort files`, `kill 1234`, `date today`, `man pages`, `source env`,
+    and `git history` fail closed, while `Node is fast.` and
+    `git history is clean.` certify on their copula.
 
   The complete turn text is judged — never one fragment at a time — so
   material split across `pi.text_delta` fragments is caught in its
   assembled form. `available` asserts certification under exactly these
   classes; it is not a general claim that the text is harmless, and
   client-side filtering is still not the boundary.
-  **Honest residual.** Inside an already-certified narrative sentence, an
-  invocation of a tool no vocabulary lists, written in plain-English
-  words and carrying none of the structural material above (no flag,
-  path, quote, `//target`, subcommand, or non-starter + base-verb pair),
-  is not distinguishable from prose by a deterministic gate; such text is
-  only excluded when one of the listed classes matches. This is the exact
-  reach of `available`, and no stronger boundary is claimed.
+  **Honest residual.** Segment starts are covered as described above;
+  *inside* an already-certified narrative sentence — where prose like
+  `the echo tool` must stay displayable — an invocation shape written in
+  plain-English words and carrying none of the structural material above
+  (no flag, path, quote, `//target`, subcommand, or non-starter +
+  base-verb pair), whether or not its head is a listed tool word (for
+  example `We saw node app run`), is not distinguishable from prose by a
+  deterministic gate; such text is only excluded when one of the listed
+  classes matches. This is the exact reach of `available`, and no
+  stronger boundary is claimed.
 - **Fail closed.** Any rule hit yields `status:"unavailable"` with
   `unavailable_reason` set to that rule's reason — `"unsafe_content"` for
   identified unsafe material, `"undecidable"` when the gate could not

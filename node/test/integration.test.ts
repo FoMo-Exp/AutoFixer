@@ -1030,4 +1030,43 @@ describe("command display boundary over the API (DAT-192)", () => {
       ),
     ).toBe(true);
   });
+
+  test("a segment-start polysemous command projects text null everywhere (QA round-2)", async () => {
+    const command = "node app";
+    const raw = "The tool is ready.\nnode app";
+    const { base } = await startApp([{ kind: "text", text: raw }]);
+    const created = await createAndApprove(base);
+
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.pi_summary
+          ?.status === "unavailable",
+      "summary unavailable for the segment-start polysemous command turn",
+    );
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    expect(task.body.pi_summary).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "undecidable",
+    });
+    expect(JSON.stringify(task.body.pi_summary)).not.toContain(command);
+
+    const events = await timeline(base, created.id);
+    const summaryEvents = events.filter((event) => event.type === "pi.summary.updated");
+    expect(
+      summaryEvents.map((event) => (event.data["summary"] as { status: string }).status),
+    ).toEqual(["pending", "unavailable"]);
+    // Projection and every pi.summary.updated frame carry text null and no
+    // trace of the command; only the M0 delta keeps the model's raw text.
+    for (const event of summaryEvents) {
+      expect((event.data["summary"] as { text: unknown }).text).toBeNull();
+      expect(JSON.stringify(event.data)).not.toContain(command);
+    }
+    expect(
+      events.some(
+        (event) => event.type === "pi.text_delta" && String(event.data["delta"]).includes(command),
+      ),
+    ).toBe(true);
+  });
 });

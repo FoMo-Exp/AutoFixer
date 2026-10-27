@@ -368,8 +368,8 @@ describe("DAT-192: undecidable turns fail closed without a guess", () => {
 describe("DAT-192: positive prose certification keeps narrative turns displayable", () => {
   const certifiedTurns: Array<[label: string, text: string]> = [
     ["capitalised prose word (QA baseline)", "Node is fast"],
-    ["polysemous head + prose noun (QA baseline)", "git history"],
-    ["polysemous head + prose complement (QA baseline)", "make sense"],
+    ["polysemous head + copula marker (QA contrast)", "Node is fast."],
+    ["polysemous head + copula in prose (QA contrast)", "git history is clean."],
     ["plain narrative sentence", "The manifest lists three dependencies and no secrets."],
     ["first-person analysis", "I inspected the manifest and found no issues."],
     ["narrative list", "- Checked the manifest.\n- Confirmed the lockfile."],
@@ -377,7 +377,7 @@ describe("DAT-192: positive prose certification keeps narrative turns displayabl
     ["lowercase gerund bullet", "- verified the manifest."],
     ["abbreviation-led sentence", "e.g. the manifest lists three entries."],
     ["repository-relative paths stay allowed", "Updated node/src/api/task-service.ts in place."],
-    ["polysemous find in prose", "find the bug before the release."],
+    ["participle opener (former poly baseline)", "Finding the bug before the release."],
     ["conjunction opener", "but the export check still passed."],
   ];
 
@@ -505,6 +505,52 @@ describe("DAT-192 QA round-1: capitalised and line-start commands fail closed", 
     const raw = "The plan is ready\nbazel build //app:server";
     expect(firstSafetyViolation(raw)?.code).toBe("tool_invocation");
     expect(evaluateTurnText(raw)).toEqual({ outcome: "unavailable", reason: "unsafe_content" });
+  });
+});
+
+describe("DAT-192 QA round-2: segment-start polysemous heads need a narrative marker", () => {
+  // QA reproduced these on head 51ae7f7: a polysemous command head with a
+  // plain-word argument carries no structural evidence, so it must fail
+  // closed at a segment start unless the segment has narrative evidence.
+  const qaRows: Array<[label: string, text: string]> = [
+    ["echo + plain argument", "echo hello"],
+    ["node + plain argument", "node app"],
+    ["python + plain argument", "python script"],
+    ["head + plain argument", "head notes"],
+    ["tail + plain argument", "tail notes"],
+    ["sort + plain argument", "sort files"],
+    ["kill + numeric argument", "kill 1234"],
+    ["date + plain argument", "date today"],
+    ["man + plain argument", "man pages"],
+    ["source + plain argument", "source env"],
+    ["poly head on its own line", "The tool is ready.\nnode app"],
+    ["poly head after a certified line", "Verified the fix.\npython script"],
+  ];
+
+  for (const [label, text] of qaRows) {
+    test(`${label} fails closed as undecidable (prose_starter)`, () => {
+      const evaluation = evaluateTurnText(text);
+      expect(evaluation).toEqual({ outcome: "unavailable", reason: "undecidable" });
+      expect(firstSafetyViolation(text)?.code).toBe("prose_starter");
+      // No command material may appear in any exposed byte.
+      expect(JSON.stringify(evaluation)).not.toContain("echo hello");
+      expect(JSON.stringify(evaluation)).not.toContain("node app");
+      expect(JSON.stringify(evaluation)).not.toContain("python script");
+    });
+  }
+
+  test("a narrative marker keeps a polysemous opener displayable (QA contrast)", () => {
+    for (const text of ["Node is fast.", "git history is clean."]) {
+      expect(evaluateTurnText(text)).toEqual({ outcome: "available", text });
+    }
+  });
+
+  test("marker-less poly openers are over-rejected as undecidable (accepted cost)", () => {
+    for (const text of ["git history", "make sense of this.", "find the bug before the release."]) {
+      const evaluation = evaluateTurnText(text);
+      expect(evaluation).toEqual({ outcome: "unavailable", reason: "undecidable" });
+      expect(firstSafetyViolation(text)?.code).toBe("prose_starter");
+    }
   });
 });
 
