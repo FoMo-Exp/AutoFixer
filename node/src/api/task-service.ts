@@ -541,6 +541,16 @@ export class TaskService {
     return toTaskResource(this.requireRecord(taskId));
   }
 
+  /**
+   * Whether the task reached a terminal projection. The SSE handler uses
+   * this to decide that no future events can exist, so it must never
+   * subscribe a client to a terminal task — including one whose replay has
+   * nothing left to write (Last-Event-ID anchored at task.terminal).
+   */
+  isTerminal(taskId: string): boolean {
+    return this.requireRecord(taskId).terminal;
+  }
+
   listTasks(cursor: string | null, status: string | null): TaskPage {
     if (status !== null && !(UI_STATUSES as readonly string[]).includes(status)) {
       throw new ApiError(400, "INVALID_REQUEST", `Unknown status filter ${JSON.stringify(status)}`);
@@ -1017,6 +1027,12 @@ export class TaskService {
   async recoverFromDsh(): Promise<void> {
     for (const record of this.deps.store.list()) {
       if (record.terminal) {
+        if (!record.terminalEventRecorded) {
+          // A terminal projection without its closing frame (only reachable
+          // from a hand-migrated or damaged state file): record it exactly
+          // once so replayed timelines always end on task.terminal.
+          this.finalizeIfTerminal(record);
+        }
         continue;
       }
       if (!record.runId) {

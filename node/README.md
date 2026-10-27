@@ -86,7 +86,8 @@ After a restart:
 
 - tasks, timelines, and SSE `Last-Event-ID` replay resume exactly where they
   stopped — same `event_id`s, same `sequence` numbers, no duplicated business
-  events; a replay that reaches `task.terminal` closes the stream;
+  events; a terminal task's stream always closes after its replay, including
+  when the client's `Last-Event-ID` is already anchored at `task.terminal`;
 - a run that terminated while Node was down gains exactly one status
   transition and one `task.terminal` event; a run dsh no longer knows is
   projected `stopped` with a reason;
@@ -95,9 +96,19 @@ After a restart:
   stays cancellable through the product API.
 
 `POST /api/v1/tasks` additionally accepts an optional `Idempotency-Key`
-header (≤256 chars): same key + same payload replays the original task
-(including across restarts), the same key with a different payload is `409
-IDEMPOTENCY_CONFLICT`, and concurrent same-key creates join one run.
+header (≤256 chars, enforced with `400 INVALID_REQUEST` when longer): same
+key + same payload replays the original task (including across restarts), the
+same key with a different payload is `409 IDEMPOTENCY_CONFLICT`, and
+concurrent same-key creates join one run.
+
+**Single instance per state file.** The projection has no cross-process lock:
+two orchestrators pointed at the same `FORGEPILOT_TASK_STATE_FILE` replace
+whole documents and would silently drop each other's tasks. Run one
+orchestrator per state file (the per-uid default assumes exactly that). The
+parent directory is created `0700`, but like the api-token directory pattern
+the mode only applies when Node creates it — on a shared `/tmp` another user
+could pre-create `$TMPDIR/forgepilot-<uid>/`; prefer an absolute private
+path under your home directory when that matters.
 
 ## Authentication and origin guards
 

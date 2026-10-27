@@ -500,9 +500,11 @@ function deserializeTask(serialized: PersistedTaskRecord): TaskRecord {
   record.mergeQueueEligible ??= false;
   record.artifactIndex ??= [];
   // A terminal status is terminal regardless of what a stale flag says; the
-  // flag only records whether the closing event was already appended.
+  // flag records whether the closing event exists. Derive it from the events
+  // themselves: if they disagree (damaged or hand-migrated file), the
+  // events win and recovery re-records the missing frame exactly once.
   record.terminal = record.terminal === true || isTerminalStatus(record.status);
-  record.terminalEventRecorded ??= record.events.some((event) => event.type === "task.terminal");
+  record.terminalEventRecorded = record.events.some((event) => event.type === "task.terminal");
   record.actionsInFlight = 0;
   return record;
 }

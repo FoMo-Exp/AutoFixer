@@ -51,8 +51,11 @@ The OpenAPI document declares this as the `bearerAuth` security scheme
 ```
 
 `association` and `revision` are the verifiable task/run/repository/base-SHA/
-head-SHA bindings, every field projected from the authoritative dsh run and
-never inferred by Node. `governance` projects the GitHub merge boundary for
+head-SHA bindings. `run_id` and `head_sha` are projected from the
+authoritative dsh run (`head_sha` from its patch report, null until one
+exists); `task_id`, `repository_id`, and `base_sha` are the creation bindings
+dsh accepted and pinned for the run — Node records them at create time and
+never invents or re-derives them afterwards. `governance` projects the GitHub merge boundary for
 the current head: approvals and checks are observations of one exact head, so
 when dsh reports a newer head than the last approval snapshot, Node marks
 `observations_valid: false` and `merge_queue_eligible: false` until dsh
@@ -151,8 +154,10 @@ Consequences a client can rely on:
   `sequence` numbers as before the restart.
 - `GET /tasks/{id}/stream` replays from the durable timeline, so a
   `Last-Event-ID` captured before a restart resumes exactly after that event:
-  ordered, gap-free, and without repeating business events. A replay that
-  reaches `task.terminal` closes the stream.
+  ordered, gap-free, and without repeating business events. A stream for a
+  terminal task always closes after its replay — including when the client's
+  `Last-Event-ID` is already anchored at `task.terminal` and the replay has
+  nothing left to write.
 - A task whose run reached a terminal dsh state while Node was down gains
   exactly one new status transition and one `task.terminal` event at
   recovery; a run dsh no longer knows is projected `stopped` with a reason,

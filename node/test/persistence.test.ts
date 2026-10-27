@@ -148,8 +148,9 @@ describe("durable task projection (M3 persistence)", () => {
     const store = new TaskStore({ persistencePath: stateFile });
     const restored = store.get(base.id);
     expect(restored?.status).toBe("stopped");
-    // A terminal status without a recorded terminal event is healed so a
-    // replay cannot end without the closing frame.
+    // Load flags the record terminal without inventing the closing frame;
+    // recovery records it exactly once (see recovery.test.ts), so a replay
+    // can never end without the closing frame.
     expect(restored?.terminal).toBe(true);
     expect(restored?.terminalEventRecorded).toBe(false);
     expect(restored?.governanceValid).toBe(true);

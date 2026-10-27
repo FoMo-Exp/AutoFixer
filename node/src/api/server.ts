@@ -147,6 +147,16 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
       if (req.method === "POST" && segments.length === 3) {
         const body = await readJsonBody(req);
         const idempotencyKey = req.headers["idempotency-key"];
+        // The contract caps the key at 256 characters; enforce it here so the
+        // documented maxLength is real rather than aspirational.
+        if (typeof idempotencyKey === "string" && idempotencyKey.length > 256) {
+          throw new ApiError(
+            400,
+            "INVALID_REQUEST",
+            "Idempotency-Key must be at most 256 characters",
+            { length: idempotencyKey.length },
+          );
+        }
         const created = await service.createTask(
           {
             repository_id: requireString(body, "repository_id"),
@@ -242,27 +252,28 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
           "Cache-Control": "no-cache",
           Connection: "keep-alive",
         });
+        const timeline = service.getTimeline(taskId);
         const lastEventId = req.headers["last-event-id"];
         let lastSequence = 0;
         if (typeof lastEventId === "string" && lastEventId.length > 0) {
-          const known = service.getTimeline(taskId).find((item) => item.event_id === lastEventId);
+          const known = timeline.find((item) => item.event_id === lastEventId);
           // Unknown ids replay from the start: safer than silently skipping
           // history for a reconnecting client.
           lastSequence = known?.sequence ?? 0;
         }
-        let ended = false;
-        for (const item of service.getTimeline(taskId)) {
+        for (const item of timeline) {
           if (item.sequence > lastSequence) {
             writeSseEvent(res, item);
-            if (item.type === "task.terminal") {
-              // The replay itself closed the task: a reconnecting client gets
-              // the terminal frame and a completed stream, never a dangling
-              // subscription on a dead task.
-              ended = true;
-            }
           }
         }
-        if (ended) {
+        // A terminal task has no future events, so never subscribe to one.
+        // The replay above already covered whatever the client was missing;
+        // closing here handles every terminal shape — the browser EventSource
+        // auto-reconnect whose Last-Event-ID is anchored at task.terminal
+        // (nothing left to write), a record that predates the closing-frame
+        // invariant, and the fresh replay that just delivered the frame.
+        // Subscribing in any of these would dangle forever.
+        if (service.isTerminal(taskId)) {
           res.end();
           return;
         }

@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -11,7 +11,14 @@ import type { ApiErrorBody } from "../src/api/errors.js";
 import type { TaskResource, TimelineItem } from "../src/api/task-store.js";
 import type { DshServerHandle } from "./helpers/dsh-server.js";
 import { startDshServer } from "./helpers/dsh-server.js";
-import { getJson, postJson, readSse, setAuthToken, waitUntil } from "./helpers/http.js";
+import {
+  getJson,
+  postJson,
+  readSse,
+  readSseResult,
+  setAuthToken,
+  waitUntil,
+} from "./helpers/http.js";
 import type { ScriptedTurn } from "./helpers/scripted-stream.js";
 import { scriptedStream, TEST_MODEL } from "./helpers/scripted-stream.js";
 
@@ -259,6 +266,99 @@ describe("restart recovery (M3 acceptance 1)", () => {
     );
   });
 
+  test("a stream reconnect anchored at task.terminal closes instead of dangling (QA B1)", async () => {
+    const stateFile = freshStateFile();
+    const { base } = await startApp(stateFile, [
+      {
+        kind: "tool",
+        toolId: "echo",
+        args: { message: "hello" },
+        pathScope: ["secrets/keys.md"],
+        rationale: "outside the grant",
+      },
+      { kind: "text", text: "Stopped." },
+    ]);
+    const task = await createAndApprove(base);
+    await waitUntil(async () => {
+      const current = await getJson<TaskResource>(`${base}/api/v1/tasks/${task.id}`);
+      return current.body.status === "stopped";
+    }, "task terminal for the anchored reconnect");
+
+    const events = await timeline(base, task.id);
+    const terminal = events.at(-1);
+    expect(terminal?.type).toBe("task.terminal");
+
+    // A browser EventSource reconnects with Last-Event-ID set to the last
+    // frame it saw — for a completed task that is the terminal event id.
+    // The replay has nothing left to write; the server must still commit
+    // headers and close rather than subscribe and hang forever.
+    const anchored = await readSseResult(`${base}/api/v1/tasks/${task.id}/stream`, {
+      lastEventId: terminal!.event_id,
+      timeoutMs: 5_000,
+    });
+    expect(anchored.frames).toHaveLength(0);
+    expect(anchored.closedByServer).toBe(true);
+
+    // Same for an id anchored one frame before the terminal event: the
+    // replay delivers the closing frame and closes.
+    const beforeTerminal = events.at(-2)!;
+    const tail = await readSseResult(`${base}/api/v1/tasks/${task.id}/stream`, {
+      lastEventId: beforeTerminal.event_id,
+      timeoutMs: 5_000,
+    });
+    expect(tail.frames.map((frame) => frame.event)).toEqual(["task.terminal"]);
+    expect(tail.closedByServer).toBe(true);
+
+    // And an unknown anchor replays the full history, ends at the closing
+    // frame, and closes — the same guarantee for a fresh client.
+    const full = await readSseResult(`${base}/api/v1/tasks/${task.id}/stream`, {
+      timeoutMs: 5_000,
+    });
+    expect(full.frames.map((frame) => frame.event)).toEqual(events.map((e) => e.type));
+    expect(full.closedByServer).toBe(true);
+  });
+
+  test("recovery heals a terminal record missing its closing frame, and its stream closes", async () => {
+    const stateFile = freshStateFile();
+    const { base } = await startApp(stateFile, [
+      {
+        kind: "tool",
+        toolId: "echo",
+        args: { message: "hello" },
+        pathScope: ["secrets/keys.md"],
+        rationale: "outside the grant",
+      },
+      { kind: "text", text: "Stopped." },
+    ]);
+    const task = await createAndApprove(base);
+    await waitUntil(async () => {
+      const current = await getJson<TaskResource>(`${base}/api/v1/tasks/${task.id}`);
+      return current.body.status === "stopped";
+    }, "task terminal before stripping the closing frame");
+    await apps.pop()?.stop();
+
+    // Simulate a damaged/hand-migrated projection: the record is terminal
+    // but its task.terminal event was lost.
+    const document = JSON.parse(readFileSync(stateFile, "utf8")) as {
+      tasks: Array<{ id: string; events: Array<{ type: string }> }>;
+    };
+    const damaged = document.tasks.find((record) => record.id === task.id)!;
+    damaged.events = damaged.events.filter((event) => event.type !== "task.terminal");
+    writeFileSync(stateFile, JSON.stringify(document), "utf8");
+
+    const second = await startApp(stateFile, []);
+    // Recovery records the missing closing frame exactly once…
+    const events = await timeline(second.base, task.id);
+    expect(events.at(-1)?.type).toBe("task.terminal");
+    expect(events.filter((event) => event.type === "task.terminal")).toHaveLength(1);
+    // …and the stream for that healed task closes after its replay.
+    const replay = await readSseResult(`${second.base}/api/v1/tasks/${task.id}/stream`, {
+      timeoutMs: 5_000,
+    });
+    expect(replay.frames.at(-1)?.event).toBe("task.terminal");
+    expect(replay.closedByServer).toBe(true);
+  });
+
   test("recovery never fabricates a run dsh does not know", async () => {
     const stateFile = freshStateFile();
     const first = await startApp(stateFile, []);
@@ -413,6 +513,22 @@ describe("create idempotency (M3 acceptance 3)", () => {
     );
     expect(conflicting.status).toBe(409);
     expect(conflicting.body.error.code).toBe("IDEMPOTENCY_CONFLICT");
+  });
+
+  test("an Idempotency-Key longer than 256 characters is rejected with 400", async () => {
+    const { base } = await startApp(freshStateFile(), []);
+    const response = await postJson<ApiErrorBody>(
+      `${base}/api/v1/tasks`,
+      {
+        repository_id: REPOSITORY_ID,
+        base_ref: "main",
+        summary: "Overlong key",
+        acceptance_criteria: ["bounded"],
+      },
+      { "Idempotency-Key": "k".repeat(257) },
+    );
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe("INVALID_REQUEST");
   });
 
   test("without a key every create is a new task", async () => {

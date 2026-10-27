@@ -94,8 +94,10 @@ const taskSchema: JsonObject = {
     association: {
       type: "object",
       description:
-        "Verifiable task/run/repository/revision binding. Every field is " +
-        "projected from the authoritative dsh run, never inferred by Node.",
+        "Verifiable task/run/repository/revision binding. run_id and " +
+        "head_sha are projected from the authoritative dsh run; task_id, " +
+        "repository_id, and base_sha are the creation bindings dsh accepted " +
+        "and pinned for the run. Node never invents any of these values.",
       required: ["task_id", "run_id", "repository_id", "base_sha", "head_sha"],
       properties: {
         task_id: { type: "string" },
@@ -496,7 +498,9 @@ export function buildOpenApiDocument(): OpenApiDocument {
           "SSE stream of task events; replays by Last-Event-ID in sequence order " +
           "from the durable projection, so a reconnect after an orchestrator " +
           "restart resumes exactly where the client stopped without duplicating " +
-          "business events. A replay that reaches task.terminal closes the stream.",
+          "business events. A terminal task's stream always closes after its " +
+          "replay, including when Last-Event-ID is already anchored at " +
+          "task.terminal and the replay has nothing left to write.",
         parameters: [
           { name: "task_id", in: "path", required: true, schema: { type: "string" } },
           {

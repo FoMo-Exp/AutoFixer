@@ -81,14 +81,24 @@ export interface SseFrame {
   data: TaskEvent | undefined;
 }
 
+export interface SseReadResult {
+  frames: SseFrame[];
+  /**
+   * True when the server ended the stream; false when the client gave up
+   * (untilType matched, or the deadline hit a dangling connection).
+   */
+  closedByServer: boolean;
+}
+
 /**
- * Read an SSE stream, optionally replaying after Last-Event-ID, and collect
- * frames until `untilType` is seen (or the stream ends / timeout elapses).
+ * Read an SSE stream and also report whether the server closed it. A stream
+ * that only ends by aborting the fetch is a dangling connection — the failure
+ * mode of subscribing a client to a task that can never emit again.
  */
-export async function readSse(
+export async function readSseResult(
   url: string,
   options: { lastEventId?: string; untilType?: string; timeoutMs?: number } = {},
-): Promise<SseFrame[]> {
+): Promise<SseReadResult> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 15_000);
   const frames: SseFrame[] = [];
@@ -109,7 +119,8 @@ export async function readSse(
     for (;;) {
       const { done, value } = await reader.read();
       if (done) {
-        break;
+        // The response body ended without an abort: the server closed it.
+        return { frames, closedByServer: true };
       }
       buffer += decoder.decode(value, { stream: true });
       let separator = buffer.indexOf("\n\n");
@@ -130,19 +141,30 @@ export async function readSse(
           frames.push(frame);
           if (options.untilType && frame.event === options.untilType) {
             controller.abort();
-            return frames;
+            return { frames, closedByServer: false };
           }
         }
         separator = buffer.indexOf("\n\n");
       }
     }
-    return frames;
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      return frames;
+      return { frames, closedByServer: false };
     }
     throw error;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/**
+ * Read an SSE stream, optionally replaying after Last-Event-ID, and collect
+ * frames until `untilType` is seen (or the stream ends / timeout elapses).
+ */
+export async function readSse(
+  url: string,
+  options: { lastEventId?: string; untilType?: string; timeoutMs?: number } = {},
+): Promise<SseFrame[]> {
+  const { frames } = await readSseResult(url, options);
+  return frames;
 }
