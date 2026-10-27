@@ -59,7 +59,7 @@ describe("redaction", () => {
       eventSummary(first),
       ...(turn?.kind === "pi_turn" ? [piTurnSummary(turn)] : []),
     ].join(" ");
-    expect(rendered).toContain("hidden for safety");
+    expect(rendered).toContain("Pi text");
     expect(rendered).not.toContain("ghp_");
     expect(rendered).not.toContain("/sec");
   });

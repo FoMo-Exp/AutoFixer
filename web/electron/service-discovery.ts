@@ -48,7 +48,7 @@ export function parseNodeServiceLine(line: string): {
   apiTokenFile?: string;
 } {
   const listening = /forgepilot-api\/v1 listening on (https?:\/\/\S+)/i.exec(line);
-  const tokenFile = /API token file .*:\s*(\S.*)$/i.exec(line);
+  const tokenFile = /API token file .*:\s+(\S.*)$/i.exec(line);
   const apiBaseUrl = listening ? normalizeUnbracketedIpv6Url(listening[1]) : undefined;
   return {
     ...(apiBaseUrl && isLoopbackApiUrl(apiBaseUrl) ? { apiBaseUrl } : {}),

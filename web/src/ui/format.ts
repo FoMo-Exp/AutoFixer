@@ -72,9 +72,6 @@ export function eventLabel(type: TaskEvent["type"]): string {
 
 export function eventSummary(event: TaskEvent): string {
   const data = event.data;
-  if (event.type === "pi.text_delta") {
-    return "Pi output is hidden for safety; review a redacted artifact for details.";
-  }
   if (event.type === "task.status_changed") {
     const status = data["to"] ?? data["status"];
     return typeof status === "string"

@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   discoverNodeService,
@@ -27,6 +28,14 @@ describe("Electron Node service discovery", () => {
     ).toMatchObject({ apiBaseUrl: "http://[::1]:4321" });
   });
 
+  it("keeps a Windows token path intact across the drive colon", () => {
+    expect(
+      parseNodeServiceLine(
+        "API token file (Authorization: Bearer <token>): C:\\Users\\operator\\AppData\\forgepilot\\api-token",
+      ),
+    ).toEqual({ apiTokenFile: "C:\\Users\\operator\\AppData\\forgepilot\\api-token" });
+  });
+
   it("accepts only loopback HTTP endpoints", () => {
     expect(isLoopbackApiUrl("http://127.0.0.1:4321")).toBe(true);
     expect(isLoopbackApiUrl("http://[::1]:4321")).toBe(true);
@@ -46,11 +55,13 @@ describe("Electron Node service discovery", () => {
       ...process.env,
       FORGEPILOT_BASE_SHA: "",
       FORGEPILOT_NODE_EXECUTABLE: "missing-node",
+      // Any existing file reaches the base-SHA check; the real entrypoint
+      // lives in node/dist, which is not committed.
+      FORGEPILOT_NODE_ENTRY: fileURLToPath(import.meta.url),
     };
     delete env.FORGEPILOT_API_URL;
     delete env.FORGEPILOT_API_PORT;
     delete env.FORGEPILOT_API_DISCOVERY_FILE;
-    delete env.FORGEPILOT_NODE_ENTRY;
 
     await expect(discoverNodeService(env)).rejects.toThrow(/Set FORGEPILOT_BASE_SHA/);
   });
