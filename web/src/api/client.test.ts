@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ForgePilotClient } from "./client";
+import { ApiConfigurationError, ForgePilotClient } from "./client";
 
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -72,5 +72,17 @@ describe("ForgePilotClient", () => {
       code: "TASK_NOT_FOUND",
       message: "Task is not available.",
     });
+  });
+
+  it("refuses to send bearer credentials to a non-loopback URL", async () => {
+    const fetchImpl = vi.fn();
+    const client = new ForgePilotClient({
+      baseUrl: "https://example.invalid",
+      token: "local-secret",
+      fetchImpl,
+    });
+
+    await expect(client.getTask("tsk_1")).rejects.toBeInstanceOf(ApiConfigurationError);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

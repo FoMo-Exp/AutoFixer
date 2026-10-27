@@ -98,8 +98,10 @@ export function eventSummary(event: TaskEvent): string {
   return `${eventLabel(event.type)} recorded.`;
 }
 
-export function approvalScopeDigest(events: TaskEvent[]): string | undefined {
-  const approval = [...events].reverse().find((event) => event.type === "approval.required");
+export function approvalScopeDigest(events: TaskEvent[], taskId: string): string | undefined {
+  const approval = [...events]
+    .reverse()
+    .find((event) => event.task_id === taskId && event.type === "approval.required");
   const digest = approval?.data["scope_digest"];
   return typeof digest === "string" ? digest : undefined;
 }

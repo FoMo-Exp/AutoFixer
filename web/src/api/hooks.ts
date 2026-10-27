@@ -24,11 +24,13 @@ export function useTaskStream(
     }
 
     let stopped = false;
+    const controller = new AbortController();
     let reconnectTimer: number | undefined;
     let lastEventId: string | undefined;
     let delay = 1000;
 
     const addEvent = (event: TaskEvent): void => {
+      if (stopped) return;
       lastEventId = event.event_id;
       setEvents((current) => {
         if (current.some((item) => item.event_id === event.event_id)) return current;
@@ -53,6 +55,7 @@ export function useTaskStream(
         }
         const result = await client.streamTaskEvents(taskId, {
           lastEventId,
+          signal: controller.signal,
           onEvent: addEvent,
         });
         if (stopped) return;
@@ -73,9 +76,12 @@ export function useTaskStream(
       }
     };
 
+    setEvents([]);
+    setError(undefined);
     void connect();
     return () => {
       stopped = true;
+      controller.abort();
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
     };
   }, [client, taskId, terminal]);
