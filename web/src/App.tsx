@@ -7,15 +7,19 @@ import { useTaskStream } from "./api/hooks";
 import { CreateIdempotencyKeys } from "./api/idempotency";
 import {
   approvalScopeDigest,
-  collapsePiTextDeltas,
+  buildTimelineRows,
   eventLabel,
   eventSummary,
   formatDate,
   formatStatus,
+  piActivityText,
+  piTurnSummary,
   progressPercent,
   shortId,
+  summarizePiActivity,
   TERMINAL_STATUSES,
 } from "./ui/format";
+import type { PiTurnRow } from "./ui/format";
 import { redactText, sanitizeValue } from "./ui/redaction";
 
 const STATUS_FILTERS: Array<"all" | TaskStatus> = [
@@ -464,7 +468,8 @@ function TaskDetail({
   const [messageMode, setMessageMode] = useState<"steer" | "follow_up">("steer");
   const [messageSent, setMessageSent] = useState(false);
   const digest = approvalScopeDigest(events, task.id);
-  const timelineEvents = collapsePiTextDeltas(events);
+  const timelineRows = buildTimelineRows(events);
+  const piActivity = summarizePiActivity(events);
   const percentage = progressPercent(task.progress.actions_completed, task.progress.actions_total);
   const canCancel = !TERMINAL_STATUSES.has(task.status);
 
@@ -604,11 +609,24 @@ function TaskDetail({
             {events.length === 0 ? (
               <div className="card-empty">Waiting for the first task event.</div>
             ) : (
-              <div className="timeline">
-                {timelineEvents.map((event) => (
-                  <TimelineEvent key={event.event_id} event={event} />
-                ))}
-              </div>
+              <>
+                <div className="pi-summary">
+                  <strong>Pi summary</strong>
+                  <p>{piActivityText(piActivity)}</p>
+                  <span>
+                    Natural-language Pi output stays hidden; open a redacted artifact for details.
+                  </span>
+                </div>
+                <div className="timeline">
+                  {timelineRows.map((row) =>
+                    row.kind === "pi_turn" ? (
+                      <PiTurnEvent key={row.key} row={row} />
+                    ) : (
+                      <TimelineEvent key={row.key} event={row.event} />
+                    ),
+                  )}
+                </div>
+              </>
             )}
           </section>
 
@@ -780,8 +798,24 @@ function ApprovalCard({
   );
 }
 
+function PiTurnEvent({ row }: { row: PiTurnRow }): ReactElement {
+  return (
+    <div className="timeline-event timeline-pi-turn">
+      <div className="timeline-marker" aria-hidden="true">
+        ✦
+      </div>
+      <div className="timeline-content">
+        <div className="timeline-title">
+          <strong>Pi summary</strong>
+          <time dateTime={row.startedAt}>{formatDate(row.startedAt)}</time>
+        </div>
+        <p className="timeline-delta">{piTurnSummary(row)}</p>
+      </div>
+    </div>
+  );
+}
+
 function TimelineEvent({ event }: { event: TaskEvent }): ReactElement {
-  const isDelta = event.type === "pi.text_delta";
   return (
     <div className={`timeline-event timeline-${event.type.replaceAll(".", "-")}`}>
       <div className="timeline-marker" aria-hidden="true">
@@ -792,7 +826,7 @@ function TimelineEvent({ event }: { event: TaskEvent }): ReactElement {
           <strong>{eventLabel(event.type)}</strong>
           <time dateTime={event.occurred_at}>{formatDate(event.occurred_at)}</time>
         </div>
-        <p className={isDelta ? "timeline-delta" : ""}>{redactText(eventSummary(event))}</p>
+        <p>{redactText(eventSummary(event))}</p>
       </div>
     </div>
   );

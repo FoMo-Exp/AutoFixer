@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   discoverNodeService,
   isLoopbackApiUrl,
+  NodeServiceStartupError,
   parseNodeServiceLine,
   resolveNodeExecutable,
 } from "../../electron/service-discovery";
@@ -52,5 +53,19 @@ describe("Electron Node service discovery", () => {
     delete env.FORGEPILOT_NODE_ENTRY;
 
     await expect(discoverNodeService(env)).rejects.toThrow(/Set FORGEPILOT_BASE_SHA/);
+  });
+
+  it("explains how to build the Node service when the entrypoint is missing", async () => {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      FORGEPILOT_BASE_SHA: "abcdef0",
+      FORGEPILOT_NODE_ENTRY: "/nonexistent/forgepilot/node/dist/src/index.js",
+    };
+    delete env.FORGEPILOT_API_URL;
+    delete env.FORGEPILOT_API_PORT;
+    delete env.FORGEPILOT_API_DISCOVERY_FILE;
+
+    await expect(discoverNodeService(env)).rejects.toBeInstanceOf(NodeServiceStartupError);
+    await expect(discoverNodeService(env)).rejects.toThrow(/cd node && npm run build/);
   });
 });

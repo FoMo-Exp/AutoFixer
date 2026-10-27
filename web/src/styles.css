@@ -791,6 +791,38 @@ p {
   padding: 4px 7px;
 }
 
+.pi-summary {
+  background: rgba(240, 182, 107, 0.06);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 17px;
+  padding: 10px 12px;
+}
+
+.pi-summary strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.pi-summary p {
+  color: #b7c5da;
+  font-size: 11px;
+}
+
+.pi-summary span {
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.timeline-pi-turn .timeline-marker {
+  color: var(--amber);
+}
+
 .timeline {
   display: flex;
   flex-direction: column;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TaskEvent } from "../api/client";
-import { collapsePiTextDeltas, eventSummary } from "./format";
+import { buildTimelineRows, eventSummary, piTurnSummary } from "./format";
 import { redactText, sanitizeValue } from "./redaction";
 
 describe("redaction", () => {
@@ -36,7 +36,7 @@ describe("redaction", () => {
     expect(redactText("echo hello")).toBe("[command redacted]");
   });
 
-  it("never renders raw Pi text while a sensitive value is still streaming", () => {
+  it("never renders raw Pi text that was split across streaming deltas", () => {
     const first = {
       event_id: "evt_1",
       sequence: 1,
@@ -52,11 +52,15 @@ describe("redaction", () => {
       sequence: 2,
       data: { delta: "secret123 and /sec" },
     } as TaskEvent;
-    const [combined] = collapsePiTextDeltas([first, second]);
+    const rows = buildTimelineRows([first, second]);
+    const [turn] = rows;
 
-    const summary = combined && eventSummary(combined);
-    expect(summary).toContain("hidden for safety");
-    expect(summary).not.toContain("ghp_");
-    expect(summary).not.toContain("/sec");
+    const rendered = [
+      eventSummary(first),
+      ...(turn?.kind === "pi_turn" ? [piTurnSummary(turn)] : []),
+    ].join(" ");
+    expect(rendered).toContain("hidden for safety");
+    expect(rendered).not.toContain("ghp_");
+    expect(rendered).not.toContain("/sec");
   });
 });
