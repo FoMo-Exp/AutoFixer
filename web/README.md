@@ -68,5 +68,9 @@ This build withholds `pi_summary.text` even when Node certifies it as
 `available`, because the merged contract's documented residual admits
 command-shaped text such as `node app succeeded.` as available, and DAT-189
 forbids displaying raw commands. The card states that the text is withheld
-pending the contract ruling; no frontend re-judging of the certified text is
-attempted. See `CONTRACT.md` for the baseline and the exact rules.
+pending the contract ruling (DAT-193); no frontend re-judging of the certified
+text is attempted. Summary resolution fails closed: the task projection wins
+over timeline events that are not newer than `Task.version`, and a summary is
+used only when its `task_id` matches and its `run_id` equals the task's
+`current_run_id` — missing identity, a task without a current run, and a
+previous run all yield no summary. See `CONTRACT.md` for the exact rules.

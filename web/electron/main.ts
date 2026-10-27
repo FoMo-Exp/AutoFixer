@@ -53,7 +53,7 @@ function runWindowSmoke(window: BrowserWindow): void {
   const timeout = setTimeout(() => {
     console.error("Electron window smoke timed out.");
     app.exit(1);
-  }, 20_000);
+  }, 45_000);
   window.webContents.once("did-finish-load", () => {
     void window.webContents
       .executeJavaScript(
@@ -80,6 +80,73 @@ function runWindowSmoke(window: BrowserWindow): void {
           if (brand !== "ForgePilot") throw new Error("relative file:// app assets did not render");
           const apiBaseUrl = window.forgePilotConfig?.apiBaseUrl;
           if (!apiBaseUrl) throw new Error("preload did not expose the local API endpoint");
+          const summaryMode = ${JSON.stringify(process.env["FORGEPILOT_ELECTRON_EXPECT_PI_SUMMARY"] ?? "")};
+          if (summaryMode === "settled" || summaryMode === "settled-existing") {
+            const call = (requestId, method, requestPath, body, headers) =>
+              window.forgePilotApi.request({
+                requestId,
+                url: apiBaseUrl + requestPath,
+                method,
+                headers: { Accept: "application/json", ...(body ? { "Content-Type": "application/json" } : {}), ...(headers || {}) },
+                ...(body ? { body: JSON.stringify(body) } : {})
+              });
+            const read = (response) => JSON.parse(response.body || "{}");
+            const delay = (ms) => {
+              const { promise, resolve } = Promise.withResolvers();
+              setTimeout(resolve, ms);
+              return promise;
+            };
+            let taskId = ${JSON.stringify(process.env["FORGEPILOT_ELECTRON_SMOKE_TASK_ID"] ?? "")};
+            if (summaryMode === "settled") {
+              const created = await call("00000000-0000-4000-8000-0000000000a1", "POST", "/api/v1/tasks", {
+                repository_id: "github:Luthiel/AutoFixer",
+                base_ref: "main",
+                summary: "Scripted Pi summary window smoke"
+              }, { "Idempotency-Key": "electron-window-pi-summary" });
+              if (created.status !== 201) throw new Error("task creation for the scripted Pi turn failed: " + created.status + " " + (created.body || ""));
+              taskId = read(created).id;
+              await delay(15);
+              const timeline = read(await call("00000000-0000-4000-8000-0000000000a2", "GET", "/api/v1/tasks/" + encodeURIComponent(taskId) + "/timeline"));
+              const digest = (timeline.items || [])
+                .filter((event) => event.type === "approval.required")
+                .map((event) => event.data && event.data.scope_digest)
+                .find(Boolean);
+              if (!digest) throw new Error("approval.required scope digest is missing");
+              const approved = await call("00000000-0000-4000-8000-0000000000a3", "POST", "/api/v1/tasks/" + encodeURIComponent(taskId) + "/approvals", { decision: "approve", scope_digest: digest });
+              if (approved.status !== 200) throw new Error("approval failed: " + approved.status + " " + (approved.body || ""));
+            }
+            const deadline = Date.now() + 20000;
+            let summary;
+            while (Date.now() < deadline) {
+              summary = read(await call("00000000-0000-4000-8000-0000000000a4", "GET", "/api/v1/tasks/" + encodeURIComponent(taskId))).pi_summary;
+              if (summary && summary.status !== "pending") break;
+              await delay(100);
+            }
+            if (!summary || summary.status === "pending") throw new Error("the scripted Pi turn never settled a summary");
+            if (summary.status !== "available") throw new Error("scripted prose summary was not certified available: " + JSON.stringify(summary));
+            if (summary.text !== "Checked the echo tool and confirmed it prints hello.") {
+              throw new Error("settled summary text does not match the scripted Pi turn");
+            }
+            if (summaryMode === "settled-existing") {
+              const card = await waitFor(() => {
+                const rendered = document.querySelector(".pi-summary-card")?.innerText || "";
+                return rendered.toLowerCase().includes("available · text withheld")
+                  ? rendered
+                  : undefined;
+              }, 15000);
+              if (!card) {
+                const rendered = document.querySelector(".pi-summary-card")?.innerText || "(no card)";
+                const taskItems = document.querySelectorAll(".task-item").length;
+                const banner = document.querySelector(".connection-banner")?.innerText || "";
+                throw new Error("Pi summary card did not render the settled summary after reload: card=" + rendered.replaceAll("\\n", " | ") + " tasks=" + taskItems + " banner=" + banner.replaceAll("\\n", " | "));
+              }
+              const bodyText = document.body.innerText;
+              if (bodyText.includes("Checked the echo tool")) throw new Error("certified summary text leaked into the rendered window");
+              if (bodyText.includes("node app")) throw new Error("raw command text leaked into the rendered window");
+              return { mode: "pi-summary-settled-existing", taskId, summaryStatus: summary.status, card: card.replaceAll("\\n", " | ") };
+            }
+            return { mode: "pi-summary-settled", taskId, summaryStatus: summary.status };
+          }
           const list = await window.forgePilotApi.request({
             requestId: "00000000-0000-4000-8000-000000000001",
             url: apiBaseUrl + "/api/v1/tasks",

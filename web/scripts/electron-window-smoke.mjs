@@ -1,3 +1,4 @@
+/* global fetch, AbortController, TextDecoder, queueMicrotask */
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -161,6 +162,114 @@ try {
   }
   await runElectron(startupEnv);
   process.stdout.write("Default-startup configuration guidance smoke passed.\n");
+
+  // Real settled summary through the test-only scripted Pi provider. The real
+  // orchestrator, summary gate, REST API, SSE replay and Electron window run
+  // unchanged: only inference is replaced through the existing
+  // createOrchestrator({ model, streamFn }) test seam. No production debug
+  // endpoint, network transfer, or credential is involved.
+  const { createOrchestrator, configFromEnv } = await import(
+    pathToFileURL(path.join(repoRoot, "node", "dist", "src", "index.js")).href
+  );
+  const { createAssistantMessageEventStream } = await import(
+    pathToFileURL(
+      path.join(repoRoot, "node", "node_modules", "@mariozechner", "pi-ai", "dist", "index.js"),
+    ).href
+  );
+  const scriptedModel = {
+    id: "scripted",
+    name: "scripted",
+    api: "openai-completions",
+    provider: "openai",
+    baseUrl: "",
+    reasoning: false,
+    input: [],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 200_000,
+    maxTokens: 8_192,
+  };
+  const scriptedTextStream = (text) => {
+    const base = () => ({
+      role: "assistant",
+      api: "openai-completions",
+      provider: "openai",
+      model: "scripted",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      timestamp: Date.now(),
+    });
+    return () => {
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => {
+        const content = [{ type: "text", text }];
+        stream.push({ type: "start", partial: { ...base(), content: [], stopReason: "stop" } });
+        stream.push({
+          type: "text_start",
+          contentIndex: 0,
+          partial: { ...base(), content, stopReason: "stop" },
+        });
+        stream.push({
+          type: "text_delta",
+          contentIndex: 0,
+          delta: text,
+          partial: { ...base(), content, stopReason: "stop" },
+        });
+        stream.push({
+          type: "text_end",
+          contentIndex: 0,
+          content: text,
+          partial: { ...base(), content, stopReason: "stop" },
+        });
+        stream.push({
+          type: "done",
+          reason: "stop",
+          message: { ...base(), content, stopReason: "stop" },
+        });
+      });
+      return stream;
+    };
+  };
+  const scriptedSummaryText = "Checked the echo tool and confirmed it prints hello.";
+  const summaryConfig = configFromEnv({
+    ...serviceEnv,
+    FORGEPILOT_TASK_STATE_FILE: path.join(tempDir, "summary-task-state.json"),
+  });
+  const orchestrator = createOrchestrator({
+    config: summaryConfig,
+    model: scriptedModel,
+    streamFn: scriptedTextStream(scriptedSummaryText),
+  });
+  const { host: summaryHost, port: summaryPort } = await orchestrator.start();
+  const summaryBase = `http://${summaryHost}:${summaryPort}`;
+  const summaryEnv = {
+    ...serviceEnv,
+    FORGEPILOT_API_URL: summaryBase,
+    FORGEPILOT_API_TOKEN: orchestrator.apiToken,
+    FORGEPILOT_ELECTRON_WINDOW_SMOKE: "1",
+  };
+  try {
+    const settled = await runElectron({
+      ...summaryEnv,
+      FORGEPILOT_ELECTRON_EXPECT_PI_SUMMARY: "settled",
+    });
+    const taskId = settled?.result?.taskId;
+    if (!taskId) throw new Error("settled summary smoke did not report a task id");
+    await assertSummaryReplay(summaryBase, orchestrator.apiToken, taskId, scriptedSummaryText);
+    await runElectron({
+      ...summaryEnv,
+      FORGEPILOT_ELECTRON_EXPECT_PI_SUMMARY: "settled-existing",
+      FORGEPILOT_ELECTRON_SMOKE_TASK_ID: taskId,
+    });
+    process.stdout.write("Scripted Pi settled summary + Electron replay smoke passed.\n");
+  } finally {
+    await orchestrator.stop();
+  }
 } finally {
   await stopChild(nodeService?.child);
   await stopChild(dsh);
@@ -185,7 +294,7 @@ async function waitForDsh(child, client, errorChunks) {
 }
 
 async function runElectron(env) {
-  await new Promise((resolve, reject) => {
+  return await new Promise((resolve, reject) => {
     const child = spawn(electronCommand, [mainEntry], {
       cwd: webRoot,
       env,
@@ -201,7 +310,7 @@ async function runElectron(env) {
       timedOut = true;
       child.kill("SIGTERM");
       forceKillTimeout = setTimer(() => child.kill("SIGKILL"), 5000);
-    }, 30_000);
+    }, 90_000);
     child.once("error", (error) => {
       clearTimer(timeout);
       if (forceKillTimeout) clearTimer(forceKillTimeout);
@@ -219,7 +328,15 @@ async function runElectron(env) {
       if (code === 0 && output.includes("Electron window smoke passed:")) {
         process.stdout.write(output);
         if (errors) process.stderr.write(errors);
-        resolve();
+        const marker = "Electron window smoke passed:";
+        const payload = output.slice(output.indexOf(marker) + marker.length).split("\n")[0];
+        let parsed;
+        try {
+          parsed = JSON.parse(payload);
+        } catch {
+          parsed = undefined;
+        }
+        resolve(parsed);
       } else {
         reject(
           new Error(
@@ -236,4 +353,80 @@ async function stopChild(child) {
   const exited = once(child, "exit");
   child.kill("SIGTERM");
   await exited;
+}
+
+async function apiJson(url, token, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  if (!response.ok) {
+    throw new Error(
+      `API ${options.method ?? "GET"} ${url} failed: ${response.status} ${await response.text()}`,
+    );
+  }
+  return response.json();
+}
+
+/** Read SSE text until the window elapses; the stream stays open for a live task. */
+async function readStreamWindow(url, token, lastEventId, windowMs) {
+  const controller = new AbortController();
+  const timer = setTimer(() => controller.abort(), windowMs);
+  let text = "";
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: "text/event-stream",
+        Authorization: `Bearer ${token}`,
+        ...(lastEventId ? { "Last-Event-ID": lastEventId } : {}),
+      },
+      signal: controller.signal,
+    });
+    if (response.status !== 200) throw new Error(`SSE stream failed: ${response.status}`);
+    const decoder = new TextDecoder();
+    for await (const chunk of response.body) {
+      text += decoder.decode(chunk, { stream: true });
+    }
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== "AbortError") throw error;
+  } finally {
+    clearTimer(timer);
+  }
+  return text;
+}
+
+/**
+ * Verify the settled summary over the real API: exactly one settled event,
+ * projection equality, current-run attribution, and Last-Event-ID replay that
+ * does not repeat the delivered summary.
+ */
+async function assertSummaryReplay(base, token, taskId, expectedText) {
+  const taskUrl = `${base}/api/v1/tasks/${encodeURIComponent(taskId)}`;
+  const task = await apiJson(taskUrl, token);
+  const timeline = await apiJson(`${taskUrl}/timeline`, token);
+  const summaryEvents = timeline.items.filter((event) => event.type === "pi.summary.updated");
+  const settled = summaryEvents.filter((event) => event.data?.summary?.status === "available");
+  if (settled.length !== 1) {
+    throw new Error(`expected exactly one settled summary event, got ${settled.length}`);
+  }
+  const summary = settled[0].data.summary;
+  if (summary.text !== expectedText) {
+    throw new Error("settled summary text does not match the scripted Pi turn");
+  }
+  if (summary.task_id !== task.id || summary.run_id !== task.current_run_id) {
+    throw new Error("settled summary is not attributed to the task's current run");
+  }
+  if (JSON.stringify(task.pi_summary) !== JSON.stringify(summary)) {
+    throw new Error("the task projection does not equal the last summary event");
+  }
+
+  const replay = await readStreamWindow(`${taskUrl}/stream`, token, settled[0].event_id, 2000);
+  if (replay.includes("event: pi.summary.updated")) {
+    throw new Error("Last-Event-ID replay repeated an already-delivered summary event");
+  }
 }

@@ -43,20 +43,18 @@ interface SummaryPayload {
 
 /**
  * Read one summary candidate from a Task projection or a
- * `pi.summary.updated` event. Returns null when the candidate cannot belong to
- * `task`: another task's summary, or a summary from a previous run.
+ * `pi.summary.updated` event. Returns null unless the candidate is positively
+ * attributable to the task's current run: a foreign `task_id`, a missing
+ * identity (no `run_id`, or a task without `current_run_id`), and a previous
+ * run all fail closed.
  */
 function candidate(value: unknown, task: Task): SummaryPayload | null {
   if (value === null || typeof value !== "object") return null;
   const summary = value as SummaryPayload;
   if (summary.task_id !== task.id) return null;
-  if (
-    typeof summary.run_id === "string" &&
-    task.current_run_id !== null &&
-    summary.run_id !== task.current_run_id
-  ) {
-    return null;
-  }
+  if (task.current_run_id === null) return null;
+  if (typeof summary.run_id !== "string") return null;
+  if (summary.run_id !== task.current_run_id) return null;
   return summary;
 }
 
@@ -90,19 +88,31 @@ function project(value: SummaryPayload): PiSummaryView {
 
 /**
  * Resolve the summary for `task` from its projection plus the streamed
- * timeline. The projection is authoritative at fetch time; newer
- * `pi.summary.updated` events replace it in sequence order. Summaries of other
- * tasks and of previous runs never apply.
+ * timeline.
+ *
+ * `Task.version` is the contract's monotonic task version, and every event
+ * carries the `task_version` it produced. The projection at version V already
+ * contains every event with `task_version <= V`, so a replayed or reordered
+ * timeline must never overwrite it: only strictly newer events apply, and they
+ * are applied in `sequence` order regardless of arrival order. Summaries of
+ * other tasks and of previous runs never apply.
  */
 export function resolvePiSummary(task: Task, events: TaskEvent[]): PiSummaryView {
-  const base =
-    task.pi_summary === null
-      ? { state: "none" as const, withheld: false, runId: null, turnId: null }
-      : project(candidate(task.pi_summary, task) ?? {});
+  const projection = task.pi_summary === null ? null : candidate(task.pi_summary, task);
+  let view: PiSummaryView = projection
+    ? project(projection)
+    : { state: "none", withheld: false, runId: null, turnId: null };
 
-  let view: PiSummaryView = base;
-  for (const event of events) {
-    if (event.type !== "pi.summary.updated") continue;
+  const newer = events
+    .filter(
+      (event) =>
+        event.type === "pi.summary.updated" &&
+        event.task_id === task.id &&
+        event.task_version > task.version,
+    )
+    .sort((left, right) => left.sequence - right.sequence);
+
+  for (const event of newer) {
     const payload = candidate(event.data["summary"], task);
     if (payload) view = project(payload);
   }

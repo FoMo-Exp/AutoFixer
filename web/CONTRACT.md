@@ -40,8 +40,17 @@ events whose `data.summary` is the same object.
 `src/ui/pi-summary.ts` resolves the current view from the projection plus the
 streamed events, and fails closed:
 
-- events for another task, or for a run other than `current_run_id`, never
-  apply (cross-task/run isolation);
+- **projection wins over older timeline events.** `Task.version` is the
+  contract's monotonic task version and every event carries `task_version`;
+  a projection at version V already contains every event with
+  `task_version <= V`. Only events with `task_version > task.version` apply,
+  sorted by `sequence`, so a replayed or reordered timeline can never roll a
+  newer projection back to an older summary or turn;
+- **strict run attribution.** A summary applies only when its `task_id` is
+  the task's, the task has a non-null `current_run_id`, the summary carries a
+  `run_id` string, and that `run_id` equals `current_run_id`. A missing
+  identity, a task without a current run, and a previous run all fail closed
+  (no summary is shown);
 - only `pending` / `available` / `unavailable` are displayable; an unknown
   status renders as a plain unavailable state, and an unknown
   `unavailable_reason` renders as generic unavailable (the enum is additive);
@@ -50,12 +59,20 @@ streamed events, and fails closed:
   `false`. The merged contract's "Honest residual" admits command-shaped text
   certified as `available` — `node app succeeded.` is exposed verbatim by
   `node/dist` on the `af2ac8e` baseline, and DAT-189 acceptance forbids
-  displaying raw commands. Until the backend closes that residual or the
-  Architect rules it acceptable, the workbench shows the summary state and
-  reason only, and does not claim the natural-language-summary acceptance
-  criterion. Rendering the certified text is a one-constant change once that
-  ruling exists; the frontend does not attempt to re-judge the text.
+  displaying raw commands. Until DAT-193 (or a later contract) closes that
+  residual, the workbench shows the summary state and reason only, and does
+  not claim the natural-language-summary acceptance criterion. The frontend
+  does not attempt to re-judge the text.
 
 Fixtures for these tests are the merged-contract captures under
 `docs/fixtures/forgepilot-api-v1/` (`task-pi-summary-available.json`,
 `pi-summary-events-available.json`), not invented shapes.
+
+The Electron window smoke additionally runs the real orchestrator with a
+test-only deterministic scripted Pi stream through the existing
+`createOrchestrator({ model, streamFn })` seam: it creates and approves a
+task, waits for the settled summary over real REST, asserts projection
+equality and current-run attribution, verifies that a `Last-Event-ID` replay
+does not repeat the summary, and opens a second real window to confirm the
+settled summary still renders after a reload. No production debug endpoint,
+network transfer, or credential is involved.
