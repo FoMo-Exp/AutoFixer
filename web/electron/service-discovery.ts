@@ -10,6 +10,18 @@ export interface DiscoveredNodeService {
   child?: ChildProcess;
 }
 
+/**
+ * A launch problem the operator can fix with a concrete action. The message is
+ * shown verbatim in the workbench startup banner, so it must stay actionable
+ * and must never include credentials.
+ */
+export class NodeServiceStartupError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NodeServiceStartupError";
+  }
+}
+
 interface DiscoveryRecord {
   api_url?: unknown;
   url?: unknown;
@@ -71,9 +83,13 @@ export async function discoverNodeService(
     "../../node/dist/src/index.js",
   );
   const nodeEntry = env["FORGEPILOT_NODE_ENTRY"]?.trim() || defaultEntry;
-  if (!existsSync(nodeEntry)) return { apiBaseUrl: "" };
+  if (!existsSync(nodeEntry)) {
+    throw new NodeServiceStartupError(
+      'ForgePilot Node service entrypoint was not found. Build it with "cd node && npm run build", or point FORGEPILOT_API_URL / FORGEPILOT_API_PORT at an already running loopback service, set FORGEPILOT_API_DISCOVERY_FILE to its discovery file, or set FORGEPILOT_NODE_ENTRY to a built entrypoint.',
+    );
+  }
   if (!/^[0-9a-fA-F]{7,40}$/.test(env["FORGEPILOT_BASE_SHA"] ?? "")) {
-    throw new Error(
+    throw new NodeServiceStartupError(
       "Set FORGEPILOT_BASE_SHA to the repository base commit (7–40 hexadecimal characters) before starting the local Node service.",
     );
   }
@@ -86,7 +102,7 @@ function configuredService(env: NodeJS.ProcessEnv): DiscoveredNodeService | unde
   const candidate = apiBaseUrl || (port ? `http://127.0.0.1:${port}` : "");
   if (!candidate) return undefined;
   if (!isLoopbackApiUrl(candidate)) {
-    throw new Error("FORGEPILOT_API_URL must be an HTTP loopback URL.");
+    throw new NodeServiceStartupError("FORGEPILOT_API_URL must be an HTTP loopback URL.");
   }
   return {
     apiBaseUrl: candidate.replace(/\/$/, ""),

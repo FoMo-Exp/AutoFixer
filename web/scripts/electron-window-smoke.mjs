@@ -107,6 +107,45 @@ try {
   });
   process.stdout.write("Real Electron window + Node REST/SSE smoke passed.\n");
 
+  // Stop the externally started service so the next mode proves the main
+  // process launches Node itself and discovers the URL it publishes.
+  await stopChild(nodeService?.child);
+  nodeService = undefined;
+
+  const selfStartEnv = {
+    ...serviceEnv,
+    FORGEPILOT_ELECTRON_WINDOW_SMOKE: "1",
+    FORGEPILOT_ELECTRON_EXPECT_PI_SUMMARY: "1",
+  };
+  for (const name of [
+    "FORGEPILOT_API_URL",
+    "FORGEPILOT_API_PORT",
+    "FORGEPILOT_API_DISCOVERY_FILE",
+    "FORGEPILOT_API_TOKEN",
+  ]) {
+    delete selfStartEnv[name];
+  }
+  await runElectron(selfStartEnv);
+  process.stdout.write("Electron self-start + Node REST/SSE smoke passed.\n");
+
+  // A checkout without a built Node entrypoint must explain the remediation.
+  const unbuiltEnv = {
+    ...serviceEnv,
+    FORGEPILOT_ELECTRON_WINDOW_SMOKE: "1",
+    FORGEPILOT_NODE_ENTRY: path.join(tempDir, "missing", "index.js"),
+    FORGEPILOT_ELECTRON_EXPECTED_GUIDANCE: "cd node && npm run build",
+  };
+  for (const name of [
+    "FORGEPILOT_API_URL",
+    "FORGEPILOT_API_PORT",
+    "FORGEPILOT_API_DISCOVERY_FILE",
+    "FORGEPILOT_API_TOKEN",
+  ]) {
+    delete unbuiltEnv[name];
+  }
+  await runElectron(unbuiltEnv);
+  process.stdout.write("Unbuilt Node entrypoint guidance smoke passed.\n");
+
   const startupEnv = { ...serviceEnv, FORGEPILOT_ELECTRON_WINDOW_SMOKE: "1" };
   for (const name of [
     "FORGEPILOT_API_URL",

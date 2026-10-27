@@ -26,6 +26,13 @@ bearer token and sends requests only to the configured HTTP loopback origin.
 Redirects are rejected, and the token is never exposed to renderer JavaScript.
 This keeps the browser out of the API request path, so no CORS preflight is
 needed and the Node API's origin and bearer checks remain unchanged. The UI
-does not display the token, raw tool commands, or absolute workspace paths;
-Pi text deltas are combined before redaction so values split across deltas are
-handled together.
+does not display the token, raw tool commands, or absolute workspace paths.
+
+`TaskEvent.data` is the only Pi source in this contract: `pi.text_delta`
+carries `delta` and `pi.turn_settled` carries no payload. The contract does not
+define a server-redacted natural-language summary, so the workbench never
+renders `delta`. It renders a summary built from typed event fields instead:
+contiguous delta runs as one Pi turn row with its update count and settle state,
+plus a task-level tally of turns, text updates, and `tool.*` outcomes. Adding a
+redacted summary field would be a contract change owned by the Node service;
+until then, redacted artifacts remain the detail path.

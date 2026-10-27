@@ -97,17 +97,107 @@ export function eventSummary(event: TaskEvent): string {
   return `${eventLabel(event.type)} recorded.`;
 }
 
-export function collapsePiTextDeltas(events: TaskEvent[]): TaskEvent[] {
-  const collapsed: TaskEvent[] = [];
+export interface PiTurnRow {
+  kind: "pi_turn";
+  key: string;
+  startedAt: string;
+  endedAt: string;
+  updates: number;
+  settled: boolean;
+}
+
+export interface TimelineEventRow {
+  kind: "event";
+  key: string;
+  event: TaskEvent;
+}
+
+export type TimelineRow = TimelineEventRow | PiTurnRow;
+
+/**
+ * Group consecutive Pi text deltas into one turn row and absorb the settling
+ * marker into it. Every other event keeps its own row, so actions, approvals,
+ * and status changes stay between the Pi turns that actually produced them.
+ */
+export function buildTimelineRows(events: TaskEvent[]): TimelineRow[] {
+  const rows: TimelineRow[] = [];
+  let turn: PiTurnRow | undefined;
   for (const event of events) {
     if (event.type === "pi.text_delta") {
-      if (collapsed.at(-1)?.type === "pi.text_delta") continue;
-      collapsed.push({ ...event, data: { ...event.data, delta: "" } });
-    } else {
-      collapsed.push(event);
+      if (!turn) {
+        turn = {
+          kind: "pi_turn",
+          key: `pi_turn:${event.event_id}`,
+          startedAt: event.occurred_at,
+          endedAt: event.occurred_at,
+          updates: 0,
+          settled: false,
+        };
+        rows.push(turn);
+      }
+      turn.updates += 1;
+      turn.endedAt = event.occurred_at;
+      continue;
     }
+    if (event.type === "pi.turn_settled" && turn) {
+      turn.settled = true;
+      turn.endedAt = event.occurred_at;
+      continue;
+    }
+    turn = undefined;
+    rows.push({ kind: "event", key: event.event_id, event });
   }
-  return collapsed;
+  return rows;
+}
+
+export function piTurnSummary(row: PiTurnRow): string {
+  const updates = `${row.updates} Pi text ${row.updates === 1 ? "update" : "updates"}`;
+  return row.settled ? `${updates} · turn settled` : `${updates} · turn in progress`;
+}
+
+export interface PiActivitySummary {
+  turns: number;
+  updates: number;
+  requested: number;
+  completed: number;
+  denied: number;
+}
+
+/** Summarize Pi activity from typed timeline fields; raw Pi text is never read. */
+export function summarizePiActivity(events: TaskEvent[]): PiActivitySummary {
+  const summary: PiActivitySummary = {
+    turns: 0,
+    updates: 0,
+    requested: 0,
+    completed: 0,
+    denied: 0,
+  };
+  let inTurn = false;
+  for (const event of events) {
+    if (event.type === "pi.text_delta") {
+      summary.updates += 1;
+      if (!inTurn) summary.turns += 1;
+      inTurn = true;
+      continue;
+    }
+    if (event.type === "tool.requested") summary.requested += 1;
+    else if (event.type === "tool.completed") summary.completed += 1;
+    else if (event.type === "tool.denied") summary.denied += 1;
+    if (event.type === "pi.turn_settled") inTurn = false;
+  }
+  return summary;
+}
+
+export function piActivityText(summary: PiActivitySummary): string {
+  if (summary.turns === 0) return "No Pi output recorded for this task yet.";
+  const turns = `${summary.turns} Pi ${summary.turns === 1 ? "turn" : "turns"}`;
+  const updates = `${summary.updates} text ${summary.updates === 1 ? "update" : "updates"}`;
+  const actions = [
+    `${summary.requested} requested`,
+    `${summary.completed} completed`,
+    ...(summary.denied > 0 ? [`${summary.denied} denied`] : []),
+  ].join(", ");
+  return `${turns} · ${updates} · actions ${actions}.`;
 }
 
 export function approvalScopeDigest(events: TaskEvent[], taskId: string): string | undefined {

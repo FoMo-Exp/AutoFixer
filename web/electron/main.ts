@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createApiProxy, installApiProxy } from "./api-proxy.js";
-import { discoverNodeService } from "./service-discovery.js";
+import { discoverNodeService, NodeServiceStartupError } from "./service-discovery.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let nodeChild: ChildProcess | undefined;
@@ -72,6 +72,8 @@ function runWindowSmoke(window: BrowserWindow): void {
           if (expectedConfigError) {
             const banner = await waitFor(() => document.querySelector(".connection-banner")?.innerText);
             if (!banner?.includes(expectedConfigError)) throw new Error("startup configuration guidance is not visible");
+            const expectedGuidance = ${JSON.stringify(process.env["FORGEPILOT_ELECTRON_EXPECTED_GUIDANCE"] ?? "")};
+            if (expectedGuidance && !banner.includes(expectedGuidance)) throw new Error("startup guidance does not include the expected remediation: " + expectedGuidance);
             return { mode: "startup-guidance", banner };
           }
           const brand = await waitFor(() => document.querySelector(".brand-name")?.textContent);
@@ -123,6 +125,15 @@ function runWindowSmoke(window: BrowserWindow): void {
           window.forgePilotApi.abort(requestId);
           unsubscribe();
           if (!eventText.includes("data:")) throw new Error("Node SSE event frame was empty");
+          const expectPiSummary = ${JSON.stringify(process.env["FORGEPILOT_ELECTRON_EXPECT_PI_SUMMARY"] ?? "")};
+          if (expectPiSummary === "1") {
+            const summary = await waitFor(() => document.querySelector(".pi-summary")?.innerText, 8000);
+            if (!summary) throw new Error("Pi summary did not render for the selected task timeline");
+            if (!summary.includes("Pi summary")) throw new Error("Pi summary card is missing its label");
+            const renderedEvents = document.querySelectorAll(".timeline-event").length;
+            if (renderedEvents === 0) throw new Error("Selected task timeline rendered no events");
+            return { mode: "electron-node-rest-sse", status: list.status, taskId: task.id, sse: true, piSummary: summary.replaceAll("\\n", " | "), renderedEvents };
+          }
           return { mode: "electron-node-rest-sse", status: list.status, taskId: task.id, sse: true };
         })()`,
       )
@@ -152,9 +163,10 @@ void app.whenReady().then(async () => {
     if (discovered.apiToken) process.env["FORGEPILOT_API_TOKEN"] = discovered.apiToken;
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
-    startupError = message.startsWith("Set FORGEPILOT_BASE_SHA")
-      ? message
-      : "Node service could not start. Check the local launch configuration and Node service logs.";
+    startupError =
+      error instanceof NodeServiceStartupError && message
+        ? message
+        : "Node service could not start. Check the local launch configuration and Node service logs.";
     process.env["FORGEPILOT_API_STARTUP_ERROR"] = startupError;
     console.error("ForgePilot Node service discovery failed:", error);
   }
