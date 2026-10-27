@@ -410,7 +410,7 @@ function TaskDetail({
   const [message, setMessage] = useState("");
   const [messageMode, setMessageMode] = useState<"steer" | "follow_up">("steer");
   const [messageSent, setMessageSent] = useState(false);
-  const digest = approvalScopeDigest(events);
+  const digest = approvalScopeDigest(events, task.id);
   const percentage = progressPercent(task.progress.actions_completed, task.progress.actions_total);
   const canCancel = !TERMINAL_STATUSES.has(task.status);
 

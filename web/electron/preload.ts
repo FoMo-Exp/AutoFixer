@@ -17,10 +17,25 @@ function readApiToken(): string {
 
 function resolveApiBaseUrl(): string {
   const configuredUrl = process.env["FORGEPILOT_API_URL"]?.trim();
-  if (configuredUrl) return configuredUrl.replace(/\/$/, "");
+  if (configuredUrl && isLoopbackApiUrl(configuredUrl)) return configuredUrl.replace(/\/$/, "");
 
   const port = process.env["FORGEPILOT_API_PORT"]?.trim();
-  return port ? `http://127.0.0.1:${port}` : "";
+  const discoveredUrl = port ? `http://127.0.0.1:${port}` : "";
+  return isLoopbackApiUrl(discoveredUrl) ? discoveredUrl : "";
+}
+
+function isLoopbackApiUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "http:" &&
+      !url.username &&
+      !url.password &&
+      ["127.0.0.1", "localhost", "[::1]", "::1"].includes(url.hostname)
+    );
+  } catch {
+    return false;
+  }
 }
 
 contextBridge.exposeInMainWorld("forgePilotConfig", {

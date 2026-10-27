@@ -18,8 +18,10 @@ The workbench uses `src/api/contracts/openapi.json` and its generated
 | `GET /api/v1/tasks/{task_id}/artifacts/{artifact_id}` | `task_id`, `artifact_id` path                                                                                          | redacted artifact object       | ✅     |
 | `GET /api/v1/tasks/{task_id}/stream`                  | `task_id` path; optional `Last-Event-ID` header                                                                        | SSE `TaskEvent` envelopes      | ✅     |
 
-The Electron preload reads the per-process bearer token without exposing its
-file path to the renderer. The renderer sends it only in requests to the
-configured loopback Node service. It never displays the token, raw tool
-commands, or absolute workspace paths; event text and artifact values pass
-through the UI redaction boundary before rendering.
+The Electron main process discovers an existing loopback service from launch
+configuration or a discovery file, or starts the local Node entrypoint and
+parses its loopback startup address. The preload reads the per-process bearer
+token without exposing its file path to the renderer. The renderer sends it
+only to an HTTP loopback URL and rejects redirects. It never displays the
+token, raw tool commands, or absolute workspace paths; event text and artifact
+values pass through the UI redaction boundary before rendering.

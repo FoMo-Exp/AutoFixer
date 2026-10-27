@@ -25,9 +25,23 @@ export class ApiError extends Error {
 }
 
 export class ApiConfigurationError extends Error {
-  constructor() {
-    super("Node service endpoint is not configured for this workbench.");
+  constructor(message = "Node service endpoint is not configured for this workbench.") {
+    super(message);
     this.name = "ApiConfigurationError";
+  }
+}
+
+export function isLoopbackApiUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "http:" &&
+      !url.username &&
+      !url.password &&
+      ["127.0.0.1", "localhost", "[::1]", "::1"].includes(url.hostname)
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -188,8 +202,12 @@ export class ForgePilotClient {
 
   private async raw(path: string, init: RequestInit = {}): Promise<Response> {
     if (!this.baseUrl) throw new ApiConfigurationError();
+    if (!isLoopbackApiUrl(this.baseUrl)) {
+      throw new ApiConfigurationError("ForgePilot only permits an HTTP loopback Node service.");
+    }
     return this.fetchImpl(`${this.baseUrl}${path}`, {
       ...init,
+      redirect: "error",
       headers: {
         ...this.headers(),
         ...init.headers,
@@ -221,15 +239,15 @@ interface SseFrame {
 }
 
 export function takeSseFrames(input: string): { frames: string[]; rest: string } {
-  const normalized = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  let remainder = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const frames: string[] = [];
-  let boundary = normalized.indexOf("\n\n");
+  let boundary = remainder.indexOf("\n\n");
   while (boundary >= 0) {
-    frames.push(normalized.slice(0, boundary));
-    input = normalized.slice(boundary + 2);
-    boundary = input.indexOf("\n\n");
+    frames.push(remainder.slice(0, boundary));
+    remainder = remainder.slice(boundary + 2);
+    boundary = remainder.indexOf("\n\n");
   }
-  return { frames, rest: input };
+  return { frames, rest: remainder };
 }
 
 export function parseSseFrame(frame: string): TaskEvent | undefined {

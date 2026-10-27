@@ -19,6 +19,16 @@ describe("SSE contract parsing", () => {
     });
   });
 
+  it("extracts every complete frame from one network chunk", () => {
+    const second = eventJson
+      .replaceAll('"evt_1"', '"evt_2"')
+      .replaceAll('"sequence":1', '"sequence":2');
+    expect(takeSseFrames(`data: ${eventJson}\n\ndata: ${second}\n\npartial`)).toEqual({
+      frames: [`data: ${eventJson}`, `data: ${second}`],
+      rest: "partial",
+    });
+  });
+
   it("parses the event envelope and preserves the sequence", () => {
     expect(
       parseSseFrame(`id: evt_1\nevent: task.status_changed\ndata: ${eventJson}`),

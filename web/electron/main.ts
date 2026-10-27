@@ -1,8 +1,11 @@
 import { app, BrowserWindow } from "electron";
+import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { discoverNodeService } from "./service-discovery.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+let nodeChild: ChildProcess | undefined;
 
 function createWindow(): void {
   const window = new BrowserWindow({
@@ -27,11 +30,24 @@ function createWindow(): void {
   }
 }
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
+  try {
+    const discovered = await discoverNodeService();
+    nodeChild = discovered.child;
+    if (discovered.apiBaseUrl) process.env["FORGEPILOT_API_URL"] = discovered.apiBaseUrl;
+    if (discovered.apiTokenFile) process.env["FORGEPILOT_API_TOKEN_FILE"] = discovered.apiTokenFile;
+    if (discovered.apiToken) process.env["FORGEPILOT_API_TOKEN"] = discovered.apiToken;
+  } catch (error) {
+    console.error("ForgePilot Node service discovery failed:", error);
+  }
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on("before-quit", () => {
+  nodeChild?.kill();
 });
 
 app.on("window-all-closed", () => {

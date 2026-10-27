@@ -9,9 +9,26 @@ describe("redaction", () => {
   });
 
   it("sanitizes nested artifact values", () => {
-    expect(sanitizeValue({ output: "/home/alice/task", nested: ["sk-live_abc"] })).toEqual({
-      output: "[path redacted]",
+    expect(
+      sanitizeValue({
+        output: "/home/alice/task",
+        nested: ["sk-live_abc"],
+        command: "git diff --stat",
+        stdout: "raw log output",
+        logs: "an unredacted log line",
+      }),
+    ).toEqual({
+      output: "[redacted]",
       nested: ["[redacted]"],
+      command: "[redacted]",
+      stdout: "[redacted]",
+      logs: "[redacted]",
     });
+  });
+
+  it("redacts generic Unix paths and shell commands", () => {
+    expect(redactText("run git status in /etc/example and /srv/forgepilot")).toBe(
+      "run [command redacted]",
+    );
   });
 });
