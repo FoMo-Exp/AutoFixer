@@ -215,7 +215,11 @@ const piSummarySchema: JsonObject = {
     "Lifecycle: null on the task until a Pi session exists; pending from " +
     "session start (and at the start of every run) until a turn settles; " +
     "then exactly one available/unavailable per settled turn, each replacing " +
-    "the previous summary. A pi.summary.updated event carries the same " +
+    "the previous summary — a turn settles (and publishes) exactly once, " +
+    "including the duplicated agent_error/agent_settled emission of a " +
+    "provider failure. A terminal task whose last turn never settled keeps " +
+    "status pending with text null; no summary is fabricated after the " +
+    "terminal frame. A pi.summary.updated event carries the same " +
     "object on the SSE stream and in the timeline, replayable by " +
     "Last-Event-ID like every other event.",
   required: ["task_id", "run_id", "turn_id", "status", "text", "unavailable_reason", "updated_at"],

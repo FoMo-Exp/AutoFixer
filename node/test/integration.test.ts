@@ -830,6 +830,42 @@ describe("safe Pi text summary contract (DAT-191)", () => {
     ).toEqual([null, "Working on the export fix.", "Plan B applied and verified."]);
   });
 
+  test("a provider-error run publishes exactly one summary for its turn (QA B3)", async () => {
+    const partialText = "Partial analysis of the export flow.";
+    const { base } = await startApp([
+      { kind: "error", text: partialText, message: "provider exploded" },
+    ]);
+    const created = await createAndApprove(base);
+
+    // The provider-error path emits agent_error and then agent_settled for
+    // one run; both pi.turn_settled frames land. Wait until the second one
+    // proves the double emission happened before asserting the summary count.
+    await waitUntil(
+      async () =>
+        (await timeline(base, created.id)).filter((event) => event.type === "pi.turn_settled")
+          .length >= 2,
+      "both settlement emissions observed",
+    );
+
+    const summaryEvents = (await timeline(base, created.id)).filter(
+      (event) => event.type === "pi.summary.updated",
+    );
+    // Exactly pending + one evaluated summary for the one open turn: the
+    // duplicate settlement path publishes nothing (contract: one summary
+    // per settled turn).
+    expect(
+      summaryEvents.map((event) => (event.data["summary"] as { status: string }).status),
+    ).toEqual(["pending", "available"]);
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    expect(task.body.pi_summary).toMatchObject({
+      turn_id: "turn_1",
+      status: "available",
+      text: partialText,
+      unavailable_reason: null,
+    });
+  });
+
   test("SSE reconnect replays summary events exactly once and matches the projection", async () => {
     const benignText = "Verified the echo configuration end to end.";
     const { base } = await startApp([{ kind: "text", text: benignText }]);

@@ -927,9 +927,18 @@ export class TaskService {
     this.store.appendEvent(record, "pi.summary.updated", { summary: { ...summary } });
   }
 
-  /** Close the open turn through the safety gate and publish the outcome. */
+  /**
+   * Close the open turn through the safety gate and publish the outcome.
+   * A settlement with no open turn (the `agent_error` then `agent_settled`
+   * double emission of one run) publishes nothing: each turn yields exactly
+   * one pi.summary.updated, as the contract promises.
+   */
   private settleSummary(record: TaskRecord, tracker: PiSummaryTracker): void {
-    this.publishSummary(record, tracker.settleTurn());
+    const settled = tracker.settleTurn();
+    if (settled === null) {
+      return;
+    }
+    this.publishSummary(record, settled);
   }
 
   /**

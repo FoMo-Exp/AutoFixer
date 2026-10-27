@@ -145,14 +145,36 @@ Contract semantics:
   code, not reconstructed by the client.
 - **Generation.** A turn that passes every safety rule is excerpted to its
   first non-empty paragraph, single-spaced, bounded to 240 characters.
-- **Safety boundary.** The ordered rules keep out credential-shaped
-  material, raw command material (fenced code, command-shaped code spans,
-  shell prompts), absolute local filesystem paths, unredacted
-  log/diagnostic output (stack traces, log-level lines, ANSI escapes, log
-  timestamps), and opaque high-entropy strings (digests, hex/base64 blobs)
-  whose safety cannot be determined from the text. The complete turn text
-  is judged — never one fragment at a time — so material split across
-  `pi.text_delta` fragments is caught in its assembled form.
+- **Safety boundary.** The ordered rules keep out exactly these five
+  classes; `available` means the whole turn passed all five, nothing more:
+  - *credential-shaped material*: provider prefixes `sk-`, `sk_live_` /
+    `sk_test_`, `ghp_` / `gho_` / `ghs_` / `ghu_` / `ghr_`, `github_pat_`,
+    `AKIA` / `ASIA`, `xox*`, `glpat-`, `AIza`, `npm_`, `SG.`, `dop_v1_`,
+    `SK`+32 hex, PEM private-key blocks, `Bearer …` headers, and
+    `authorization` / `api_key` / `password` / … assignments;
+  - *raw command material*: fenced code blocks, inline code spans containing
+    shell metacharacters or a command executable, `$ ` prompt lines, bare
+    invocations of shell utilities (sudo, su, chmod, chown, rm, mv, cp,
+    curl, wget, ssh, scp, rsync, sh/bash/zsh, docker, kubectl, systemctl,
+    launchctl), interpreter invocations with a flag or file argument
+    (python, node, java, ruby, perl, php, deno), and git / npm / pnpm /
+    yarn / bun / deno / pip / cargo / make / go invocations with a
+    subcommand or flag;
+  - *absolute local filesystem paths* at the roots `Users`, `home`, `root`,
+    `tmp`, `var`, `private`, `etc`, `opt`, `mnt`, `media`, `srv`, `proc`,
+    `usr`, `bin`, `sbin`, `Library`, `System`, `Applications`, `Volumes`,
+    `workspace`, `workdir`, plus Windows drive letters;
+  - *unredacted log / diagnostic output*: stack frames, log-level lines,
+    `fatal:` / `error:` / `warning:` / `critical:` markers, ANSI escapes,
+    and log timestamps;
+  - *opaque high-entropy strings*: hex runs of 32+ characters and
+    base64-shaped runs of 32+ characters (digests, API keys, auth blobs)
+    whose safety cannot be determined from the text.
+
+  The complete turn text is judged — never one fragment at a time — so
+  material split across `pi.text_delta` fragments is caught in its
+  assembled form. `available` asserts only non-membership in these five
+  classes; it is not a general claim that the text is harmless.
 - **Fail closed.** Any rule hit yields `status:"unavailable"` with
   `unavailable_reason:"unsafe_content"`; a failure inside the gate itself
   yields `"gate_error"`; a settled turn with no displayable text yields
@@ -173,9 +195,16 @@ Contract semantics:
 - **SSE and recovery.** `pi.summary.updated` is a durable timeline event: it
   replays by `Last-Event-ID` in sequence order, survives an orchestrator
   restart with its original `event_id`, and the `pi_summary` projection
-  field always equals the last published summary event. Pi sessions are not
-  resumed across restarts (see Durability), so a recovered task keeps the
-  last settled summary it actually produced.
+  field always equals the last published summary event. Each settled turn
+  publishes exactly one summary event — the duplicated `agent_error` then
+  `agent_settled` emission of a provider failure settles one turn once. Pi
+  sessions are not resumed across restarts (see Durability), so a recovered
+  task keeps the last settled summary it actually produced.
+- **Terminal without a settled turn.** A terminal task whose last turn never
+  settled (cancel or abort winning the race against settlement) keeps
+  `status:"pending"` with `text:null`: Node never fabricates a summary after
+  the terminal frame. Clients that render on a pending summary of a terminal
+  task show no summary, gating on the task status instead.
 
 ## Error model
 
