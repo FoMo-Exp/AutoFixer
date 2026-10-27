@@ -6,6 +6,32 @@ This is the Node-to-Electron/React API. The UI only calls Node at an ephemeral
 loopback address; it never sees dsh sockets, boot tokens, Pi credentials, raw
 tool output, or provider credentials.
 
+## Authentication
+
+Every `/api/v1` request MUST carry the per-process bearer token:
+
+```
+Authorization: Bearer <token>
+```
+
+The token is minted fresh at each orchestrator start and written `0600` to a
+user-private file (`FORGEPILOT_API_TOKEN_FILE`, default
+`$TMPDIR/forgepilot-<uid>/api-token`). The UI, running as the same local user,
+reads that file and the ephemeral loopback port from the orchestrator's startup
+configuration and sends the token on every call. Possessing the token — not a
+statically configured identity string — is what authorizes a caller to act as
+the local operator, approvals included.
+
+A missing, malformed, or wrong token is `401 UNAUTHENTICATED` on every
+endpoint. The server additionally pins browser requests to its own loopback
+`Origin` and requires `application/json` bodies, so a cross-site page cannot
+ride a simple request; those guards are server-side hardening and do not
+replace the token.
+
+The OpenAPI document declares this as the `bearerAuth` security scheme
+(`type: http`, `scheme: bearer`); every operation requires it and documents the
+`401` response, so a client generated from the contract sends the credential.
+
 ## Task resource
 
 ```json
