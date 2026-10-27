@@ -48,6 +48,8 @@ export interface ActionObservation {
   outcome: "accepted" | "denied";
   actionId: string;
   state?: DshState;
+  /** dsh audit event reference for an accepted action (drives evidence.appended). */
+  auditEventReference?: string;
   errorCode?: string;
   errorMessage?: string;
 }
@@ -121,6 +123,7 @@ export function createDshRequestActionTool(
           outcome: "accepted",
           actionId,
           state: response.state,
+          auditEventReference: response.audit_event_reference,
         });
         return {
           content: [

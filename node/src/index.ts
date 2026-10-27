@@ -5,6 +5,7 @@ import { getEnvApiKey, getModel } from "@mariozechner/pi-ai";
 import type { Api, KnownProvider, Model } from "@mariozechner/pi-ai";
 
 import { buildOpenApiDocument } from "./api/openapi.js";
+import { readOrCreateApiToken } from "./api/auth.js";
 import { createApiServer } from "./api/server.js";
 import { TaskService } from "./api/task-service.js";
 import { TaskStore } from "./api/task-store.js";
@@ -26,6 +27,8 @@ export interface OrchestratorHandle {
   store: TaskStore;
   dsh: DshClient;
   model: Model<Api> | undefined;
+  /** Per-process bearer token callers must present on every API request. */
+  apiToken: string;
   /** Start listening; resolves with the bound loopback address. */
   start(): Promise<{ host: string; port: number }>;
   /** Stop listening and release Pi sessions. */
@@ -53,13 +56,18 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     ...(model ? { model } : {}),
     ...(options.streamFn ? { streamFn: options.streamFn } : {}),
   });
-  const server = createApiServer({ service });
+  // Fresh per-process token: possessing it is what authorizes API callers,
+  // approvals included; the configured dsh identity alone is not proof of a
+  // human decision.
+  const apiToken = readOrCreateApiToken(config.apiTokenFile);
+  const server = createApiServer({ service, apiToken });
   return {
     server,
     service,
     store,
     dsh,
     model,
+    apiToken,
     start: () => {
       const { promise, resolve, reject } = Promise.withResolvers<{ host: string; port: number }>();
       server.once("error", reject);
@@ -107,6 +115,7 @@ async function main(): Promise<void> {
   const { host, port } = await orchestrator.start();
   console.log(`forgepilot-api/v1 listening on http://${host}:${port}`);
   console.log(`dsh control plane: ${config.dshSocketPath}`);
+  console.log(`API token file (Authorization: Bearer <token>): ${config.apiTokenFile}`);
   console.log(
     orchestrator.model
       ? `Pi model: ${orchestrator.model.provider}/${orchestrator.model.id}`

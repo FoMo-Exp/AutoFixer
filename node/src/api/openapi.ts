@@ -1,4 +1,4 @@
-import { UI_STATUSES } from "./task-store.js";
+import { TASK_EVENT_TYPES, UI_STATUSES } from "./task-store.js";
 import { DSH_STATES } from "../dsh/types.js";
 
 type JsonObject = Record<string, unknown>;
@@ -115,17 +115,7 @@ const taskEventSchema: JsonObject = {
     task_version: { type: "integer" },
     type: {
       type: "string",
-      enum: [
-        "task.status_changed",
-        "pi.text_delta",
-        "pi.turn_settled",
-        "approval.required",
-        "approval.resolved",
-        "tool.requested",
-        "tool.completed",
-        "tool.denied",
-        "task.terminal",
-      ],
+      enum: [...TASK_EVENT_TYPES],
     },
     data: { type: "object", additionalProperties: true },
   },

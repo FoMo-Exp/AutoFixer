@@ -1,5 +1,20 @@
 import type { TaskEvent } from "../../src/api/task-store.js";
 
+/**
+ * Bearer token injected into every request. Each orchestrator mints its own
+ * per-process token; tests run sequentially, so startApp sets the current
+ * one before any request is issued.
+ */
+let authToken = "";
+
+export function setAuthToken(token: string): void {
+  authToken = token;
+}
+
+function authHeaders(): Record<string, string> {
+  return authToken ? { Authorization: `Bearer ${authToken}` } : {};
+}
+
 /** Poll until the predicate holds; fails the test on timeout. */
 export async function waitUntil(
   predicate: () => boolean | Promise<boolean>,
@@ -26,19 +41,33 @@ export interface JsonResponse<T = unknown> {
 export async function postJson<T = unknown>(url: string, body: unknown): Promise<JsonResponse<T>> {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   return { status: response.status, body: (await response.json()) as T };
 }
 
-export async function postEmpty<T = unknown>(url: string): Promise<JsonResponse<T>> {
-  const response = await fetch(url, { method: "POST" });
-  return { status: response.status, body: (await response.json()) as T };
+/** Raw POST with full control over headers/body — for auth/CSRF negative tests. */
+export async function postRaw(
+  url: string,
+  init: { headers?: Record<string, string>; body?: string },
+): Promise<JsonResponse<unknown>> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { ...authHeaders(), ...init.headers },
+    ...(init.body !== undefined ? { body: init.body } : {}),
+  });
+  let parsed: unknown;
+  try {
+    parsed = await response.json();
+  } catch {
+    parsed = undefined;
+  }
+  return { status: response.status, body: parsed };
 }
 
 export async function getJson<T = unknown>(url: string): Promise<JsonResponse<T>> {
-  const response = await fetch(url);
+  const response = await fetch(url, { headers: authHeaders() });
   return { status: response.status, body: (await response.json()) as T };
 }
 
@@ -61,7 +90,10 @@ export async function readSse(
   const frames: SseFrame[] = [];
   try {
     const response = await fetch(url, {
-      headers: options.lastEventId ? { "Last-Event-ID": options.lastEventId } : {},
+      headers: {
+        ...authHeaders(),
+        ...(options.lastEventId ? { "Last-Event-ID": options.lastEventId } : {}),
+      },
       signal: controller.signal,
     });
     if (response.status !== 200 || response.body === null) {

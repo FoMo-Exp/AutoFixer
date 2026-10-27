@@ -2,10 +2,13 @@ import { describe, expect, test } from "vitest";
 
 import { DshError } from "../src/dsh/client.js";
 import { apiErrorFromDsh } from "../src/api/errors.js";
+import type { TaskRecord } from "../src/api/task-store.js";
 import {
+  createTaskRecord,
   isTerminalStatus,
   projectDshState,
   runningPhaseFor,
+  TaskStore,
   UI_STATUSES,
 } from "../src/api/task-store.js";
 
@@ -118,5 +121,51 @@ describe("dsh error → API error mapping (M0 error model)", () => {
     expect(mapped.status).toBe(503);
     expect(mapped.code).toBe("DSH_UNAVAILABLE");
     expect(mapped.retryable).toBe(true);
+  });
+});
+
+describe("terminal statuses are absorbing (QA round-1 blocker)", () => {
+  function makeRecord(): TaskRecord {
+    return createTaskRecord({
+      id: "tsk_absorbing",
+      repository: {
+        id: "github:Luthiel/AutoFixer",
+        display_name: "Luthiel/AutoFixer",
+        base_ref: "main",
+        base_sha: "52081ea",
+      },
+      summary: "s",
+      sourceReference: null,
+      acceptanceCriteria: [],
+    });
+  }
+
+  test("setStatus cannot leave a terminal status", () => {
+    const store = new TaskStore();
+    const record = makeRecord();
+    store.put(record);
+    store.setStatus(record, "stopped", null);
+    expect(record.terminal).toBe(true);
+
+    const version = record.version;
+    const eventCount = record.events.length;
+    // A stale projection (e.g. an out-of-order `running` read) must not
+    // revive the task: no status move, no event, no version bump.
+    const result = store.setStatus(record, "executing", null);
+    expect(result).toBeNull();
+    expect(record.status).toBe("stopped");
+    expect(record.terminal).toBe(true);
+    expect(record.version).toBe(version);
+    expect(record.events).toHaveLength(eventCount);
+  });
+
+  test("appendEvent still records terminal bookkeeping but setStatus stays closed", () => {
+    const store = new TaskStore();
+    const record = makeRecord();
+    store.put(record);
+    store.setStatus(record, "cancelled", null);
+    expect(isTerminalStatus(record.status)).toBe(true);
+    // Re-setting the same terminal status is also a no-op.
+    expect(store.setStatus(record, "cancelled", null)).toBeNull();
   });
 });

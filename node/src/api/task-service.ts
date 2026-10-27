@@ -65,14 +65,20 @@ export interface TaskServiceDeps {
 }
 
 /**
- * The declared work shape Node submits to dsh. Node never classifies risk —
- * dsh does, independently, from these facts. A task that declares acceptance
- * criteria is a bounded, verifiable request (localized reversible change); a
- * task that declares none carries material uncertainty and fails closed to
- * elevated, mirroring harness.AssessRisk's fail-closed rule.
+ * The declared work shape Node submits to dsh.
+ *
+ * Node never classifies risk — dsh does, independently, from these facts.
+ * The forgepilot-api/v1 create body carries no authenticated, structured
+ * risk facts (only free-text summary and criteria strings, which are
+ * attacker-influencable), so Node declares no positive low-risk signal.
+ * harness.AssessRisk then fails every task closed to `elevated`, and each
+ * one requires the pre-grant human approval. A low-risk fast path may return
+ * only when the API contract grows explicit, authenticated risk declarations
+ * that dsh can bind to the grant — never inferred from free text. (QA
+ * round-1 blocker: criteria presence is not a trustworthy risk fact.)
  */
-function proposedWorkFor(acceptanceCriteria: string[]): DshProposedWork {
-  const flags: DshProposedWork = {
+function neutralProposedWork(): DshProposedWork {
+  return {
     localized_reversible_change: false,
     broad_refactor: false,
     dependency_change: false,
@@ -89,12 +95,6 @@ function proposedWorkFor(acceptanceCriteria: string[]): DshProposedWork {
     alters_infrastructure: false,
     unapproved_network: false,
   };
-  if (acceptanceCriteria.length === 0) {
-    flags.material_uncertainty = true;
-    return flags;
-  }
-  flags.localized_reversible_change = true;
-  return flags;
 }
 
 /** Best-effort external issue id from a source reference URL. */
@@ -118,6 +118,13 @@ function externalIdFrom(sourceReference: string | null | undefined, taskId: stri
 export class TaskService {
   private readonly deps: TaskServiceDeps;
   private readonly runtimes = new Map<string, TaskRuntime>();
+  /**
+   * Per-task serialization of dsh state refreshes (QA round-1 blocker):
+   * overlapping getRun responses can resolve out of order, so each refresh
+   * waits for the previous one before projecting. Combined with the store's
+   * absorbing terminal statuses, a stale read can never revive a task.
+   */
+  private readonly refreshQueues = new Map<string, Promise<void>>();
 
   constructor(deps: TaskServiceDeps) {
     this.deps = deps;
@@ -151,11 +158,6 @@ export class TaskService {
     const acceptanceCriteria = (input.acceptance_criteria ?? []).filter(
       (criterion) => criterion.trim().length > 0,
     );
-    // A criteria-bearing task starts Pi as soon as dsh grants; refuse up front
-    // when no model is configured instead of creating a task that cannot run.
-    if (acceptanceCriteria.length > 0 && !this.deps.model) {
-      throw new ApiError(503, "PI_UNAVAILABLE", "No Pi model is configured for this orchestrator");
-    }
 
     const taskId = newTaskId();
     const sourceReference = input.source_reference?.trim() || null;
@@ -181,7 +183,7 @@ export class TaskService {
             display_name: this.deps.config.actorDisplayName,
           },
         },
-        proposed_work: proposedWorkFor(acceptanceCriteria),
+        proposed_work: neutralProposedWork(),
         requested_scope: {
           path_hints: [...this.deps.config.pathHints],
           tool_capabilities: [...this.deps.config.toolCapabilities],
@@ -541,6 +543,15 @@ export class TaskService {
             action_id: observation.actionId,
             state: observation.state ?? null,
           });
+          // An accepted action produced dsh audit evidence; surface it as the
+          // contract's evidence.appended event so the UI can show the chain
+          // growing without reading dsh directly.
+          if (observation.auditEventReference) {
+            this.store.appendEvent(record, "evidence.appended", {
+              action_id: observation.actionId,
+              audit_event_reference: observation.auditEventReference,
+            });
+          }
         } else {
           this.store.appendEvent(record, "tool.denied", {
             tool_call_id: observation.toolCallId,
@@ -550,7 +561,7 @@ export class TaskService {
             message: observation.errorMessage ?? "dsh did not answer",
           });
         }
-        void this.refreshRunState(record);
+        this.queueRefresh(record);
       },
     });
     const sessionOptions: PiSessionOptions = {
@@ -597,12 +608,12 @@ export class TaskService {
           case "agent_settled":
             record.agentSettled = true;
             this.store.appendEvent(record, "pi.turn_settled", {});
-            void this.refreshRunState(record);
+            this.queueRefresh(record);
             break;
           case "agent_error":
             record.agentSettled = true;
             this.store.appendEvent(record, "pi.turn_settled", { error: event.message });
-            void this.refreshRunState(record);
+            this.queueRefresh(record);
             break;
           case "run_started":
             break;
@@ -674,6 +685,22 @@ export class TaskService {
   }
 
   /**
+   * Queue a dsh state refresh for this task. Refreshes for one task are
+   * serialized so out-of-order getRun responses cannot apply stale state on
+   * top of newer projections.
+   */
+  private queueRefresh(record: TaskRecord): void {
+    const previous = this.refreshQueues.get(record.id) ?? Promise.resolve();
+    const next = previous
+      .then(() => this.refreshRunState(record))
+      .catch(() => {
+        // refreshRunState already swallows dsh errors it can classify; this
+        // catch keeps one failed refresh from poisoning the task's queue.
+      });
+    this.refreshQueues.set(record.id, next);
+  }
+
+  /**
    * Re-read the authoritative run state from dsh and re-project the task.
    * Called after every tool outcome and at turn settlement so dsh-side
    * transitions (stopped by a stop condition, timed_out, expired, ...)
@@ -683,17 +710,34 @@ export class TaskService {
     if (!record.runId || record.terminal) {
       return;
     }
+    const runId = record.runId;
     let run;
     try {
-      run = await this.deps.dsh.getRun(record.runId);
+      run = await this.deps.dsh.getRun(runId);
     } catch (error) {
+      if (record.terminal) {
+        return;
+      }
       if (error instanceof DshError && error.status === 404) {
         this.store.setStatus(record, "stopped", "dsh no longer knows this run");
         this.finalizeIfTerminal(record);
       }
       return;
     }
+    // Terminal statuses are absorbing: a stale read that lands after a newer
+    // projection finalized the task must not revive it (QA round-1 blocker).
+    if (record.terminal) {
+      return;
+    }
     this.updateRunSummary(record, run.run_id, run.state);
+    // Emit artifact.available exactly on the unavailable→available edge so
+    // the UI learns about a finalized evidence bundle without polling dsh.
+    if (run.bundle_available && !record.evidenceBundleAvailable) {
+      this.store.appendEvent(record, "artifact.available", {
+        run_id: run.run_id,
+        artifact_id: "evidence_bundle",
+      });
+    }
     record.evidenceBundleAvailable = run.bundle_available;
     record.risk = {
       class: run.risk_assessment.risk_class,

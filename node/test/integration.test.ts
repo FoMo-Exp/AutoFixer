@@ -1,13 +1,18 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 
 import { createOrchestrator } from "../src/index.js";
 import type { OrchestratorHandle } from "../src/index.js";
 import type { OrchestratorConfig } from "../src/config.js";
+import { configFromEnv } from "../src/config.js";
 import type { ApiErrorBody } from "../src/api/errors.js";
 import type { RunSummary, TaskResource, TimelineItem } from "../src/api/task-store.js";
 import type { DshServerHandle } from "./helpers/dsh-server.js";
 import { startDshServer } from "./helpers/dsh-server.js";
-import { getJson, postJson, readSse, waitUntil } from "./helpers/http.js";
+import { getJson, postJson, postRaw, readSse, setAuthToken, waitUntil } from "./helpers/http.js";
 import type { ScriptedTurn } from "./helpers/scripted-stream.js";
 import { makeGate, scriptedStream, TEST_MODEL } from "./helpers/scripted-stream.js";
 
@@ -17,6 +22,7 @@ const BASE_SHA = "52081eaddca099967fd8be13b3060337fde50d3f";
 
 let dsh: DshServerHandle;
 const apps: OrchestratorHandle[] = [];
+let tokenDirCounter = 0;
 
 beforeAll(async () => {
   dsh = await startDshServer({ approver: APPROVER });
@@ -34,10 +40,13 @@ afterEach(async () => {
 });
 
 function testConfig(overrides: Partial<OrchestratorConfig> = {}): OrchestratorConfig {
+  tokenDirCounter += 1;
+  const tokenDir = mkdtempSync(path.join(tmpdir(), `forgepilot-test-${tokenDirCounter}-`));
   return {
     dshSocketPath: dsh.socketPath,
     apiHost: "127.0.0.1",
     apiPort: 0,
+    apiTokenFile: path.join(tokenDir, "api-token"),
     repositoryId: REPOSITORY_ID,
     repositoryUrl: "https://github.com/Luthiel/AutoFixer.git",
     baseRef: "main",
@@ -60,20 +69,9 @@ async function startApp(turns: ScriptedTurn[], overrides: Partial<OrchestratorCo
     streamFn: scripted.streamFn,
   });
   apps.push(orchestrator);
+  setAuthToken(orchestrator.apiToken);
   const { port } = await orchestrator.start();
   return { orchestrator, scripted, base: `http://127.0.0.1:${port}` };
-}
-
-async function createLowRiskTask(base: string): Promise<TaskResource> {
-  const created = await postJson<TaskResource>(`${base}/api/v1/tasks`, {
-    repository_id: REPOSITORY_ID,
-    base_ref: "main",
-    summary: "Verify the echo tool works",
-    source_reference: "https://github.com/Luthiel/AutoFixer/issues/42",
-    acceptance_criteria: ["echo prints hello"],
-  });
-  expect(created.status).toBe(201);
-  return created.body;
 }
 
 async function timeline(base: string, taskId: string): Promise<TimelineItem[]> {
@@ -84,6 +82,38 @@ async function timeline(base: string, taskId: string): Promise<TimelineItem[]> {
   return response.body.items;
 }
 
+/**
+ * Create a task and record the pre-grant approval. Since Node fails closed to
+ * elevated (no authenticated risk facts exist in the v1 body), every task
+ * needs the scoped approval before Pi starts.
+ */
+async function createAndApprove(
+  base: string,
+  body: Record<string, unknown> = {},
+): Promise<TaskResource> {
+  const created = await postJson<TaskResource>(`${base}/api/v1/tasks`, {
+    repository_id: REPOSITORY_ID,
+    base_ref: "main",
+    summary: "Verify the echo tool works",
+    source_reference: "https://github.com/Luthiel/AutoFixer/issues/42",
+    acceptance_criteria: ["echo prints hello"],
+    ...body,
+  });
+  expect(created.status).toBe(201);
+  const taskId = created.body.id;
+  const required = (await timeline(base, taskId)).find(
+    (event) => event.type === "approval.required",
+  );
+  const digest = required?.data["scope_digest"];
+  expect(typeof digest).toBe("string");
+  const approved = await postJson<TaskResource>(`${base}/api/v1/tasks/${taskId}/approvals`, {
+    decision: "approve",
+    scope_digest: String(digest),
+  });
+  expect(approved.status).toBe(200);
+  return approved.body;
+}
+
 function requireRunId(task: TaskResource): string {
   if (typeof task.current_run_id !== "string") {
     throw new Error(`task ${task.id} has no current_run_id`);
@@ -92,10 +122,8 @@ function requireRunId(task: TaskResource): string {
 }
 
 describe("forgepilot-api/v1 against the real dsh control plane", () => {
-  test("low-risk task streams Pi text and tool events and settles through dsh", async () => {
+  test("every task fails closed to elevated and streams Pi events after approval", async () => {
     const { base } = await startApp([
-      // Tool turn first: a text-only turn would settle the run before any
-      // action is requested. The preamble text still streams as pi.text_delta.
       {
         kind: "tool",
         text: "Checking the echo tool.",
@@ -106,20 +134,43 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
       },
       { kind: "text", text: "Echo verified." },
     ]);
-    const created = await createLowRiskTask(base);
-    expect(created.risk?.class).toBe("low");
-    expect(created.risk?.requires_human_approval).toBe(false);
-    const runId = requireRunId(created);
+    // Create with acceptance criteria — the old heuristic would have granted
+    // low risk here; the fail-closed posture must classify it elevated.
+    const created = await postJson<TaskResource>(`${base}/api/v1/tasks`, {
+      repository_id: REPOSITORY_ID,
+      base_ref: "main",
+      summary: "Verify the echo tool works",
+      source_reference: "https://github.com/Luthiel/AutoFixer/issues/42",
+      acceptance_criteria: ["echo prints hello"],
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.status).toBe("awaiting_approval");
+    expect(created.body.risk?.class).toBe("elevated");
+    expect(created.body.risk?.requires_human_approval).toBe(true);
+    const taskId = created.body.id;
+    const runId = requireRunId(created.body);
+
+    // Approve with the scope digest from the approval.required event.
+    const required = (await timeline(base, taskId)).find(
+      (event) => event.type === "approval.required",
+    );
+    const digest = String(required?.data["scope_digest"]);
+    const approved = await postJson<TaskResource>(`${base}/api/v1/tasks/${taskId}/approvals`, {
+      decision: "approve",
+      scope_digest: digest,
+    });
+    expect(approved.status).toBe(200);
+    expect(approved.body.status).toBe("approved");
 
     await waitUntil(
-      async () =>
-        (await timeline(base, created.id)).some((event) => event.type === "pi.turn_settled"),
+      async () => (await timeline(base, taskId)).some((event) => event.type === "pi.turn_settled"),
       "Pi turn settled",
     );
 
-    const events = await timeline(base, created.id);
+    const events = await timeline(base, taskId);
     const types = events.map((event) => event.type);
     expect(types).toContain("task.status_changed");
+    expect(types).toContain("approval.resolved");
     expect(types).toContain("pi.text_delta");
     expect(types).toContain("tool.requested");
     expect(types).toContain("tool.completed");
@@ -136,7 +187,11 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     expect(String(completed?.data["action_id"])).toMatch(/^act_/);
     expect(completed?.data["state"]).toBe("running");
 
-    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    // An accepted action appends dsh audit evidence.
+    const evidence = events.find((event) => event.type === "evidence.appended");
+    expect(String(evidence?.data["audit_event_reference"])).toMatch(/^evidence:\/\//);
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${taskId}`);
     expect(task.body.status).toBe("validating");
     expect(task.body.progress.actions_completed).toBe(1);
 
@@ -145,27 +200,17 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     expect(run.state).toBe("running");
     expect(run.execution_counts.actions_allowed).toBe(1);
 
-    const runs = await getJson<{ items: RunSummary[] }>(`${base}/api/v1/tasks/${created.id}/runs`);
+    const runs = await getJson<{ items: RunSummary[] }>(`${base}/api/v1/tasks/${taskId}/runs`);
     expect(runs.body.items).toHaveLength(1);
     expect(runs.body.items[0]?.state).toBe("running");
 
     const list = await getJson<{ items: TaskResource[] }>(`${base}/api/v1/tasks`);
     expect(list.status).toBe(200);
-    expect(list.body.items.map((item) => item.id)).toContain(created.id);
+    expect(list.body.items.map((item) => item.id)).toContain(taskId);
   });
 
-  test("elevated task blocks until the scoped approval is recorded", async () => {
-    const { base } = await startApp([
-      {
-        kind: "tool",
-        text: "Working after approval.",
-        toolId: "echo",
-        args: { message: "hello" },
-        pathScope: ["node/approved.txt"],
-        rationale: "post-approval check",
-      },
-      { kind: "text", text: "Done." },
-    ]);
+  test("messages are blocked and wrong scope digests are refused before approval", async () => {
+    const { base } = await startApp([]);
     const created = await postJson<TaskResource>(`${base}/api/v1/tasks`, {
       repository_id: REPOSITORY_ID,
       base_ref: "main",
@@ -173,16 +218,7 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     });
     expect(created.status).toBe(201);
     expect(created.body.status).toBe("awaiting_approval");
-    expect(created.body.risk?.class).toBe("elevated");
-    expect(created.body.risk?.requires_human_approval).toBe(true);
     const taskId = created.body.id;
-
-    const required = (await timeline(base, taskId)).find(
-      (event) => event.type === "approval.required",
-    );
-    expect(required).toBeDefined();
-    const digest = required?.data["scope_digest"];
-    expect(typeof digest).toBe("string");
 
     // No Pi session exists before approval: messages are refused, not faked.
     const early = await postJson<ApiErrorBody>(`${base}/api/v1/tasks/${taskId}/messages`, {
@@ -200,27 +236,6 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     expect(wrong.status).toBe(409);
     expect(wrong.body.error.code).toBe("TASK_STATE_CONFLICT");
     expect(wrong.body.error.details["dsh_code"]).toBe("DSH_APPROVAL_SCOPE_MISMATCH");
-
-    const approved = await postJson<TaskResource>(`${base}/api/v1/tasks/${taskId}/approvals`, {
-      decision: "approve",
-      scope_digest: String(digest),
-    });
-    expect(approved.status).toBe(200);
-    expect(approved.body.status).toBe("approved");
-
-    await waitUntil(
-      async () => (await timeline(base, taskId)).some((event) => event.type === "pi.turn_settled"),
-      "Pi turn settled after approval",
-    );
-    const after = await timeline(base, taskId);
-    expect(
-      after.some(
-        (event) => event.type === "approval.resolved" && event.data["decision"] === "approve",
-      ),
-    ).toBe(true);
-    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${taskId}`);
-    expect(task.body.status).toBe("validating");
-    expect(task.body.risk?.requires_human_approval).toBe(false);
   });
 
   test("an out-of-grant action intent is refused by dsh and stops the task", async () => {
@@ -234,7 +249,7 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
       },
       { kind: "text", text: "Stopped by policy." },
     ]);
-    const created = await createLowRiskTask(base);
+    const created = await createAndApprove(base);
     const runId = requireRunId(created);
 
     await waitUntil(async () => {
@@ -261,6 +276,44 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     expect(cancel.body.error.code).toBe("TASK_STATE_CONFLICT");
   });
 
+  test("a terminal task is absorbing: a stale dsh read cannot revive it", async () => {
+    const { base, orchestrator } = await startApp([
+      {
+        kind: "tool",
+        toolId: "echo",
+        args: { message: "hello" },
+        pathScope: ["secrets/keys.md"],
+        rationale: "attempt outside the grant",
+      },
+      { kind: "text", text: "Stopped." },
+    ]);
+    const created = await createAndApprove(base);
+    await waitUntil(async () => {
+      const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+      return task.body.status === "stopped";
+    }, "task terminal");
+
+    // Re-run the refresh path directly: it must be a no-op on a terminal task.
+    const record = orchestrator.store.get(created.id);
+    expect(record?.terminal).toBe(true);
+    const versionBefore = record?.version;
+    // Await the actual refresh; the absorbing terminal guard keeps the task
+    // terminal and leaves the version untouched (no fixed wait: the refresh
+    // promise is the signal).
+    await orchestrator.service["refreshRunState"](record!);
+    expect(orchestrator.store.get(created.id)?.status).toBe("stopped");
+    expect(orchestrator.store.get(created.id)?.terminal).toBe(true);
+    expect(orchestrator.store.get(created.id)?.version).toBe(versionBefore);
+
+    // Timeline must not contain a status change after the terminal event.
+    const events = await timeline(base, created.id);
+    const terminalIndex = events.findIndex((event) => event.type === "task.terminal");
+    const statusAfterTerminal = events
+      .slice(terminalIndex + 1)
+      .filter((event) => event.type === "task.status_changed");
+    expect(statusAfterTerminal).toHaveLength(0);
+  });
+
   test("shell-shaped requests never execute: vocabulary is refused, unregistered tools are denied", async () => {
     const { base } = await startApp([
       {
@@ -273,8 +326,8 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
         rationale: "try a shell",
       },
       {
-        // A registered-looking tool id that is not in dsh's registry is
-        // denied by the registry and recorded in the evidence chain.
+        // A tool id that is not in dsh's registry is denied by the registry
+        // and recorded in the evidence chain.
         kind: "tool",
         toolId: "sh",
         args: { script: "pwned" },
@@ -283,7 +336,7 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
       },
       { kind: "text", text: "I cannot run shells." },
     ]);
-    const created = await createLowRiskTask(base);
+    const created = await createAndApprove(base);
     const runId = requireRunId(created);
 
     await waitUntil(async () => {
@@ -316,7 +369,7 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
       },
       { kind: "hang" },
     ]);
-    const created = await createLowRiskTask(base);
+    const created = await createAndApprove(base);
     const runId = requireRunId(created);
 
     await waitUntil(
@@ -355,7 +408,7 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
       ],
       { maxWallClockSeconds: 2 },
     );
-    const created = await createLowRiskTask(base);
+    const created = await createAndApprove(base);
     const runId = requireRunId(created);
 
     await waitUntil(
@@ -390,7 +443,7 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
       },
       { kind: "text", text: "Stopped." },
     ]);
-    const created = await createLowRiskTask(base);
+    const created = await createAndApprove(base);
     await waitUntil(async () => {
       const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
       return task.body.status === "stopped";
@@ -427,7 +480,7 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
       { kind: "text", text: "Plan B applied." },
       { kind: "text", text: "Extra check done." },
     ]);
-    const created = await createLowRiskTask(base);
+    const created = await createAndApprove(base);
 
     await waitUntil(() => scripted.calls.length >= 1, "first model call");
     const steer = await postJson<{ task_id: string; queued: boolean }>(
@@ -469,25 +522,136 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     expect(response.body.error.code).toBe("INVALID_REQUEST");
   });
 
-  test("tasks that need Pi fail closed with PI_UNAVAILABLE when no model is configured", async () => {
-    const orchestrator = createOrchestrator({ config: testConfig() });
-    apps.push(orchestrator);
-    const { port } = await orchestrator.start();
-    const response = await postJson<ApiErrorBody>(`http://127.0.0.1:${port}/api/v1/tasks`, {
-      repository_id: REPOSITORY_ID,
-      base_ref: "main",
-      summary: "Needs a model",
-      acceptance_criteria: ["something verifiable"],
-    });
-    expect(response.status).toBe(503);
-    expect(response.body.error.code).toBe("PI_UNAVAILABLE");
-  });
-
   test("unknown tasks 404 with the contract error envelope", async () => {
     const { base } = await startApp([]);
     const response = await getJson<ApiErrorBody>(`${base}/api/v1/tasks/tsk_missing`);
     expect(response.status).toBe(404);
     expect(response.body.error.code).toBe("TASK_NOT_FOUND");
     expect(response.body.error.request_id).toMatch(/^req_/);
+  });
+});
+
+describe("API authentication and origin guards (QA round-1 blocker)", () => {
+  test("every endpoint requires the bearer token", async () => {
+    const { base } = await startApp([]);
+    setAuthToken(""); // strip credentials to reproduce the QA finding
+    const created = await postRaw(`${base}/api/v1/tasks`, {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        repository_id: REPOSITORY_ID,
+        base_ref: "main",
+        summary: "sneaky",
+      }),
+    });
+    expect(created.status).toBe(401);
+    const read = await fetch(`${base}/api/v1/tasks`);
+    expect(read.status).toBe(401);
+    const stream = await fetch(`${base}/api/v1/tasks/tsk_x/stream`);
+    expect(stream.status).toBe(401);
+  });
+
+  test("a wrong token is rejected", async () => {
+    const { base } = await startApp([]);
+    setAuthToken("0000000000000000000000000000000000000000000000000000000000000000");
+    const created = await postJson<ApiErrorBody>(`${base}/api/v1/tasks`, {
+      repository_id: REPOSITORY_ID,
+      base_ref: "main",
+      summary: "sneaky",
+    });
+    expect(created.status).toBe(401);
+  });
+
+  test("a cross-site Origin and a non-JSON content type are refused", async () => {
+    const { base, orchestrator } = await startApp([]);
+    // Restore a valid token after the negative tests above.
+    setAuthToken(orchestrator.apiToken);
+
+    // Cross-site origin, even with a valid token.
+    const crossSite = await postRaw(`${base}/api/v1/tasks`, {
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "https://untrusted.example",
+      },
+      body: JSON.stringify({ repository_id: REPOSITORY_ID, base_ref: "main", summary: "x" }),
+    });
+    expect(crossSite.status).toBe(403);
+
+    // Simple-request content type (text/plain) is refused: bodies must be JSON.
+    const plain = await postRaw(`${base}/api/v1/tasks`, {
+      headers: { "Content-Type": "text/plain", Origin: "https://untrusted.example" },
+      body: JSON.stringify({ repository_id: REPOSITORY_ID, base_ref: "main", summary: "x" }),
+    });
+    expect([400, 403]).toContain(plain.status);
+
+    // The loopback origin is allowed.
+    const port = new URL(base).port;
+    const sameOrigin = await postJson<ApiErrorBody>(`${base}/api/v1/tasks`, {
+      repository_id: "github:acme/payments",
+      base_ref: "main",
+      summary: "x",
+    });
+    expect(sameOrigin.status).toBe(400); // reaches validation, i.e. auth+origin passed
+    expect(port).toBeTruthy();
+  });
+
+  test("config refuses a non-loopback bind address", () => {
+    expect(() =>
+      configFromEnv({
+        FORGEPILOT_BASE_SHA: BASE_SHA,
+        FORGEPILOT_API_HOST: "0.0.0.0",
+      } as NodeJS.ProcessEnv),
+    ).toThrow(/loopback/);
+  });
+});
+
+describe("risk classification fails closed (QA round-1 blocker)", () => {
+  test("a dependency-change task with acceptance criteria still requires approval", async () => {
+    const { base } = await startApp([]);
+    const created = await postJson<TaskResource>(`${base}/api/v1/tasks`, {
+      repository_id: REPOSITORY_ID,
+      base_ref: "main",
+      summary: "Upgrade the export dependency and change its data shape",
+      acceptance_criteria: ["export still works", "no regression"],
+    });
+    expect(created.status).toBe(201);
+    // A single acceptance criterion must NOT unlock the low-risk path.
+    expect(created.body.risk?.class).toBe("elevated");
+    expect(created.body.status).toBe("awaiting_approval");
+    expect(created.body.risk?.requires_human_approval).toBe(true);
+  });
+});
+
+describe("PI_UNAVAILABLE at approval (QA round-1 blocker)", () => {
+  test("approving without a configured model fails closed with PI_UNAVAILABLE", async () => {
+    const scripted = scriptedStream([]);
+    const orchestrator = createOrchestrator({
+      config: testConfig(),
+      // no model → PI_UNAVAILABLE
+      streamFn: scripted.streamFn,
+    });
+    apps.push(orchestrator);
+    setAuthToken(orchestrator.apiToken);
+    const { port } = await orchestrator.start();
+    const base = `http://127.0.0.1:${port}`;
+
+    const created = await postJson<TaskResource>(`${base}/api/v1/tasks`, {
+      repository_id: REPOSITORY_ID,
+      base_ref: "main",
+      summary: "Needs a model",
+      acceptance_criteria: ["something verifiable"],
+    });
+    // Creating is allowed (fail-closed to elevated); the approval that would
+    // start Pi is what fails.
+    expect(created.status).toBe(201);
+    const taskId = created.body.id;
+    const required = (await timeline(base, taskId)).find(
+      (event) => event.type === "approval.required",
+    );
+    const approved = await postJson<ApiErrorBody>(`${base}/api/v1/tasks/${taskId}/approvals`, {
+      decision: "approve",
+      scope_digest: String(required?.data["scope_digest"]),
+    });
+    expect(approved.status).toBe(503);
+    expect(approved.body.error.code).toBe("PI_UNAVAILABLE");
   });
 });

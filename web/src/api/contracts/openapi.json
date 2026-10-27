@@ -932,11 +932,15 @@
               "task.status_changed",
               "pi.text_delta",
               "pi.turn_settled",
+              "plan.updated",
               "approval.required",
               "approval.resolved",
               "tool.requested",
               "tool.completed",
               "tool.denied",
+              "validation.completed",
+              "artifact.available",
+              "evidence.appended",
               "task.terminal"
             ]
           },

@@ -46,16 +46,30 @@ export function isTerminalStatus(status: UiStatus): boolean {
   return TERMINAL_STATUS_TABLE[status];
 }
 
-export type TaskEventType =
-  | "task.status_changed"
-  | "pi.text_delta"
-  | "pi.turn_settled"
-  | "approval.required"
-  | "approval.resolved"
-  | "tool.requested"
-  | "tool.completed"
-  | "tool.denied"
-  | "task.terminal";
+/**
+ * The complete M0 SSE event vocabulary (forgepilot-api/v1). All 13 types are
+ * allowed on the stream; M2 emits the ones with real producers (see
+ * TaskService) and reserves `plan.updated` / `validation.completed` for the
+ * milestones that produce plans and validation runs.
+ */
+export type TaskEventType = (typeof TASK_EVENT_TYPES)[number];
+
+/** Runtime list backing TaskEventType; single source for the OpenAPI enum. */
+export const TASK_EVENT_TYPES = [
+  "task.status_changed",
+  "pi.text_delta",
+  "pi.turn_settled",
+  "plan.updated",
+  "approval.required",
+  "approval.resolved",
+  "tool.requested",
+  "tool.completed",
+  "tool.denied",
+  "validation.completed",
+  "artifact.available",
+  "evidence.appended",
+  "task.terminal",
+] as const;
 
 export interface TaskEvent {
   event_id: string;
@@ -255,8 +269,17 @@ export class TaskStore {
     return event;
   }
 
-  /** Set a new status, recording the change event when the status really moved. */
+  /**
+   * Set a new status, recording the change event when the status really moved.
+   *
+   * Terminal statuses are absorbing, mirroring dsh's FP-01 state table: a
+   * stale or out-of-order projection can never revive a task that already
+   * reached a terminal outcome.
+   */
   setStatus(record: TaskRecord, status: UiStatus, reason: string | null): TaskEvent | null {
+    if (isTerminalStatus(record.status)) {
+      return null;
+    }
     if (record.status === status && record.statusReason === reason) {
       return null;
     }
