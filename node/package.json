@@ -1,6 +1,6 @@
 {
   "name": "@autofixer/orchestrator",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "ForgePilot Node/Pi orchestration service and minimal forgepilot-api/v1 product API",

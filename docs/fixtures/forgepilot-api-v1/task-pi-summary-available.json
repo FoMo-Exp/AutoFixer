@@ -45,6 +45,24 @@
     "status": "available",
     "text": "Pi reported that it inspected and updated the package manifest and the lockfile and that the change is ready for review.",
     "unavailable_reason": null,
+    "source": {
+      "kind": "turn_report",
+      "version": 1,
+      "task_id": "tsk_00000000000000000000000000000001",
+      "run_id": "run_00000000000000000000000000000001",
+      "turn_id": "turn_1",
+      "report": {
+        "areas": [
+          "manifest",
+          "lockfile"
+        ],
+        "activities": [
+          "inspected",
+          "updated"
+        ],
+        "outcome": "ready_for_review"
+      }
+    },
     "updated_at": "2099-01-01T00:00:00.000Z"
   },
   "governance": {

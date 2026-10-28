@@ -195,6 +195,8 @@ describe("real-response fixtures for pi_summary (DAT-191/193)", () => {
       text: null,
       unavailable_reason: "untrusted_source",
     });
+    // No displayable text means no provenance claim either.
+    expect(resource.body.pi_summary?.source).toBeNull();
     expect(JSON.stringify(resource.body.pi_summary)).not.toContain(benignText);
     checkFixture("task-pi-summary-unavailable-untrusted-source.json", resource.body);
 
@@ -236,6 +238,21 @@ describe("real-response fixtures for pi_summary (DAT-191/193)", () => {
       text: rendered,
       unavailable_reason: null,
     });
+    // DAT-194: the same response carries the verifiable provenance record —
+    // closed channel, proof version, task/run/turn attribution, and the
+    // closed-enum report the text was fixed-rendered from.
+    expect(resource.body.pi_summary?.source).toEqual({
+      kind: "turn_report",
+      version: 1,
+      task_id: task.id,
+      run_id: task.current_run_id,
+      turn_id: "turn_1",
+      report: {
+        areas: ["manifest", "lockfile"],
+        activities: ["inspected", "updated"],
+        outcome: "ready_for_review",
+      },
+    });
     expect(JSON.stringify(resource.body.pi_summary)).not.toContain(freeText);
     checkFixture("task-pi-summary-available.json", resource.body);
 
@@ -244,6 +261,9 @@ describe("real-response fixtures for pi_summary (DAT-191/193)", () => {
     );
     const summaryEvents = events.body.items.filter((event) => event.type === "pi.summary.updated");
     expect(summaryEvents).toHaveLength(2);
+    // Projection and event agree byte for byte: the served event payload is
+    // the same provenance-gated summary the Task response carries.
+    expect(summaryEvents.at(-1)?.data["summary"]).toEqual(resource.body.pi_summary);
     checkFixture("pi-summary-events-available.json", summaryEvents);
   });
 

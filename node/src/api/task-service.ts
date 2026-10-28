@@ -31,6 +31,7 @@ import {
   isTerminalStatus,
   newTaskId,
   projectDshState,
+  projectEventForDisplay,
   runningPhaseFor,
   toTaskResource,
 } from "./task-store.js";
@@ -584,14 +585,23 @@ export class TaskService {
     return this.requireRecord(taskId).runs;
   }
 
+  /**
+   * The recorded timeline as the API serves it: every event passes the
+   * display gate, so a `pi.summary.updated` payload is re-proven exactly
+   * like the task's `pi_summary` (DAT-194). Records and durable bytes are
+   * untouched — this returns gated copies in their recorded order.
+   */
   getTimeline(taskId: string): TimelineItem[] {
-    return this.requireRecord(taskId).events;
+    return this.requireRecord(taskId).events.map(projectEventForDisplay);
   }
 
   subscribe(taskId: string, listener: (event: TaskEvent) => void): () => void {
     const record = this.requireRecord(taskId);
-    record.subscribers.add(listener);
-    return () => record.subscribers.delete(listener);
+    // Live events go through the same display gate as replayed ones, so a
+    // subscriber sees one contract no matter how the event reaches it.
+    const gated = (event: TaskEvent): void => listener(projectEventForDisplay(event));
+    record.subscribers.add(gated);
+    return () => record.subscribers.delete(gated);
   }
 
   async getArtifact(taskId: string, artifactId: string): Promise<Record<string, unknown>> {

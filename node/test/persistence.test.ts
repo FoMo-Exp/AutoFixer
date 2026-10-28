@@ -5,8 +5,9 @@ import path from "node:path";
 import { describe, expect, test } from "vitest";
 
 import { applyRunFacts } from "../src/api/task-service.js";
+import type { PiSummary } from "../src/api/pi-summary.js";
 import type { TaskRecord } from "../src/api/task-store.js";
-import { createTaskRecord, TaskStore } from "../src/api/task-store.js";
+import { createTaskRecord, TaskStore, toTaskResource } from "../src/api/task-store.js";
 import type { DshRunResponse } from "../src/dsh/types.js";
 
 function tempDir(): string {
@@ -163,11 +164,12 @@ describe("durable task projection (M3 persistence)", () => {
     const stateFile = path.join(tempDir(), "task-state.json");
     const first = new TaskStore({ persistencePath: stateFile });
     const record = makeRecord();
-    // DAT-193 does not rewrite history: a summary recorded before the
-    // trust boundary (an `available` projection under the DAT-191/192
-    // contract) reloads byte-for-byte, event included. The trusted-source
-    // rule governs every settlement produced from this version forward.
-    record.piSummary = {
+    // DAT-193 does not rewrite history, and neither does DAT-194: a summary
+    // recorded before the provenance contract (an `available` projection in
+    // the DAT-191/192 shape — no `source` field at all, free text and all)
+    // reloads byte-for-byte, event included. The store is not where the
+    // provenance decision is made; the read gate is.
+    const legacySummary = {
       task_id: record.id,
       run_id: "run_persisted",
       turn_id: "turn_1",
@@ -175,7 +177,8 @@ describe("durable task projection (M3 persistence)", () => {
       text: "Checked the echo tool and confirmed it prints hello.",
       unavailable_reason: null,
       updated_at: "2099-01-01T00:00:00.000Z",
-    };
+    } as PiSummary;
+    record.piSummary = legacySummary;
     first.put(record);
     const publishedEvent = first.appendEvent(record, "pi.summary.updated", {
       summary: { ...record.piSummary },
@@ -185,9 +188,29 @@ describe("durable task projection (M3 persistence)", () => {
     const second = new TaskStore({ persistencePath: stateFile });
     const restored = second.get(record.id);
     expect(restored?.piSummary).toEqual(record.piSummary);
+    // Reloading never backfills a source: the legacy record keeps the exact
+    // shape the old version wrote, so no old record can grow a provenance
+    // claim it never had.
+    expect(restored?.piSummary).not.toHaveProperty("source");
     const replayed = restored?.events.find((event) => event.type === "pi.summary.updated");
     expect(replayed?.event_id).toBe(publishedEvent.event_id);
     expect(replayed?.data["summary"]).toEqual(record.piSummary);
+
+    // The API projection is where DAT-194 fails closed: the same stored
+    // `available` summary is served unavailable, with no text and no source.
+    expect(toTaskResource(restored!).pi_summary).toEqual({
+      task_id: record.id,
+      run_id: "run_persisted",
+      turn_id: "turn_1",
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "untrusted_source",
+      source: null,
+      updated_at: "2099-01-01T00:00:00.000Z",
+    });
+    // …while the stored bytes stay exactly as written: provenance is decided
+    // on read, never by editing history.
+    expect(restored?.piSummary).toEqual(legacySummary);
   });
 
   test("a future schema version refuses to load instead of guessing", () => {

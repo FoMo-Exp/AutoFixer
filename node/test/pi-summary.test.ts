@@ -646,6 +646,7 @@ describe("PiSummaryTracker lifecycle and attribution", () => {
       status: "pending",
       text: null,
       unavailable_reason: null,
+      source: null,
       updated_at: "2099-01-01T00:00:00.000Z",
     });
   });

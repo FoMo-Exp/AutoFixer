@@ -45,7 +45,7 @@ The OpenAPI document declares this as the `bearerAuth` security scheme
   "status":"executing","status_reason":null,
   "risk":{"class":"low","decision_code":"risk_low_approved","requires_human_approval":false},
   "progress":{"phase":"validating","actions_completed":2,"actions_total":3},
-  "pi_summary":{"task_id":"tsk_01J...","run_id":"run_01J...","turn_id":"turn_1","status":"unavailable","text":null,"unavailable_reason":"untrusted_source","updated_at":"2026-10-26T12:03:00Z"},
+  "pi_summary":{"task_id":"tsk_01J...","run_id":"run_01J...","turn_id":"turn_1","status":"unavailable","text":null,"unavailable_reason":"untrusted_source","source":null,"updated_at":"2026-10-26T12:03:00Z"},
   "governance":{"current_head_sha":"9ef012...","observations_valid":true,"merge_queue_eligible":false},
   "artifacts":{"patch":null,"report":null,"evidence_bundle_available":false,"index":[{"artifact_id":"patch_report","available":true,"digest":"sha256:…","head_sha":"9ef012..."}]}
 }
@@ -75,8 +75,11 @@ projected as its authoritative `stopped` or `timed_out` outcome.
 of the task's current run; free model turn text is never displayable
 (DAT-193 trust boundary) and the available path is the turn's validated
 structured Pi report (see [Safe Pi text
-summary](#safe-pi-text-summary) below). It is `null` until a Pi session
-exists for the task.
+summary](#safe-pi-text-summary) below). Text is served only together with
+the verifiable `source` record that proves it (DAT-194); a summary whose
+source cannot be re-proven — including every summary recorded before the
+provenance contract — is served `unavailable` with `text:null`. It is
+`null` until a Pi session exists for the task.
 
 ## Authoritative run-state projection
 
@@ -155,7 +158,7 @@ below.
 timeline/SSE event whose `data.summary` is the same object:
 
 ```json
-{"task_id":"tsk_01J...","run_id":"run_01J...","turn_id":"turn_1","status":"available","text":"Pi reported that it inspected and updated the package manifest and the lockfile and that the change is ready for review.","unavailable_reason":null,"updated_at":"2026-10-26T12:03:00Z"}
+{"task_id":"tsk_01J...","run_id":"run_01J...","turn_id":"turn_1","status":"available","text":"Pi reported that it inspected and updated the package manifest and the lockfile and that the change is ready for review.","unavailable_reason":null,"source":{"kind":"turn_report","version":1,"task_id":"tsk_01J...","run_id":"run_01J...","turn_id":"turn_1","report":{"areas":["manifest","lockfile"],"activities":["inspected","updated"],"outcome":"ready_for_review"}},"updated_at":"2026-10-26T12:03:00Z"}
 ```
 
 Contract semantics:
@@ -181,6 +184,34 @@ Contract semantics:
   text is additionally run through the DAT-192 classifier before
   release (defence in depth; in that direction the classifier can only
   withhold, never allow).
+- **Verifiable source: the provenance record (DAT-194).** `source` is
+  non-null if and only if `status` is `"available"`, and it states the
+  whole trust chain in the payload: `kind` is the closed provenance
+  channel (this version defines exactly one, `"turn_report"`, and any
+  other kind is not a trusted source); `version` versions the proof
+  format and its rendering vocabulary (this version defines `1`; the
+  version is read from the record and never inferred from the writer or
+  the running service, so an unknown version is unverifiable);
+  `task_id`/`run_id`/`turn_id` bind the proof to the exact task, run,
+  and turn the summary describes; and `report` echoes the validated
+  closed-enum structured report the sentence was fixed-rendered from, so
+  a client can corroborate the closed vocabulary and the attribution.
+  The gate is server-side: on every read — the Task response, the
+  timeline, the SSE replay, and the live stream — Node re-proves an
+  `available` summary from its stored source: the report must validate
+  against the closed vocabulary, re-render through the fixed wording
+  byte-for-byte equal to `text`, still pass the classifier, and be
+  attributed to this summary's own task/run/turn at a known `kind` and
+  `version`. Anything Node cannot prove — a missing source (every
+  DAT-191/192 record), an unknown kind or version, attribution naming a
+  different task, run, or turn, a report that does not reproduce the
+  stored text, a damaged record, or an unknown status — is served
+  `status:"unavailable"` with `unavailable_reason:"untrusted_source"`
+  and `text:null`. Nothing about provenance is ever inferred from the
+  text's shape, a timestamp, or the service's current version. A client
+  MAY check `source` before rendering, but that check is corroboration,
+  not the safety boundary: the UI MUST NOT treat client-side validation
+  as the trust decision.
 - **Classification (DAT-192): why material is kept out.** The ordered
   rules keep out exactly these classes; a hit yields `unavailable` with
   that class's reason. The table only ever adds rejections and never
@@ -276,20 +307,31 @@ Contract semantics:
   classifier itself yields `"gate_error"`; a settled turn with no content
   yields `"no_content"`; a turn no rule flags still yields
   `"untrusted_source"`, because its content has no auditable trusted
-  source — free model text, or a structured report that failed
-  server-side validation. The reason enum is additive: clients MUST render an unknown
+  source — free model text, a structured report that failed
+  server-side validation, or a recorded summary whose source cannot be
+  re-proven on read (DAT-194: legacy, missing, forged, or
+  unknown-version provenance). The reason enum is additive: clients MUST render an unknown
   reason — and an unknown status — as a plain unavailable state. An
   unavailable summary never carries the raw turn text — in any field,
   event, or projection.
-- **Compatibility with recorded history (DAT-193).** Fields, event type,
-  lifecycle, and attribution are unchanged, so DAT-191/192 clients keep
-  working: a settlement is either `available` with the report-rendered
-  `text` above or `unavailable` with `text:null`, the reason enum only
-  grows, and an unknown reason or status renders as a plain unavailable
-  state. No persisted projection and no recorded timeline event is
-  rewritten: summaries settled before DAT-193 remain exactly as recorded,
-  and the trusted-source rule governs every settlement produced from this
-  version forward.
+- **Compatibility with recorded history (DAT-193, DAT-194).** Fields,
+  event type, lifecycle, and attribution are unchanged, so
+  DAT-191/192/193 clients keep working: a settlement is either
+  `available` with the report-rendered `text` above or `unavailable`
+  with `text:null`, `source` is an additive field, and the reason enum
+  only grows. No persisted projection and no recorded timeline event is
+  rewritten: summaries settled before DAT-193 and before DAT-194 remain
+  exactly as recorded, and no old record is ever re-labelled trusted.
+  Provenance is decided on read instead: the `pi_summary` projection and
+  every served `pi.summary.updated` payload pass the same source gate,
+  so a legacy `available` free-text summary keeps its bytes on disk and
+  its event envelope (`event_id`, `sequence`, `occurred_at`) untouched
+  while being served as `unavailable`/`"untrusted_source"` with
+  `text:null`. A client that predates the `source` field and renders
+  only on `status`/`text` is therefore still safe — the server never
+  serves text it cannot prove — and a current client additionally
+  requires a known `kind`/`version` with matching attribution as
+  defence in depth.
 - **Lifecycle and attribution.** `pi_summary` is `null` until a Pi session
   exists for the task; `pending` from session start — and again at the
   start of every new run, which resets any earlier run's summary to
@@ -298,18 +340,24 @@ Contract semantics:
   bind the summary to the producing task, run, and turn; a summary never
   crosses task or run boundaries.
 - **Missing / unavailable semantics.** `text` is non-null if and only if
+  `status` is `"available"`; `source` is non-null if and only if
   `status` is `"available"`; `unavailable_reason` is non-null if and only if
-  `status` is `"unavailable"`; both are null while `pending`. Clients render
-  unavailable states from the reason enum and must never fall back to
-  displaying the raw `pi.text_delta` stream.
+  `status` is `"unavailable"`; `text`, `source`, and `unavailable_reason`
+  are null while `pending`. An unprovable or unavailable summary carries
+  neither text nor source, so a provenance question can never resurrect
+  withheld content. Clients render unavailable states from the reason enum
+  and must never fall back to displaying the raw `pi.text_delta` stream.
 - **SSE and recovery.** `pi.summary.updated` is a durable timeline event: it
   replays by `Last-Event-ID` in sequence order, survives an orchestrator
   restart with its original `event_id`, and the `pi_summary` projection
-  field always equals the last published summary event. Each settled turn
-  publishes exactly one summary event — the duplicated `agent_error` then
+  field always equals the last published summary event **as served** —
+  both pass the same provenance gate, so projection and events agree on
+  what is displayable even when a recorded summary cannot prove its
+  source. Each settled turn publishes exactly one summary event — the duplicated `agent_error` then
   `agent_settled` emission of a provider failure settles one turn once. Pi
   sessions are not resumed across restarts (see Durability), so a recovered
-  task keeps the last settled summary it actually produced.
+  task keeps the last settled summary it actually produced, provenance
+  included.
 - **Terminal without a settled turn.** A terminal task whose last turn never
   settled (cancel or abort winning the race against settlement) keeps
   `status:"pending"` with `text:null`: Node never fabricates a summary after
