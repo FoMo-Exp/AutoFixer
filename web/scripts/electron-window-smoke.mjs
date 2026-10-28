@@ -163,7 +163,7 @@ try {
   await runElectron(startupEnv);
   process.stdout.write("Default-startup configuration guidance smoke passed.\n");
 
-  // Real settled summary through the test-only scripted Pi provider. The real
+  // Real Pi summaries through the test-only scripted provider. The real
   // orchestrator, summary gate, REST API, SSE replay and Electron window run
   // unchanged: only inference is replaced through the existing
   // createOrchestrator({ model, streamFn }) test seam. No production debug
@@ -188,87 +188,182 @@ try {
     contextWindow: 200_000,
     maxTokens: 8_192,
   };
-  const scriptedTextStream = (text) => {
-    const base = () => ({
-      role: "assistant",
-      api: "openai-completions",
-      provider: "openai",
-      model: "scripted",
-      usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      },
-      timestamp: Date.now(),
+  const assistantBase = () => ({
+    role: "assistant",
+    api: "openai-completions",
+    provider: "openai",
+    model: "scripted",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    timestamp: Date.now(),
+  });
+  const emitText = (stream, text) => {
+    const content = [{ type: "text", text }];
+    stream.push({
+      type: "start",
+      partial: { ...assistantBase(), content: [], stopReason: "stop" },
     });
+    stream.push({
+      type: "text_start",
+      contentIndex: 0,
+      partial: { ...assistantBase(), content, stopReason: "stop" },
+    });
+    stream.push({
+      type: "text_delta",
+      contentIndex: 0,
+      delta: text,
+      partial: { ...assistantBase(), content, stopReason: "stop" },
+    });
+    stream.push({
+      type: "text_end",
+      contentIndex: 0,
+      content: text,
+      partial: { ...assistantBase(), content, stopReason: "stop" },
+    });
+    stream.push({
+      type: "done",
+      reason: "stop",
+      message: { ...assistantBase(), content, stopReason: "stop" },
+    });
+  };
+  const emitReportCall = (stream, report, callIndex) => {
+    const toolCall = {
+      type: "toolCall",
+      id: `call_${callIndex}`,
+      name: "report_turn_summary",
+      arguments: report,
+    };
+    const content = [toolCall];
+    const partial = { ...assistantBase(), content, stopReason: "toolUse" };
+    stream.push({
+      type: "start",
+      partial: { ...assistantBase(), content: [], stopReason: "toolUse" },
+    });
+    stream.push({ type: "toolcall_start", contentIndex: 0, partial });
+    stream.push({ type: "toolcall_end", contentIndex: 0, toolCall, partial });
+    stream.push({
+      type: "done",
+      reason: "toolUse",
+      message: { ...assistantBase(), content, stopReason: "toolUse" },
+    });
+  };
+  const scriptedTurns = (turns) => {
+    let index = 0;
     return () => {
       const stream = createAssistantMessageEventStream();
+      const turn = turns[Math.min(index, turns.length - 1)];
+      index += 1;
       queueMicrotask(() => {
-        const content = [{ type: "text", text }];
-        stream.push({ type: "start", partial: { ...base(), content: [], stopReason: "stop" } });
-        stream.push({
-          type: "text_start",
-          contentIndex: 0,
-          partial: { ...base(), content, stopReason: "stop" },
-        });
-        stream.push({
-          type: "text_delta",
-          contentIndex: 0,
-          delta: text,
-          partial: { ...base(), content, stopReason: "stop" },
-        });
-        stream.push({
-          type: "text_end",
-          contentIndex: 0,
-          content: text,
-          partial: { ...base(), content, stopReason: "stop" },
-        });
-        stream.push({
-          type: "done",
-          reason: "stop",
-          message: { ...base(), content, stopReason: "stop" },
-        });
+        if (turn.kind === "report") {
+          emitReportCall(stream, turn.report, index);
+          return;
+        }
+        emitText(stream, turn.text);
       });
       return stream;
     };
   };
-  const scriptedSummaryText = "Checked the echo tool and confirmed it prints hello.";
-  const summaryConfig = configFromEnv({
-    ...serviceEnv,
-    FORGEPILOT_TASK_STATE_FILE: path.join(tempDir, "summary-task-state.json"),
-  });
-  const orchestrator = createOrchestrator({
-    config: summaryConfig,
-    model: scriptedModel,
-    streamFn: scriptedTextStream(scriptedSummaryText),
-  });
-  const { host: summaryHost, port: summaryPort } = await orchestrator.start();
-  const summaryBase = `http://${summaryHost}:${summaryPort}`;
-  const summaryEnv = {
-    ...serviceEnv,
-    FORGEPILOT_API_URL: summaryBase,
-    FORGEPILOT_API_TOKEN: orchestrator.apiToken,
-    FORGEPILOT_ELECTRON_WINDOW_SMOKE: "1",
+
+  const reportTurn = {
+    kind: "report",
+    report: {
+      areas: ["manifest", "lockfile"],
+      activities: ["inspected", "updated"],
+      outcome: "ready_for_review",
+    },
   };
+  const renderedReport =
+    "Pi reported that it inspected and updated the package manifest and the lockfile and that the change is ready for review.";
+  const withheldFreeText = "The team used poetry lock to pin versions.";
+
+  const startScriptedOrchestrator = async (stateFile, turns) => {
+    const config = configFromEnv({
+      ...serviceEnv,
+      FORGEPILOT_TASK_STATE_FILE: path.join(tempDir, stateFile),
+    });
+    const orchestrator = createOrchestrator({
+      config,
+      model: scriptedModel,
+      streamFn: scriptedTurns(turns),
+    });
+    const { host, port } = await orchestrator.start();
+    return { orchestrator, base: `http://${host}:${port}` };
+  };
+
+  // Trusted path: a validated structured report settles `available` with the
+  // fixed wording composed by Node; the turn's free text is never displayed.
+  const trusted = await startScriptedOrchestrator("summary-trusted-state.json", [
+    reportTurn,
+    { kind: "text", text: "Checking the manifest and the lockfile." },
+  ]);
   try {
+    const trustedEnv = {
+      ...serviceEnv,
+      FORGEPILOT_API_URL: trusted.base,
+      FORGEPILOT_API_TOKEN: trusted.orchestrator.apiToken,
+      FORGEPILOT_ELECTRON_WINDOW_SMOKE: "1",
+      FORGEPILOT_ELECTRON_EXPECTED_SUMMARY_TEXT: renderedReport,
+      FORGEPILOT_ELECTRON_FORBIDDEN_TEXT: withheldFreeText,
+    };
     const settled = await runElectron({
-      ...summaryEnv,
+      ...trustedEnv,
       FORGEPILOT_ELECTRON_EXPECT_PI_SUMMARY: "settled",
     });
     const taskId = settled?.result?.taskId;
     if (!taskId) throw new Error("settled summary smoke did not report a task id");
-    await assertSummaryReplay(summaryBase, orchestrator.apiToken, taskId, scriptedSummaryText);
+    await assertSummaryPublished(trusted.base, trusted.orchestrator.apiToken, taskId, {
+      status: "available",
+      text: renderedReport,
+      forbidden: withheldFreeText,
+    });
     await runElectron({
-      ...summaryEnv,
+      ...trustedEnv,
       FORGEPILOT_ELECTRON_EXPECT_PI_SUMMARY: "settled-existing",
       FORGEPILOT_ELECTRON_SMOKE_TASK_ID: taskId,
     });
-    process.stdout.write("Scripted Pi settled summary + Electron replay smoke passed.\n");
+    process.stdout.write("Scripted structured Pi report + Electron replay smoke passed.\n");
   } finally {
-    await orchestrator.stop();
+    await trusted.orchestrator.stop();
+  }
+
+  // Untrusted path: a free-text-only turn settles `unavailable` as
+  // untrusted_source, carries no text anywhere, and renders as unavailable.
+  const untrusted = await startScriptedOrchestrator("summary-untrusted-state.json", [
+    { kind: "text", text: withheldFreeText },
+  ]);
+  try {
+    const untrustedEnv = {
+      ...serviceEnv,
+      FORGEPILOT_API_URL: untrusted.base,
+      FORGEPILOT_API_TOKEN: untrusted.orchestrator.apiToken,
+      FORGEPILOT_ELECTRON_WINDOW_SMOKE: "1",
+      FORGEPILOT_ELECTRON_FORBIDDEN_TEXT: withheldFreeText,
+    };
+    const settled = await runElectron({
+      ...untrustedEnv,
+      FORGEPILOT_ELECTRON_EXPECT_PI_SUMMARY: "untrusted",
+    });
+    const taskId = settled?.result?.taskId;
+    if (!taskId) throw new Error("untrusted summary smoke did not report a task id");
+    await assertSummaryPublished(untrusted.base, untrusted.orchestrator.apiToken, taskId, {
+      status: "unavailable",
+      reason: "untrusted_source",
+      forbidden: withheldFreeText,
+    });
+    await runElectron({
+      ...untrustedEnv,
+      FORGEPILOT_ELECTRON_EXPECT_PI_SUMMARY: "untrusted-existing",
+      FORGEPILOT_ELECTRON_SMOKE_TASK_ID: taskId,
+    });
+    process.stdout.write("Scripted free-text Pi turn withheld + Electron render smoke passed.\n");
+  } finally {
+    await untrusted.orchestrator.stop();
   }
 } finally {
   await stopChild(nodeService?.child);
@@ -401,28 +496,42 @@ async function readStreamWindow(url, token, lastEventId, windowMs) {
 }
 
 /**
- * Verify the settled summary over the real API: exactly one settled event,
- * projection equality, current-run attribution, and Last-Event-ID replay that
- * does not repeat the delivered summary.
+ * Verify one settled summary over the real API: a single settlement event for
+ * the expected outcome, projection equality, current-run attribution,
+ * Last-Event-ID replay that does not repeat it, and no withheld text anywhere.
  */
-async function assertSummaryReplay(base, token, taskId, expectedText) {
+async function assertSummaryPublished(base, token, taskId, expected) {
   const taskUrl = `${base}/api/v1/tasks/${encodeURIComponent(taskId)}`;
   const task = await apiJson(taskUrl, token);
   const timeline = await apiJson(`${taskUrl}/timeline`, token);
   const summaryEvents = timeline.items.filter((event) => event.type === "pi.summary.updated");
-  const settled = summaryEvents.filter((event) => event.data?.summary?.status === "available");
+  const settled = summaryEvents.filter((event) => event.data?.summary?.status === expected.status);
   if (settled.length !== 1) {
-    throw new Error(`expected exactly one settled summary event, got ${settled.length}`);
+    throw new Error(`expected exactly one ${expected.status} summary event, got ${settled.length}`);
   }
   const summary = settled[0].data.summary;
-  if (summary.text !== expectedText) {
-    throw new Error("settled summary text does not match the scripted Pi turn");
-  }
   if (summary.task_id !== task.id || summary.run_id !== task.current_run_id) {
-    throw new Error("settled summary is not attributed to the task's current run");
+    throw new Error("the settled summary is not attributed to the task's current run");
   }
   if (JSON.stringify(task.pi_summary) !== JSON.stringify(summary)) {
     throw new Error("the task projection does not equal the last summary event");
+  }
+  if (expected.status === "available") {
+    if (summary.text !== expected.text) {
+      throw new Error("the available summary is not the structured report rendering");
+    }
+  } else {
+    if (summary.text !== null || summary.unavailable_reason !== expected.reason) {
+      throw new Error("the unavailable summary carries text or an unexpected reason");
+    }
+  }
+  if (expected.forbidden) {
+    // Raw pi.text_delta events keep their M0 payload; only the summary
+    // projection and every summary event are display surfaces.
+    const surfaces = JSON.stringify([task.pi_summary, summaryEvents.map((event) => event.data)]);
+    if (surfaces.includes(expected.forbidden)) {
+      throw new Error("withheld Pi text appears in the summary projection or events");
+    }
   }
 
   const replay = await readStreamWindow(`${taskUrl}/stream`, token, settled[0].event_id, 2000);

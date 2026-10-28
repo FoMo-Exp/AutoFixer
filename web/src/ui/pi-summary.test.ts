@@ -54,14 +54,32 @@ function summary(overrides: Record<string, unknown> = {}): Record<string, unknow
   };
 }
 
+const untrustedTask = (): Task =>
+  JSON.parse(
+    readFileSync(
+      path.join(fixtureDir, "task-pi-summary-unavailable-untrusted-source.json"),
+      "utf8",
+    ),
+  ) as Task;
+
 describe("Pi summary resolution", () => {
+  it("renders the merged untrusted_source fixture as a plain unavailable state", () => {
+    const view = resolvePiSummary(untrustedTask(), []);
+
+    expect(view).toMatchObject({ state: "unavailable", reason: "untrusted_source" });
+    expect(view.text).toBeUndefined();
+    expect(piSummaryHeadline(view)).toBe(
+      "Pi produced no validated structured report for this turn, so there is no trustworthy text to show.",
+    );
+  });
+
   it("withholds the certified text of the merged contract fixture", () => {
     const view = resolvePiSummary(availableTask(), []);
 
     expect(PI_SUMMARY_TEXT_DISPLAY_ALLOWED).toBe(false);
     expect(view).toMatchObject({ state: "available", withheld: true, turnId: "turn_1" });
     expect(view.text).toBeUndefined();
-    expect(JSON.stringify(view)).not.toContain("Checked the echo tool");
+    expect(JSON.stringify(view)).not.toContain("Pi reported that it");
     expect(piSummaryStateLabel(view)).toBe("Available · text withheld");
   });
 

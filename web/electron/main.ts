@@ -81,7 +81,12 @@ function runWindowSmoke(window: BrowserWindow): void {
           const apiBaseUrl = window.forgePilotConfig?.apiBaseUrl;
           if (!apiBaseUrl) throw new Error("preload did not expose the local API endpoint");
           const summaryMode = ${JSON.stringify(process.env["FORGEPILOT_ELECTRON_EXPECT_PI_SUMMARY"] ?? "")};
-          if (summaryMode === "settled" || summaryMode === "settled-existing") {
+          const trustedMode = summaryMode === "settled" || summaryMode === "settled-existing";
+          const untrustedMode = summaryMode === "untrusted" || summaryMode === "untrusted-existing";
+          if (trustedMode || untrustedMode) {
+            const expectedSummaryText = ${JSON.stringify(process.env["FORGEPILOT_ELECTRON_EXPECTED_SUMMARY_TEXT"] ?? "")};
+            const forbiddenText = ${JSON.stringify(process.env["FORGEPILOT_ELECTRON_FORBIDDEN_TEXT"] ?? "")};
+            const createMode = summaryMode === "settled" || summaryMode === "untrusted";
             const call = (requestId, method, requestPath, body, headers) =>
               window.forgePilotApi.request({
                 requestId,
@@ -97,12 +102,12 @@ function runWindowSmoke(window: BrowserWindow): void {
               return promise;
             };
             let taskId = ${JSON.stringify(process.env["FORGEPILOT_ELECTRON_SMOKE_TASK_ID"] ?? "")};
-            if (summaryMode === "settled") {
+            if (createMode) {
               const created = await call("00000000-0000-4000-8000-0000000000a1", "POST", "/api/v1/tasks", {
                 repository_id: "github:Luthiel/AutoFixer",
                 base_ref: "main",
                 summary: "Scripted Pi summary window smoke"
-              }, { "Idempotency-Key": "electron-window-pi-summary" });
+              }, { "Idempotency-Key": "electron-window-pi-summary-" + summaryMode });
               if (created.status !== 201) throw new Error("task creation for the scripted Pi turn failed: " + created.status + " " + (created.body || ""));
               taskId = read(created).id;
               await delay(15);
@@ -123,29 +128,32 @@ function runWindowSmoke(window: BrowserWindow): void {
               await delay(100);
             }
             if (!summary || summary.status === "pending") throw new Error("the scripted Pi turn never settled a summary");
-            if (summary.status !== "available") throw new Error("scripted prose summary was not certified available: " + JSON.stringify(summary));
-            if (summary.text !== "Checked the echo tool and confirmed it prints hello.") {
-              throw new Error("settled summary text does not match the scripted Pi turn");
+            if (trustedMode) {
+              if (summary.status !== "available") throw new Error("the structured Pi report was not published as available: " + JSON.stringify(summary));
+              if (summary.text !== expectedSummaryText) throw new Error("the available summary is not the fixed report wording");
+            } else {
+              if (summary.status !== "unavailable" || summary.unavailable_reason !== "untrusted_source" || summary.text !== null) {
+                throw new Error("a free-text-only turn was not withheld as untrusted_source: " + JSON.stringify(summary));
+              }
             }
-            if (summaryMode === "settled-existing") {
+            if (!createMode) {
+              const expected = trustedMode ? "available · text withheld" : "unavailable";
               const card = await waitFor(() => {
                 const rendered = document.querySelector(".pi-summary-card")?.innerText || "";
-                return rendered.toLowerCase().includes("available · text withheld")
-                  ? rendered
-                  : undefined;
+                return rendered.toLowerCase().includes(expected) ? rendered : undefined;
               }, 15000);
               if (!card) {
                 const rendered = document.querySelector(".pi-summary-card")?.innerText || "(no card)";
                 const taskItems = document.querySelectorAll(".task-item").length;
                 const banner = document.querySelector(".connection-banner")?.innerText || "";
-                throw new Error("Pi summary card did not render the settled summary after reload: card=" + rendered.replaceAll("\\n", " | ") + " tasks=" + taskItems + " banner=" + banner.replaceAll("\\n", " | "));
+                throw new Error("Pi summary card did not render the expected state: card=" + rendered.replaceAll("\\n", " | ") + " tasks=" + taskItems + " banner=" + banner.replaceAll("\\n", " | "));
               }
               const bodyText = document.body.innerText;
-              if (bodyText.includes("Checked the echo tool")) throw new Error("certified summary text leaked into the rendered window");
-              if (bodyText.includes("node app")) throw new Error("raw command text leaked into the rendered window");
-              return { mode: "pi-summary-settled-existing", taskId, summaryStatus: summary.status, card: card.replaceAll("\\n", " | ") };
+              if (expectedSummaryText && bodyText.includes(expectedSummaryText)) throw new Error("server summary text leaked into the rendered window");
+              if (forbiddenText && bodyText.includes(forbiddenText)) throw new Error("withheld Pi text leaked into the rendered window");
+              return { mode: "pi-summary-" + summaryMode, taskId, summaryStatus: summary.status, summaryReason: summary.unavailable_reason, card: card.replaceAll("\\n", " | ") };
             }
-            return { mode: "pi-summary-settled", taskId, summaryStatus: summary.status };
+            return { mode: "pi-summary-" + summaryMode, taskId, summaryStatus: summary.status, summaryReason: summary.unavailable_reason };
           }
           const list = await window.forgePilotApi.request({
             requestId: "00000000-0000-4000-8000-000000000001",

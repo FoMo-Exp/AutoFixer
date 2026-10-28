@@ -3,15 +3,18 @@ import type { Task, TaskEvent } from "../api/client";
 /**
  * Whether this build renders `pi_summary.text`.
  *
- * The merged contract (DAT-191/DAT-192, main `af2ac8e`) certifies a summary
- * as available only under its listed classes, and its "Honest residual" admits
- * command-shaped text that the deterministic gate cannot distinguish from
- * prose: `node app succeeded.` is certified `available` with the command
- * prefix intact (verified against `node/dist` on `af2ac8e`). DAT-189
- * acceptance forbids displaying raw commands, so `available` is not by itself
- * a display guarantee. Until the contract closes that residual (or the
- * Architect rules the residual acceptable), text stays withheld and the UI
- * only renders the summary's state.
+ * The merged contract (0.5.0, DAT-193, main `5828f92`) defines the only
+ * displayable source as the validated structured Pi report, with fixed
+ * wording composed by Node. It also states that recorded history is never
+ * rewritten, so a summary settled before DAT-193 can still be `available`
+ * with arbitrary free-model text — the earlier boundary exposed
+ * command-shaped text (`node app succeeded.`). `PiSummary` exposes no
+ * provenance or schema-version discriminator, so a client cannot tell a
+ * trusted report rendering from a legacy free-text summary, and text
+ * inspection is explicitly not the trust boundary. Displaying on `status`
+ * alone would therefore render unprovable content; deriving provenance from
+ * the wording would fabricate it. This build fails closed and withholds
+ * `text`, pending a contract field that positively identifies the source.
  */
 export const PI_SUMMARY_TEXT_DISPLAY_ALLOWED = false;
 
@@ -124,6 +127,8 @@ const REASON_LABELS: Record<string, string> = {
   unsafe_content: "Pi output was withheld because it contained unsafe material.",
   undecidable: "Pi output could not be certified as safe to display.",
   gate_error: "The summary safety gate failed; no text is shown.",
+  untrusted_source:
+    "Pi produced no validated structured report for this turn, so there is no trustworthy text to show.",
 };
 
 export function piSummaryHeadline(view: PiSummaryView): string {
@@ -134,7 +139,7 @@ export function piSummaryHeadline(view: PiSummaryView): string {
       return "The current Pi turn has not settled yet.";
     case "available":
       return view.withheld
-        ? "The server certified a summary for this turn, but this build withholds Pi text pending the DAT-189 contract ruling."
+        ? "The summary has no client-verifiable provenance field, so this build withholds its text rather than render an unprovable source."
         : (view.text ?? "");
     case "unavailable":
       return (

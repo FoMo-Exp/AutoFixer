@@ -64,13 +64,20 @@ and `pi.summary.updated` events), which the workbench renders as a state card:
 `pending`, `available`, or `unavailable` with its reason code. Unknown reasons
 and unknown statuses render as a plain unavailable state.
 
-This build withholds `pi_summary.text` even when Node certifies it as
-`available`, because the merged contract's documented residual admits
-command-shaped text such as `node app succeeded.` as available, and DAT-189
-forbids displaying raw commands. The card states that the text is withheld
-pending the contract ruling (DAT-193); no frontend re-judging of the certified
-text is attempted. Summary resolution fails closed: the task projection wins
-over timeline events that are not newer than `Task.version`, and a summary is
-used only when its `task_id` matches and its `run_id` equals the task's
+Contract `0.5.0` (DAT-193) makes the validated structured
+`report_turn_summary` report — rendered by Node in fixed wording — the only
+displayable Pi source, and withholds free model text as `untrusted_source`.
+This build still withholds `pi_summary.text` for `available` summaries: the
+payload carries no provenance or schema-version discriminator, recorded
+history is never rewritten, and a summary settled before DAT-193 stays
+`available` with arbitrary free-model text (the earlier boundary exposed
+`node app succeeded.`). A client cannot prove which `available` summaries
+came from the trusted report channel, so the card shows the state and reason
+and never the text; provenance is not inferred from wording. The card states
+this and the required contract addition is recorded in `CONTRACT.md`.
+
+Summary resolution fails closed elsewhere too: the task projection wins over
+timeline events that are not newer than `Task.version`, and a summary is used
+only when its `task_id` matches and its `run_id` equals the task's
 `current_run_id` — missing identity, a task without a current run, and a
 previous run all yield no summary. See `CONTRACT.md` for the exact rules.

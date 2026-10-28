@@ -2,9 +2,10 @@
 
 The workbench uses `src/api/contracts/openapi.json` and its generated
 `schema.d.ts` as the only API source. The contract baseline is `main` at
-`af2ac8e97a7e9e91fa9a0987e4c05352bf6d299a` (DAT-192 #19), which contains the
-DAT-191 safe-summary contract (#18, merge commit `705b4a0`) and the DAT-188 M3
-baseline `8734984`. No UI fixture invents a field outside this baseline.
+`5828f92ca6fbff0b462d05896e689b9aad66362f` (DAT-193 #21, OpenAPI `0.5.0`,
+merge-base `af2ac8e`), which contains DAT-191 (#18, `705b4a0`), DAT-192 (#19,
+`af2ac8e`) and the DAT-188 M3 baseline `8734984`. No UI fixture invents a
+field outside this baseline.
 
 | Endpoint                                              | Request fields                                                                                                         | Response type                  | Status |
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ------ |
@@ -55,24 +56,43 @@ streamed events, and fails closed:
   status renders as a plain unavailable state, and an unknown
   `unavailable_reason` renders as generic unavailable (the enum is additive);
 - `available` without non-empty `text` is treated as unavailable;
+- `untrusted_source` is rendered with its own copy: a settled turn with no
+  validated structured report has no displayable text;
 - **`pi_summary.text` is withheld**: `PI_SUMMARY_TEXT_DISPLAY_ALLOWED` is
-  `false`. The merged contract's "Honest residual" admits command-shaped text
-  certified as `available` — `node app succeeded.` is exposed verbatim by
-  `node/dist` on the `af2ac8e` baseline, and DAT-189 acceptance forbids
-  displaying raw commands. Until DAT-193 (or a later contract) closes that
-  residual, the workbench shows the summary state and reason only, and does
-  not claim the natural-language-summary acceptance criterion. The frontend
-  does not attempt to re-judge the text.
+  `false`. Contract `0.5.0` (DAT-193) defines the only displayable source as
+  the validated structured `report_turn_summary` report rendered by Node in
+  fixed wording, but `PiSummary` exposes no provenance or schema-version
+  discriminator, and recorded history is never rewritten — a summary settled
+  before DAT-193 stays `available` with arbitrary free-model text (the
+  previous boundary exposed `node app succeeded.`). A client therefore cannot
+  prove which `available` summaries came from the trusted report channel, and
+  text inspection is explicitly not the trust boundary. The workbench fails
+  closed: it shows the state and reason, never `text`, and does not claim the
+  natural-language-summary acceptance criterion. It does not infer provenance
+  from wording. **Required contract change:** a positive source marker on
+  `PiSummary` (for example a provenance/version discriminator identifying the
+  structured-report rendering) so clients can display exactly the proven
+  source and withhold everything else.
 
 Fixtures for these tests are the merged-contract captures under
 `docs/fixtures/forgepilot-api-v1/` (`task-pi-summary-available.json`,
 `pi-summary-events-available.json`), not invented shapes.
 
-The Electron window smoke additionally runs the real orchestrator with a
-test-only deterministic scripted Pi stream through the existing
-`createOrchestrator({ model, streamFn })` seam: it creates and approves a
-task, waits for the settled summary over real REST, asserts projection
-equality and current-run attribution, verifies that a `Last-Event-ID` replay
-does not repeat the summary, and opens a second real window to confirm the
-settled summary still renders after a reload. No production debug endpoint,
-network transfer, or credential is involved.
+The Electron window smoke additionally runs the real orchestrator with
+test-only deterministic scripted Pi streams through the existing
+`createOrchestrator({ model, streamFn })` seam, for both paths:
+
+- a turn that calls `report_turn_summary` with closed-enum values settles
+  `available` with Node's fixed wording; the smoke asserts the exact rendered
+  text, projection equality, current-run attribution, that a `Last-Event-ID`
+  replay does not repeat the summary, and that the turn's free text appears in
+  no summary surface;
+- a free-text-only turn settles `unavailable` / `untrusted_source` with
+  `text:null`, and neither the projection nor any summary event carries the
+  turn text.
+
+Each path opens a second real window over the same state to confirm the
+rendered card after a reload: `AVAILABLE · TEXT WITHHELD` for the structured
+report and `UNAVAILABLE` with the untrusted-source copy for the free-text
+turn, with no withheld text in the DOM. No production debug endpoint, network
+transfer, or credential is involved.
