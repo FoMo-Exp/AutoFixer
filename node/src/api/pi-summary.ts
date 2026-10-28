@@ -75,6 +75,25 @@
  * text. Determinism is what makes the *classification* auditable; it is not
  * what makes text displayable — only provenance does that.
  *
+ * Provenance (DAT-194): a client cannot tell a DAT-193 report-rendered
+ * sentence from a DAT-191/192 free-text settlement by looking at `text`, so
+ * every summary carries an explicit, server-verifiable `source` record — the
+ * closed channel that produced the text (`kind`), the proof format's
+ * `version`, the task/run/turn attribution it is bound to, and the validated
+ * structured report the text was fixed-rendered from. Displayability stays a
+ * server decision: `projectPiSummary` re-proves any `available` summary from
+ * its stored source on the way out (valid closed-enum report, re-rendered
+ * wording equal to the stored text, attribution identical, known kind and
+ * version) and withholds anything it cannot prove — a summary with no source,
+ * an unknown kind or version, a mismatched task/run/turn, tampered text, a
+ * damaged record, or an unknown status all project to
+ * `unavailable`/`untrusted_source` with `text: null`. Nothing about the
+ * decision may come from the text's shape, a timestamp, or the running
+ * service's own version, and no stored record or recorded event is ever
+ * rewritten: the gate runs on read, for the REST projection, the timeline,
+ * and SSE replay alike, so a legacy free-text `available` record keeps its
+ * bytes on disk but is never served as displayable.
+ *
  * Scope note (DAT-193, per the Architect's ruling on this issue): the
  * structured report channel is the available path for a real task's
  * natural-language summary — closed enums only, server-side validation,
@@ -124,6 +143,57 @@ export type PiSummaryRuleReason = Extract<
 >;
 
 /**
+ * Closed set of provenance channels a summary source may name (DAT-194).
+ * `turn_report` is the only one this contract defines: the model's
+ * closed-enum `report_turn_summary` tool, validated by Node server-side and
+ * fixed-rendered by Node (`node/src/pi/turn-report.ts`). Any other kind — a
+ * free-text channel, a legacy label, a value this code has never heard of —
+ * is not a trusted source and fails closed on read.
+ */
+export const PI_SUMMARY_SOURCE_KINDS = ["turn_report"] as const;
+
+export type PiSummarySourceKind = (typeof PI_SUMMARY_SOURCE_KINDS)[number];
+
+/** The single provenance channel this contract version can verify. */
+export const PI_SUMMARY_SOURCE_KIND: PiSummarySourceKind = "turn_report";
+
+/**
+ * Version of the source proof format: the meaning of `kind`, the shape of
+ * the record, and the fixed-rendering vocabulary `report` is judged against.
+ * Carried by the record, never inferred from the writer's code version: a
+ * record claiming an unknown version is unverifiable and fails closed.
+ */
+export const PI_SUMMARY_SOURCE_VERSION = 1;
+
+/**
+ * Verifiable provenance of a displayable summary's `text` (DAT-194).
+ *
+ * The record is the client-visible proof behind `status: "available"`:
+ * - `kind` names the channel (closed enum; only `turn_report` exists),
+ * - `version` versions the proof format and its rendering vocabulary,
+ * - `task_id` / `run_id` / `turn_id` bind the proof to the exact task, run,
+ *   and turn the summary claims to describe (attribution is compared, never
+ *   trusted),
+ * - `report` echoes the validated closed-enum structured report the text was
+ *   fixed-rendered from, so a client can corroborate the enums and the
+ *   attribution and a server can re-render the wording byte for byte.
+ *
+ * Only production code ever writes this: `PiSummaryTracker.settleTurn`
+ * attaches it exclusively when `evaluateTurnReport` produced the text from a
+ * validated report. A client MAY check the fields it can see, but that check
+ * is corroboration, not the safety boundary — the server re-proves every
+ * served `available` summary through `projectPiSummary`.
+ */
+export interface PiSummarySource {
+  kind: PiSummarySourceKind;
+  version: number;
+  task_id: string;
+  run_id: string | null;
+  turn_id: string;
+  report: TurnReport;
+}
+
+/**
  * One display-safe summary of the latest settled Pi turn for a task's run.
  *
  * Lifecycle: absent (`null` on the task) until a Pi session exists for the
@@ -147,6 +217,15 @@ export interface PiSummary {
   text: string | null;
   /** Why the summary is unavailable; non-null iff status is `unavailable`. */
   unavailable_reason: PiSummaryUnavailableReason | null;
+  /**
+   * Provenance of `text` (DAT-194): non-null if and only if status is
+   * `available`. `pending` and `unavailable` summaries always carry null —
+   * there is no displayable text to source — and an `available` summary
+   * whose source is missing, unknown, of an unknown version, or not bound to
+   * this task/run/turn is served as `unavailable`/`untrusted_source` with
+   * `text: null` instead (see `projectPiSummary`).
+   */
+  source: PiSummarySource | null;
   updated_at: string;
 }
 
@@ -1120,10 +1199,11 @@ export type PiSummaryEvaluation =
   /**
    * A displayable summary from the turn's auditable trusted source
    * (DAT-193): only `evaluateTurnReport` produces it, from the validated
-   * structured Pi report. `evaluateTurnText` never returns it for free
-   * model turns.
+   * structured Pi report, and it carries that report so the summary can
+   * publish it as its verifiable `source` (DAT-194). `evaluateTurnText`
+   * never returns it for free model turns.
    */
-  | { outcome: "available"; text: string }
+  | { outcome: "available"; text: string; report: TurnReport }
   | { outcome: "unavailable"; reason: PiSummaryUnavailableReason };
 
 /**
@@ -1191,9 +1271,156 @@ export function evaluateTurnReport(
     if (violation !== null) {
       return { outcome: "unavailable", reason: violation.reason };
     }
-    return { outcome: "available", text };
+    return { outcome: "available", text, report };
   } catch {
     return { outcome: "unavailable", reason: "gate_error" };
+  }
+}
+
+/** The only reason an unprovable summary is withheld for (DAT-194). */
+const UNPROVEN_SOURCE_REASON: PiSummaryUnavailableReason = "untrusted_source";
+
+/** Whether a stored value could be a source record at all. */
+function sourceCandidate(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+/**
+ * Re-prove one stored `available` summary from its own source record
+ * (DAT-194). Returns true only when every element of the trust chain holds:
+ *
+ * 1. the source names a known channel (`kind`) at a known proof `version` —
+ *    never a guess from text, timestamps, or this service's own version;
+ * 2. the source is attributed to exactly the task, run, and turn the summary
+ *    claims (all three must be concrete identifiers);
+ * 3. the echoed report is valid against the closed vocabulary server-side;
+ * 4. re-rendering that report through the fixed wording reproduces the stored
+ *    text byte for byte and still passes the classifier.
+ *
+ * Condition 4 makes the stored text itself evidence: the only text that can
+ * ever be served as trusted is wording this server composes from a real,
+ * validated structured report.
+ */
+function hasTrustedProvenance(summary: PiSummary): boolean {
+  const source = sourceCandidate(summary.source);
+  if (source === null) {
+    return false;
+  }
+  if (source["kind"] !== PI_SUMMARY_SOURCE_KIND) {
+    return false;
+  }
+  if (source["version"] !== PI_SUMMARY_SOURCE_VERSION) {
+    return false;
+  }
+  const { task_id: taskId, run_id: runId, turn_id: turnId } = summary;
+  if (typeof taskId !== "string" || typeof runId !== "string" || typeof turnId !== "string") {
+    return false;
+  }
+  if (source["task_id"] !== taskId || source["run_id"] !== runId || source["turn_id"] !== turnId) {
+    return false;
+  }
+  if (typeof summary.text !== "string") {
+    return false;
+  }
+  const report = validateTurnReport(source["report"]);
+  if (report === null) {
+    return false;
+  }
+  const evaluation = evaluateTurnReport(report);
+  return evaluation.outcome === "available" && evaluation.text === summary.text;
+}
+
+/** Canonical key order and shape for every served summary, trusted or not. */
+function projectedSummary(
+  stored: PiSummary,
+  status: PiSummaryStatus,
+  text: string | null,
+  unavailableReason: PiSummaryUnavailableReason | null,
+  source: PiSummarySource | null,
+): PiSummary {
+  return {
+    task_id: stored.task_id,
+    run_id: stored.run_id,
+    turn_id: stored.turn_id,
+    status,
+    text,
+    unavailable_reason: unavailableReason,
+    source,
+    updated_at: stored.updated_at,
+  };
+}
+
+/**
+ * The read-side provenance gate for `pi_summary` (DAT-194).
+ *
+ * Every served summary passes through here — `GET /tasks`, the Task payloads
+ * of list/approve/create responses, `GET /tasks/{id}/timeline`, and the SSE
+ * replay and live stream — so the REST projection and the replayed events
+ * always agree, and no code path can serve a summary the gate has not
+ * approved. The stored record and the recorded event stay byte-for-byte as
+ * written: history is preserved, only its projection fails closed.
+ *
+ * Rules:
+ * - `pending` → text, reason, and source are all null.
+ * - `unavailable` → text and source are null; the recorded reason (the enum
+ *   is additive) is passed through, defaulting to `untrusted_source` when the
+ *   record cannot name one.
+ * - `available` → served unchanged only if `hasTrustedProvenance` proves the
+ *   text from the stored source; otherwise served as
+ *   `unavailable`/`untrusted_source` with `text: null`. This is where every
+ *   legacy DAT-191/192 free-text `available` record, every missing, forged,
+ *   or unknown-version source, and every damaged summary lands.
+ * - an unknown status fails closed exactly like an unproven `available`.
+ *
+ * Returns null when the stored value is not a summary at all — not an
+ * object, or missing the task/run/turn/time envelope that identifies what a
+ * summary would even describe: a damaged record or event payload must not
+ * become displayable text either, and there is nothing left of it to serve.
+ */
+export function projectPiSummary(value: unknown): PiSummary | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const stored = value as PiSummary;
+  if (
+    typeof stored.task_id !== "string" ||
+    (stored.run_id !== null && typeof stored.run_id !== "string") ||
+    (stored.turn_id !== null && typeof stored.turn_id !== "string") ||
+    typeof stored.updated_at !== "string"
+  ) {
+    return null;
+  }
+  switch (stored.status) {
+    case "pending":
+      return projectedSummary(stored, "pending", null, null, null);
+    case "unavailable":
+      return projectedSummary(
+        stored,
+        "unavailable",
+        null,
+        typeof stored.unavailable_reason === "string"
+          ? (stored.unavailable_reason as PiSummaryUnavailableReason)
+          : UNPROVEN_SOURCE_REASON,
+        null,
+      );
+    case "available":
+      if (hasTrustedProvenance(stored)) {
+        return projectedSummary(
+          stored,
+          "available",
+          stored.text as string,
+          null,
+          structuredClone(stored.source as PiSummarySource),
+        );
+      }
+      return projectedSummary(stored, "unavailable", null, UNPROVEN_SOURCE_REASON, null);
+    default:
+      // Unknown status (a record this contract cannot interpret): a plain
+      // unavailable state, never text.
+      return projectedSummary(stored, "unavailable", null, UNPROVEN_SOURCE_REASON, null);
   }
 }
 
@@ -1264,8 +1491,10 @@ export class PiSummaryTracker {
    * emits `agent_error` and then `agent_settled`) must publish exactly one
    * summary for the turn, so callers publish only real settlements. A turn
    * with a validated structured report publishes that report's fixed
-   * wording; a turn without one evaluates its free text, which under the
-   * DAT-193 trust boundary always resolves to `unavailable`.
+   * wording together with the `source` record proving it (DAT-194); a turn
+   * without one evaluates its free text, which under the
+   * DAT-193 trust boundary always resolves to `unavailable` and never
+   * receives a source.
    */
   settleTurn(): PiSummary | null {
     const turnId = this.openTurnId;
@@ -1274,17 +1503,38 @@ export class PiSummaryTracker {
     }
     const turnText = this.buffer.join("");
     const report = this.openReport;
+    const runId = this.summary.run_id;
     this.openTurnId = null;
     this.buffer = [];
     this.openReport = null;
     const evaluation = report !== null ? evaluateTurnReport(report) : evaluateTurnText(turnText);
+    // Only the report path can carry provenance: the source record is
+    // attached exactly when Node composed the displayed text from the
+    // validated structured report, and it is bound to this task, run, and
+    // turn (DAT-194). Free-text settlements never receive one.
+    const source: PiSummarySource | null =
+      evaluation.outcome === "available"
+        ? {
+            kind: PI_SUMMARY_SOURCE_KIND,
+            version: PI_SUMMARY_SOURCE_VERSION,
+            task_id: this.taskId,
+            run_id: runId,
+            turn_id: turnId,
+            report: {
+              areas: [...evaluation.report.areas],
+              activities: [...evaluation.report.activities],
+              outcome: evaluation.report.outcome,
+            },
+          }
+        : null;
     this.summary = {
       task_id: this.taskId,
-      run_id: this.summary.run_id,
+      run_id: runId,
       turn_id: turnId,
       status: evaluation.outcome,
       text: evaluation.outcome === "available" ? evaluation.text : null,
       unavailable_reason: evaluation.outcome === "unavailable" ? evaluation.reason : null,
+      source,
       updated_at: this.now().toISOString(),
     };
     return this.snapshot();
@@ -1303,6 +1553,7 @@ export class PiSummaryTracker {
       status: "pending",
       text: null,
       unavailable_reason: null,
+      source: null,
       updated_at: this.now().toISOString(),
     };
   }

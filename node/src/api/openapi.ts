@@ -1,5 +1,16 @@
 import { TASK_EVENT_TYPES, UI_STATUSES } from "./task-store.js";
-import { PI_SUMMARY_STATUSES, PI_SUMMARY_UNAVAILABLE_REASONS } from "./pi-summary.js";
+import {
+  PI_SUMMARY_SOURCE_KINDS,
+  PI_SUMMARY_SOURCE_VERSION,
+  PI_SUMMARY_STATUSES,
+  PI_SUMMARY_UNAVAILABLE_REASONS,
+} from "./pi-summary.js";
+import {
+  TURN_REPORT_ACTIVITIES,
+  TURN_REPORT_AREAS,
+  TURN_REPORT_MAX_ITEMS,
+  TURN_REPORT_OUTCOMES,
+} from "../pi/turn-report.js";
 import { DSH_STATES } from "../dsh/types.js";
 
 type JsonObject = Record<string, unknown>;
@@ -142,7 +153,10 @@ const taskSchema: JsonObject = {
         "Display-safe summary of the latest settled Pi turn for the current " +
         "run (DAT-191). Null until a Pi session exists for the task. The " +
         "raw pi.text_delta stream is never the display source: text is " +
-        "exposed only through this fail-closed, Node-judged summary.",
+        "exposed only through this fail-closed, Node-judged summary, and only " +
+        "with a verifiable source record (DAT-194) — a summary whose source " +
+        "cannot be re-proven, including every legacy DAT-191/192 record, is " +
+        "served unavailable with text null.",
       oneOf: [{ $ref: "#/components/schemas/PiSummary" }, { type: "null" }],
     },
     governance: {
@@ -207,13 +221,13 @@ const piSummarySchema: JsonObject = {
   description:
     "A display-safe natural-language summary of the latest settled Pi turn " +
     "for one task run (DAT-191, classification boundary DAT-192, trust " +
-    "boundary DAT-193). Displayability comes from provenance, not text " +
-    "inspection: text is exposed only when it comes from an auditable " +
-    "trusted source whose composition is reviewable in the orchestrator, " +
-    "and free model output never has one — no rule table can prove that " +
-    "arbitrary free text contains no command — so a settled model turn is " +
-    "withheld in full. The Node-side fail-closed classifier still names " +
-    "why material is kept out: credentials, shell syntax, absolute " +
+    "boundary DAT-193, verifiable provenance DAT-194). Displayability comes " +
+    "from provenance, not text inspection: text is exposed only when it comes " +
+    "from an auditable trusted source whose composition is reviewable in the " +
+    "orchestrator, and free model output never has one — no rule table can " +
+    "prove that arbitrary free text contains no command — so a settled model " +
+    "turn is withheld in full. The Node-side fail-closed classifier still " +
+    "names why material is kept out: credentials, shell syntax, absolute " +
     "workspace paths, command invocations, argument material, unredacted " +
     "logs, and opaque high-entropy strings fail closed as unsafe_content; " +
     "an execution report or a sentence/line opener it cannot recognise as " +
@@ -229,6 +243,18 @@ const piSummarySchema: JsonObject = {
     "activity counts, and no additional model, network, or permission. A " +
     "missing, unknown, or invalid report fails closed exactly like a turn " +
     "with no report. " +
+    "Provenance (DAT-194): `source` is the machine-checkable record behind " +
+    "that claim — closed channel, proof-format version, task/run/turn " +
+    "attribution, and the echoed structured report — non-null exactly when " +
+    "status is available. The server re-proves every served available " +
+    "summary from it and withholds anything it cannot prove: a missing or " +
+    "unknown source, an unknown version, attribution to a different " +
+    "task/run/turn, tampered text, or a damaged record all serve as " +
+    "unavailable/untrusted_source with text null. Nothing is inferred from " +
+    "the text's shape, a timestamp, or the service's current version; no " +
+    "persisted record or recorded event is rewritten, so legacy " +
+    "DAT-191/192 free-text summaries keep their history but are never " +
+    "served as displayable. " +
     "Lifecycle: null on the task until a Pi " +
     "session exists; pending from " +
     "session start (and at the start of every run) until a turn settles; " +
@@ -239,8 +265,18 @@ const piSummarySchema: JsonObject = {
     "status pending with text null; no summary is fabricated after the " +
     "terminal frame. A pi.summary.updated event carries the same " +
     "object on the SSE stream and in the timeline, replayable by " +
-    "Last-Event-ID like every other event.",
-  required: ["task_id", "run_id", "turn_id", "status", "text", "unavailable_reason", "updated_at"],
+    "Last-Event-ID like every other event, and passes the same provenance " +
+    "gate, so projection and events always agree.",
+  required: [
+    "task_id",
+    "run_id",
+    "turn_id",
+    "status",
+    "text",
+    "unavailable_reason",
+    "source",
+    "updated_at",
+  ],
   properties: {
     task_id: { type: "string" },
     run_id: {
@@ -270,12 +306,103 @@ const piSummarySchema: JsonObject = {
         "execution report or an unrecognised sentence opener), gate_error " +
         "(the classifier itself failed), untrusted_source (no rule flagged " +
         "the content, but it has no auditable trusted source: free model " +
-        "text, or a structured report that failed server-side validation). " +
+        "text, a structured report that failed server-side validation, or a " +
+        "recorded summary whose source cannot be re-proven on read — " +
+        "legacy, missing, forged, or unknown-version provenance). " +
         "Null unless status is unavailable. " +
         "The enum is additive: clients render an unknown reason — and an " +
-        "unknown status — as a plain unavailable state.",
+        "unknown status — as a plain unavailable state. " +
+        "A legacy available summary is served this way after the DAT-194 " +
+        "gate downgrades it, so an old client that renders on status and " +
+        "text alone stops displaying historical free text without " +
+        "understanding the source field.",
+    },
+    source: {
+      description:
+        "Verifiable provenance of `text`; non-null iff status is available. " +
+        "Null for pending and unavailable summaries, and for any summary " +
+        "whose source the server cannot re-proven (which is then served " +
+        "unavailable with text null instead of exposing an unproven source).",
+      oneOf: [{ $ref: "#/components/schemas/PiSummarySource" }, { type: "null" }],
     },
     updated_at: { type: "string", format: "date-time" },
+  },
+};
+
+const piSummarySourceSchema: JsonObject = {
+  type: "object",
+  description:
+    "Verifiable provenance of a displayable summary's text (DAT-194). " +
+    "Non-null exactly when the summary is available. The trust chain it " +
+    "states: `kind` is the closed provenance channel (only `turn_report` — " +
+    "the model's closed-enum report_turn_summary tool, validated by the " +
+    "server and fixed-rendered by the server), `version` versions the proof " +
+    "format and rendering vocabulary (carried by the record; an unknown " +
+    "version is unverifiable), task_id/run_id/turn_id bind the proof to the " +
+    "task, run, and turn the summary describes, and `report` echoes the " +
+    "validated closed-enum report the text was rendered from. The server " +
+    "re-proves every served available summary from this record — valid " +
+    "report, re-rendered wording equal to the stored text, identical " +
+    "attribution, known kind and version — and serves anything it cannot " +
+    "prove as unavailable/untrusted_source with text null. Legacy " +
+    "DAT-191/192 summaries carry no source and are therefore never served " +
+    "as displayable. A client MAY corroborate these fields (enums, " +
+    "attribution, version); that check is not the safety boundary.",
+  required: ["kind", "version", "task_id", "run_id", "turn_id", "report"],
+  properties: {
+    kind: {
+      type: "string",
+      enum: [...PI_SUMMARY_SOURCE_KINDS],
+      description:
+        "The provenance channel. Closed set: any other kind is not a " +
+        "trusted source and fails closed.",
+    },
+    version: {
+      type: "integer",
+      enum: [PI_SUMMARY_SOURCE_VERSION],
+      description:
+        "Version of the source proof format and its rendering vocabulary. " +
+        "This contract defines 1; a client MUST treat an unknown version as " +
+        "unverifiable, and the server serves such summaries as unavailable.",
+    },
+    task_id: { type: "string", description: "Task the proof is bound to." },
+    run_id: {
+      type: ["string", "null"],
+      description: "Run the proof is bound to; must equal the summary's run_id.",
+    },
+    turn_id: {
+      type: "string",
+      description: "Pi turn the proof is bound to; must equal the summary's turn_id.",
+    },
+    report: {
+      $ref: "#/components/schemas/TurnReport",
+    },
+  },
+};
+
+const turnReportSchema: JsonObject = {
+  type: "object",
+  description:
+    "One validated structured Pi turn report: the closed-enum parameters of " +
+    "the report_turn_summary tool (DAT-193). Every parameter is a key from a " +
+    "closed vocabulary — there is no free-text field — and the server " +
+    "validates membership and cardinality before recording it. Summary text " +
+    "is fixed-rendered from exactly this structure.",
+  required: ["areas", "activities", "outcome"],
+  properties: {
+    areas: {
+      type: "array",
+      minItems: 1,
+      maxItems: TURN_REPORT_MAX_ITEMS,
+      items: { type: "string", enum: [...TURN_REPORT_AREAS] },
+    },
+    activities: {
+      type: "array",
+      minItems: 1,
+      maxItems: TURN_REPORT_MAX_ITEMS,
+      items: { type: "string", enum: [...TURN_REPORT_ACTIVITIES] },
+    },
+    outcome: { type: "string", enum: [...TURN_REPORT_OUTCOMES] },
   },
 };
 
@@ -623,14 +750,15 @@ export function buildOpenApiDocument(): OpenApiDocument {
     openapi: "3.1.0",
     info: {
       title: "ForgePilot orchestrator API",
-      version: "0.5.0",
+      version: "0.6.0",
       description:
         "forgepilot-api/v1: the Node-to-UI contract of the ForgePilot pilot. " +
         "The UI calls Node only, at an ephemeral loopback address; it never sees " +
         "dsh sockets, boot tokens, Pi credentials, raw tool output, or provider " +
         "credentials. Pi text is displayed only through the fail-closed " +
         "pi_summary contract (DAT-191), whose classification boundary is " +
-        "DAT-192 and whose trusted-source display boundary is DAT-193. " +
+        "DAT-192, whose trusted-source display boundary is DAT-193, and whose " +
+        "verifiable provenance record and read-side gate are DAT-194. " +
         "Generated from the orchestrator " +
         "implementation; shapes are defined by " +
         "docs/contracts/forgepilot-api-v1.md.",
@@ -643,6 +771,8 @@ export function buildOpenApiDocument(): OpenApiDocument {
         Task: taskSchema,
         TaskEvent: taskEventSchema,
         PiSummary: piSummarySchema,
+        PiSummarySource: piSummarySourceSchema,
+        TurnReport: turnReportSchema,
         RunSummary: runSummarySchema,
         ArtifactMetadata: artifactMetadataSchema,
         Error: errorSchema,

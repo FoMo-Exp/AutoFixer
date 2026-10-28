@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { DshState } from "../dsh/types.js";
+import { projectPiSummary } from "./pi-summary.js";
 import type { PiSummary } from "./pi-summary.js";
 
 /** UI status enum from the M0 forgepilot-api/v1 contract. */
@@ -139,6 +140,25 @@ export interface RunSummary {
   run_id: string;
   state: DshState;
   created_at: string;
+}
+
+/**
+ * Project one recorded event onto what the API may serve (DAT-194).
+ *
+ * The timeline, the SSE replay, and the live stream all serve events through
+ * this gate, so a `pi.summary.updated` event's `data.summary` is re-proven by
+ * the same rules as the task's `pi_summary` field: a summary that cannot
+ * prove its source is served `unavailable` with `text: null`, and the two
+ * views can therefore never disagree about what is displayable. The recorded
+ * event itself is never modified — the gate returns a copy with a gated
+ * summary payload, leaving `event_id`, `sequence`, `occurred_at`, and the
+ * durable timeline untouched.
+ */
+export function projectEventForDisplay(event: TaskEvent): TaskEvent {
+  if (event.type !== "pi.summary.updated" || !("summary" in event.data)) {
+    return event;
+  }
+  return { ...event, data: { ...event.data, summary: projectPiSummary(event.data["summary"]) } };
 }
 
 /**
@@ -280,7 +300,7 @@ export function toTaskResource(record: TaskRecord): TaskResource {
     status_reason: record.statusReason,
     risk: record.risk,
     progress: record.progress,
-    pi_summary: record.piSummary,
+    pi_summary: projectPiSummary(record.piSummary),
     governance: {
       current_head_sha: record.headSha,
       observations_valid: record.governanceValid,
