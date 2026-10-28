@@ -45,7 +45,7 @@ The OpenAPI document declares this as the `bearerAuth` security scheme
   "status":"executing","status_reason":null,
   "risk":{"class":"low","decision_code":"risk_low_approved","requires_human_approval":false},
   "progress":{"phase":"validating","actions_completed":2,"actions_total":3},
-  "pi_summary":{"task_id":"tsk_01J...","run_id":"run_01J...","turn_id":"turn_1","status":"available","text":"Checked the echo tool and confirmed it prints hello.","unavailable_reason":null,"updated_at":"2026-10-26T12:03:00Z"},
+  "pi_summary":{"task_id":"tsk_01J...","run_id":"run_01J...","turn_id":"turn_1","status":"unavailable","text":null,"unavailable_reason":"untrusted_source","updated_at":"2026-10-26T12:03:00Z"},
   "governance":{"current_head_sha":"9ef012...","observations_valid":true,"merge_queue_eligible":false},
   "artifacts":{"patch":null,"report":null,"evidence_bundle_available":false,"index":[{"artifact_id":"patch_report","available":true,"digest":"sha256:…","head_sha":"9ef012..."}]}
 }
@@ -71,10 +71,12 @@ The UI status enum is `queued`, `assessing_risk`, `awaiting_approval`,
 machine. `failed` is deliberately not a status: an execution failure is
 projected as its authoritative `stopped` or `timed_out` outcome.
 
-`pi_summary` is the display-safe summary of the latest settled Pi turn for
-the task's current run; its full semantics are specified in [Safe Pi text
-summary](#safe-pi-text-summary) below. It is `null` until a Pi session exists
-for the task.
+`pi_summary` is the display-safe projection for the latest settled Pi turn
+of the task's current run; free model turn text is never displayable
+(DAT-193 trust boundary) and the available path is the turn's validated
+structured Pi report (see [Safe Pi text
+summary](#safe-pi-text-summary) below). It is `null` until a Pi session
+exists for the task.
 
 ## Authoritative run-state projection
 
@@ -125,49 +127,65 @@ SSE events contain `event_id`, `sequence`, `occurred_at`, `task_id`,
 source: free-form model output can contain credentials, commands, absolute
 workspace paths, or unredacted logs, and client-side filtering cannot be
 the safety boundary. The product API exposes Pi text only as the fail-closed
-`pi_summary` projection, judged on the Node side by the ordered fail-closed
-certification table in `node/src/api/pi-summary.ts` (DAT-192) —
-deterministic, reviewable, and free of any model call, network transfer, or
-widened permission.
+`pi_summary` projection, judged on the Node side in
+`node/src/api/pi-summary.ts` (DAT-191, classification boundary DAT-192,
+trust boundary DAT-193) — deterministic, reviewable, and free of any model
+call, network transfer, or widened permission.
+
+**Trust boundary (DAT-193).** Displayability comes from provenance, not
+from inspecting text. `status:"available"` may only ever carry text that
+production code composed from an auditable trusted source — a source whose
+origin and validation are reviewable in this repository, with a trust
+chain this contract can state — never text a rule table merely passed.
+Free model output has no such provenance: any turn, in any wording, may
+carry commands, credentials, absolute paths, or raw logs, and no
+deterministic rule table can prove that arbitrary free text contains none.
+DAT-191/DAT-192 hardened the table across three QA rounds, and QA still
+reproduced raw commands reaching `available` on the merged baseline
+(`node app succeeded.`, `The team used poetry lock to pin versions.`).
+A settled model turn's free text is therefore never displayable,
+whatever the table says: the DAT-192 rule table remains only as the
+*classifier* that names why material is kept out, and a pass of that
+table is a classification, not a certification. The one displayable
+source this version has is the structured Pi report channel described
+below.
 
 `GET /api/v1/tasks/{task_id}` (and every other Task response) carries the
 `pi_summary` field, and every change is recorded as a `pi.summary.updated`
 timeline/SSE event whose `data.summary` is the same object:
 
 ```json
-{"task_id":"tsk_01J...","run_id":"run_01J...","turn_id":"turn_1","status":"available","text":"Checked the echo tool and confirmed it prints hello.","unavailable_reason":null,"updated_at":"2026-10-26T12:03:00Z"}
+{"task_id":"tsk_01J...","run_id":"run_01J...","turn_id":"turn_1","status":"available","text":"Pi reported that it inspected and updated the package manifest and the lockfile and that the change is ready for review.","unavailable_reason":null,"updated_at":"2026-10-26T12:03:00Z"}
 ```
 
 Contract semantics:
 
-- **Source.** The summary describes the fully assembled assistant text of
-  one settled Pi turn (`run_started` to settlement) of the run's Pi session.
-  Node performs the judging; the source is auditable in the orchestrator
-  code, not reconstructed by the client.
-- **Generation.** A turn the gate certifies in full is excerpted to its
-  first non-empty paragraph, single-spaced, bounded to 240 characters.
-- **Security basis.** Certification is positive, not a tool blacklist: the
-  set of possible commands is open, so extending a tool list can never be
-  the safety claim. The gate only ever exposes text it positively
-  recognises as ordinary narrative prose: every segment — turn start,
-  inline sentence end, and every single-newline line start — must open
-  with a reviewed narrative starter (case-insensitive; **capitalisation
-  confers no exemption**) or an `-ed`/`-ing` participle/gerund form, or
-  with a polysemous command head **plus an in-segment narrative marker**;
-  any other opener needs that narrative marker too — a base command-verb
-  opener never certifies — and command lines carry none: segment-start
-  `node app`, `echo hello`, `python script`, `Deploy the new version.`
-  are unavailable, while `Node is fast.` and `git history is clean.`
-  certify on their copula. Structural command material, execution
-  reports, and unrecognised openers all fail closed. The command
-  vocabularies named below are defence in depth layered on top: they can
-  only add
-  rejections and never create an allowance. The exact reach of the
-  deterministic boundary — including what it deliberately does not
-  claim — is stated after the classes.
-- **Safety boundary.** The ordered rules keep out exactly these classes;
-  `available` means the whole turn was certified under all of them,
-  nothing more. Each class names its rule and the reason a hit yields:
+- **Source and trust chain: the structured Pi report (DAT-193).** `text`,
+  when present, is the fixed-wording rendering of one settled Pi turn's
+  validated structured report. The model labels the turn's work through
+  the `report_turn_summary` tool, whose parameters are closed enums
+  (`areas`, `activities`, `outcome`) with no free-text field and no
+  argument that could carry a command, token, path, or log; Node
+  validates the report against that vocabulary server-side (the
+  provider-side schema is descriptive only) and records it only when it
+  is valid; Node itself composes every displayed word from fixed phrases
+  (`node/src/pi/turn-report.ts`), framed as Pi's own report — "Pi reported that it …" — not as an independently verified fact, and it
+  conveys the turn's concrete work (what was done, to which parts, with
+  which outcome), never run status or action counts. The tool executes
+  nothing: no additional model, external network, widened permission, or
+  dsh action is involved. A turn whose report is missing, unknown, or
+  invalid fails closed exactly like a turn with no report. Free model
+  text has no such source and is never displayable — no rule table can
+  prove arbitrary free text safe, and DAT-193 claims no such proof — so a
+  free-text-only turn always settles `unavailable`. The rendered report
+  text is additionally run through the DAT-192 classifier before
+  release (defence in depth; in that direction the classifier can only
+  withhold, never allow).
+- **Classification (DAT-192): why material is kept out.** The ordered
+  rules keep out exactly these classes; a hit yields `unavailable` with
+  that class's reason. The table only ever adds rejections and never
+  creates an allowance — it classifies withheld material, it does not
+  certify display:
   - *credential-shaped material* (`secret_material` → `unsafe_content`):
     provider prefixes `sk-`, `sk_live_` /
     `sk_test_`, `ghp_` / `gho_` / `ghs_` / `ghu_` / `ghr_`, `github_pat_`,
@@ -242,27 +260,36 @@ Contract semantics:
 
   The complete turn text is judged — never one fragment at a time — so
   material split across `pi.text_delta` fragments is caught in its
-  assembled form. `available` asserts certification under exactly these
-  classes; it is not a general claim that the text is harmless, and
-  client-side filtering is still not the boundary.
-  **Honest residual.** Segment starts are covered as described above;
-  *inside* an already-certified narrative sentence — where prose like
-  `the echo tool` must stay displayable — an invocation shape written in
-  plain-English words and carrying none of the structural material above
-  (no flag, path, quote, `//target`, subcommand, or non-starter +
-  base-verb pair), whether or not its head is a listed tool word (for
-  example `We saw node app run`), is not distinguishable from prose by a
-  deterministic gate; such text is only excluded when one of the listed
-  classes matches. This is the exact reach of `available`, and no
-  stronger boundary is claimed.
+  assembled form. The reach of this table over arbitrary free text is
+  exactly what DAT-191/192 could not close: an invocation written in
+  plain-English words *inside* an otherwise narrative sentence and
+  carrying none of the structural material above (for example
+  `The team used poetry lock to pin versions.`) passes every class, and a
+  marker-rescued segment opener such as `node app succeeded.` passes the
+  prose classification. DAT-193 withholds both shapes as
+  `untrusted_source` instead of exposing them: the classification table is
+  no longer a display decision, and no residual of it is displayable.
 - **Fail closed.** Any rule hit yields `status:"unavailable"` with
   `unavailable_reason` set to that rule's reason — `"unsafe_content"` for
-  identified unsafe material, `"undecidable"` when the gate could not
-  certify the turn; a failure inside the gate itself yields
-  `"gate_error"`; a settled turn with no displayable text yields
-  `"no_content"`. The reason enum is additive: clients MUST render an
-  unknown reason as a plain unavailable state. An unavailable summary
-  never carries the raw turn text — in any field, event, or projection.
+  identified unsafe material, `"undecidable"` when the classifier could
+  not recognise the turn as narrative prose; a failure inside the
+  classifier itself yields `"gate_error"`; a settled turn with no content
+  yields `"no_content"`; a turn no rule flags still yields
+  `"untrusted_source"`, because its content has no auditable trusted
+  source — free model text, or a structured report that failed
+  server-side validation. The reason enum is additive: clients MUST render an unknown
+  reason — and an unknown status — as a plain unavailable state. An
+  unavailable summary never carries the raw turn text — in any field,
+  event, or projection.
+- **Compatibility with recorded history (DAT-193).** Fields, event type,
+  lifecycle, and attribution are unchanged, so DAT-191/192 clients keep
+  working: a settlement is either `available` with the report-rendered
+  `text` above or `unavailable` with `text:null`, the reason enum only
+  grows, and an unknown reason or status renders as a plain unavailable
+  state. No persisted projection and no recorded timeline event is
+  rewritten: summaries settled before DAT-193 remain exactly as recorded,
+  and the trusted-source rule governs every settlement produced from this
+  version forward.
 - **Lifecycle and attribution.** `pi_summary` is `null` until a Pi session
   exists for the task; `pending` from session start — and again at the
   start of every new run, which resets any earlier run's summary to

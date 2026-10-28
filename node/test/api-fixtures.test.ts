@@ -16,7 +16,8 @@ import { scriptedStream, TEST_MODEL } from "./helpers/scripted-stream.js";
 import type { ScriptedTurn } from "./helpers/scripted-stream.js";
 
 /**
- * Real-response golden fixtures for the safe Pi summary contract (DAT-191).
+ * Real-response golden fixtures for the safe Pi summary contract (DAT-191,
+ * trust boundary DAT-193).
  *
  * These are captured from a live orchestrator + the real Go dsh control
  * plane, exactly like the client-facing API returns them, then normalized
@@ -171,8 +172,8 @@ function checkFixture(name: string, payload: unknown): void {
   ).toBe(encoded);
 }
 
-describe("real-response fixtures for pi_summary (DAT-191)", () => {
-  test("an available summary round-trips as a frozen live response", async () => {
+describe("real-response fixtures for pi_summary (DAT-191/193)", () => {
+  test("a benign turn round-trips as a withheld (untrusted_source) live response", async () => {
     const benignText = "Checked the echo tool and confirmed it prints hello.";
     const base = await startApp([{ kind: "text", text: benignText }]);
     const task = await createApprovedTask(base);
@@ -181,13 +182,61 @@ describe("real-response fixtures for pi_summary (DAT-191)", () => {
     await waitUntil(async () => {
       const current = await getJson<TaskResource>(`${base}/api/v1/tasks/${task.id}`);
       return (
+        current.body.pi_summary?.status === "unavailable" &&
+        current.body.progress.phase === "validating"
+      );
+    }, "summary withheld and projection settled");
+
+    const resource = await getJson<TaskResource>(`${base}/api/v1/tasks/${task.id}`);
+    // DAT-193: free model text has no auditable trusted source, so even a
+    // turn that passes every classification rule is withheld in full.
+    expect(resource.body.pi_summary).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "untrusted_source",
+    });
+    expect(JSON.stringify(resource.body.pi_summary)).not.toContain(benignText);
+    checkFixture("task-pi-summary-unavailable-untrusted-source.json", resource.body);
+
+    const events = await getJson<{ items: TimelineItem[] }>(
+      `${base}/api/v1/tasks/${task.id}/timeline`,
+    );
+    const summaryEvents = events.body.items.filter((event) => event.type === "pi.summary.updated");
+    expect(summaryEvents).toHaveLength(2);
+    checkFixture("pi-summary-events-unavailable-untrusted-source.json", summaryEvents);
+  });
+
+  test("a verified Pi report round-trips as an available real response", async () => {
+    const freeText = "Ran the checks and patched the manifest after review.";
+    const rendered =
+      "Pi reported that it inspected and updated the package manifest and the lockfile and that the change is ready for review.";
+    const base = await startApp([
+      {
+        kind: "report",
+        areas: ["manifest", "lockfile"],
+        activities: ["inspected", "updated"],
+        outcome: "ready_for_review",
+      },
+      { kind: "text", text: freeText },
+    ]);
+    const task = await createApprovedTask(base);
+    await waitUntil(async () => {
+      const current = await getJson<TaskResource>(`${base}/api/v1/tasks/${task.id}`);
+      return (
         current.body.pi_summary?.status === "available" &&
         current.body.progress.phase === "validating"
       );
-    }, "summary available and projection settled");
+    }, "summary available from the structured report and projection settled");
 
     const resource = await getJson<TaskResource>(`${base}/api/v1/tasks/${task.id}`);
-    expect(resource.body.pi_summary?.text).toBe(benignText);
+    // The trusted source is the validated structured report; the displayed
+    // sentence is Node's fixed wording, framed as Pi's own report.
+    expect(resource.body.pi_summary).toMatchObject({
+      status: "available",
+      text: rendered,
+      unavailable_reason: null,
+    });
+    expect(JSON.stringify(resource.body.pi_summary)).not.toContain(freeText);
     checkFixture("task-pi-summary-available.json", resource.body);
 
     const events = await getJson<{ items: TimelineItem[] }>(

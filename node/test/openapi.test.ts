@@ -81,6 +81,7 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
       "unsafe_content",
       "undecidable",
       "gate_error",
+      "untrusted_source",
       null,
     ]);
     // text can only be a string or null; never a non-string fallback.

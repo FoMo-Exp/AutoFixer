@@ -52,6 +52,18 @@ export type ScriptedTurn =
       pathScope: string[];
       rationale?: string;
     }
+  /**
+   * One `report_turn_summary` tool call (DAT-193 trusted source), with an
+   * optional preamble text in the same assistant message. Invalid reports
+   * are scripted by passing values outside the closed vocabulary.
+   */
+  | {
+      kind: "report";
+      text?: string;
+      areas: string[];
+      activities: string[];
+      outcome: string;
+    }
   /** Never completes on its own; finishes only when the session is aborted. */
   | { kind: "hang" }
   /** Completes when the gate is released; lets tests interleave API calls. */
@@ -192,18 +204,31 @@ export function scriptedStream(turns: ScriptedTurn[]): ScriptedStream {
       return stream;
     }
 
-    // Tool turn: optional preamble text, then one dsh_request_action call.
-    const toolCall: ToolCall = {
-      type: "toolCall",
-      id: `call_${index}`,
-      name: "dsh_request_action",
-      arguments: {
-        tool_id: turn.toolId,
-        arguments: turn.args,
-        path_scope: turn.pathScope,
-        rationale: turn.rationale ?? "scripted request",
-      },
-    };
+    // Tool turn: optional preamble text, then one tool call — the dsh
+    // action intent, or the structured summary report (DAT-193).
+    const toolCall: ToolCall =
+      turn.kind === "report"
+        ? {
+            type: "toolCall",
+            id: `call_${index}`,
+            name: "report_turn_summary",
+            arguments: {
+              areas: turn.areas,
+              activities: turn.activities,
+              outcome: turn.outcome,
+            },
+          }
+        : {
+            type: "toolCall",
+            id: `call_${index}`,
+            name: "dsh_request_action",
+            arguments: {
+              tool_id: turn.toolId,
+              arguments: turn.args,
+              path_scope: turn.pathScope,
+              rationale: turn.rationale ?? "scripted request",
+            },
+          };
     const finalContent: (TextContent | ToolCall)[] = [];
     if (turn.text) {
       finalContent.push({ type: "text", text: turn.text });

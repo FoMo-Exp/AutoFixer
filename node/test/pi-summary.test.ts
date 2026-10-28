@@ -2,10 +2,8 @@ import { describe, expect, test } from "vitest";
 
 import {
   evaluateTurnText,
-  excerptTurnText,
   firstSafetyViolation,
   PI_SUMMARY_COMMAND_VERBS,
-  PI_SUMMARY_MAX_CHARS,
   PI_SUMMARY_PROSE_STARTERS,
   PI_SUMMARY_SAFETY_RULES,
   PI_SUMMARY_UNAVAILABLE_REASONS,
@@ -39,36 +37,39 @@ function expectNoLeak(serialized: string, rawTurnText: string): void {
   }
 }
 
-describe("safety gate: accepted real Pi content", () => {
-  test("a benign turn yields an available summary with the actual Pi content", () => {
-    const evaluation = evaluateTurnText(
-      "Checked the echo tool and confirmed it prints hello. The patch is ready for review.",
-    );
-    expect(evaluation).toEqual({
-      outcome: "available",
-      text: "Checked the echo tool and confirmed it prints hello. The patch is ready for review.",
-    });
+describe("DAT-193: free model turn text is never displayable", () => {
+  test("a benign turn fails closed as untrusted_source and exposes nothing", () => {
+    const text =
+      "Checked the echo tool and confirmed it prints hello. The patch is ready for review.";
+    const evaluation = evaluateTurnText(text);
+    expect(evaluation).toEqual({ outcome: "unavailable", reason: "untrusted_source" });
+    // The withheld text must not appear in any exposed byte, not even a slice.
+    expectNoLeak(JSON.stringify(evaluation), text);
   });
 
-  test("repo-relative paths and prose punctuation are allowed", () => {
+  test("prose that passes every classification rule still has no trusted source", () => {
     const evaluation = evaluateTurnText(
       "Updated node/src/api/task-service.ts and web/src/ui/format.ts to fix the export.",
     );
-    expect(evaluation.outcome).toBe("available");
+    expect(evaluation).toEqual({ outcome: "unavailable", reason: "untrusted_source" });
   });
 
-  test("the excerpt is the first paragraph, single-spaced", () => {
-    expect(excerptTurnText("First line\ncontinues here.\n\nSecond paragraph.")).toBe(
-      "First line continues here.",
-    );
-  });
-
-  test("long turns are truncated at the bound, at a word boundary", () => {
-    const long = `${"word ".repeat(120)}end.`;
-    const excerpt = excerptTurnText(long);
-    expect(excerpt.length).toBeLessThanOrEqual(PI_SUMMARY_MAX_CHARS);
-    expect(excerpt.endsWith("...")).toBe(true);
-    expect(excerpt.startsWith("word word word")).toBe(true);
+  test("the classifier pass alone never produces a displayable outcome", () => {
+    // A pass of the DAT-192 table is a classification, not a certification:
+    // provenance is what displayability requires, and model text has none.
+    const classificationPasses = [
+      "The manifest lists three dependencies and no secrets.",
+      "Node is fast.",
+      "git history is clean.",
+      "I inspected the manifest and found no issues.",
+    ];
+    for (const text of classificationPasses) {
+      expect(firstSafetyViolation(text), `expected no rule hit for ${text}`).toBeNull();
+      expect(evaluateTurnText(text)).toEqual({
+        outcome: "unavailable",
+        reason: "untrusted_source",
+      });
+    }
   });
 });
 
@@ -365,8 +366,8 @@ describe("DAT-192: undecidable turns fail closed without a guess", () => {
   });
 });
 
-describe("DAT-192: positive prose certification keeps narrative turns displayable", () => {
-  const certifiedTurns: Array<[label: string, text: string]> = [
+describe("DAT-193: classification-passing prose is withheld, not displayed", () => {
+  const classifiedTurns: Array<[label: string, text: string]> = [
     ["capitalised prose word (QA baseline)", "Node is fast"],
     ["polysemous head + copula marker (QA contrast)", "Node is fast."],
     ["polysemous head + copula in prose (QA contrast)", "git history is clean."],
@@ -376,26 +377,32 @@ describe("DAT-192: positive prose certification keeps narrative turns displayabl
     ["lowercase result fragment", "works as expected after the run."],
     ["lowercase gerund bullet", "- verified the manifest."],
     ["abbreviation-led sentence", "e.g. the manifest lists three entries."],
-    ["repository-relative paths stay allowed", "Updated node/src/api/task-service.ts in place."],
+    [
+      "repository-relative paths pass classification",
+      "Updated node/src/api/task-service.ts in place.",
+    ],
     ["participle opener (former poly baseline)", "Finding the bug before the release."],
     ["conjunction opener", "but the export check still passed."],
   ];
 
-  for (const [label, text] of certifiedTurns) {
-    test(`${label} stays available`, () => {
-      // Excerpting collapses soft line breaks to single spaces; everything
-      // else about the certified turn is exposed unchanged.
+  for (const [label, text] of classifiedTurns) {
+    test(`${label} passes classification but is withheld as untrusted_source`, () => {
+      // DAT-193: passing every classification rule is not certification —
+      // free model text has no auditable trusted source, so nothing of the
+      // turn is exposed, not even a slice.
+      expect(firstSafetyViolation(text)).toBeNull();
       expect(evaluateTurnText(text)).toEqual({
-        outcome: "available",
-        text: text.replace(/\s+/g, " "),
+        outcome: "unavailable",
+        reason: "untrusted_source",
       });
+      expectNoLeak(JSON.stringify(evaluateTurnText(text)), text);
     });
   }
 
-  test("available prose carries the actual Pi content, unchanged", () => {
+  test("even the clearest prose never yields a displayable outcome", () => {
     const text =
       "Checked the echo tool and confirmed it prints hello. The patch is ready for review.";
-    expect(evaluateTurnText(text)).toEqual({ outcome: "available", text });
+    expect(evaluateTurnText(text)).toEqual({ outcome: "unavailable", reason: "untrusted_source" });
   });
 });
 
@@ -539,9 +546,13 @@ describe("DAT-192 QA round-2: segment-start polysemous heads need a narrative ma
     });
   }
 
-  test("a narrative marker keeps a polysemous opener displayable (QA contrast)", () => {
+  test("a narrative marker passes the classification but the turn is still withheld (DAT-193)", () => {
     for (const text of ["Node is fast.", "git history is clean."]) {
-      expect(evaluateTurnText(text)).toEqual({ outcome: "available", text });
+      expect(firstSafetyViolation(text)).toBeNull();
+      expect(evaluateTurnText(text)).toEqual({
+        outcome: "unavailable",
+        reason: "untrusted_source",
+      });
     }
   });
 
@@ -583,17 +594,37 @@ describe("safety gate: cross-fragment assembly", () => {
     expectNoLeak(JSON.stringify(summary), "/Users/ludwig/workspace/repo/node/src/x.ts");
   });
 
-  test("a benign turn streamed in fragments stays available", () => {
+  test("a benign turn streamed in fragments is withheld as untrusted_source", () => {
     const tracker = new PiSummaryTracker("tsk_unit");
     tracker.beginRun("run_a");
     tracker.beginTurn("turn_1");
     for (const fragment of ["Verified the ", "export ", "flow end to end."]) {
       tracker.appendText(fragment);
     }
-    expect(tracker.settleTurn()).toMatchObject({
-      status: "available",
-      text: "Verified the export flow end to end.",
+    const summary = tracker.settleTurn();
+    expect(summary).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "untrusted_source",
     });
+    expectNoLeak(JSON.stringify(summary), "Verified the export flow end to end.");
+  });
+
+  test("a reproduced baseline example assembled across deltas still fails closed", () => {
+    const tracker = new PiSummaryTracker("tsk_unit");
+    tracker.beginRun("run_a");
+    tracker.beginTurn("turn_1");
+    for (const fragment of ["The team used poetry", " lock to pin", " versions."]) {
+      tracker.appendText(fragment);
+    }
+    const summary = tracker.settleTurn();
+    expect(summary).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "untrusted_source",
+    });
+    expectNoLeak(JSON.stringify(summary), "The team used poetry lock to pin versions.");
+    expect(JSON.stringify(summary)).not.toContain("poetry lock");
   });
 });
 
@@ -632,7 +663,11 @@ describe("PiSummaryTracker lifecycle and attribution", () => {
     tracker.beginTurn("turn_1");
     tracker.appendText("First turn summary text.");
     const first = tracker.settleTurn();
-    expect(first).toMatchObject({ status: "available", text: "First turn summary text." });
+    expect(first).toMatchObject({
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "untrusted_source",
+    });
     // The agent_error + agent_settled double emission must not re-publish:
     // the second call reports that no turn was settled instead.
     expect(tracker.settleTurn()).toBeNull();
@@ -645,20 +680,25 @@ describe("PiSummaryTracker lifecycle and attribution", () => {
     tracker.appendText("First settled turn.");
     expect(tracker.settleTurn()).toMatchObject({
       turn_id: "turn_1",
-      status: "available",
-      text: "First settled turn.",
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "untrusted_source",
     });
     tracker.beginTurn("turn_2");
     tracker.appendText("The second turn mentions nothing sensitive.");
     expect(tracker.settleTurn()).toMatchObject({
       turn_id: "turn_2",
-      status: "available",
-      text: "The second turn mentions nothing sensitive.",
+      status: "unavailable",
+      text: null,
+      unavailable_reason: "untrusted_source",
     });
     expect(JSON.stringify(tracker.snapshot())).not.toContain("First settled turn.");
+    expect(JSON.stringify(tracker.snapshot())).not.toContain(
+      "The second turn mentions nothing sensitive.",
+    );
   });
 
-  test("an unsafe turn replaces a previously available summary without leaking", () => {
+  test("an unsafe turn replaces a previously withheld summary without leaking", () => {
     const tracker = newTracker();
     tracker.beginTurn("turn_1");
     tracker.appendText("The first summary was clean.");
@@ -703,5 +743,184 @@ describe("PiSummaryTracker lifecycle and attribution", () => {
     const snapshot = tracker.snapshot();
     (snapshot as { status: string }).status = "available";
     expect(tracker.snapshot().status).toBe("pending");
+  });
+});
+
+describe("DAT-193: acceptance coverage over the trust boundary", () => {
+  test("the reproduced baseline examples are withheld as untrusted_source", () => {
+    // QA reproduced both on the DAT-192 merge baseline as available text
+    // carrying raw commands; under the trust boundary neither is displayable.
+    const reproduced = [
+      "node app succeeded.",
+      "The team used poetry lock to pin versions.",
+      "NODE APP SUCCEEDED.",
+      "The Team Used Poetry Lock To Pin Versions.",
+    ];
+    for (const text of reproduced) {
+      expect(evaluateTurnText(text)).toEqual({
+        outcome: "unavailable",
+        reason: "untrusted_source",
+      });
+      expectNoLeak(JSON.stringify(evaluateTurnText(text)), text);
+      expect(JSON.stringify(evaluateTurnText(text))).not.toContain("poetry lock");
+      expect(JSON.stringify(evaluateTurnText(text))).not.toContain("node app");
+    }
+  });
+
+  test("case variants of structural command material still hit the classifier", () => {
+    const rows: Array<[rule: string, text: string]> = [
+      ["tool_invocation", "ZORQUE BUILD SUCCEEDED."],
+      ["tool_invocation", "GIT STATUS"],
+      ["command_material", "THE FLAG --FORCE WAS REQUIRED."],
+      ["absolute_path", "THE FILE IS /bin/sh."],
+      ["shell_syntax", "OUTPUT:\n$ SUDO RM -RF /VAR/CACHE"],
+      ["tool_invocation", "I RAN CAT PACKAGE.JSON."],
+    ];
+    for (const [rule, text] of rows) {
+      expect(firstSafetyViolation(text)?.code, `rule for ${text}`).toBe(rule);
+      expect(evaluateTurnText(text)).toEqual({ outcome: "unavailable", reason: "unsafe_content" });
+      expectNoLeak(JSON.stringify(evaluateTurnText(text)), text);
+    }
+  });
+
+  test("tokens, absolute paths, and unredacted logs are withheld with unsafe_content", () => {
+    const rows: Array<[label: string, text: string]> = [
+      ["token", "The credential ghp_abcdefghijklmnopqrstuvwx123456 was exposed."],
+      ["absolute path", "The file at /Users/ludwig/work/repo/node/x.ts was changed."],
+      ["unredacted log", "Output:\nERROR database connection refused\nbye."],
+    ];
+    for (const [, text] of rows) {
+      expect(evaluateTurnText(text)).toEqual({ outcome: "unavailable", reason: "unsafe_content" });
+      expectNoLeak(JSON.stringify(evaluateTurnText(text)), text);
+    }
+  });
+
+  test("evaluateTurnText never yields a displayable outcome across the corpus", () => {
+    const corpus = [
+      "",
+      "   ",
+      "Checked the echo tool and confirmed it prints hello.",
+      "node app succeeded.",
+      "The team used poetry lock to pin versions.",
+      "Zorque app succeeded.",
+      "Bazel build //app:server",
+      "We should run bazel build //app:server",
+      "I ran the linter over the tree.",
+      "install the dependencies today.",
+      "The credential ghp_abcdefghijklmnopqrstuvwx123456 was exposed.",
+      "The file at /Users/ludwig/work/repo/node/x.ts was changed.",
+      "Output:\nERROR database connection refused\nbye.",
+      "The plan is ready\npoetry install",
+      "Summary:\n```sh\nnpm run build\n```\ndone.",
+    ];
+    for (const text of corpus) {
+      const evaluation = evaluateTurnText(text);
+      expect(evaluation.outcome, `corpus entry ${JSON.stringify(text)}`).toBe("unavailable");
+      if (evaluation.outcome === "unavailable") {
+        expect(PI_SUMMARY_UNAVAILABLE_REASONS).toContain(evaluation.reason);
+      }
+    }
+    expect(PI_SUMMARY_UNAVAILABLE_REASONS).toContain("untrusted_source");
+  });
+});
+
+describe("DAT-193: the structured report is the turn's display source", () => {
+  const REPORT = {
+    areas: ["manifest", "lockfile"],
+    activities: ["inspected", "updated"],
+    outcome: "ready_for_review",
+  } as const;
+  const RENDERED =
+    "Pi reported that it inspected and updated the package manifest and the lockfile and that the change is ready for review.";
+
+  test("a turn with a validated report publishes the fixed wording, not the free text", () => {
+    const tracker = new PiSummaryTracker("tsk_unit");
+    tracker.beginRun("run_a");
+    tracker.beginTurn("turn_1");
+    // Free text that would never be displayable on its own: the report is
+    // the display source, so none of it may appear anywhere.
+    tracker.appendText("Ran `npm test` and patched /Users/ludwig/repo/node/x.ts after ghp_abc.");
+    tracker.recordReport({
+      ...REPORT,
+      areas: [...REPORT.areas],
+      activities: [...REPORT.activities],
+    });
+    const summary = tracker.settleTurn();
+    expect(summary).toMatchObject({
+      status: "available",
+      text: RENDERED,
+      unavailable_reason: null,
+      turn_id: "turn_1",
+      run_id: "run_a",
+    });
+    // No slice of the withheld free text may appear in any exposed byte.
+    expect(JSON.stringify(summary)).not.toContain("npm test");
+    expect(JSON.stringify(summary)).not.toContain("/Users/ludwig/repo/node/x.ts");
+    expect(JSON.stringify(summary)).not.toContain("ghp_abc");
+  });
+
+  test("a report recorded with no open turn is dropped, not judged", () => {
+    const tracker = new PiSummaryTracker("tsk_unit");
+    tracker.beginRun("run_a");
+    tracker.recordReport({
+      areas: ["tests"],
+      activities: ["verified"],
+      outcome: "completed",
+    });
+    expect(tracker.settleTurn()).toBeNull();
+    expect(tracker.snapshot().status).toBe("pending");
+    // The next turn starts without that dropped report and fails closed.
+    tracker.beginTurn("turn_1");
+    tracker.appendText("The tests were checked.");
+    expect(tracker.settleTurn()).toMatchObject({
+      status: "unavailable",
+      unavailable_reason: "untrusted_source",
+      text: null,
+    });
+  });
+
+  test("a new turn does not inherit the previous turn's report", () => {
+    const tracker = new PiSummaryTracker("tsk_unit");
+    tracker.beginRun("run_a");
+    tracker.beginTurn("turn_1");
+    tracker.recordReport({
+      areas: ["tests"],
+      activities: ["verified"],
+      outcome: "completed",
+    });
+    expect(tracker.settleTurn()).toMatchObject({ turn_id: "turn_1", status: "available" });
+    tracker.beginTurn("turn_2");
+    tracker.appendText("A second turn without any structured report.");
+    const second = tracker.settleTurn();
+    expect(second).toMatchObject({
+      turn_id: "turn_2",
+      status: "unavailable",
+      unavailable_reason: "untrusted_source",
+      text: null,
+    });
+    expect(JSON.stringify(second)).not.toContain(RENDERED);
+  });
+
+  test("a new run clears any unsettled report before it can be published", () => {
+    const tracker = new PiSummaryTracker("tsk_unit");
+    tracker.beginRun("run_a");
+    tracker.beginTurn("turn_1");
+    tracker.recordReport({
+      areas: ["tests"],
+      activities: ["verified"],
+      outcome: "completed",
+    });
+    const reset = tracker.beginRun("run_b");
+    expect(reset).toMatchObject({ run_id: "run_b", status: "pending", text: null });
+    expect(tracker.settleTurn()).toBeNull();
+    tracker.beginTurn("turn_1");
+    tracker.appendText("A second run settled cleanly.");
+    expect(tracker.settleTurn()).toMatchObject({
+      run_id: "run_b",
+      status: "unavailable",
+      unavailable_reason: "untrusted_source",
+      text: null,
+    });
+    expect(JSON.stringify(tracker.snapshot())).not.toContain("verified the tests");
   });
 });

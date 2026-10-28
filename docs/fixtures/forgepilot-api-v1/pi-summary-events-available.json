@@ -31,7 +31,7 @@
         "run_id": "run_00000000000000000000000000000001",
         "turn_id": "turn_1",
         "status": "available",
-        "text": "Checked the echo tool and confirmed it prints hello.",
+        "text": "Pi reported that it inspected and updated the package manifest and the lockfile and that the change is ready for review.",
         "unavailable_reason": null,
         "updated_at": "2099-01-01T00:00:00.000Z"
       }

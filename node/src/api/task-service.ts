@@ -9,6 +9,7 @@ import { DshError } from "../dsh/client.js";
 import type { DshClient } from "../dsh/client.js";
 import type { DshGrantSummary, DshProposedWork, DshRunResponse, DshState } from "../dsh/types.js";
 import { createDshRequestActionTool } from "../pi/dsh-request-action-tool.js";
+import { createTurnSummaryReportTool } from "../pi/turn-report-tool.js";
 import { piSystemPrompt, taskPrompt } from "../pi/prompts.js";
 import type { PiSessionOptions } from "../pi/session.js";
 import { PiSession } from "../pi/session.js";
@@ -749,6 +750,12 @@ export class TaskService {
     // turn settles, then one evaluated summary per settled turn (DAT-191).
     const summaryTracker = new PiSummaryTracker(record.id);
     this.publishSummary(record, summaryTracker.beginRun(record.runId));
+    // The structured report tool is the session's trusted display source
+    // (DAT-193): it records the model's closed-vocabulary report of the
+    // open turn; it executes nothing and adds no capability.
+    const reportTool = createTurnSummaryReportTool({
+      onReport: (report) => summaryTracker.recordReport(report),
+    });
     let sessionRef: PiSession | null = null;
     const tool = createDshRequestActionTool({
       client: this.deps.dsh,
@@ -792,7 +799,7 @@ export class TaskService {
       sessionId,
       systemPrompt: piSystemPrompt(),
       model: this.deps.model,
-      tools: [tool],
+      tools: [tool, reportTool],
       listener: (event) => {
         if (record.terminal) {
           return;
