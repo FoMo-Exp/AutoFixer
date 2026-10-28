@@ -13,6 +13,35 @@ npm test
 npm run build
 ```
 
+## Provider account binding (settings)
+
+The workbench Settings dialog binds GitHub or GitLab accounts so the task
+composer can offer discovered repositories and branches alongside the
+free-text inputs (which are always kept as a "Custom…" option).
+
+- Account tokens are entered in the renderer but never stored there: the
+  main process verifies the token against the provider, then persists
+  `{ account id, provider, instance origin, login }` plus the token in
+  `<userData>/provider-accounts.json` (0600, atomic replace). No IPC
+  response ever contains a token.
+- Discovery runs in the main process (`electron/git-providers.ts`): GitHub
+  via `api.github.com` (or `<host>/api/v3` for Enterprise), GitLab via
+  `<origin>/api/v4` with optional self-hosted instance origins (https,
+  origin-only). Every request is pinned to the API origin derived from the
+  bound instance, so a crafted repository name cannot redirect a token.
+- The renderer sees only renderer-safe projections: account ids/logins,
+  repository ids (`github:owner/repo`, `gitlab:group/sub/project`), and
+  branch names.
+- Settings IPC channels (`forgepilot:settings:*`) reuse the API proxy's
+  trusted-sender guard: only the app window's top frame may call them.
+- Without the Electron bridge (plain-browser dev), settings and the
+  pickers degrade to free-text input instead of failing.
+
+The workbench only _selects_ `repository_id`/`base_ref`; the Node service
+and dsh keep their existing governance over which repositories and refs a
+task may target. The credential boundary for this feature is recorded in
+[ADR-0004](../docs/adr/0004-workbench-provider-credential-boundary.md).
+
 For an Electron launch, the main process first checks the configured
 `FORGEPILOT_API_URL` / `FORGEPILOT_API_PORT`, then an optional
 `FORGEPILOT_API_DISCOVERY_FILE`, and finally starts the local Node entrypoint

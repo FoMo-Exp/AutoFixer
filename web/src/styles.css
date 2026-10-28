@@ -1291,3 +1291,105 @@ p {
     grid-template-columns: minmax(0, 1fr) 290px;
   }
 }
+
+/* Settings dialog and repository/branch pickers */
+
+.settings-accounts {
+  border-top: 1px solid var(--line-soft);
+  margin-bottom: 18px;
+  padding-top: 15px;
+}
+
+.settings-accounts .card-heading h3 {
+  margin-top: 4px;
+}
+
+.settings-account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 11px;
+}
+
+.settings-account-row {
+  align-items: center;
+  background: #0f151f;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  gap: 11px;
+  padding: 10px 12px;
+}
+
+.provider-badge {
+  background: rgba(116, 168, 255, 0.12);
+  border: 1px solid rgba(116, 168, 255, 0.35);
+  border-radius: 5px;
+  color: var(--blue);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 4px 7px;
+  text-transform: uppercase;
+}
+
+.settings-account-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.settings-account-copy strong {
+  font-size: 12px;
+}
+
+.settings-account-copy span {
+  color: var(--muted);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-toolbar {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
+.picker-toolbar .field-hint {
+  margin: 0;
+}
+
+.picker-toolbar-actions {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+}
+
+.picker-error {
+  color: var(--red);
+  font-size: 10px;
+}
+
+.modal .form-grid label select {
+  font-weight: 400;
+}
+
+.picker-input-row {
+  display: flex;
+  gap: 6px;
+}
+
+.picker-input-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.picker-input-row .button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}

@@ -5,6 +5,8 @@ import type { ArtifactMetadata, RunSummary, Task, TaskEvent, TaskStatus } from "
 import { resolveApiConfig } from "./api/config";
 import { useTaskStream } from "./api/hooks";
 import { CreateIdempotencyKeys } from "./api/idempotency";
+import { RepositoryPicker } from "./settings/RepositoryPicker";
+import { SettingsDialog } from "./settings/SettingsDialog";
 import {
   approvalScopeDigest,
   buildTimelineRows,
@@ -62,6 +64,10 @@ export default function App(): ReactElement {
   const [serviceError, setServiceError] = useState<string>();
   const [filter, setFilter] = useState<"all" | TaskStatus>("all");
   const [showCreate, setShowCreate] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  // Bumped whenever the settings dialog closes so open pickers re-run
+  // discovery against the (possibly changed) account set.
+  const [settingsEpoch, setSettingsEpoch] = useState(0);
   const [form, setForm] = useState<CreateTaskForm>(INITIAL_FORM);
   const [isCreating, setIsCreating] = useState(false);
   const [actionError, setActionError] = useState<string>();
@@ -238,6 +244,13 @@ export default function App(): ReactElement {
         <div className="topbar-actions">
           <ServiceBadge status={serviceStatus} />
           <button
+            className="button button-quiet button-small"
+            onClick={() => setShowSettings(true)}
+            aria-label="Open settings"
+          >
+            <span aria-hidden="true">⚙</span> Settings
+          </button>
+          <button
             className="button button-primary button-small"
             onClick={() => setShowCreate(true)}
           >
@@ -357,7 +370,17 @@ export default function App(): ReactElement {
           isCreating={isCreating}
           onChange={setForm}
           onClose={() => setShowCreate(false)}
+          onOpenSettings={() => setShowSettings(true)}
           onSubmit={handleCreate}
+          refreshToken={settingsEpoch}
+        />
+      )}
+      {showSettings && (
+        <SettingsDialog
+          onClose={() => {
+            setShowSettings(false);
+            setSettingsEpoch((value) => value + 1);
+          }}
         />
       )}
     </div>
@@ -897,13 +920,17 @@ function CreateTaskDialog({
   isCreating,
   onChange,
   onClose,
+  onOpenSettings,
   onSubmit,
+  refreshToken,
 }: {
   form: CreateTaskForm;
   isCreating: boolean;
   onChange: (form: CreateTaskForm) => void;
   onClose: () => void;
+  onOpenSettings: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  refreshToken: number;
 }): ReactElement {
   return (
     <div
@@ -926,24 +953,13 @@ function CreateTaskDialog({
           begins.
         </p>
         <form onSubmit={(event) => void onSubmit(event)}>
-          <div className="form-grid">
-            <label>
-              Repository ID
-              <input
-                value={form.repositoryId}
-                onChange={(event) => onChange({ ...form, repositoryId: event.target.value })}
-                required
-              />
-            </label>
-            <label>
-              Base ref
-              <input
-                value={form.baseRef}
-                onChange={(event) => onChange({ ...form, baseRef: event.target.value })}
-                required
-              />
-            </label>
-          </div>
+          <RepositoryPicker
+            repositoryId={form.repositoryId}
+            baseRef={form.baseRef}
+            onChange={(patch) => onChange({ ...form, ...patch })}
+            onOpenSettings={onOpenSettings}
+            refreshToken={refreshToken}
+          />
           <label>
             Task summary
             <textarea

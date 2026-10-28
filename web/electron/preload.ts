@@ -28,6 +28,16 @@ contextBridge.exposeInMainWorld("forgePilotConfig", {
   startupError: process.env["FORGEPILOT_API_STARTUP_ERROR"] ?? "",
 });
 
+contextBridge.exposeInMainWorld("forgePilotSettings", {
+  listAccounts: () => ipcRenderer.invoke("forgepilot:settings:list-accounts"),
+  saveAccount: (input: unknown) => ipcRenderer.invoke("forgepilot:settings:save-account", input),
+  removeAccount: (input: unknown) =>
+    ipcRenderer.invoke("forgepilot:settings:remove-account", input),
+  listRepositories: (input: unknown) =>
+    ipcRenderer.invoke("forgepilot:settings:list-repositories", input),
+  listBranches: (input: unknown) => ipcRenderer.invoke("forgepilot:settings:list-branches", input),
+});
+
 contextBridge.exposeInMainWorld("forgePilotApi", {
   request: (request: unknown) => ipcRenderer.invoke("forgepilot:api-request", request),
   abort: (requestId: string) => ipcRenderer.send("forgepilot:api-abort", requestId),

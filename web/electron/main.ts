@@ -4,12 +4,15 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createApiProxy, installApiProxy } from "./api-proxy.js";
+import { createProviderClient } from "./git-providers.js";
 import { discoverNodeService, NodeServiceStartupError } from "./service-discovery.js";
+import { installSettingsIpc } from "./settings-ipc.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let nodeChild: ChildProcess | undefined;
 let mainWindow: BrowserWindow | undefined;
 let disposeApiProxy: () => void = () => undefined;
+let disposeSettingsIpc: () => void = () => undefined;
 let startupError = "";
 
 function createWindow(): BrowserWindow {
@@ -263,6 +266,10 @@ void app.whenReady().then(async () => {
     },
   });
   disposeApiProxy = installApiProxy(ipcMain, () => mainWindow, proxy, isTrustedRendererUrl);
+  disposeSettingsIpc = installSettingsIpc(ipcMain, () => mainWindow, isTrustedRendererUrl, {
+    statePath: path.join(app.getPath("userData"), "provider-accounts.json"),
+    client: createProviderClient(),
+  });
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -271,6 +278,7 @@ void app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   disposeApiProxy();
+  disposeSettingsIpc();
   nodeChild?.kill();
 });
 
