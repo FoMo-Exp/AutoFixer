@@ -46,7 +46,15 @@ Logs must be append-only, access-controlled, retained according to project polic
 
 The runner may push only `autofixer/*` branches and create/update an issue-linked PR. Direct pushes or merges to `main` are forbidden. GitHub's merge queue is the only component permitted to merge.
 
-For the PR's current head, entry to the merge queue requires all of the following at the same time: QA has passed; every required GitHub check has passed; all review discussions are resolved; and Luthiel and Ludwig-Planck have each approved that exact head. A new commit invalidates the prior QA result and both approvals until renewed. The runner cannot dismiss reviews, alter required checks, waive a gate, self-approve, or enqueue a PR.
+For the PR's current head, entry to the merge queue requires all of the following at the same time: QA has passed; every required GitHub check has passed; all review discussions are resolved; and the applicable human approval requirement is satisfied on that exact head. A new commit invalidates the prior QA result and stale approvals until renewed. The runner cannot dismiss reviews, alter required checks, waive a gate, self-approve, or enqueue a PR.
+
+#### Proposed revision: non-author review
+
+Luthiel confirmed in DAT-176 that the former requirement for simultaneous approvals by both Luthiel and Ludwig-Planck should be replaced by at least one non-author approval for every PR, with stale approvals dismissed when a new commit is pushed. A PR authored by Luthiel requires Ludwig-Planck's approval; a PR authored by Ludwig-Planck requires Luthiel's approval. GitHub does not allow a PR author to approve their own PR, so the former two-person requirement cannot be met when either named person is the author. The designated approver for PRs authored by anyone else, including bots, remains undecided; the minimum non-author approval requirement still applies.
+
+A numeric approval count alone does not establish that the designated person approved the current head. Until an appropriate automated check is available, a human must verify the reviewer's identity and its approval against the latest PR head before queue admission. A head change requires renewed QA and approval evidence. This revision does not relax required checks, resolved discussions, the merge queue, or any other control in this ADR.
+
+**Transition:** the current project description still requires both named people to approve; it has not been updated by this ADR. Until an authorized person updates that governing project requirement and the actual GitHub configuration and required-check policy are aligned and verified, the existing stricter requirement remains in force. Do not treat this proposed revision, a numeric one-approval setting, or this PR as proof that those dependencies are complete. DAT-176 remains responsible for the administrator's configuration and non-secret evidence. This creates an availability risk for a PR authored by either named person until alignment is complete; it is not a waiver of the existing gate.
 
 ### Stop and escalation conditions
 
@@ -61,7 +69,7 @@ Human triage decides whether to cancel, issue a narrower new grant, or reclassif
 | Prompt injection or malicious repository content induces unsafe commands | Grant allowlist constrains executable/tool arguments, paths, and network; blocked dispatch is recorded with a stop code. |
 | Credential theft or leakage through logs/artifacts | Ephemeral runner has no ambient credentials or secret mounts; logs are redacted and artifact/output digests are stored; secret detection stops the run. |
 | Branch-protection or main bypass | Token scope permits only `autofixer/*` push and PR mutation; GitHub audit log shows no runner write to `main`; merge queue is the sole merger. |
-| Review/CI TOCTOU after a new commit | Audit binds QA, checks, resolved discussions, and both approvals to the head SHA; a head change invalidates all four conditions. |
+| Review/CI TOCTOU after a new commit | Audit binds QA, checks, resolved discussions, and the applicable approval evidence to the head SHA; a head change invalidates the prior evidence. |
 | Unbounded or destructive tool behavior | Per-run command, path, duration, and resource limits; cancellation/timeout revoke the grant and preserve evidence. |
 | Supply-chain or network exfiltration | Default network deny; every permitted destination is named in the grant and logged; unapproved egress stops the run. |
 | Audit tampering or missing evidence | Append-only event store with digest chain and restricted writers; missing/invalid evidence blocks review and merge eligibility. |
@@ -70,7 +78,7 @@ Human triage decides whether to cancel, issue a narrower new grant, or reclassif
 ## Considered options
 
 - **Broad repository token with policy checks in the runner:** rejected because a compromised or defective runner could bypass its own policy.
-- **Direct merge after tests:** rejected because it omits independent QA, named owner quorum, and GitHub's protected merge boundary.
+- **Direct merge after tests:** rejected because it omits independent QA, the applicable named-review requirement, and GitHub's protected merge boundary.
 - **Human approval for every individual command:** rejected for the pilot because narrowly scoped, auditable grants preserve review at the consequential boundaries while keeping diagnosis practical.
 
 ## Consequences
