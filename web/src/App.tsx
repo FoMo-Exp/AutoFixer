@@ -22,6 +22,7 @@ import {
 import type { PiTurnRow } from "./ui/format";
 import { piSummaryHeadline, piSummaryStateLabel, resolvePiSummary } from "./ui/pi-summary";
 import { redactText, sanitizeValue } from "./ui/redaction";
+import { Select } from "./ui/Select";
 
 const STATUS_FILTERS: Array<"all" | TaskStatus> = [
   "all",
@@ -739,13 +740,15 @@ function TaskDetail({
                 {messageSent && <span className="success-label">Message queued</span>}
               </div>
               <div className="message-controls">
-                <select
+                <Select
                   value={messageMode}
-                  onChange={(event) => setMessageMode(event.target.value as typeof messageMode)}
-                >
-                  <option value="steer">Steer current turn</option>
-                  <option value="follow_up">Queue follow-up</option>
-                </select>
+                  onChange={(v) => setMessageMode(v as typeof messageMode)}
+                  options={[
+                    { value: "steer", label: "Steer current turn" },
+                    { value: "follow_up", label: "Queue follow-up" },
+                  ]}
+                  className="message-mode-select"
+                />
                 <button
                   className="button button-primary button-small"
                   type="submit"

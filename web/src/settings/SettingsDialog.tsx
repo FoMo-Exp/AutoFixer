@@ -13,6 +13,7 @@ import type { ModelSettingsSnapshot, ProviderAccount } from "../settings/client"
 import { formatDate } from "../ui/format";
 import { applySurface, getSurface } from "../ui/surface";
 import type { Surface } from "../ui/surface";
+import { Select } from "../ui/Select";
 
 interface SettingsDialogProps {
   onClose: () => void;
@@ -275,17 +276,15 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
             <div className="form-grid">
               <label>
                 Provider
-                <select
+                <Select
                   value={modelProvider}
-                  onChange={(event) => setModelProvider(event.target.value)}
+                  onChange={setModelProvider}
                   disabled={!modelSettings || modelSettingsLoading || modelBusy}
-                >
-                  {(modelSettings?.providers ?? []).map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                  options={(modelSettings?.providers ?? []).map((option) => ({
+                    value: option.id,
+                    label: option.label,
+                  }))}
+                />
               </label>
               <label>
                 Model ID
@@ -401,13 +400,14 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
             <div className="form-grid">
               <label>
                 Provider
-                <select
+                <Select
                   value={provider}
-                  onChange={(event) => setProvider(event.target.value as Provider)}
-                >
-                  <option value="github">GitHub</option>
-                  <option value="gitlab">GitLab</option>
-                </select>
+                  onChange={(v) => setProvider(v as Provider)}
+                  options={[
+                    { value: "github", label: "GitHub" },
+                    { value: "gitlab", label: "GitLab" },
+                  ]}
+                />
               </label>
               <label>
                 Instance <span className="optional">optional</span>
