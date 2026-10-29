@@ -1042,8 +1042,10 @@ p {
 .message-card textarea,
 .modal textarea,
 .modal input,
-.message-card select,
-.modal select {
+.message-card textarea,
+.modal textarea,
+.modal select,
+.message-card select {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
@@ -1051,7 +1053,32 @@ p {
   font-size: 12px;
   padding: 10px 11px;
   resize: vertical;
+  transition: border-color 120ms ease;
   width: 100%;
+}
+
+.modal input:hover,
+.modal select:hover,
+.message-card select:hover {
+  border-color: var(--muted);
+}
+
+/* 统一下拉框：去原生外观 + 自定义箭头 */
+.modal select,
+.message-card select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238793a8' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 10px 6px;
+  cursor: pointer;
+  padding-right: 30px;
+}
+
+[data-surface="light"] .modal select,
+[data-surface="light"] .message-card select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23545a63' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 .message-card textarea::placeholder,
