@@ -40,6 +40,8 @@ export interface OrchestratorConfig {
   /** Pi model provider and id; both unset means PI_UNAVAILABLE. */
   piModelProvider?: string;
   piModelId?: string;
+  /** Optional API origin override for a compatible provider endpoint. */
+  piBaseUrl?: string;
 }
 
 function csv(value: string | undefined, fallback: string[]): string[] {
@@ -129,5 +131,26 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     config.piModelProvider = env["FORGEPILOT_PI_PROVIDER"];
     config.piModelId = env["FORGEPILOT_PI_MODEL"];
   }
+  const piBaseUrl = env["FORGEPILOT_PI_BASE_URL"]?.trim();
+  if (piBaseUrl) config.piBaseUrl = validateModelBaseUrl(piBaseUrl);
   return config;
+}
+
+function validateModelBaseUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("FORGEPILOT_PI_BASE_URL must be a valid HTTP or HTTPS URL");
+  }
+  if (!(["http:", "https:"].includes(url.protocol) && !url.username && !url.password)) {
+    throw new Error("FORGEPILOT_PI_BASE_URL must use HTTP or HTTPS and must not contain credentials");
+  }
+  if (url.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname)) {
+    throw new Error("FORGEPILOT_PI_BASE_URL must use HTTPS for a non-local endpoint");
+  }
+  if (url.search || url.hash) {
+    throw new Error("FORGEPILOT_PI_BASE_URL must not include a query string or fragment");
+  }
+  return url.toString().replace(/\/$/, "");
 }

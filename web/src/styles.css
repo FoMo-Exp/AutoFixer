@@ -32,6 +32,15 @@
   box-sizing: border-box;
 }
 
+html {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+html::-webkit-scrollbar {
+  display: none;
+}
+
 body {
   min-width: 1060px;
   min-height: 100vh;
@@ -77,6 +86,10 @@ select:focus-visible {
   height: 76px;
   justify-content: space-between;
   padding: 0 32px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg);
 }
 
 .brand-lockup,
@@ -267,9 +280,14 @@ select:focus-visible {
 .sidebar {
   border-right: 1px solid var(--line-soft);
   display: flex;
+  height: calc(100vh - 76px);
   flex-direction: column;
-  min-height: calc(100vh - 76px);
+  min-height: 0;
+  overflow: hidden;
   padding: 28px 16px 16px;
+  position: sticky;
+  top: 76px;
+  align-self: start;
 }
 
 .sidebar-heading {
@@ -338,7 +356,9 @@ p {
   flex: 1;
   flex-direction: column;
   gap: 6px;
-  min-height: 120px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .task-list-item {
@@ -508,7 +528,24 @@ p {
 
 .inline-error {
   color: var(--red);
+}
+
+.main-panel > .inline-error {
+  box-shadow: var(--shadow);
+  left: 50%;
+  margin: 0;
+  max-width: min(560px, calc(100vw - 32px));
   justify-content: space-between;
+  position: fixed;
+  right: auto;
+  top: 38px;
+  transform: translate(-50%, -50%);
+  z-index: 30;
+}
+
+.inline-error > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .inline-error button,
@@ -1214,9 +1251,19 @@ p {
   width: 100%;
 }
 
+.modal-settings {
+  display: flex;
+  flex-direction: column;
+  height: min(560px, calc(100vh - 60px));
+  max-width: 680px;
+  overflow: hidden;
+  padding: 21px 23px;
+}
+
 .modal-heading {
   align-items: flex-start;
   display: flex;
+  flex: 0 0 auto;
   justify-content: space-between;
 }
 
@@ -1281,6 +1328,50 @@ p {
   gap: 8px;
 }
 
+.settings-tabs {
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  flex: 0 0 auto;
+  gap: 5px;
+  margin: 12px 0 15px;
+}
+
+.settings-tab {
+  align-items: center;
+  background: transparent;
+  border-radius: 7px 7px 0 0;
+  color: var(--muted);
+  display: flex;
+  font-size: 11px;
+  font-weight: 700;
+  gap: 8px;
+  padding: 9px 12px;
+  position: relative;
+}
+
+.settings-tab:hover,
+.settings-tab.active {
+  background: var(--panel-raised);
+  color: var(--text);
+}
+
+.settings-tab.active::after {
+  background: var(--blue);
+  bottom: -1px;
+  content: "";
+  height: 2px;
+  left: 0;
+  position: absolute;
+  right: 0;
+}
+
+.settings-tab-status {
+  background: var(--green);
+  border-radius: 50%;
+  height: 6px;
+  width: 6px;
+}
+
 @media (max-width: 1160px) {
   .main-panel {
     padding-left: 28px;
@@ -1295,20 +1386,101 @@ p {
 /* Settings dialog and repository/branch pickers */
 
 .settings-accounts {
-  border-top: 1px solid var(--line-soft);
-  margin-bottom: 18px;
-  padding-top: 15px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
-.settings-accounts .card-heading h3 {
+.settings-model {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings-panel {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* Keep the 2px focus outline + offset inside the scrollport on every edge. */
+  padding: 5px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.settings-panel::-webkit-scrollbar {
+  display: none;
+}
+
+.settings-panel[hidden] {
+  display: none;
+}
+
+.settings-panel-heading {
+  flex: 0 0 auto;
+  min-height: 58px;
+}
+
+.settings-panel-heading .card-heading {
+  margin-bottom: 4px;
+}
+
+.settings-panel-heading .card-heading h3 {
   margin-top: 4px;
 }
 
-.settings-account-list {
+.settings-panel-description {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+  margin: 0;
+  min-height: 14px;
+}
+
+.model-settings-fields,
+.settings-account-fields {
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+}
+
+.settings-field-note {
+  align-self: stretch;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 11px;
+  justify-content: center;
+  min-width: 0;
+}
+
+.settings-field-note > span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.settings-field-note p {
+  font-size: 10px;
+  line-height: 1.4;
+  margin: 5px 0 0;
+}
+
+.modal-settings form {
+  gap: 10px;
+}
+
+.modal-settings label {
+  gap: 5px;
+}
+
+.modal-settings .form-grid {
+  gap: 10px;
+}
+
+.modal-settings .modal-footer {
+  margin-top: 1px;
+  padding-top: 11px;
+}
+
+.settings-account-list {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 9px 0 12px;
 }
 
 .settings-account-row {
@@ -1317,8 +1489,9 @@ p {
   border: 1px solid var(--line);
   border-radius: 8px;
   display: flex;
-  gap: 11px;
-  padding: 10px 12px;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 9px;
 }
 
 .provider-badge {
@@ -1350,6 +1523,53 @@ p {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.settings-bound-accounts {
+  margin-top: 14px;
+}
+
+.settings-bound-accounts-heading {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.settings-bound-accounts .card-empty {
+  margin: 9px 0 12px;
+}
+
+.settings-accounts > .picker-error {
+  margin-bottom: 10px;
+}
+
+.settings-accounts .field-hint {
+  font-size: 9px;
+}
+
+@media (max-height: 720px) {
+  .modal-backdrop {
+    padding: 16px;
+  }
+
+  .modal-settings {
+    padding: 16px 19px;
+  }
+
+  .settings-tabs {
+    margin: 8px 0 10px;
+  }
+
+  .settings-tab {
+    padding-bottom: 7px;
+    padding-top: 7px;
+  }
+
+  .modal-settings .modal-footer {
+    padding-top: 8px;
+  }
 }
 
 .picker-toolbar {

@@ -42,6 +42,21 @@ and dsh keep their existing governance over which repositories and refs a
 task may target. The credential boundary for this feature is recorded in
 [ADR-0004](../docs/adr/0004-workbench-provider-credential-boundary.md).
 
+## Orchestrator model settings
+
+The Electron Settings dialog lets an operator select a built-in Pi provider,
+enter a model ID, and optionally override the API base URL. An
+OpenAI-compatible option accepts custom model IDs and local or HTTPS endpoints.
+The API key is encrypted with Electron `safeStorage` in the app's user-data
+directory; it is never returned to renderer JavaScript. The main process passes
+it only to the local Node orchestrator child and restarts ForgePilot after a
+model configuration is saved or removed. In a plain browser the model settings
+are unavailable.
+
+For built-in providers, use a model ID registered by the bundled `pi-ai`
+version. OpenAI-compatible endpoints accept their own model IDs and use the
+OpenAI Chat Completions protocol.
+
 For an Electron launch, the main process first checks the configured
 `FORGEPILOT_API_URL` / `FORGEPILOT_API_PORT`, then an optional
 `FORGEPILOT_API_DISCOVERY_FILE`, and finally starts the local Node entrypoint

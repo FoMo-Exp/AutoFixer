@@ -71,11 +71,26 @@ export default function App(): ReactElement {
   const [form, setForm] = useState<CreateTaskForm>(INITIAL_FORM);
   const [isCreating, setIsCreating] = useState(false);
   const [actionError, setActionError] = useState<string>();
+  const [isActionErrorHovered, setIsActionErrorHovered] = useState(false);
   const [actionBusy, setActionBusy] = useState<string>();
   const createKeyRef = useRef(new CreateIdempotencyKeys());
   const listRequestRef = useRef(0);
+  const taskDetailRequestRef = useRef(0);
+
+  useEffect(() => {
+    if (!actionError) {
+      setIsActionErrorHovered(false);
+      return;
+    }
+    if (isActionErrorHovered) return;
+    const timeoutId = window.setTimeout(() => {
+      setActionError((current) => (current === actionError ? undefined : current));
+    }, 1000);
+    return () => window.clearTimeout(timeoutId);
+  }, [actionError, isActionErrorHovered]);
 
   const selectTask = useCallback((taskId: string | undefined): void => {
+    taskDetailRequestRef.current += 1;
     selectedIdRef.current = taskId;
     setSelectedId(taskId);
     setSelectedTask(undefined);
@@ -84,9 +99,9 @@ export default function App(): ReactElement {
     setActionBusy(undefined);
   }, []);
 
-  const loadTasks = useCallback(async (): Promise<void> => {
+  const loadTasks = useCallback(async (showConnecting = false): Promise<void> => {
     const requestId = ++listRequestRef.current;
-    setServiceStatus("connecting");
+    if (showConnecting) setServiceStatus("connecting");
     try {
       const page = await client.listTasks();
       if (requestId !== listRequestRef.current) return;
@@ -123,25 +138,36 @@ export default function App(): ReactElement {
   }, [client, isLoadingMore, nextCursor]);
 
   useEffect(() => {
-    void loadTasks();
+    void loadTasks(true);
   }, [loadTasks]);
 
   const refreshSelectedTask = useCallback(async (): Promise<void> => {
     const requestedId = selectedIdRef.current;
     if (!requestedId) return;
+    const requestId = ++taskDetailRequestRef.current;
     try {
       const [task, taskRuns] = await Promise.all([
         client.getTask(requestedId),
         client.getRuns(requestedId),
       ]);
-      if (selectedIdRef.current !== requestedId) return;
+      if (
+        selectedIdRef.current !== requestedId ||
+        taskDetailRequestRef.current !== requestId
+      ) {
+        return;
+      }
       setSelectedTask(task);
       setRuns(taskRuns);
       setTasks((current) => current.map((entry) => (entry.id === task.id ? task : entry)));
       setServiceStatus("connected");
       setServiceError(undefined);
     } catch (caught) {
-      if (selectedIdRef.current !== requestedId) return;
+      if (
+        selectedIdRef.current !== requestedId ||
+        taskDetailRequestRef.current !== requestId
+      ) {
+        return;
+      }
       setActionError(errorMessage(caught));
     }
   }, [client]);
@@ -219,9 +245,12 @@ export default function App(): ReactElement {
               decision: action,
               scope_digest: digest ?? "",
             });
-      if (selectedIdRef.current === taskId) setSelectedTask(task);
-      await loadTasks();
-      if (selectedIdRef.current === taskId) await refreshSelectedTask();
+      listRequestRef.current += 1;
+      if (selectedIdRef.current === taskId) {
+        taskDetailRequestRef.current += 1;
+        setSelectedTask(task);
+      }
+      setTasks((current) => current.map((entry) => (entry.id === task.id ? task : entry)));
     } catch (caught) {
       if (selectedIdRef.current === taskId) setActionError(errorMessage(caught));
     } finally {
@@ -333,15 +362,26 @@ export default function App(): ReactElement {
                 <strong>Node service unavailable</strong>
                 <span>{serviceError ?? "Check the local service and try again."}</span>
               </div>
-              <button className="button button-quiet button-small" onClick={() => void loadTasks()}>
+              <button
+                className="button button-quiet button-small"
+                onClick={() => void loadTasks(true)}
+              >
                 Retry connection
               </button>
             </div>
           )}
           {actionError && (
-            <div className="inline-error" role="alert">
+            <div
+              className="inline-error"
+              role="alert"
+              onMouseEnter={() => setIsActionErrorHovered(true)}
+              onMouseLeave={() => setIsActionErrorHovered(false)}
+            >
               <span>{actionError}</span>
-              <button aria-label="Dismiss error" onClick={() => setActionError(undefined)}>
+              <button
+                aria-label="Dismiss error"
+                onClick={() => setActionError(undefined)}
+              >
                 ×
               </button>
             </div>

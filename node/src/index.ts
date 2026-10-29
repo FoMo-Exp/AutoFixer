@@ -108,10 +108,31 @@ function resolveConfiguredModel(config: OrchestratorConfig): Model<Api> | undefi
   if (!config.piModelProvider || !config.piModelId) {
     return undefined;
   }
+  if (config.piModelProvider === "openai-compatible") {
+    if (!config.piBaseUrl) {
+      throw new Error("OpenAI-compatible models require FORGEPILOT_PI_BASE_URL");
+    }
+    return {
+      id: config.piModelId,
+      name: config.piModelId,
+      api: "openai-completions",
+      provider: "openai",
+      baseUrl: config.piBaseUrl,
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128_000,
+      maxTokens: 4_096,
+    };
+  }
   try {
     // Runtime lookup: the registry validates the pair and throws when the
     // provider or model id is unknown to this pi-ai build.
-    return getModel(config.piModelProvider as KnownProvider, config.piModelId as never);
+    const model = getModel(config.piModelProvider as KnownProvider, config.piModelId as never);
+    if (!model) {
+      throw new Error("the model id is not in the provider registry");
+    }
+    return config.piBaseUrl ? { ...model, baseUrl: config.piBaseUrl } : model;
   } catch (error) {
     throw new Error(
       `Unknown Pi model ${config.piModelProvider}/${config.piModelId}: ` +

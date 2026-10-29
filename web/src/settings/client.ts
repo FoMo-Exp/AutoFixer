@@ -27,6 +27,24 @@ export interface ProviderBranch {
   isDefault: boolean;
 }
 
+export interface ModelSettingsSnapshot {
+  providers: Array<{ id: string; label: string }>;
+  current?: {
+    provider: string;
+    modelId: string;
+    baseUrl?: string;
+    apiKeyConfigured: boolean;
+  };
+  secureStorageAvailable: boolean;
+}
+
+export interface SaveModelSettingsInput {
+  provider: string;
+  modelId: string;
+  baseUrl?: string;
+  apiKey?: string;
+}
+
 export function settingsAvailable(): boolean {
   return typeof window !== "undefined" && window.forgePilotSettings !== undefined;
 }
@@ -39,6 +57,20 @@ function bridge() {
 
 export async function listAccounts(): Promise<ProviderAccount[]> {
   return bridge().listAccounts();
+}
+
+export async function getModelSettings(): Promise<ModelSettingsSnapshot> {
+  return bridge().getModelSettings();
+}
+
+export async function saveModelSettings(
+  input: SaveModelSettingsInput,
+): Promise<ModelSettingsSnapshot> {
+  return bridge().saveModelSettings(input);
+}
+
+export async function removeModelSettings(): Promise<void> {
+  return bridge().removeModelSettings();
 }
 
 export async function saveAccount(input: {

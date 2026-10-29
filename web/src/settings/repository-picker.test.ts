@@ -6,7 +6,10 @@ import {
   buildRepositoryOptions,
   CUSTOM_BRANCH,
   CUSTOM_REPOSITORY,
+  isBranchInput,
+  isRepositoryInput,
   orderedBranchNames,
+  pickPrefillOption,
   repositorySelectValue,
   resolveRepositoryOption,
 } from "./repository-picker";
@@ -151,5 +154,89 @@ describe("branch ordering", () => {
       { name: "main", isDefault: false },
     ]);
     expect(names).toEqual(["dev", "main"]);
+  });
+});
+
+describe("view state model (regression: Choose from discovered did nothing)", () => {
+  // The bug: two booleans could not express "force the select open" while
+  // the value stayed undiscovered, so the button's flag flip was cancelled
+  // by !selectedOption and the input bounced back.
+  it("shows the select in auto mode only when the value is discovered", () => {
+    expect(isRepositoryInput("auto", true)).toBe(false);
+    expect(isRepositoryInput("auto", false)).toBe(true);
+  });
+
+  it("forces the select open after Choose from discovered, even when undiscovered", () => {
+    expect(isRepositoryInput("select", false)).toBe(false);
+    expect(isRepositoryInput("select", true)).toBe(false);
+  });
+
+  it("forces free text after Custom is chosen, even when discovered", () => {
+    expect(isRepositoryInput("input", true)).toBe(true);
+    expect(isRepositoryInput("input", false)).toBe(true);
+  });
+
+  it("offers the base-ref select whenever branches are known, in auto mode", () => {
+    const branches = ["main", "dev"];
+    // A known ref selects directly…
+    expect(isBranchInput("auto", branches)).toBe(false);
+    // …and even an unknown/inherited ref still shows the dropdown (landing on
+    // the Custom sentinel) rather than trapping the user in a text box.
+    expect(isBranchInput("auto", branches)).toBe(false);
+    // "Choose from branches…" forces the select open.
+    expect(isBranchInput("select", branches)).toBe(false);
+    // "Custom ref…" forces free text.
+    expect(isBranchInput("input", branches)).toBe(true);
+  });
+
+  it("renders free text when no branches are known, regardless of view", () => {
+    expect(isBranchInput("select", [])).toBe(true);
+    expect(isBranchInput("auto", [])).toBe(true);
+    expect(isBranchInput("input", [])).toBe(true);
+  });
+});
+
+describe("auto-prefill of an undiscovered default repository", () => {
+  const fomoRepo = repository({
+    id: "github:FoMo-Exp/AutoFixer",
+    owner: "FoMo-Exp",
+    name: "AutoFixer",
+    defaultBranch: "main",
+  });
+  const otherRepo = repository({
+    id: "github:someone/other",
+    owner: "someone",
+    name: "other",
+  });
+  const options = buildRepositoryOptions(
+    [githubAccount],
+    new Map([[githubAccount.id, [otherRepo, fomoRepo]]]),
+  );
+
+  it("prefers a discovered repo whose name matches the default, across owners", () => {
+    // The form default points at an owner the bound account does not see;
+    // the discovered FoMo-Exp/AutoFixer should still be recognised by name.
+    const picked = pickPrefillOption(options, "github:Luthiel/AutoFixer");
+    expect(picked?.repositoryId).toBe("github:FoMo-Exp/AutoFixer");
+  });
+
+  it("is case-insensitive on the repository name", () => {
+    const picked = pickPrefillOption(options, "github:Luthiel/autofixer");
+    expect(picked?.repositoryId).toBe("github:FoMo-Exp/AutoFixer");
+  });
+
+  it("falls back to the first option when no name matches", () => {
+    const picked = pickPrefillOption(options, "github:acme/unrelated");
+    expect(picked?.repositoryId).toBe("github:someone/other");
+  });
+
+  it("returns undefined when nothing was discovered", () => {
+    expect(pickPrefillOption([], "github:Luthiel/AutoFixer")).toBeUndefined();
+  });
+
+  it("handles a default with no owner segment", () => {
+    const picked = pickPrefillOption(options, "AutoFixer");
+    // No slash means no name to match, so it falls back to the first option.
+    expect(picked?.repositoryId).toBe("github:someone/other");
   });
 });

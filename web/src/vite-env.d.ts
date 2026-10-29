@@ -52,6 +52,32 @@ interface Window {
     ) => () => void;
   };
   forgePilotSettings?: {
+    getModelSettings: () => Promise<{
+      providers: Array<{ id: string; label: string }>;
+      current?: {
+        provider: string;
+        modelId: string;
+        baseUrl?: string;
+        apiKeyConfigured: boolean;
+      };
+      secureStorageAvailable: boolean;
+    }>;
+    saveModelSettings: (input: {
+      provider: string;
+      modelId: string;
+      baseUrl?: string;
+      apiKey?: string;
+    }) => Promise<{
+      providers: Array<{ id: string; label: string }>;
+      current?: {
+        provider: string;
+        modelId: string;
+        baseUrl?: string;
+        apiKeyConfigured: boolean;
+      };
+      secureStorageAvailable: boolean;
+    }>;
+    removeModelSettings: () => Promise<void>;
     listAccounts: () => Promise<ProviderAccountSummary[]>;
     saveAccount: (input: {
       provider: "github" | "gitlab";

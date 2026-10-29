@@ -7,10 +7,14 @@ import {
   buildRepositoryOptions,
   CUSTOM_BRANCH,
   CUSTOM_REPOSITORY,
+  isBranchInput,
+  isRepositoryInput,
   orderedBranchNames,
+  pickPrefillOption,
   repositorySelectValue,
   resolveRepositoryOption,
 } from "./repository-picker";
+import type { PickerView } from "./repository-picker";
 
 interface RepositoryPickerProps {
   repositoryId: string;
@@ -48,10 +52,13 @@ export function RepositoryPicker({
   const [branchesFor, setBranchesFor] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
-  // Explicit "Custom…" choices; an unrecognized value also renders as
-  // free-text input with a way back to the select (see below).
-  const [customRepository, setCustomRepository] = useState(false);
-  const [customBranch, setCustomBranch] = useState(false);
+  // Tri-state view per field: auto follows discovery, "Choose from
+  // discovered…" forces the select open even when the typed value is not an
+  // option, and "Custom…" forces free text. Booleans cannot express the
+  // forced-select case — the value stays undiscovered, so a boolean flag
+  // would bounce straight back to the input.
+  const [repositoryView, setRepositoryView] = useState<PickerView>("auto");
+  const [branchView, setBranchView] = useState<PickerView>("auto");
   // Account-scoped selection so the same repo path bound to two instances
   // resolves to the account the operator actually picked.
   const [selectedValue, setSelectedValue] = useState<string | undefined>(undefined);
@@ -84,10 +91,39 @@ export function RepositoryPicker({
     [options, repositoryId, selectedValue],
   );
 
-  // Text input when the user chose Custom, when nothing was discovered, or
-  // when the current value is not among the discovered options. In the last
-  // case the select stays reachable via "Choose from discovered…".
-  const repositoryIsCustom = customRepository || !selectedOption;
+  // Auto-prefill: when discovery lands but the current value resolves to no
+  // option (e.g. the form default points at another owner than the bound
+  // account sees), select a sensible discovered repository once so the
+  // pickers — base ref included — are immediately usable. A ref keeps this
+  // to a single nudge; it never overrides an explicit choice or re-fires on
+  // later discovery refreshes.
+  const didPrefill = useRef(false);
+  useEffect(() => {
+    if (didPrefill.current) return;
+    if (options.length === 0) return;
+    if (selectedOption !== undefined) {
+      didPrefill.current = true;
+      return;
+    }
+    const option = pickPrefillOption(options, repositoryId);
+    if (!option) return;
+    didPrefill.current = true;
+    setRepositoryView("auto");
+    setBranchView("auto");
+    setSelectedValue(option.value);
+    const patch: { repositoryId: string; baseRef?: string } = {
+      repositoryId: option.repositoryId,
+    };
+    if (option.repository.defaultBranch) patch.baseRef = option.repository.defaultBranch;
+    onChange(patch);
+  }, [options, selectedOption, repositoryId, onChange]);
+
+  // Free text when the view says so, when nothing was discovered, or when
+  // the current value is not among the discovered options. "Choose from
+  // discovered…" forces the select open (view = "select") even in the last
+  // case, where the select lands on the Custom sentinel until an option is
+  // picked.
+  const repositoryIsCustom = isRepositoryInput(repositoryView, selectedOption !== undefined);
   const repositoryChooseable = options.length > 0;
 
   // Branch loading is guarded by repository id so a slow response for the
@@ -129,7 +165,7 @@ export function RepositoryPicker({
   );
   // Branch text input when Custom was chosen, nothing is discovered, or the
   // typed ref is unknown — with a way back to the select in the last case.
-  const branchIsCustom = customBranch || branchNames.length === 0 || !branchNames.includes(baseRef);
+  const branchIsCustom = isBranchInput(branchView, branchNames);
   const branchChooseable = branchNames.length > 0;
 
   return (
@@ -149,7 +185,7 @@ export function RepositoryPicker({
                 <button
                   className="button button-quiet button-small"
                   type="button"
-                  onClick={() => setCustomRepository(false)}
+                  onClick={() => setRepositoryView("select")}
                 >
                   Choose from discovered…
                 </button>
@@ -163,13 +199,13 @@ export function RepositoryPicker({
                 if (value === CUSTOM_REPOSITORY) {
                   // Switch to free-text input without discarding the current
                   // value, so choosing Custom never loses what is typed.
-                  setCustomRepository(true);
+                  setRepositoryView("input");
                   return;
                 }
                 const option = options.find((entry) => entry.value === value);
                 if (!option) return;
-                setCustomRepository(false);
-                setCustomBranch(false);
+                setRepositoryView("auto");
+                setBranchView("auto");
                 setSelectedValue(option.value);
                 const patch: { repositoryId: string; baseRef?: string } = {
                   repositoryId: option.repositoryId,
@@ -202,7 +238,7 @@ export function RepositoryPicker({
                 <button
                   className="button button-quiet button-small"
                   type="button"
-                  onClick={() => setCustomBranch(false)}
+                  onClick={() => setBranchView("select")}
                 >
                   Choose from branches…
                 </button>
@@ -215,9 +251,10 @@ export function RepositoryPicker({
                 const value = event.target.value;
                 if (value === CUSTOM_BRANCH) {
                   // Keep the current ref when switching to free-text input.
-                  setCustomBranch(true);
+                  setBranchView("input");
                   return;
                 }
+                setBranchView("auto");
                 onChange({ baseRef: value });
               }}
             >

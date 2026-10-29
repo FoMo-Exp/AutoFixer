@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 
 import type { IpcMain, IpcMainInvokeEvent } from "electron";
 import type { BrowserWindow } from "electron";
+import type { SafeStorage } from "electron";
 
 import type { BranchSummary, ProviderClient, RepositorySummary } from "./git-providers.js";
 import { ProviderApiError } from "./git-providers.js";
@@ -14,6 +15,12 @@ import {
   saveAccounts,
   toAccountProjection,
 } from "./settings-store.js";
+import {
+  getModelSettingsSnapshot,
+  removeModelSettings,
+  saveModelSettings,
+} from "./model-settings-store.js";
+import type { ModelSettingsInput } from "./model-settings-store.js";
 
 /**
  * Settings IPC surface for provider account binding.
@@ -26,7 +33,10 @@ import {
 
 export interface SettingsIpcOptions {
   statePath: string;
+  modelSettingsPath: string;
+  safeStorage: SafeStorage;
   client: ProviderClient;
+  restartApp: () => void;
   clock?: () => Date;
 }
 
@@ -66,6 +76,31 @@ export function installSettingsIpc(
 
   const listAccountsHandler = (event: IpcMainInvokeEvent): Promise<AccountProjection[]> =>
     guard(event, async () => loadAccounts(options.statePath).map(toAccountProjection));
+
+  const getModelSettingsHandler = (event: IpcMainInvokeEvent) =>
+    guard(event, async () =>
+      getModelSettingsSnapshot(options.modelSettingsPath, options.safeStorage),
+    );
+
+  const saveModelSettingsHandler = (event: IpcMainInvokeEvent, input: unknown) =>
+    guard(event, async () => {
+      saveModelSettings(
+        options.modelSettingsPath,
+        options.safeStorage,
+        parseModelSettingsInput(input),
+      );
+      const snapshot = getModelSettingsSnapshot(options.modelSettingsPath, options.safeStorage);
+      // Let the IPC response reach the renderer before relaunching. The app's
+      // before-quit handler stops the current orchestrator child cleanly.
+      setTimeout(options.restartApp, 350);
+      return snapshot;
+    });
+
+  const removeModelSettingsHandler = (event: IpcMainInvokeEvent) =>
+    guard(event, async () => {
+      removeModelSettings(options.modelSettingsPath);
+      setTimeout(options.restartApp, 350);
+    });
 
   const saveAccountHandler = (
     event: IpcMainInvokeEvent,
@@ -134,16 +169,45 @@ export function installSettingsIpc(
     });
 
   ipcMain.handle("forgepilot:settings:list-accounts", listAccountsHandler);
+  ipcMain.handle("forgepilot:settings:get-model", getModelSettingsHandler);
+  ipcMain.handle("forgepilot:settings:save-model", saveModelSettingsHandler);
+  ipcMain.handle("forgepilot:settings:remove-model", removeModelSettingsHandler);
   ipcMain.handle("forgepilot:settings:save-account", saveAccountHandler);
   ipcMain.handle("forgepilot:settings:remove-account", removeAccountHandler);
   ipcMain.handle("forgepilot:settings:list-repositories", listRepositoriesHandler);
   ipcMain.handle("forgepilot:settings:list-branches", listBranchesHandler);
   return () => {
     ipcMain.removeHandler("forgepilot:settings:list-accounts");
+    ipcMain.removeHandler("forgepilot:settings:get-model");
+    ipcMain.removeHandler("forgepilot:settings:save-model");
+    ipcMain.removeHandler("forgepilot:settings:remove-model");
     ipcMain.removeHandler("forgepilot:settings:save-account");
     ipcMain.removeHandler("forgepilot:settings:remove-account");
     ipcMain.removeHandler("forgepilot:settings:list-repositories");
     ipcMain.removeHandler("forgepilot:settings:list-branches");
+  };
+}
+
+function parseModelSettingsInput(input: unknown): ModelSettingsInput {
+  const record = requireInputObject(input);
+  const provider = record["provider"];
+  const modelId = record["modelId"];
+  const baseUrl = record["baseUrl"];
+  const apiKey = record["apiKey"];
+  if (typeof provider !== "string" || typeof modelId !== "string") {
+    throw new Error("A model provider and model ID are required.");
+  }
+  if (baseUrl !== undefined && typeof baseUrl !== "string") {
+    throw new Error("Base URL must be a string.");
+  }
+  if (apiKey !== undefined && typeof apiKey !== "string") {
+    throw new Error("API key must be a string.");
+  }
+  return {
+    provider: provider as ModelSettingsInput["provider"],
+    modelId,
+    ...(baseUrl !== undefined ? { baseUrl } : {}),
+    ...(apiKey !== undefined ? { apiKey } : {}),
   };
 }
 

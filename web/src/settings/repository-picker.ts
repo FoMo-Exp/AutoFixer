@@ -8,6 +8,36 @@ import type { ProviderAccount, ProviderRepository } from "./client";
 export const CUSTOM_REPOSITORY = "__forgepilot_custom_repository__";
 export const CUSTOM_BRANCH = "__forgepilot_custom_branch__..";
 
+/**
+ * Which control renders for a picker field. `auto` follows whether the
+ * current value is discovered; `select` forces the dropdown open (after
+ * "Choose from discovered…"); `input` forces free text (after choosing
+ * "Custom…").
+ */
+export type PickerView = "auto" | "select" | "input";
+
+/** Free-text input for the repository field? */
+export function isRepositoryInput(view: PickerView, hasSelection: boolean): boolean {
+  if (view === "input") return true;
+  if (view === "select") return false;
+  return !hasSelection;
+}
+
+/**
+ * Free-text input for the base-ref field. No branches means nothing to pick,
+ * so that stays free text; otherwise auto mode always offers the dropdown —
+ * even when the current base ref is not among the discovered branches (e.g.
+ * a ref inherited from a previously selected repository, or a repo with no
+ * known default branch). Trapping the user in a text box would hide the
+ * branches that are right there; instead the select lands on the "Custom
+ * ref…" sentinel so the value stays editable while the branches stay
+ * visible.
+ */
+export function isBranchInput(view: PickerView, branchNames: string[]): boolean {
+  if (branchNames.length === 0) return true;
+  return view === "input";
+}
+
 export interface RepositoryOption {
   /** Select-element value; unique per account so two instances never collide. */
   value: string;
@@ -40,6 +70,37 @@ export function buildRepositoryOptions(
     }
   }
   return options;
+}
+
+/** Repository name (segment after the last `/`) of a task-scoped id. */
+function nameOfRepositoryId(id: string): string | undefined {
+  const trimmed = id.trim();
+  const separator = trimmed.lastIndexOf("/");
+  if (separator === -1 || separator === trimmed.length - 1) return undefined;
+  return trimmed.slice(separator + 1);
+}
+
+/**
+ * Pick the option to auto-select when the current repository id resolves to
+ * no discovered option (e.g. the form default points at another owner than
+ * the bound account sees). Prefers an option whose repository name matches
+ * the current id's name — so a default of `github:Luthiel/AutoFixer` resolves
+ * to `github:FoMo-Exp/AutoFixer` — then falls back to the first option so
+ * the pickers are immediately usable. Returns undefined when there is
+ * nothing to pick.
+ */
+export function pickPrefillOption(
+  options: RepositoryOption[],
+  currentRepositoryId: string,
+): RepositoryOption | undefined {
+  if (options.length === 0) return undefined;
+  const currentName = nameOfRepositoryId(currentRepositoryId);
+  if (currentName) {
+    const wanted = currentName.toLowerCase();
+    const match = options.find((option) => option.repository.name.toLowerCase() === wanted);
+    if (match) return match;
+  }
+  return options[0];
 }
 
 /**

@@ -18,14 +18,23 @@ export function useTaskStream(
   const [connection, setConnection] = useState<StreamConnection>("idle");
   const [error, setError] = useState<string>();
   const onEventRef = useRef(onEvent);
+  const terminalRef = useRef(terminal);
+  const activeTaskIdRef = useRef<string | undefined>(undefined);
   onEventRef.current = onEvent;
+  terminalRef.current = terminal;
 
   useEffect(() => {
     if (!taskId) {
+      activeTaskIdRef.current = undefined;
       setEvents([]);
       setConnection("idle");
       setError(undefined);
       return;
+    }
+
+    if (activeTaskIdRef.current !== taskId) {
+      activeTaskIdRef.current = taskId;
+      setEvents([]);
     }
 
     let stopped = false;
@@ -55,7 +64,7 @@ export function useTaskStream(
           for (const event of timeline) addEvent(event);
           lastEventId = timeline.at(-1)?.event_id;
         }
-        if (terminal) {
+        if (terminalRef.current) {
           setConnection("connected");
           return;
         }
@@ -82,7 +91,6 @@ export function useTaskStream(
       }
     };
 
-    setEvents([]);
     setError(undefined);
     void connect();
     return () => {
@@ -90,7 +98,7 @@ export function useTaskStream(
       controller.abort();
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
     };
-  }, [client, taskId, terminal]);
+  }, [client, taskId]);
 
   return { events, connection, error };
 }
