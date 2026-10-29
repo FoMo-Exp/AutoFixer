@@ -263,7 +263,11 @@ export default function App(): ReactElement {
       <header className="topbar">
         <div className="brand-lockup">
           <div className="brand-mark" aria-hidden="true">
-            FP
+            <svg width="26" height="26" viewBox="0 0 22 22" fill="none" aria-hidden="true">
+              <rect x="3" y="3.5" width="3.6" height="15" rx="1.2" fill="currentColor" />
+              <rect x="15.4" y="3.5" width="3.6" height="15" rx="1.2" fill="currentColor" />
+              <circle cx="11" cy="11" r="3" fill="var(--accent)" />
+            </svg>
           </div>
           <div>
             <div className="brand-name">ForgePilot</div>
@@ -477,7 +481,13 @@ function WelcomePanel({ onCreate }: { onCreate: () => void }): ReactElement {
         <span />
         <span />
         <span />
-        <b>FP</b>
+        <b>
+          <svg width="40" height="40" viewBox="0 0 22 22" fill="none" aria-hidden="true">
+            <rect x="3" y="3.5" width="3.6" height="15" rx="1.2" fill="currentColor" />
+            <rect x="15.4" y="3.5" width="3.6" height="15" rx="1.2" fill="currentColor" />
+            <circle cx="11" cy="11" r="3" fill="var(--accent)" />
+          </svg>
+        </b>
       </div>
       <span className="eyebrow">Controlled remediation</span>
       <h2>Turn a reported problem into an auditable change.</h2>
