@@ -250,9 +250,6 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
                       : "Not configured"}
               </span>
             </div>
-            <p className="settings-panel-description">
-              Choose a provider and model ID. Saving restarts ForgePilot to apply changes.
-            </p>
           </div>
           {!settingsAvailable() && (
             <div className="picker-error" role="status">
@@ -321,10 +318,6 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
                   required={modelProvider === "openai-compatible"}
                   disabled={!modelSettings || modelSettingsLoading || modelBusy}
                 />
-                <span className="field-hint">
-                  OpenAI-compatible endpoints can use custom model IDs. Use HTTPS for remote
-                  endpoints.
-                </span>
               </label>
               <label>
                 API key{" "}
@@ -355,11 +348,6 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
             )}
             {modelNotice && <div className="success-label">{modelNotice}</div>}
             <div className="modal-footer">
-              <span className="field-hint">
-                {modelProvider === "openai-compatible"
-                  ? "Use a model ID accepted by the configured endpoint."
-                  : "Model IDs must be supported by the selected provider."}
-              </span>
               <div className="modal-actions">
                 {modelSettings?.current && (
                   <button
@@ -403,9 +391,6 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
               </div>
               <span className="event-count">{accounts.length} bound</span>
             </div>
-            <p className="settings-panel-description">
-              Manage Git provider access for repository discovery.
-            </p>
           </div>
           {!settingsAvailable() && (
             <div className="picker-error" role="status">
@@ -527,12 +512,7 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
                 <span className="eyebrow">Theme</span>
                 <h3>Appearance</h3>
               </div>
-              <span className="event-count">Signal 信号橙</span>
             </div>
-            <p className="settings-panel-description">
-              The accent is fixed to Signal (#F25C05, same as the logo). The surface below swaps
-              neutrals and status hues; both keep text contrast at 4.5:1 or better.
-            </p>
           </div>
           <div className="surface-picker" role="radiogroup" aria-label="Surface">
             {(["dark", "light"] as const).map((value) => (
@@ -554,9 +534,6 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
               </button>
             ))}
           </div>
-          <p className="settings-panel-description" style={{ marginTop: 14 }}>
-            Stored locally in this app (localStorage); no account sync.
-          </p>
         </section>
       </section>
     </div>
