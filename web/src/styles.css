@@ -22,6 +22,9 @@
   --on-accent: #17181a;
   --accent-text: #f5a571;
   --accent-rgb: 242, 92, 5;
+  --red-rgb: 244, 127, 131;
+  --amber-rgb: 240, 182, 107;
+  --panel-rgb: 18, 24, 36;
   color: #e7ebf3;
   background: #0c1018;
   font-family:
@@ -48,7 +51,36 @@
   --amber: #f0b66b;
   --red: #f47f83;
   --green: #79d7a4;
+  --green-rgb: 121, 215, 164;
+  --cyan-rgb: 98, 213, 206;
   --shadow: 0 24px 70px rgba(0, 0, 0, 0.26);
+}
+
+/* ── 浅色皮肤：data-surface 切换；语义色加深保对比（均 ≥4.5:1，源：design-demos/dir-2 实测）── */
+[data-surface="light"] {
+  color: #16181c;
+  background: #f5f6f8;
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --panel-raised: #f0f1f4;
+  --panel-hover: #e9ebef;
+  --line: #e3e5ea;
+  --line-soft: #ecece8;
+  --muted: #545a63;
+  --faint: #7b828c;
+  --text: #16181c;
+  --blue: #2e6fd0;
+  --cyan: #0e7d6f;
+  --amber: #9a6511;
+  --red: #c33439;
+  --green: #1f8a5f;
+  --green-rgb: 31, 138, 95;
+  --cyan-rgb: 14, 125, 111;
+  --accent-text: #b34201;
+  --red-rgb: 195, 52, 57;
+  --amber-rgb: 154, 101, 17;
+  --panel-rgb: 255, 255, 255;
+  --shadow: 0 24px 70px rgba(16, 24, 40, 0.12);
 }
 
 * {
@@ -69,7 +101,7 @@ body {
   min-height: 100vh;
   margin: 0;
   background:
-    radial-gradient(circle at 78% -12%, rgba(60, 88, 135, 0.18), transparent 31rem), var(--bg);
+    radial-gradient(circle at 78% -12%, rgba(var(--accent-rgb), 0.07), transparent 31rem), var(--bg);
 }
 
 button,
@@ -228,7 +260,7 @@ select:focus-visible {
 .service-connected .status-dot,
 .stream-connected {
   background: var(--green);
-  box-shadow: 0 0 0 3px rgba(121, 215, 164, 0.11);
+  box-shadow: 0 0 0 3px rgba(var(--green-rgb), 0.11);
 }
 
 .service-connecting .status-dot,
@@ -452,30 +484,41 @@ p {
   width: 6px;
 }
 
-.status-awaiting_approval,
+/* 状态语义色：绿=机器正常工作 · 琿珀=需要人介入 · 蓝=信息性中进展 · 红=真失败 · 灰=人为终止/过期
+   （对齐 design-demos/dir-2 语义表与 CONTEXT.md 的 stop condition 语言：stopped 是停下等人，不是失败） */
+.status-queued,
+.status-requested,
 .status-assessing_risk {
+  background: var(--blue);
+}
+
+.status-awaiting_approval,
+.status-stopped {
   background: var(--amber);
 }
 
 .status-executing,
+.status-running,
 .status-planning,
 .status-validating,
-.status-approved {
+.status-approved,
+.status-approved_for_merge,
+.status-merged {
+  background: var(--green);
+}
+
+.status-awaiting_review {
   background: var(--blue);
 }
 
-.status-awaiting_review,
-.status-approved_for_merge,
-.status-merged {
-  background: var(--cyan);
+.status-rejected,
+.status-timed_out {
+  background: var(--red);
 }
 
-.status-stopped,
-.status-rejected,
 .status-cancelled,
-.status-timed_out,
 .status-expired {
-  background: var(--red);
+  background: var(--faint);
 }
 
 .sidebar-footer {
@@ -490,7 +533,7 @@ p {
 }
 
 .security-icon {
-  color: var(--cyan);
+  color: var(--accent-text);
   font-size: 15px;
 }
 
@@ -527,8 +570,8 @@ p {
 
 .connection-banner,
 .inline-error {
-  background: rgba(244, 127, 131, 0.1);
-  border: 1px solid rgba(244, 127, 131, 0.24);
+  background: rgba(var(--red-rgb), 0.1);
+  border: 1px solid rgba(var(--red-rgb), 0.24);
   border-radius: var(--r-md);
   gap: 12px;
   margin: 0 auto 20px;
@@ -642,30 +685,36 @@ p {
   white-space: nowrap;
 }
 
+.status-pill-queued,
+.status-pill-requested,
+.status-pill-assessing_risk,
+.status-pill-awaiting_review {
+  color: var(--blue);
+}
+
 .status-pill-awaiting_approval,
-.status-pill-assessing_risk {
+.status-pill-stopped {
   color: var(--amber);
 }
 
 .status-pill-executing,
+.status-pill-running,
 .status-pill-planning,
 .status-pill-validating,
-.status-pill-approved {
-  color: var(--blue);
-}
-
-.status-pill-awaiting_review,
+.status-pill-approved,
 .status-pill-approved_for_merge,
 .status-pill-merged {
-  color: var(--cyan);
+  color: var(--green);
 }
 
-.status-pill-stopped,
 .status-pill-rejected,
-.status-pill-cancelled,
-.status-pill-timed_out,
-.status-pill-expired {
+.status-pill-timed_out {
   color: var(--red);
+}
+
+.status-pill-cancelled,
+.status-pill-expired {
+  color: var(--muted);
 }
 
 .detail-grid {
@@ -686,7 +735,7 @@ p {
 .card,
 .approval-card,
 .reason-card {
-  background: rgba(18, 24, 36, 0.86);
+  background: rgba(var(--panel-rgb), 0.86);
   border: 1px solid var(--line-soft);
   border-radius: var(--r-md);
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
@@ -709,8 +758,8 @@ p {
 
 .approval-card {
   align-items: flex-start;
-  background: linear-gradient(110deg, rgba(240, 182, 107, 0.12), rgba(18, 24, 36, 0.9) 65%);
-  border-color: rgba(240, 182, 107, 0.26);
+  background: linear-gradient(110deg, rgba(var(--amber-rgb), 0.12), rgba(var(--panel-rgb), 0.9) 65%);
+  border-color: rgba(var(--amber-rgb), 0.26);
   display: flex;
   gap: 17px;
   padding: 22px;
@@ -718,7 +767,7 @@ p {
 
 .approval-icon {
   align-items: center;
-  background: rgba(240, 182, 107, 0.15);
+  background: rgba(var(--amber-rgb), 0.15);
   border-radius: var(--r-md);
   color: var(--amber);
   display: flex;
@@ -764,8 +813,8 @@ p {
 
 .reason-card {
   align-items: flex-start;
-  background: rgba(244, 127, 131, 0.08);
-  border-color: rgba(244, 127, 131, 0.2);
+  background: rgba(var(--red-rgb), 0.08);
+  border-color: rgba(var(--red-rgb), 0.2);
   display: flex;
   gap: 12px;
   padding: 15px 17px;
@@ -773,7 +822,7 @@ p {
 
 .reason-icon {
   align-items: center;
-  background: rgba(244, 127, 131, 0.15);
+  background: rgba(var(--red-rgb), 0.15);
   border-radius: 50%;
   color: var(--red);
   display: flex;
@@ -818,7 +867,7 @@ p {
 }
 
 .progress-track {
-  background: #202b3b;
+  background: var(--panel-raised);
   border-radius: 99px;
   height: 5px;
   overflow: hidden;
@@ -843,7 +892,7 @@ p {
 }
 
 .stream-note {
-  background: rgba(240, 182, 107, 0.08);
+  background: rgba(var(--amber-rgb), 0.08);
   border-radius: var(--r-sm);
   color: var(--amber);
   line-height: 1.5;
@@ -881,7 +930,7 @@ p {
 }
 
 .pi-summary-copy {
-  color: #b7c5da;
+  color: var(--text);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -946,15 +995,15 @@ p {
 }
 
 .timeline-task-terminal .timeline-marker {
-  background: rgba(121, 215, 164, 0.12);
-  border-color: rgba(121, 215, 164, 0.32);
+  background: rgba(var(--green-rgb), 0.12);
+  border-color: rgba(var(--green-rgb), 0.32);
   color: var(--green);
 }
 
 .timeline-approval-required .timeline-marker,
 .timeline-tool-denied .timeline-marker {
-  background: rgba(240, 182, 107, 0.12);
-  border-color: rgba(240, 182, 107, 0.32);
+  background: rgba(var(--amber-rgb), 0.12);
+  border-color: rgba(var(--amber-rgb), 0.32);
   color: var(--amber);
 }
 
@@ -987,7 +1036,7 @@ p {
 }
 
 .timeline-delta {
-  color: #b7c5da !important;
+  color: var(--text) !important;
 }
 
 .message-card textarea,
@@ -995,7 +1044,7 @@ p {
 .modal input,
 .message-card select,
 .modal select {
-  background: #0f151f;
+  background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   color: var(--text);
@@ -1084,7 +1133,7 @@ p {
 }
 
 .artifact-available {
-  background: rgba(121, 215, 164, 0.12);
+  background: rgba(var(--green-rgb), 0.12);
   color: var(--green);
 }
 
@@ -1115,7 +1164,7 @@ p {
 }
 
 .artifact-viewer {
-  background: #0d131d;
+  background: var(--bg);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   margin-top: 12px;
@@ -1129,13 +1178,13 @@ p {
 }
 
 .artifact-viewer-heading strong {
-  color: var(--cyan);
+  color: var(--accent-text);
   font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
   font-size: 10px;
 }
 
 .artifact-viewer pre {
-  color: #aab9cc;
+  color: var(--text);
   font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
   font-size: 9px;
   line-height: 1.6;
@@ -1214,7 +1263,7 @@ p {
 }
 
 .welcome-orbit span:nth-child(3) {
-  border-color: rgba(98, 213, 206, 0.25);
+  border-color: rgba(var(--cyan-rgb), 0.25);
   transform: rotate(90deg) scaleX(0.44);
 }
 
@@ -1250,7 +1299,7 @@ p {
 }
 
 .welcome-principles span::before {
-  color: var(--cyan);
+  color: var(--accent-text);
   content: "•";
   margin-right: 6px;
 }
@@ -1267,7 +1316,7 @@ p {
 }
 
 .modal {
-  background: #151d2b;
+  background: var(--panel-raised);
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow);
@@ -1510,13 +1559,86 @@ p {
 
 .settings-account-row {
   align-items: center;
-  background: #0f151f;
+  background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   display: flex;
   gap: 8px;
   min-width: 0;
   padding: 7px 9px;
+}
+
+/* Appearance：深浅选项（选中态用 accent，与主题一致） */
+.surface-picker {
+  display: flex;
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
+}
+
+.surface-option {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-height: 44px;
+  padding: var(--sp-3) var(--sp-4);
+  position: relative;
+  transition:
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+.surface-option::after {
+  content: "";
+  inset: -2px;
+  position: absolute;
+}
+
+.surface-option:hover {
+  border-color: var(--muted);
+}
+
+.surface-option.selected {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.surface-swatch {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  display: block;
+  height: 44px;
+  overflow: hidden;
+  position: relative;
+  width: 72px;
+}
+
+.surface-swatch-dark {
+  background: #0c1018;
+}
+
+.surface-swatch-light {
+  background: #f5f6f8;
+}
+
+.surface-swatch-accent {
+  background: var(--accent);
+  border-radius: 2px;
+  bottom: 8px;
+  height: 6px;
+  left: 8px;
+  position: absolute;
+  width: 26px;
+}
+
+.surface-option-label {
+  font-size: var(--fs-meta);
+  font-weight: 600;
 }
 
 .provider-badge {
@@ -1649,4 +1771,115 @@ p {
 .task-list-repo,
 .metric-value {
   font-variant-numeric: tabular-nums slashed-zero;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   窄屏钻取（≤900px）：与 design-demos/dir-2 同一模式——
+   列表⇄详情单列切换 + 返回按钮；模态撑满；topbar 收纳副标题。
+   桌面不受影响（detail-back 隐藏，workspace 仍是双栏 grid）。
+   ══════════════════════════════════════════════════════════════ */
+.detail-back {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: var(--accent-text);
+  cursor: pointer;
+  display: none;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  margin: 0 0 10px;
+  min-height: 44px;
+  padding: 0 2px;
+}
+
+.detail-back::after {
+  content: "";
+  inset: -2px;
+  position: absolute;
+}
+
+@media (max-width: 900px) {
+  body {
+    min-width: 0;
+  }
+
+  .topbar {
+    height: 60px;
+    padding: 0 16px;
+  }
+
+  .brand-caption {
+    display: none;
+  }
+
+  .workspace {
+    display: block;
+    min-height: calc(100vh - 60px);
+  }
+
+  .workspace[data-view="list"] .main-panel {
+    display: none;
+  }
+
+  .workspace[data-view="detail"] .sidebar {
+    display: none;
+  }
+
+  .sidebar {
+    border-right: 0;
+    height: auto;
+    overflow: visible;
+    padding: 20px 16px 32px;
+    position: static;
+  }
+
+  .main-panel {
+    padding: 20px 16px 48px;
+  }
+
+  .detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .detail-header {
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .detail-back {
+    display: inline-flex;
+  }
+
+  .detail-actions {
+    flex-wrap: wrap;
+  }
+
+  .detail-heading h2 {
+    font-size: 19px;
+  }
+
+  .modal {
+    width: calc(100vw - 24px);
+  }
+
+  .modal-heading,
+  .modal-body {
+    padding: 18px 16px;
+  }
+}
+
+@media (max-width: 430px) {
+  .brand-name {
+    font-size: 13px;
+  }
+
+  .service-label {
+    display: none;
+  }
+
+  .topbar-actions .action-label {
+    display: none;
+  }
 }

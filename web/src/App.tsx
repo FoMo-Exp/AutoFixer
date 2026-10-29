@@ -55,6 +55,8 @@ export default function App(): ReactElement {
   const client = useMemo(() => new ForgePilotClient(resolveApiConfig()), []);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
+  /** 窄屏钻取视图：list ↔ detail（≤900px 生效，桌面始终双栏并存） */
+  const [mobileView, setMobileView] = useState<"list" | "detail">("list");
   const selectedIdRef = useRef<string | undefined>(undefined);
   const [selectedTask, setSelectedTask] = useState<Task>();
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -94,6 +96,7 @@ export default function App(): ReactElement {
     selectedIdRef.current = taskId;
     setSelectedId(taskId);
     setSelectedTask(undefined);
+    setMobileView(taskId ? "detail" : "list");
     setRuns([]);
     setActionError(undefined);
     setActionBusy(undefined);
@@ -281,7 +284,7 @@ export default function App(): ReactElement {
             onClick={() => setShowSettings(true)}
             aria-label="Open settings"
           >
-            <span aria-hidden="true">⚙</span> Settings
+            <span aria-hidden="true">⚙</span> <span className="action-label">Settings</span>
           </button>
           <button
             className="button button-primary button-small"
@@ -292,7 +295,7 @@ export default function App(): ReactElement {
         </div>
       </header>
 
-      <div className="workspace">
+      <div className="workspace" data-view={mobileView}>
         <aside className="sidebar">
           <div className="sidebar-heading">
             <div>
@@ -401,6 +404,10 @@ export default function App(): ReactElement {
               actionBusy={actionBusy}
               onAction={handleTaskAction}
               onRefresh={() => void refreshSelectedTask()}
+              onBack={() => {
+                setMobileView("list");
+                selectTask(undefined);
+              }}
             />
           ) : (
             <WelcomePanel onCreate={() => setShowCreate(true)} />
@@ -441,7 +448,7 @@ function ServiceBadge({ status }: { status: ServiceStatus }): ReactElement {
   return (
     <div className={`service-badge service-${status}`}>
       <span className="status-dot" />
-      {label}
+      <span className="service-label">{label}</span>
     </div>
   );
 }
@@ -517,6 +524,8 @@ interface TaskDetailProps {
   actionBusy: string | undefined;
   onAction: (action: "approve" | "reject" | "cancel", digest?: string) => Promise<void>;
   onRefresh: () => void;
+  /** 窄屏钻取：返回任务列表 */
+  onBack?: () => void;
 }
 
 function TaskDetail({
@@ -529,6 +538,7 @@ function TaskDetail({
   actionBusy,
   onAction,
   onRefresh,
+  onBack,
 }: TaskDetailProps): ReactElement {
   const [artifact, setArtifact] = useState<{
     metadata: ArtifactMetadata;
@@ -575,6 +585,11 @@ function TaskDetail({
   return (
     <section className="detail-view">
       <div className="detail-header">
+        {onBack && (
+          <button type="button" className="detail-back" onClick={onBack}>
+            ← Tasks
+          </button>
+        )}
         <div className="detail-heading">
           <div className="breadcrumb">TASK / {shortId(task.id, 18)}</div>
           <h2>{redactText(task.request.summary)}</h2>

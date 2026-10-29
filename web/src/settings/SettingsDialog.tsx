@@ -11,6 +11,8 @@ import {
 } from "../settings/client";
 import type { ModelSettingsSnapshot, ProviderAccount } from "../settings/client";
 import { formatDate } from "../ui/format";
+import { applySurface, getSurface } from "../ui/surface";
+import type { Surface } from "../ui/surface";
 
 interface SettingsDialogProps {
   onClose: () => void;
@@ -19,12 +21,13 @@ interface SettingsDialogProps {
 }
 
 type Provider = "github" | "gitlab";
-type SettingsTab = "model" | "accounts";
+type SettingsTab = "model" | "accounts" | "appearance";
 
 const PROVIDER_LABELS: Record<Provider, string> = { github: "GitHub", gitlab: "GitLab" };
 
 export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): ReactElement {
   const [activeTab, setActiveTab] = useState<SettingsTab>("model");
+  const [surface, setSurfaceState] = useState<Surface>(() => getSurface());
   const [accounts, setAccounts] = useState<ProviderAccount[]>([]);
   const [modelSettings, setModelSettings] = useState<ModelSettingsSnapshot>();
   const [modelSettingsLoading, setModelSettingsLoading] = useState(true);
@@ -209,6 +212,17 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
             onClick={() => setActiveTab("accounts")}
           >
             Repository accounts
+          </button>
+          <button
+            id="settings-tab-appearance"
+            className={`settings-tab${activeTab === "appearance" ? " active" : ""}`}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "appearance"}
+            aria-controls="settings-panel-appearance"
+            onClick={() => setActiveTab("appearance")}
+          >
+            Appearance
           </button>
         </div>
 
@@ -498,6 +512,51 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
               </div>
             )}
           </div>
+        </section>
+        <section
+          className="settings-panel settings-appearance"
+          id="settings-panel-appearance"
+          role="tabpanel"
+          aria-labelledby="settings-tab-appearance"
+          tabIndex={0}
+          hidden={activeTab !== "appearance"}
+        >
+          <div className="settings-panel-heading">
+            <div className="card-heading">
+              <div>
+                <span className="eyebrow">Theme</span>
+                <h3>Appearance</h3>
+              </div>
+              <span className="event-count">Signal 信号橙</span>
+            </div>
+            <p className="settings-panel-description">
+              The accent is fixed to Signal (#F25C05, same as the logo). The surface below swaps
+              neutrals and status hues; both keep text contrast at 4.5:1 or better.
+            </p>
+          </div>
+          <div className="surface-picker" role="radiogroup" aria-label="Surface">
+            {(["dark", "light"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={surface === value}
+                className={`surface-option${surface === value ? " selected" : ""}`}
+                onClick={() => {
+                  setSurfaceState(value);
+                  applySurface(value);
+                }}
+              >
+                <span className={`surface-swatch surface-swatch-${value}`} aria-hidden="true">
+                  <span className="surface-swatch-accent" />
+                </span>
+                <span className="surface-option-label">{value === "dark" ? "Dark" : "Light"}</span>
+              </button>
+            ))}
+          </div>
+          <p className="settings-panel-description" style={{ marginTop: 14 }}>
+            Stored locally in this app (localStorage); no account sync.
+          </p>
         </section>
       </section>
     </div>
