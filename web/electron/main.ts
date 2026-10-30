@@ -1,18 +1,32 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, safeStorage } from "electron";
 import type { ChildProcess } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createApiProxy, installApiProxy } from "./api-proxy.js";
+import { createProviderClient } from "./git-providers.js";
+import { modelSettingsEnvironment } from "./model-settings-store.js";
 import { discoverNodeService, NodeServiceStartupError } from "./service-discovery.js";
+import { installSettingsIpc } from "./settings-ipc.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const launchApiEnvironment = {
+  FORGEPILOT_API_URL: process.env["FORGEPILOT_API_URL"],
+  FORGEPILOT_API_TOKEN_FILE: process.env["FORGEPILOT_API_TOKEN_FILE"],
+  FORGEPILOT_API_TOKEN: process.env["FORGEPILOT_API_TOKEN"],
+};
 let nodeChild: ChildProcess | undefined;
 let mainWindow: BrowserWindow | undefined;
 let disposeApiProxy: () => void = () => undefined;
+let disposeSettingsIpc: () => void = () => undefined;
 let startupError = "";
 
+function appIconPath(): string {
+  return path.join(__dirname, "icon-1024.png");
+}
+
 function createWindow(): BrowserWindow {
+  const iconPath = appIconPath();
   const window = new BrowserWindow({
     width: 1440,
     height: 920,
@@ -20,6 +34,7 @@ function createWindow(): BrowserWindow {
     minHeight: 700,
     backgroundColor: "#0c1018",
     title: "ForgePilot Workbench",
+    ...(existsSync(iconPath) ? { icon: iconPath } : {}),
     show: process.env["FORGEPILOT_ELECTRON_WINDOW_SMOKE"] !== "1",
     webPreferences: {
       contextIsolation: true,
@@ -236,9 +251,23 @@ function runWindowSmoke(window: BrowserWindow): void {
 }
 
 void app.whenReady().then(async () => {
+  // A1 双柱穿珠：Signal 橙点穿过两道默认拒绝的闸门
+  const iconPath = appIconPath();
+  if (process.platform === "darwin" && app.dock && existsSync(iconPath)) {
+    app.dock.setIcon(iconPath);
+  }
   delete process.env["FORGEPILOT_API_STARTUP_ERROR"];
+  const modelSettingsPath = path.join(app.getPath("userData"), "orchestrator-model.json");
   try {
-    const discovered = await discoverNodeService();
+    let serviceEnv: NodeJS.ProcessEnv;
+    try {
+      serviceEnv = modelSettingsEnvironment(process.env, modelSettingsPath, safeStorage);
+    } catch (error) {
+      throw new NodeServiceStartupError(
+        error instanceof Error ? error.message : "Saved model settings could not be loaded.",
+      );
+    }
+    const discovered = await discoverNodeService(serviceEnv);
     nodeChild = discovered.child;
     if (discovered.apiBaseUrl) process.env["FORGEPILOT_API_URL"] = discovered.apiBaseUrl;
     if (discovered.apiTokenFile) process.env["FORGEPILOT_API_TOKEN_FILE"] = discovered.apiTokenFile;
@@ -263,6 +292,17 @@ void app.whenReady().then(async () => {
     },
   });
   disposeApiProxy = installApiProxy(ipcMain, () => mainWindow, proxy, isTrustedRendererUrl);
+  disposeSettingsIpc = installSettingsIpc(ipcMain, () => mainWindow, isTrustedRendererUrl, {
+    statePath: path.join(app.getPath("userData"), "provider-accounts.json"),
+    modelSettingsPath,
+    safeStorage,
+    client: createProviderClient(),
+    restartApp: () => {
+      restoreLaunchApiEnvironment();
+      app.relaunch();
+      app.quit();
+    },
+  });
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -271,6 +311,7 @@ void app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   disposeApiProxy();
+  disposeSettingsIpc();
   nodeChild?.kill();
 });
 
@@ -288,6 +329,14 @@ function readApiToken(): string {
   } catch {
     return "";
   }
+}
+
+function restoreLaunchApiEnvironment(): void {
+  for (const [key, value] of Object.entries(launchApiEnvironment)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  delete process.env["FORGEPILOT_API_STARTUP_ERROR"];
 }
 
 function isTrustedRendererUrl(value: string): boolean {

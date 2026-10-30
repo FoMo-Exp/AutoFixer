@@ -5,6 +5,8 @@ import type { ArtifactMetadata, RunSummary, Task, TaskEvent, TaskStatus } from "
 import { resolveApiConfig } from "./api/config";
 import { useTaskStream } from "./api/hooks";
 import { CreateIdempotencyKeys } from "./api/idempotency";
+import { RepositoryPicker } from "./settings/RepositoryPicker";
+import { SettingsDialog } from "./settings/SettingsDialog";
 import {
   approvalScopeDigest,
   buildTimelineRows,
@@ -18,8 +20,14 @@ import {
   TERMINAL_STATUSES,
 } from "./ui/format";
 import type { PiTurnRow } from "./ui/format";
+import { HeroLogo } from "./ui/HeroLogo";
 import { piSummaryHeadline, piSummaryStateLabel, resolvePiSummary } from "./ui/pi-summary";
 import { redactText, sanitizeValue } from "./ui/redaction";
+import { Select } from "./ui/Select";
+import { applyScrollMode, getScrollMode } from "./ui/scroll-mode";
+import type { ScrollMode } from "./ui/scroll-mode";
+import { useStackFold } from "./ui/use-stack-fold";
+import { useAmbientDrift } from "./ui/use-ambient-drift";
 
 const STATUS_FILTERS: Array<"all" | TaskStatus> = [
   "all",
@@ -29,6 +37,7 @@ const STATUS_FILTERS: Array<"all" | TaskStatus> = [
   "approved_for_merge",
   "stopped",
   "merged",
+  "cancelled",
 ];
 
 interface CreateTaskForm {
@@ -49,10 +58,25 @@ const INITIAL_FORM: CreateTaskForm = {
 
 type ServiceStatus = "connecting" | "connected" | "offline";
 
+function isTaskArchived(task: Task): boolean {
+  return task.archived ?? task.status === "cancelled";
+}
+
 export default function App(): ReactElement {
   const client = useMemo(() => new ForgePilotClient(resolveApiConfig()), []);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
+  /** 窄屏钻取视图：list ↔ detail（≤900px 生效，桌面始终双栏并存） */
+  const [mobileView, setMobileView] = useState<"list" | "detail">("list");
+  /** 每次点击任务卡片递增，强制详情 effect 重新执行（selectedId 不变时也能刷新） */
+  const [detailEpoch, setDetailEpoch] = useState(0);
+  /** 侧栏任务列表滚动模式：常规滚动条 / 每 3 张卡一组的折叠滚动 */
+  const [scrollMode, setScrollMode] = useState<ScrollMode>(() => getScrollMode());
+
+  const changeScrollMode = useCallback((mode: ScrollMode): void => {
+    setScrollMode(mode);
+    applyScrollMode(mode);
+  }, []);
   const selectedIdRef = useRef<string | undefined>(undefined);
   const [selectedTask, setSelectedTask] = useState<Task>();
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -62,39 +86,71 @@ export default function App(): ReactElement {
   const [serviceError, setServiceError] = useState<string>();
   const [filter, setFilter] = useState<"all" | TaskStatus>("all");
   const [showCreate, setShowCreate] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  // Bumped whenever the settings dialog closes so open pickers re-run
+  // discovery against the (possibly changed) account set.
+  const [settingsEpoch, setSettingsEpoch] = useState(0);
   const [form, setForm] = useState<CreateTaskForm>(INITIAL_FORM);
   const [isCreating, setIsCreating] = useState(false);
   const [actionError, setActionError] = useState<string>();
+  const [cancellingTaskId, setCancellingTaskId] = useState<string>();
+  const [confirmTaskAction, setConfirmTaskAction] = useState<{ task: Task; action: "archive" | "recovery" }>();
+  const confirmationTriggerRef = useRef<HTMLElement | null>(null);
+  const [isActionErrorHovered, setIsActionErrorHovered] = useState(false);
   const [actionBusy, setActionBusy] = useState<string>();
   const createKeyRef = useRef(new CreateIdempotencyKeys());
   const listRequestRef = useRef(0);
+  const taskDetailRequestRef = useRef(0);
 
-  const selectTask = useCallback((taskId: string | undefined): void => {
+  useEffect(() => {
+    if (!actionError) {
+      setIsActionErrorHovered(false);
+      return;
+    }
+    if (isActionErrorHovered) return;
+    const timeoutId = window.setTimeout(() => {
+      setActionError((current) => (current === actionError ? undefined : current));
+    }, 1000);
+    return () => window.clearTimeout(timeoutId);
+  }, [actionError, isActionErrorHovered]);
+
+  const selectTask = useCallback((task: Task | undefined): void => {
+    const taskId = task?.id;
+    taskDetailRequestRef.current += 1;
+    const previousId = selectedIdRef.current;
     selectedIdRef.current = taskId;
     setSelectedId(taskId);
-    setSelectedTask(undefined);
-    setRuns([]);
+    // 列表已包含完整任务快照：直接显示所选任务，再后台刷新详情。
+    // 同一任务保留当前详情和本地输入；只有主动返回首页才清空。
+    if (previousId !== taskId) {
+      setSelectedTask(task);
+      setRuns([]);
+    }
+    setMobileView(taskId ? "detail" : "list");
     setActionError(undefined);
     setActionBusy(undefined);
+    setDetailEpoch((n) => n + 1);
   }, []);
 
-  const loadTasks = useCallback(async (): Promise<void> => {
-    const requestId = ++listRequestRef.current;
-    setServiceStatus("connecting");
-    try {
-      const page = await client.listTasks();
-      if (requestId !== listRequestRef.current) return;
-      setTasks(page.items);
-      setNextCursor(page.next_cursor);
-      setServiceStatus("connected");
-      setServiceError(undefined);
-      if (!selectedIdRef.current && page.items[0]) selectTask(page.items[0].id);
-    } catch (caught) {
-      if (requestId !== listRequestRef.current) return;
-      setServiceStatus("offline");
-      setServiceError(errorMessage(caught));
-    }
-  }, [client, selectTask]);
+  const loadTasks = useCallback(
+    async (showConnecting = false): Promise<void> => {
+      const requestId = ++listRequestRef.current;
+      if (showConnecting) setServiceStatus("connecting");
+      try {
+        const page = await client.listTasks();
+        if (requestId !== listRequestRef.current) return;
+        setTasks(page.items);
+        setNextCursor(page.next_cursor);
+        setServiceStatus("connected");
+        setServiceError(undefined);
+      } catch (caught) {
+        if (requestId !== listRequestRef.current) return;
+        setServiceStatus("offline");
+        setServiceError(errorMessage(caught));
+      }
+    },
+    [client],
+  );
 
   const loadMoreTasks = useCallback(async (): Promise<void> => {
     if (!nextCursor || isLoadingMore) return;
@@ -117,25 +173,30 @@ export default function App(): ReactElement {
   }, [client, isLoadingMore, nextCursor]);
 
   useEffect(() => {
-    void loadTasks();
+    void loadTasks(true);
   }, [loadTasks]);
 
   const refreshSelectedTask = useCallback(async (): Promise<void> => {
     const requestedId = selectedIdRef.current;
     if (!requestedId) return;
+    const requestId = ++taskDetailRequestRef.current;
     try {
       const [task, taskRuns] = await Promise.all([
         client.getTask(requestedId),
         client.getRuns(requestedId),
       ]);
-      if (selectedIdRef.current !== requestedId) return;
+      if (selectedIdRef.current !== requestedId || taskDetailRequestRef.current !== requestId) {
+        return;
+      }
       setSelectedTask(task);
       setRuns(taskRuns);
       setTasks((current) => current.map((entry) => (entry.id === task.id ? task : entry)));
       setServiceStatus("connected");
       setServiceError(undefined);
     } catch (caught) {
-      if (selectedIdRef.current !== requestedId) return;
+      if (selectedIdRef.current !== requestedId || taskDetailRequestRef.current !== requestId) {
+        return;
+      }
       setActionError(errorMessage(caught));
     }
   }, [client]);
@@ -147,10 +208,11 @@ export default function App(): ReactElement {
       return;
     }
     void refreshSelectedTask();
-  }, [refreshSelectedTask, selectedId]);
+  }, [refreshSelectedTask, selectedId, detailEpoch]);
 
   const handleStreamEvent = useCallback(
     (event: TaskEvent): void => {
+      if (event.task_id !== selectedIdRef.current) return;
       if (event.type === "task.status_changed" || event.type === "task.terminal") {
         void refreshSelectedTask();
         void loadTasks();
@@ -165,7 +227,73 @@ export default function App(): ReactElement {
     selectedTask ? TERMINAL_STATUSES.has(selectedTask.status) : false,
   );
 
-  const visibleTasks = tasks.filter((task) => filter === "all" || task.status === filter);
+  const visibleTasks = tasks.filter((task) =>
+    filter === "all"
+      ? !isTaskArchived(task)
+      : filter === "cancelled"
+        ? isTaskArchived(task)
+        : !isTaskArchived(task) && task.status === filter,
+  );
+  const stackedScroll = scrollMode === "stacked";
+
+  const taskListRef = useRef<HTMLDivElement | null>(null);
+
+  /** 折叠堆叠效果：中心清晰，上下边缘重叠、缩小和淡化 */
+  useStackFold(taskListRef, stackedScroll, `${visibleTasks.length}:${filter}`);
+
+  async function handleQuickCancel(task: Task): Promise<void> {
+    if (
+      (TERMINAL_STATUSES.has(task.status) && task.status !== "cancelled") ||
+      isTaskArchived(task) ||
+      cancellingTaskId
+    ) return;
+    setCancellingTaskId(task.id);
+    setActionError(undefined);
+    try {
+      const cancelled = task.status === "cancelled"
+        ? await client.archiveTask(task.id)
+        : await client.cancelTask(task.id);
+      listRequestRef.current += 1;
+      setTasks((current) => current.map((entry) => (entry.id === cancelled.id ? cancelled : entry)));
+      if (selectedIdRef.current === cancelled.id) {
+        taskDetailRequestRef.current += 1;
+        setSelectedTask(cancelled);
+      }
+    } catch (caught) {
+      setActionError(errorMessage(caught));
+    } finally {
+      setCancellingTaskId(undefined);
+    }
+  }
+
+  async function handleQuickRecovery(task: Task): Promise<void> {
+    if (task.status !== "cancelled" || !isTaskArchived(task) || cancellingTaskId) return;
+    setCancellingTaskId(task.id);
+    setActionError(undefined);
+    try {
+      const recovered = await client.recoverTask(task.id);
+      listRequestRef.current += 1;
+      setTasks((current) => current.map((entry) => (entry.id === recovered.id ? recovered : entry)));
+      if (selectedIdRef.current === recovered.id) {
+        taskDetailRequestRef.current += 1;
+        setSelectedTask(recovered);
+      }
+    } catch (caught) {
+      setActionError(errorMessage(caught));
+    } finally {
+      setCancellingTaskId(undefined);
+    }
+  }
+
+  function requestTaskAction(task: Task, action: "archive" | "recovery"): void {
+    confirmationTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setConfirmTaskAction({ task, action });
+  }
+
+  function closeTaskConfirmation(): void {
+    setConfirmTaskAction(undefined);
+    confirmationTriggerRef.current?.focus();
+  }
 
   async function handleCreate(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -185,8 +313,7 @@ export default function App(): ReactElement {
       const idempotencyKey = createKeyRef.current.forInput(input);
       const task = await client.createTask(input, idempotencyKey);
       createKeyRef.current.complete(input);
-      selectTask(task.id);
-      setSelectedTask(task);
+      selectTask(task);
       setShowCreate(false);
       setForm(INITIAL_FORM);
       await loadTasks();
@@ -213,9 +340,12 @@ export default function App(): ReactElement {
               decision: action,
               scope_digest: digest ?? "",
             });
-      if (selectedIdRef.current === taskId) setSelectedTask(task);
-      await loadTasks();
-      if (selectedIdRef.current === taskId) await refreshSelectedTask();
+      listRequestRef.current += 1;
+      if (selectedIdRef.current === taskId) {
+        taskDetailRequestRef.current += 1;
+        setSelectedTask(task);
+      }
+      setTasks((current) => current.map((entry) => (entry.id === task.id ? task : entry)));
     } catch (caught) {
       if (selectedIdRef.current === taskId) setActionError(errorMessage(caught));
     } finally {
@@ -228,7 +358,11 @@ export default function App(): ReactElement {
       <header className="topbar">
         <div className="brand-lockup">
           <div className="brand-mark" aria-hidden="true">
-            FP
+            <svg width="26" height="26" viewBox="0 0 22 22" fill="none" aria-hidden="true">
+              <rect x="3" y="3.5" width="3.6" height="15" rx="1.2" fill="currentColor" />
+              <rect x="15.4" y="3.5" width="3.6" height="15" rx="1.2" fill="currentColor" />
+              <circle cx="11" cy="11" r="3" fill="var(--accent)" />
+            </svg>
           </div>
           <div>
             <div className="brand-name">ForgePilot</div>
@@ -238,6 +372,49 @@ export default function App(): ReactElement {
         <div className="topbar-actions">
           <ServiceBadge status={serviceStatus} />
           <button
+            className="button button-quiet button-small"
+            onClick={() => {
+              selectTask(undefined);
+              setMobileView("detail");
+            }}
+            aria-label="Home"
+            aria-current={!selectedId ? "page" : undefined}
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              aria-hidden="true"
+            >
+              <path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z" />
+            </svg>
+            <span className="action-label">Home</span>
+          </button>
+          <button
+            className="button button-quiet button-small"
+            onClick={() => setShowSettings(true)}
+            aria-label="Open settings"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+            </svg>
+            <span className="action-label">Settings</span>
+          </button>
+          <button
             className="button button-primary button-small"
             onClick={() => setShowCreate(true)}
           >
@@ -246,7 +423,7 @@ export default function App(): ReactElement {
         </div>
       </header>
 
-      <div className="workspace">
+      <div className="workspace" data-view={mobileView}>
         <aside className="sidebar">
           <div className="sidebar-heading">
             <div>
@@ -266,7 +443,11 @@ export default function App(): ReactElement {
               </button>
             ))}
           </div>
-          <div className="task-list">
+          <div
+            ref={taskListRef}
+            className="task-list"
+            data-scroll={stackedScroll ? "stacked" : "normal"}
+          >
             {visibleTasks.length === 0 ? (
               <div className="empty-sidebar">
                 <div className="empty-icon">⌁</div>
@@ -285,13 +466,16 @@ export default function App(): ReactElement {
                   key={task.id}
                   task={task}
                   selected={task.id === selectedId}
-                  onClick={() => selectTask(task.id)}
+                  onClick={() => selectTask(task)}
+                  onArchive={() => requestTaskAction(task, "archive")}
+                  onRecovery={() => requestTaskAction(task, "recovery")}
+                  busy={cancellingTaskId === task.id}
                 />
               ))
             )}
             {nextCursor && (
               <button
-                className="button button-quiet button-small"
+                className="button button-quiet button-small load-more"
                 onClick={() => void loadMoreTasks()}
                 disabled={isLoadingMore}
               >
@@ -320,13 +504,21 @@ export default function App(): ReactElement {
                 <strong>Node service unavailable</strong>
                 <span>{serviceError ?? "Check the local service and try again."}</span>
               </div>
-              <button className="button button-quiet button-small" onClick={() => void loadTasks()}>
+              <button
+                className="button button-quiet button-small"
+                onClick={() => void loadTasks(true)}
+              >
                 Retry connection
               </button>
             </div>
           )}
           {actionError && (
-            <div className="inline-error" role="alert">
+            <div
+              className="inline-error"
+              role="alert"
+              onMouseEnter={() => setIsActionErrorHovered(true)}
+              onMouseLeave={() => setIsActionErrorHovered(false)}
+            >
               <span>{actionError}</span>
               <button aria-label="Dismiss error" onClick={() => setActionError(undefined)}>
                 ×
@@ -335,18 +527,27 @@ export default function App(): ReactElement {
           )}
           {selectedTask ? (
             <TaskDetail
+              key={selectedTask.id}
               task={selectedTask}
               runs={runs}
-              events={stream.events}
+              events={stream.events.filter((event) => event.task_id === selectedTask.id)}
               streamConnection={stream.connection}
               streamError={stream.error}
               client={client}
-              actionBusy={actionBusy}
+              actionBusy={cancellingTaskId === selectedTask.id ? "cancel" : actionBusy}
               onAction={handleTaskAction}
+              onCancel={() => requestTaskAction(selectedTask, "archive")}
               onRefresh={() => void refreshSelectedTask()}
+              onBack={() => {
+                setMobileView("list");
+                selectTask(undefined);
+              }}
             />
           ) : (
-            <WelcomePanel onCreate={() => setShowCreate(true)} />
+            <WelcomePanel
+              onCreate={() => setShowCreate(true)}
+              onBack={() => setMobileView("list")}
+            />
           )}
         </main>
       </div>
@@ -357,7 +558,31 @@ export default function App(): ReactElement {
           isCreating={isCreating}
           onChange={setForm}
           onClose={() => setShowCreate(false)}
+          onOpenSettings={() => setShowSettings(true)}
           onSubmit={handleCreate}
+          refreshToken={settingsEpoch}
+        />
+      )}
+      {showSettings && (
+        <SettingsDialog
+          onClose={() => {
+            setShowSettings(false);
+            setSettingsEpoch((value) => value + 1);
+          }}
+          scrollMode={scrollMode}
+          onScrollModeChange={changeScrollMode}
+        />
+      )}
+      {confirmTaskAction && (
+        <TaskActionDialog
+          action={confirmTaskAction.action}
+          task={confirmTaskAction.task}
+          onClose={closeTaskConfirmation}
+          onConfirm={() => {
+            const { task, action } = confirmTaskAction;
+            closeTaskConfirmation();
+            void (action === "archive" ? handleQuickCancel(task) : handleQuickRecovery(task));
+          }}
         />
       )}
     </div>
@@ -374,7 +599,60 @@ function ServiceBadge({ status }: { status: ServiceStatus }): ReactElement {
   return (
     <div className={`service-badge service-${status}`}>
       <span className="status-dot" />
-      {label}
+      <span className="service-label">{label}</span>
+    </div>
+  );
+}
+
+function TaskActionDialog({
+  action,
+  task,
+  onClose,
+  onConfirm,
+}: {
+  action: "archive" | "recovery";
+  task: Task;
+  onClose: () => void;
+  onConfirm: () => void;
+}): ReactElement {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { cancelRef.current?.focus(); }, []);
+  const archive = action === "archive";
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onClose();
+    }}>
+      <section
+        className="modal task-confirm-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="task-confirm-title"
+        aria-describedby="task-confirm-description"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") { event.preventDefault(); onClose(); }
+          if (event.key === "Tab" && event.shiftKey && document.activeElement === cancelRef.current) {
+            event.preventDefault(); confirmRef.current?.focus();
+          } else if (event.key === "Tab" && !event.shiftKey && document.activeElement === confirmRef.current) {
+            event.preventDefault(); cancelRef.current?.focus();
+          }
+        }}
+      >
+        <h2 id="task-confirm-title">{archive ? "Archive task?" : "Recover task?"}</h2>
+        <p id="task-confirm-description">
+          {archive
+            ? task.status === "cancelled"
+              ? "Move this task to Cancelled."
+              : "This will cancel the task and move it to Cancelled."
+            : "Restore this task to All. Its run remains cancelled."}
+        </p>
+        <div className="modal-actions task-confirm-actions">
+          <button ref={cancelRef} type="button" className="button button-secondary" onClick={onClose}>Go back</button>
+          <button ref={confirmRef} type="button" className="button button-primary" onClick={onConfirm}>
+            {archive ? "Archive task" : "Recover task"}
+          </button>
+        </div>
+      </section>
     </div>
   );
 }
@@ -383,39 +661,62 @@ function TaskListItem({
   task,
   selected,
   onClick,
+  onArchive,
+  onRecovery,
+  busy,
 }: {
   task: Task;
   selected: boolean;
   onClick: () => void;
+  onArchive: () => void;
+  onRecovery: () => void;
+  busy: boolean;
 }): ReactElement {
+  const canRecover = task.status === "cancelled" && isTaskArchived(task);
+  const canArchive = !canRecover && (!TERMINAL_STATUSES.has(task.status) || task.status === "cancelled");
   return (
-    <button
-      className={`task-list-item ${selected ? "task-list-item-selected" : ""}`}
-      onClick={onClick}
+    <article
+      className={`task-list-item ${selected ? "task-list-item-selected" : ""} ${canArchive || canRecover ? "task-list-item-actionable" : ""}`}
     >
       <div className="task-list-item-topline">
         <span className={`status-pip status-${task.status}`} />
-        <span className="task-list-status">{formatStatus(task.status)}</span>
+        <span className="task-list-status task-list-status-label">{formatStatus(task.status)}</span>
+        {(canArchive || canRecover) && (
+          <button
+            type="button"
+            className={`task-archive-pill ${canRecover ? "task-recovery-pill" : ""}`}
+            onClick={canRecover ? onRecovery : onArchive}
+            disabled={busy}
+            aria-label={canRecover ? "Recover task" : "Archive task"}
+          >
+            {busy ? (canRecover ? "Recovering…" : "Archiving…") : canRecover ? "Recovery" : "Archived"}
+          </button>
+        )}
         <span className="task-list-time">{formatDate(task.updated_at)}</span>
       </div>
-      <div className="task-list-summary">{redactText(task.request.summary)}</div>
-      <div className="task-list-repo">
-        <span>{redactText(task.repository.display_name)}</span>
-        <span className="mono">{shortId(task.id, 13)}</span>
-      </div>
-    </button>
+      <button type="button" className="task-list-open" onClick={onClick}>
+        <div className="task-list-summary">{redactText(task.request.summary)}</div>
+        <div className="task-list-repo">
+          <span>{redactText(task.repository.display_name)}</span>
+        </div>
+      </button>
+    </article>
   );
 }
 
-function WelcomePanel({ onCreate }: { onCreate: () => void }): ReactElement {
+function WelcomePanel({
+  onCreate,
+  onBack,
+}: {
+  onCreate: () => void;
+  onBack: () => void;
+}): ReactElement {
   return (
     <section className="welcome-panel">
-      <div className="welcome-orbit" aria-hidden="true">
-        <span />
-        <span />
-        <span />
-        <b>FP</b>
-      </div>
+      <button type="button" className="detail-back" onClick={onBack}>
+        ← Tasks
+      </button>
+      <HeroLogo />
       <span className="eyebrow">Controlled remediation</span>
       <h2>Turn a reported problem into an auditable change.</h2>
       <p>
@@ -443,7 +744,10 @@ interface TaskDetailProps {
   client: ForgePilotClient;
   actionBusy: string | undefined;
   onAction: (action: "approve" | "reject" | "cancel", digest?: string) => Promise<void>;
+  onCancel: () => void;
   onRefresh: () => void;
+  /** 窄屏钻取：返回任务列表 */
+  onBack?: () => void;
 }
 
 function TaskDetail({
@@ -455,7 +759,9 @@ function TaskDetail({
   client,
   actionBusy,
   onAction,
+  onCancel,
   onRefresh,
+  onBack,
 }: TaskDetailProps): ReactElement {
   const [artifact, setArtifact] = useState<{
     metadata: ArtifactMetadata;
@@ -502,6 +808,11 @@ function TaskDetail({
   return (
     <section className="detail-view">
       <div className="detail-header">
+        {onBack && (
+          <button type="button" className="detail-back" onClick={onBack}>
+            ← Tasks
+          </button>
+        )}
         <div className="detail-heading">
           <div className="breadcrumb">TASK / {shortId(task.id, 18)}</div>
           <h2>{redactText(task.request.summary)}</h2>
@@ -521,9 +832,7 @@ function TaskDetail({
             <button
               className="button button-secondary"
               disabled={actionBusy === "cancel"}
-              onClick={() => {
-                if (window.confirm("Cancel this remediation task?")) void onAction("cancel");
-              }}
+              onClick={onCancel}
             >
               {actionBusy === "cancel" ? "Cancelling…" : "Cancel task"}
             </button>
@@ -651,13 +960,15 @@ function TaskDetail({
                 {messageSent && <span className="success-label">Message queued</span>}
               </div>
               <div className="message-controls">
-                <select
+                <Select
                   value={messageMode}
-                  onChange={(event) => setMessageMode(event.target.value as typeof messageMode)}
-                >
-                  <option value="steer">Steer current turn</option>
-                  <option value="follow_up">Queue follow-up</option>
-                </select>
+                  onChange={(v) => setMessageMode(v as typeof messageMode)}
+                  options={[
+                    { value: "steer", label: "Steer current turn" },
+                    { value: "follow_up", label: "Queue follow-up" },
+                  ]}
+                  className="message-mode-select"
+                />
                 <button
                   className="button button-primary button-small"
                   type="submit"
@@ -774,8 +1085,12 @@ function ApprovalCard({
   busy: string | undefined;
   onAction: (action: "approve" | "reject", digest?: string) => Promise<void>;
 }): ReactElement {
+  const glowRef = useRef<HTMLDivElement>(null);
+  useAmbientDrift(glowRef);
+
   return (
     <section className="approval-card">
+      <div ref={glowRef} className="approval-glow" aria-hidden="true" />
       <div className="approval-icon">⌁</div>
       <div className="approval-copy">
         <span className="eyebrow">Human checkpoint</span>
@@ -897,13 +1212,17 @@ function CreateTaskDialog({
   isCreating,
   onChange,
   onClose,
+  onOpenSettings,
   onSubmit,
+  refreshToken,
 }: {
   form: CreateTaskForm;
   isCreating: boolean;
   onChange: (form: CreateTaskForm) => void;
   onClose: () => void;
+  onOpenSettings: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  refreshToken: number;
 }): ReactElement {
   return (
     <div
@@ -926,26 +1245,17 @@ function CreateTaskDialog({
           begins.
         </p>
         <form onSubmit={(event) => void onSubmit(event)}>
-          <div className="form-grid">
-            <label>
-              Repository ID
-              <input
-                value={form.repositoryId}
-                onChange={(event) => onChange({ ...form, repositoryId: event.target.value })}
-                required
-              />
-            </label>
-            <label>
-              Base ref
-              <input
-                value={form.baseRef}
-                onChange={(event) => onChange({ ...form, baseRef: event.target.value })}
-                required
-              />
-            </label>
-          </div>
+          <RepositoryPicker
+            repositoryId={form.repositoryId}
+            baseRef={form.baseRef}
+            onChange={(patch) => onChange({ ...form, ...patch })}
+            onOpenSettings={onOpenSettings}
+            refreshToken={refreshToken}
+          />
           <label>
-            Task summary
+            <span className="label-text">
+              Task summary <span className="required-dot">*</span>
+            </span>
             <textarea
               value={form.summary}
               onChange={(event) => onChange({ ...form, summary: event.target.value })}
@@ -955,7 +1265,7 @@ function CreateTaskDialog({
             />
           </label>
           <label>
-            Source reference <span className="optional">optional</span>
+            Source reference
             <input
               value={form.sourceReference}
               onChange={(event) => onChange({ ...form, sourceReference: event.target.value })}
@@ -963,7 +1273,7 @@ function CreateTaskDialog({
             />
           </label>
           <label>
-            Acceptance criteria <span className="optional">one per line · optional</span>
+            Acceptance criteria
             <textarea
               value={form.acceptanceCriteria}
               onChange={(event) => onChange({ ...form, acceptanceCriteria: event.target.value })}

@@ -107,6 +107,8 @@ export interface TaskResource {
   };
   revision: { base_sha: string; head_sha: string | null };
   status: UiStatus;
+  /** Whether a cancelled task is filed in the archive view. */
+  archived?: boolean;
   status_reason: string | null;
   risk: { class: string; decision_code: string; requires_human_approval: boolean } | null;
   progress: { phase: string | null; actions_completed: number; actions_total: number | null };
@@ -213,6 +215,8 @@ export interface TaskRecord {
   mergeQueueEligible: boolean;
   artifactIndex: ArtifactMetadata[];
   status: UiStatus;
+  /** Undefined preserves the legacy default: cancelled tasks are archived. */
+  archived?: boolean;
   statusReason: string | null;
   risk: TaskResource["risk"];
   progress: TaskResource["progress"];
@@ -297,6 +301,7 @@ export function toTaskResource(record: TaskRecord): TaskResource {
     },
     revision: { base_sha: record.repository.base_sha, head_sha: record.headSha },
     status: record.status,
+    ...(record.status === "cancelled" ? { archived: record.archived ?? true } : {}),
     status_reason: record.statusReason,
     risk: record.risk,
     progress: record.progress,

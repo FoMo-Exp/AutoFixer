@@ -58,6 +58,21 @@ function makeRun(overrides: Partial<DshRunResponse> = {}): DshRunResponse {
 }
 
 describe("durable task projection (M3 persistence)", () => {
+  test("restored cancelled tasks remain unarchived across store restarts", () => {
+    const stateFile = path.join(tempDir(), "task-state.json");
+    const store = new TaskStore({ persistencePath: stateFile });
+    const record = makeRecord();
+    record.status = "cancelled";
+    record.terminal = true;
+    store.put(record);
+    expect(toTaskResource(record).archived).toBe(true);
+    record.archived = false;
+    store.save(record);
+    store.flushSync();
+    const restored = new TaskStore({ persistencePath: stateFile }).get(record.id)!;
+    expect(toTaskResource(restored)).toMatchObject({ status: "cancelled", archived: false });
+  });
+
   test("a new store instance restores tasks, events, and idempotency keys", () => {
     const stateFile = path.join(tempDir(), "task-state.json");
     const first = new TaskStore({ persistencePath: stateFile });

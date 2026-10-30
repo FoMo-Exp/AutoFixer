@@ -1,0 +1,12 @@
+# OS
+.DS_Store
+
+# Node
+node_modules/
+
+# Local design exploration & agent tooling (not application code — see AGENTS.md §10)
+.agents/
+.claude/
+design-demos/
+designs/
+skills-lock.json

@@ -142,6 +142,7 @@ function spawnAndDiscover(
     let apiBaseUrl: string | undefined;
     let apiTokenFile = env["FORGEPILOT_API_TOKEN_FILE"];
     let stdoutBuffer = "";
+    let stderrBuffer = "";
     let settled = false;
     const timeout = setTimeout(() => {
       finish(new Error("Timed out while discovering the local ForgePilot Node service."));
@@ -172,13 +173,23 @@ function spawnAndDiscover(
     };
 
     child.stdout.on("data", consume);
-    child.stderr.on("data", () => undefined);
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrBuffer = `${stderrBuffer}${chunk.toString("utf8")}`.slice(-8192);
+    });
     child.once("error", (error) => finish(error));
     child.once("exit", (code) => {
       if (!settled)
-        finish(
-          new Error(`ForgePilot Node service exited before discovery (${code ?? "unknown"}).`),
-        );
+        finish(new NodeServiceStartupError(startupFailureMessage(stderrBuffer, code)));
     });
   });
+}
+
+function startupFailureMessage(stderr: string, code: number | null): string {
+  if (/Unknown Pi model\s+[^\r\n]+/i.test(stderr)) {
+    return "The selected provider/model ID is not supported by the orchestrator. Update it in Settings.";
+  }
+  if (/FORGEPILOT_PI_BASE_URL/i.test(stderr)) {
+    return "The model API base URL is invalid. Review it in Settings.";
+  }
+  return `ForgePilot Node service exited before discovery (${code ?? "unknown"}).`;
 }

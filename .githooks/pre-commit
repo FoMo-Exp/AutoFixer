@@ -1,0 +1,39 @@
+#!/bin/sh
+# pre-commit: keep non-application files out of the repo, and check that the
+# shared design-review skill is installed locally (see AGENTS.md §10).
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+
+# --- 1. Block local/design/tooling files from being committed ---------------
+JUNK_PATTERNS='^\.DS_Store$|^\.agents/|^\.claude/|^design-demos/|^designs/|^skills-lock\.json$'
+JUNK=$(git diff --cached --name-only --diff-filter=ACM | grep -E "$JUNK_PATTERNS" || true)
+
+if [ -n "$JUNK" ]; then
+  echo "✗ pre-commit: refusing to commit files unrelated to the application:" >&2
+  echo "$JUNK" | sed 's/^/    /' >&2
+  echo "" >&2
+  echo "  These belong to local design/agent tooling and are gitignored." >&2
+  echo "  Unstage them:  git restore --staged <path>" >&2
+  exit 1
+fi
+
+# --- 2. Skill install check (only when web/ UI files are touched) ----------
+STAGED_WEB=$(git diff --cached --name-only | grep -E '^web/src/' || true)
+if [ -n "$STAGED_WEB" ]; then
+  SKILL_DIR="${HOME}/.claude/skills/huashu-design"
+  ALT_DIR="${HOME}/.pi/agent/skills/huashu-design"
+  if [ ! -f "$SKILL_DIR/SKILL.md" ] && [ ! -f "$ALT_DIR/SKILL.md" ]; then
+    echo "! huashu-design skill not found. It is used for design lint of web UI."
+    echo "! Install it locally (do not commit it into this repo):"
+    echo ""
+    echo "    npx skills add alchaincyf/huashu-design"
+    echo ""
+    echo "  (needs skills CLI > 1.5.15 so references/assets/scripts sync;"
+    echo "   upgrade with: npm i -g skills@latest)"
+    echo ""
+    echo "Continuing without it — design lint will be skipped this commit."
+  fi
+fi
+
+exit 0

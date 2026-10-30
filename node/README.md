@@ -69,10 +69,14 @@ Configuration (environment):
 | `FORGEPILOT_MAX_WALL_CLOCK_SECONDS`                     | `120`                                      | per-run wall clock                                                        |
 | `FORGEPILOT_API_TOKEN_FILE`                             | `$TMPDIR/forgepilot-<uid>/api-token`       | per-process API bearer-token file (0600)                                  |
 | `FORGEPILOT_TASK_STATE_FILE`                            | `$TMPDIR/forgepilot-<uid>/task-state.json` | durable task projection (0600); restart re-associates tasks with dsh runs |
-| `FORGEPILOT_PI_PROVIDER` / `FORGEPILOT_PI_MODEL`        | unset                                      | Pi model; unset means approvals report `PI_UNAVAILABLE`                   |
+| `FORGEPILOT_PI_PROVIDER` / `FORGEPILOT_PI_MODEL`        | unset                                      | Pi provider/model; unset means approvals report `PI_UNAVAILABLE`          |
+| `FORGEPILOT_PI_BASE_URL`                               | provider default                           | optional API base URL override; required for `openai-compatible`          |
 
 Provider API keys are resolved by pi-ai from the usual environment variables
-(for example `ANTHROPIC_API_KEY`).
+(for example `ANTHROPIC_API_KEY`). The Electron Settings dialog stores a key
+using OS-backed secure storage and passes it only to the local orchestrator
+process. The `openai-compatible` provider uses `openai-completions` against the
+configured base URL and accepts any model ID supported by that endpoint.
 
 ## Durability and restart recovery (M3)
 

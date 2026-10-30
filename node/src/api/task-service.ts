@@ -515,6 +515,21 @@ export class TaskService {
     }
   }
 
+  setTaskArchived(taskId: string, archived: boolean): TaskResource {
+    const record = this.requireRecord(taskId);
+    if (record.status !== "cancelled") {
+      throw new ApiError(409, "TASK_STATE_CONFLICT", "Only cancelled tasks can be moved to or from the archive.");
+    }
+    if ((record.archived ?? true) !== archived) {
+      record.archived = archived;
+      record.version += 1;
+      record.updatedAt = new Date().toISOString();
+      this.store.save(record);
+      this.store.flushSync();
+    }
+    return toTaskResource(record);
+  }
+
   async sendMessage(taskId: string, mode: "steer" | "follow_up", content: string): Promise<void> {
     const record = this.requireRecord(taskId);
     this.requireActive(record, "send messages to");
