@@ -2038,8 +2038,9 @@ p {
 /* ══════════════════════════════════════════════════════════════
    侧栏任务列表滚动模式（Settings → Appearance → Task list）
    normal  ：常规滚动条滚动
-   stacked ：视口固定 3 张卡，每滑一格聚焦下一组 3 张，
+   stacked ：每滑一格吸附到下一组 3 张卡，
              卡片进出视口时缩放/淡出，形成 Apple 后台式的折叠堆叠感。
+             列表布局与 normal 完全一致（仍填满侧栏），只改滚动步进。
    只在卡片数 > STACKED_MIN_TASKS(10) 时启用 stacked（见 ui/scroll-mode.ts）。
    ══════════════════════════════════════════════════════════════ */
 .task-list {
@@ -2065,20 +2066,10 @@ p {
   background: var(--muted);
 }
 
-/* ── stacked：3 张卡一组的折叠滚动 ── */
+/* ── stacked：每滑一格聚焦下一组 3 张卡（布局不变，只改滚动） ── */
 .task-list[data-scroll="stacked"] {
-  --stack-card-h: 88px;
-  flex: 0 0 auto;
-  height: calc(3 * var(--stack-card-h) + 12px);
   scroll-behavior: smooth;
   scroll-snap-type: y mandatory;
-}
-
-.task-list[data-scroll="stacked"] .task-list-item {
-  flex: 0 0 auto;
-  height: var(--stack-card-h);
-  overflow: hidden;
-  scroll-snap-align: none;
 }
 
 /* 只有每组第 1 张是吸附点，才能做到“滑一格聚焦下一组 3 张” */
@@ -2087,7 +2078,6 @@ p {
   scroll-snap-stop: always;
 }
 
-.task-list[data-scroll="stacked"] .task-list-item.load-more,
 .task-list[data-scroll="stacked"] .load-more {
   scroll-snap-align: start;
   scroll-snap-stop: always;
@@ -2119,11 +2109,6 @@ p {
     opacity: 0.45;
     transform: scale(0.92);
   }
-}
-
-/* stacked 下 footer 固定到侧栏底部，腾出的空隙留在列表下方 */
-.task-list[data-scroll="stacked"] + .sidebar-footer {
-  margin-top: auto;
 }
 
 /* Settings → Appearance → Task list 滚动模式选择 */
