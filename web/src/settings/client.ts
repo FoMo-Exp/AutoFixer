@@ -28,7 +28,7 @@ export interface ProviderBranch {
 }
 
 export interface ModelSettingsSnapshot {
-  providers: Array<{ id: string; label: string }>;
+  providers: Array<{ id: string; label: string; defaultBaseUrl?: string }>;
   current?: {
     provider: string;
     modelId: string;
@@ -43,6 +43,23 @@ export interface SaveModelSettingsInput {
   modelId: string;
   baseUrl?: string;
   apiKey?: string;
+}
+
+export interface ModelConnectionResult {
+  ok: boolean;
+  message: string;
+  latencyMs?: number;
+  models?: string[];
+}
+
+export async function testModelConnection(
+  input: Omit<SaveModelSettingsInput, "modelId">,
+): Promise<ModelConnectionResult> {
+  const settings = bridge();
+  if (typeof settings.testModelConnection !== "function") {
+    throw new Error("Restart ForgePilot to enable connection testing.");
+  }
+  return settings.testModelConnection(input);
 }
 
 export function settingsAvailable(): boolean {

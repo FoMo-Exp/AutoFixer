@@ -53,7 +53,7 @@ interface Window {
   };
   forgePilotSettings?: {
     getModelSettings: () => Promise<{
-      providers: Array<{ id: string; label: string }>;
+      providers: Array<{ id: string; label: string; defaultBaseUrl?: string }>;
       current?: {
         provider: string;
         modelId: string;
@@ -68,7 +68,7 @@ interface Window {
       baseUrl?: string;
       apiKey?: string;
     }) => Promise<{
-      providers: Array<{ id: string; label: string }>;
+      providers: Array<{ id: string; label: string; defaultBaseUrl?: string }>;
       current?: {
         provider: string;
         modelId: string;
@@ -78,6 +78,12 @@ interface Window {
       secureStorageAvailable: boolean;
     }>;
     removeModelSettings: () => Promise<void>;
+    testModelConnection: (input: {
+      provider: string;
+      modelId?: string;
+      baseUrl?: string;
+      apiKey?: string;
+    }) => Promise<{ ok: boolean; message: string; latencyMs?: number; models?: string[] }>;
     listAccounts: () => Promise<ProviderAccountSummary[]>;
     saveAccount: (input: {
       provider: "github" | "gitlab";

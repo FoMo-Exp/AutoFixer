@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
+import { MODEL_PROVIDERS, defaultModelBaseUrl } from "../../electron/model-providers";
 import {
   getModelSettings,
   listAccounts,
@@ -8,8 +9,13 @@ import {
   saveAccount,
   saveModelSettings,
   settingsAvailable,
+  testModelConnection,
 } from "../settings/client";
-import type { ModelSettingsSnapshot, ProviderAccount } from "../settings/client";
+import type {
+  ModelConnectionResult,
+  ModelSettingsSnapshot,
+  ProviderAccount,
+} from "../settings/client";
 import { formatDate } from "../ui/format";
 import { applySurface, getSurface } from "../ui/surface";
 import type { Surface } from "../ui/surface";
@@ -36,6 +42,7 @@ export function SettingsDialog({
   scrollMode = "normal",
   onScrollModeChange,
 }: SettingsDialogProps): ReactElement {
+  const modelFieldsId = useId();
   const [activeTab, setActiveTab] = useState<SettingsTab>("model");
   const [surface, setSurfaceState] = useState<Surface>(() => getSurface());
   const [accounts, setAccounts] = useState<ProviderAccount[]>([]);
@@ -44,9 +51,13 @@ export function SettingsDialog({
   const [modelSettingsLoadError, setModelSettingsLoadError] = useState<string>();
   const [modelProvider, setModelProvider] = useState("anthropic");
   const [modelId, setModelId] = useState("");
-  const [modelBaseUrl, setModelBaseUrl] = useState("");
+  const [modelBaseUrl, setModelBaseUrl] = useState(defaultModelBaseUrl("anthropic"));
   const [modelApiKey, setModelApiKey] = useState("");
   const [modelBusy, setModelBusy] = useState(false);
+  const [modelTesting, setModelTesting] = useState(false);
+  const [modelTestResult, setModelTestResult] = useState<
+    ModelConnectionResult & { revision: string }
+  >();
   const [modelError, setModelError] = useState<string>();
   const [modelNotice, setModelNotice] = useState<string>();
   const [provider, setProvider] = useState<Provider>("github");
@@ -78,9 +89,13 @@ export function SettingsDialog({
       if (nextModelSettings.current) {
         setModelProvider(nextModelSettings.current.provider);
         setModelId(nextModelSettings.current.modelId);
-        setModelBaseUrl(nextModelSettings.current.baseUrl ?? "");
-      } else if (nextModelSettings.providers[0]) {
-        setModelProvider(nextModelSettings.providers[0].id);
+        setModelBaseUrl(
+          nextModelSettings.current.baseUrl ??
+            defaultModelBaseUrl(nextModelSettings.current.provider),
+        );
+      } else {
+        setModelProvider(MODEL_PROVIDERS[0].id);
+        setModelBaseUrl(defaultModelBaseUrl(MODEL_PROVIDERS[0].id));
       }
     } else {
       setModelSettingsLoadError(modelSettingsLoadErrorMessage(modelResult.reason));
@@ -93,8 +108,40 @@ export function SettingsDialog({
   }, [refresh]);
 
   const keepsStoredModelKey =
-    modelSettings?.current?.provider === modelProvider &&
-    modelSettings.current.apiKeyConfigured;
+    modelSettings?.current?.provider === modelProvider && modelSettings.current.apiKeyConfigured;
+  const modelRevision = JSON.stringify([modelProvider, modelBaseUrl, modelApiKey]);
+  const currentTestResult =
+    modelTestResult?.revision === modelRevision ? modelTestResult : undefined;
+  const availableModels = currentTestResult?.ok ? currentTestResult.models : undefined;
+
+  function changeModelProvider(provider: string): void {
+    setModelProvider(provider);
+    setModelBaseUrl(defaultModelBaseUrl(provider));
+    setModelApiKey("");
+    setModelId("");
+    setModelTestResult(undefined);
+  }
+
+  async function handleTestModel(): Promise<void> {
+    if (!modelSettings || modelBusy || modelTesting) return;
+    setModelTesting(true);
+    setModelTestResult(undefined);
+    try {
+      const result = await testModelConnection({
+        provider: modelProvider,
+        ...(modelBaseUrl.trim() ? { baseUrl: modelBaseUrl.trim() } : {}),
+        ...(modelApiKey.trim() ? { apiKey: modelApiKey.trim() } : {}),
+      });
+      setModelTestResult({ ...result, revision: modelRevision });
+      if (result.ok && result.models?.length) {
+        setModelId((current) => (result.models!.includes(current) ? current : result.models![0]));
+      }
+    } catch (caught) {
+      setModelTestResult({ ok: false, message: errorMessage(caught), revision: modelRevision });
+    } finally {
+      setModelTesting(false);
+    }
+  }
 
   async function handleSaveModel(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -129,7 +176,7 @@ export function SettingsDialog({
       setModelSettings((current) => (current ? { ...current, current: undefined } : current));
       setModelApiKey("");
       setModelId("");
-      setModelBaseUrl("");
+      setModelBaseUrl(defaultModelBaseUrl(modelProvider));
       setModelNotice("Model configuration removed. Restarting ForgePilot…");
     } catch (caught) {
       setModelError(errorMessage(caught));
@@ -207,9 +254,7 @@ export function SettingsDialog({
             onClick={() => setActiveTab("model")}
           >
             Model
-            {modelSettings?.current && (
-              <span className="settings-tab-status" aria-hidden="true" />
-            )}
+            {modelSettings?.current && <span className="settings-tab-status" aria-hidden="true" />}
           </button>
           <button
             id="settings-tab-accounts"
@@ -281,54 +326,43 @@ export function SettingsDialog({
             </div>
           )}
           <form className="model-settings-form" onSubmit={(event) => void handleSaveModel(event)}>
-            <div className="form-grid">
-              <label>
-                Provider
+            <div className="form-grid model-settings-fields">
+              <div className="picker-field">
+                <label htmlFor={`${modelFieldsId}-provider`}>Provider</label>
                 <Select
+                  id={`${modelFieldsId}-provider`}
                   value={modelProvider}
-                  onChange={setModelProvider}
-                  disabled={!modelSettings || modelSettingsLoading || modelBusy}
-                  options={(modelSettings?.providers ?? []).map((option) => ({
+                  onChange={changeModelProvider}
+                  disabled={!modelSettings || modelSettingsLoading || modelBusy || modelTesting}
+                  options={MODEL_PROVIDERS.map((option) => ({
                     value: option.id,
                     label: option.label,
                   }))}
                 />
-              </label>
-              <label>
-                Model ID
+              </div>
+              <div className="picker-field">
+                <label htmlFor={`${modelFieldsId}-url`}>API base URL</label>
                 <input
-                  value={modelId}
-                  onChange={(event) => setModelId(event.target.value)}
-                  placeholder={
-                    modelProvider === "openai-compatible"
-                      ? "e.g. llama3.1"
-                      : "e.g. claude-sonnet-4-20250514"
-                  }
-                  autoComplete="off"
-                  required
-                  disabled={!modelSettings || modelSettingsLoading || modelBusy}
-                />
-              </label>
-            </div>
-            <div className="form-grid model-settings-fields">
-              <label>
-                API base URL
-                <input
+                  id={`${modelFieldsId}-url`}
                   value={modelBaseUrl}
                   onChange={(event) => setModelBaseUrl(event.target.value)}
-                  placeholder={
-                    modelProvider === "openai-compatible"
-                      ? "https://api.example.com/v1"
-                      : "Use the provider default"
-                  }
+                  placeholder="https://api.example.com/v1"
                   autoComplete="url"
-                  required={modelProvider === "openai-compatible"}
-                  disabled={!modelSettings || modelSettingsLoading || modelBusy}
+                  required
+                  disabled={!modelSettings || modelSettingsLoading || modelBusy || modelTesting}
                 />
-              </label>
-              <label>
-                <span className="label-text">API key{modelProvider !== "openai-compatible" && <span className="required-dot">*</span>}</span>
+              </div>
+              <div className="picker-field">
+                <label htmlFor={`${modelFieldsId}-key`}>
+                  <span className="label-text">
+                    API key
+                    {modelProvider !== "openai-compatible" && (
+                      <span className="required-dot">*</span>
+                    )}
+                  </span>
+                </label>
                 <input
+                  id={`${modelFieldsId}-key`}
                   type="password"
                   value={modelApiKey}
                   onChange={(event) => setModelApiKey(event.target.value)}
@@ -339,9 +373,31 @@ export function SettingsDialog({
                   }
                   autoComplete="new-password"
                   required={modelProvider !== "openai-compatible" && !keepsStoredModelKey}
-                  disabled={!modelSettings || modelSettingsLoading || modelBusy}
+                  disabled={!modelSettings || modelSettingsLoading || modelBusy || modelTesting}
                 />
-              </label>
+              </div>
+              <div className="picker-field">
+                <label htmlFor={`${modelFieldsId}-model`}>Model ID</label>
+                {availableModels?.length ? (
+                  <Select
+                    id={`${modelFieldsId}-model`}
+                    value={modelId}
+                    onChange={setModelId}
+                    options={availableModels.map((id) => ({ value: id, label: id }))}
+                    disabled={modelBusy || modelTesting}
+                  />
+                ) : (
+                  <input
+                    id={`${modelFieldsId}-model`}
+                    value={modelId}
+                    onChange={(event) => setModelId(event.target.value)}
+                    placeholder="Test connection to discover models"
+                    autoComplete="off"
+                    required
+                    disabled={!modelSettings || modelSettingsLoading || modelBusy || modelTesting}
+                  />
+                )}
+              </div>
             </div>
             {modelError && (
               <div className="picker-error" role="alert">
@@ -349,24 +405,52 @@ export function SettingsDialog({
               </div>
             )}
             {modelNotice && <div className="success-label">{modelNotice}</div>}
+            {currentTestResult && (
+              <div
+                className={currentTestResult.ok ? "success-label" : "picker-error"}
+                role={currentTestResult.ok ? "status" : "alert"}
+              >
+                {currentTestResult.message}
+                {currentTestResult.ok && currentTestResult.latencyMs !== undefined
+                  ? ` (${currentTestResult.latencyMs} ms)`
+                  : ""}
+              </div>
+            )}
             <div className="modal-footer">
+              <span className="field-hint">Test the endpoint to load available models.</span>
               <div className="modal-actions">
                 {modelSettings?.current && (
                   <button
                     className="button button-quiet button-small"
                     type="button"
-                    disabled={modelBusy}
+                    disabled={modelBusy || modelTesting}
                     onClick={() => void handleRemoveModel()}
                   >
                     Remove
                   </button>
                 )}
                 <button
+                  className="button button-secondary"
+                  type="button"
+                  disabled={
+                    !modelSettings ||
+                    modelSettingsLoading ||
+                    modelBusy ||
+                    modelTesting ||
+                    !modelBaseUrl.trim()
+                  }
+                  onClick={() => void handleTestModel()}
+                >
+                  {modelTesting ? "Testing…" : "Test connection"}
+                </button>
+                <button
                   className="button button-primary"
                   type="submit"
                   disabled={
                     !modelSettings ||
                     modelBusy ||
+                    modelTesting ||
+                    !modelId.trim() ||
                     (modelSettings.secureStorageAvailable === false &&
                       (!!modelApiKey.trim() || keepsStoredModelKey))
                   }
@@ -418,7 +502,9 @@ export function SettingsDialog({
                   type="password"
                   value={token}
                   onChange={(event) => setToken(event.target.value)}
-                  placeholder={tokenSaved ? "••••••••" : provider === "github" ? "ghp_…" : "glpat-…"}
+                  placeholder={
+                    tokenSaved ? "••••••••" : provider === "github" ? "ghp_…" : "glpat-…"
+                  }
                   autoComplete="off"
                   required
                 />
