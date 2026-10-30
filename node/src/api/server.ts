@@ -225,6 +225,11 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
         return;
       }
 
+      if (segments.length === 5 && req.method === "POST" && (sub === "archive" || sub === "recover")) {
+        writeJson(res, 200, service.setTaskArchived(taskId, sub === "archive"));
+        return;
+      }
+
       if (segments.length === 5 && req.method === "GET" && sub === "runs") {
         writeJson(res, 200, { items: service.getRunSummaries(taskId) });
         return;

@@ -188,7 +188,7 @@ describe("independent conformance to the normative M0 contract", () => {
       }
     }
     // Sanity: the full endpoint set is actually being checked.
-    expect(operations).toHaveLength(10);
+    expect(operations).toHaveLength(12);
   });
 
   test("the committed openapi.json also carries the auth scheme", () => {

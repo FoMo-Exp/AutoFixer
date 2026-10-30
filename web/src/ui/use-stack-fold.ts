@@ -1,19 +1,16 @@
 import { useEffect } from "react";
 import type { RefObject } from "react";
 
+const STACK_EDGE = 28;
+const STACK_LAYERS = 2;
+
 /**
  * Stacked-scroll fold effect for the sidebar task list.
  *
- * Reference: react-pop-cards CardStack — per-distance falloff
- * (scale down, opacity down, offset, z-order). Our motion differs: the
- * list scrolls vertically instead of cycling one card at a time, so the
- * "active" card becomes a focus band:
- *
- *   - the band is centred in the scrollport and sized to the cards that
- *     fit the displayable height (≈5 on desktop, fewer on short windows)
- *   - cards inside the band stay crisp (opacity 1, scale 1)
- *   - cards beyond the band get the CardStack falloff: shrunk, dimmed and
- *     tucked behind toward the nearest edge, reading as a folded stack
+ * Cards in the middle stay crisp. Outside that band, layout distances
+ * compress into a small fan at either edge: successive cards overlap,
+ * shrink and dim behind the nearer cards. Only the first few layers show.
+ * The original layout stays intact so every task remains scrollable.
  *
  * Geometry is read from layout (offsetTop/offsetHeight), never from
  * transformed rects, so the effect cannot feed back on itself.
@@ -35,35 +32,55 @@ export function useStackFold(
       const items = Array.from(list.querySelectorAll<HTMLElement>(".task-list-item"));
       if (items.length === 0) return;
 
-      const gap = Number.parseFloat(getComputedStyle(list).rowGap) || 6;
+      const listStyle = getComputedStyle(list);
+      const gap = Number.parseFloat(listStyle.rowGap) || 6;
       const pitch = items[0].offsetHeight + gap;
       if (pitch <= 0) return;
 
       const listHeight = list.clientHeight;
       const scrollTop = list.scrollTop;
-      const centerY = listHeight / 2;
-      // offsetParent 是 sticky 的 .sidebar，需减去列表自身的偏移才是列表内位置
-      const listTop = list.offsetTop;
+      const paddingTop = Number.parseFloat(listStyle.paddingTop) || 0;
+      const paddingBottom = Number.parseFloat(listStyle.paddingBottom) || 0;
+      const contentHeight = listHeight - paddingTop - paddingBottom;
+      const reserve = Math.min(
+        STACK_EDGE,
+        Math.max(0, (contentHeight - items[0].offsetHeight) / 3),
+      );
+      // Release the edge at the start/end so the first/last task opens fully.
+      const topEdge = paddingTop + Math.min(reserve, scrollTop);
+      const bottomEdge =
+        listHeight -
+        paddingBottom -
+        Math.min(reserve, Math.max(0, list.scrollHeight - listHeight - scrollTop));
 
-      // 中心核心张数按当前可展示高度确定（桌面约 5 张）
-      const coreCount = Math.max(3, Math.floor(listHeight / pitch + 0.25));
-      const bandHalf = (coreCount * pitch - gap) / 2;
+      // Read all layout before writing transforms. The positioned list is
+      // each card's offsetParent; transforms never enter these measurements.
+      const positions = items.map((item) => ({
+        item,
+        top: item.offsetTop,
+        height: item.offsetHeight,
+      }));
 
-      for (const item of items) {
-        // offsetTop 是布局位置，不受 transform 反馈影响
-        const center = item.offsetTop - listTop + item.offsetHeight / 2 - scrollTop - centerY;
-        const beyond = Math.max(0, Math.abs(center) - bandHalf);
-        const stack = beyond / pitch;
-        const fade = Math.min(1, stack / 0.7);
+      for (const { item, top, height } of positions) {
+        const y = top - scrollTop;
+        const lowerAnchor = Math.max(topEdge, bottomEdge - height);
+        const distance = y < topEdge ? y - topEdge : Math.max(0, y - lowerAnchor);
+        const depth = Math.abs(distance) / pitch;
+        const layer = Math.min(STACK_LAYERS, depth);
+        const direction = Math.sign(distance);
+        // Keep just two slim card edges, then fade the remaining layers away.
+        const peek = reserve * 0.9 * (1 - Math.exp(-depth / 1.6));
+        const tuck = direction * peek - distance;
 
-        // CardStack 公式的纵向变体：越远越小、越淡、越向边缘收拢（堆叠）
-        const opacity = 1 - fade * 0.7;
-        const scale = 1 - fade * 0.18;
-        const tuck = Math.sign(center) * Math.min(64, 4 * stack * stack);
+        const opacity = (1 - layer * 0.22) * Math.max(0, 1 - Math.max(0, depth - STACK_LAYERS));
+        const scale = 1 - layer * 0.045;
 
         item.style.opacity = opacity.toFixed(3);
         item.style.transform = `translateY(${tuck.toFixed(1)}px) scale(${scale.toFixed(3)})`;
-        item.style.zIndex = String(Math.round(100 - fade * 50));
+        item.style.transformOrigin = distance < 0 ? "center top" : "center bottom";
+        item.style.zIndex = String(100 - Math.ceil(Math.min(depth, STACK_LAYERS + 1) * 20));
+        item.style.pointerEvents = depth >= STACK_LAYERS + 1 ? "none" : "";
+        item.style.setProperty("--stack-content-opacity", Math.max(0, 1 - depth * 2).toFixed(3));
       }
     };
 
@@ -71,20 +88,37 @@ export function useStackFold(
       if (!frame) frame = requestAnimationFrame(apply);
     };
 
+    const revealFocus = (event: FocusEvent): void => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement) || !target.matches(":focus-visible")) return;
+      const item = target.closest<HTMLElement>(".task-list-item");
+      if (!item) return;
+      const top = item.offsetTop - list.scrollTop;
+      if (top < STACK_EDGE || top + item.offsetHeight > list.clientHeight - STACK_EDGE) {
+        list.scrollTop = item.offsetTop - (list.clientHeight - item.offsetHeight) / 2;
+        schedule();
+      }
+    };
+
     apply();
     list.addEventListener("scroll", schedule, { passive: true });
+    list.addEventListener("focusin", revealFocus);
     const observer = new ResizeObserver(schedule);
     observer.observe(list);
     for (const item of list.querySelectorAll(".task-list-item")) observer.observe(item);
 
     return () => {
       list.removeEventListener("scroll", schedule);
+      list.removeEventListener("focusin", revealFocus);
       observer.disconnect();
       if (frame) cancelAnimationFrame(frame);
       for (const item of list.querySelectorAll<HTMLElement>(".task-list-item")) {
         item.style.opacity = "";
         item.style.transform = "";
         item.style.zIndex = "";
+        item.style.transformOrigin = "";
+        item.style.pointerEvents = "";
+        item.style.removeProperty("--stack-content-opacity");
       }
     };
   }, [listRef, enabled, revision]);

@@ -23,6 +23,8 @@ const M0_ENDPOINTS: Array<[method: string, path: string]> = [
   ["post", "/api/v1/tasks/{task_id}/messages"],
   ["post", "/api/v1/tasks/{task_id}/approvals"],
   ["post", "/api/v1/tasks/{task_id}/cancel"],
+  ["post", "/api/v1/tasks/{task_id}/archive"],
+  ["post", "/api/v1/tasks/{task_id}/recover"],
   ["get", "/api/v1/tasks/{task_id}/timeline"],
   ["get", "/api/v1/tasks/{task_id}/artifacts/{artifact_id}"],
   ["get", "/api/v1/tasks/{task_id}/stream"],

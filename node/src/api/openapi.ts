@@ -129,6 +129,7 @@ const taskSchema: JsonObject = {
       },
     },
     status: { type: "string", enum: [...UI_STATUSES] },
+    archived: { type: "boolean", description: "Whether the cancelled task is in the archive view; the run status is unchanged." },
     status_reason: { type: ["string", "null"] },
     risk: {
       type: ["object", "null"],
@@ -656,6 +657,30 @@ export function buildOpenApiDocument(): OpenApiDocument {
           202: { description: "Cancellation requested", ...jsonRef("#/components/schemas/Task") },
           404: errorResponse("Task not found"),
           409: errorResponse("The task cannot be cancelled in its terminal state."),
+        },
+      },
+    },
+    "/api/v1/tasks/{task_id}/archive": {
+      post: {
+        operationId: "archiveTask",
+        summary: "Move a cancelled task to the archive",
+        parameters: [{ name: "task_id", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          200: { description: "Task after archiving", ...jsonRef("#/components/schemas/Task") },
+          404: errorResponse("Task not found"),
+          409: errorResponse("Task is not cancelled"),
+        },
+      },
+    },
+    "/api/v1/tasks/{task_id}/recover": {
+      post: {
+        operationId: "recoverTask",
+        summary: "Restore a cancelled task to the workspace",
+        parameters: [{ name: "task_id", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          200: { description: "Task after restoring its visibility", ...jsonRef("#/components/schemas/Task") },
+          404: errorResponse("Task not found"),
+          409: errorResponse("Task is not cancelled"),
         },
       },
     },

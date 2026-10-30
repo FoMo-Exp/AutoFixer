@@ -131,6 +131,7 @@ select:focus-visible {
 }
 
 .app-shell {
+  --workspace-gutter: 16px;
   min-height: 100vh;
 }
 
@@ -140,7 +141,7 @@ select:focus-visible {
   display: flex;
   height: 76px;
   justify-content: space-between;
-  padding: 0 32px;
+  padding: 0 var(--workspace-gutter);
   position: sticky;
   top: 0;
   z-index: 20;
@@ -183,11 +184,12 @@ select:focus-visible {
   display: flex;
   height: 34px;
   justify-content: center;
-  width: 34px;
+  width: 20px;
 }
 
 .brand-mark svg {
   display: block;
+  flex-shrink: 0;
 }
 
 .brand-name {
@@ -344,7 +346,7 @@ select:focus-visible {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  padding: 28px 16px 16px;
+  padding: 28px var(--workspace-gutter) 16px;
   position: sticky;
   top: 76px;
   align-self: start;
@@ -354,7 +356,7 @@ select:focus-visible {
   align-items: flex-end;
   display: flex;
   justify-content: space-between;
-  padding: 0 12px;
+  padding: 0;
 }
 
 .eyebrow,
@@ -392,7 +394,7 @@ p {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
-  margin: 25px 4px 14px;
+  margin: 25px 0 14px;
 }
 
 .filter-chip {
@@ -422,6 +424,8 @@ p {
 }
 
 .task-list-item {
+  display: block;
+  flex-shrink: 0;
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--r-md);
@@ -444,6 +448,84 @@ p {
 
 .task-list-item-topline {
   gap: 7px;
+  position: relative;
+}
+
+.task-list-open {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: block;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+
+.task-archive-pill {
+  align-items: center;
+  background: linear-gradient(110deg, rgba(var(--accent-rgb), 0.2), rgba(var(--accent-rgb), 0.08));
+  border: 1px solid rgba(var(--accent-rgb), 0.34);
+  border-radius: 999px;
+  color: var(--accent-text);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  opacity: 0;
+  padding: 0 var(--sp-1);
+  position: absolute;
+  left: 13px;
+  top: 50%;
+  transform: translateY(-50%);
+  transition: opacity 100ms ease, transform 100ms ease;
+  visibility: hidden;
+  z-index: 1;
+}
+
+.task-archive-pill::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  min-width: 44px;
+  width: 100%;
+  height: 44px;
+  transform: translate(-50%, -50%);
+}
+
+.task-list-item:hover .task-archive-pill,
+.task-list-item:has(:focus-visible) .task-archive-pill {
+  opacity: 1;
+  transform: translateY(-50%);
+  visibility: visible;
+}
+
+.task-list-item-actionable:hover .task-list-status-label,
+.task-list-item-actionable:has(:focus-visible) .task-list-status-label {
+  visibility: hidden;
+}
+
+.task-archive-pill:hover {
+  background: linear-gradient(110deg, rgba(var(--accent-rgb), 0.28), rgba(var(--accent-rgb), 0.12));
+}
+
+.task-recovery-pill {
+  background: linear-gradient(110deg, rgba(var(--green-rgb), 0.2), rgba(var(--green-rgb), 0.08));
+  border-color: rgba(var(--green-rgb), 0.34);
+  color: var(--green);
+}
+
+.task-recovery-pill:hover {
+  background: linear-gradient(110deg, rgba(var(--green-rgb), 0.28), rgba(var(--green-rgb), 0.12));
+}
+
+.task-archive-pill:focus-visible,
+.task-list-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .task-list-status {
@@ -757,11 +839,28 @@ p {
 
 .approval-card {
   align-items: flex-start;
-  background: linear-gradient(110deg, rgba(var(--amber-rgb), 0.12), rgba(var(--panel-rgb), 0.9) 65%);
+  background: rgba(var(--panel-rgb), 0.9);
   border-color: rgba(var(--amber-rgb), 0.26);
   display: flex;
   gap: 17px;
+  isolation: isolate;
+  overflow: hidden;
   padding: 22px;
+  position: relative;
+}
+
+.approval-glow {
+  background: radial-gradient(
+    ellipse at center,
+    rgba(var(--amber-rgb), 0.18),
+    rgba(var(--amber-rgb), 0.08) 35%,
+    transparent 65%
+  );
+  inset: -50%;
+  pointer-events: none;
+  position: absolute;
+  transform: translate(-22%, -4%) scale(1.05);
+  z-index: -1;
 }
 
 .approval-icon {
@@ -1256,41 +1355,115 @@ p {
   padding: 20px;
 }
 
-.welcome-orbit {
+/* Hero mark: A1 双柱穿珠 as a 3D scene. Rest pose reproduces the static
+   brand vector exactly (40px mark, gates 6.55×27.3, pearl 10.9); the round
+   (useLogoRound) only overlays transform, never opacity. */
+.hero-logo {
   align-items: center;
+  align-self: center;
+  color: var(--text);
   display: flex;
   height: 120px;
   justify-content: center;
   margin-bottom: 34px;
-  position: relative;
+  perspective: 320px;
   width: 120px;
 }
 
-.welcome-orbit b {
-  align-items: center;
-  color: var(--text);
-  display: flex;
-  height: 63px;
-  justify-content: center;
-  width: 63px;
+.hero-logo-scene {
+  height: 40px;
+  position: relative;
+  transform-style: preserve-3d;
+  width: 40px;
 }
 
-.welcome-orbit span {
-  border: 1px solid rgba(var(--accent-rgb), 0.3);
-  border-radius: 50%;
-  height: 92px;
+.hero-logo-spin {
+  inset: 0;
   position: absolute;
-  transform: rotate(28deg) scaleX(0.44);
-  width: 92px;
+  transform-style: preserve-3d;
 }
 
-.welcome-orbit span:nth-child(2) {
-  transform: rotate(-28deg) scaleX(0.44);
+.hero-logo-pillar {
+  height: 27.3px;
+  position: absolute;
+  top: 6.35px;
+  transform-style: preserve-3d;
+  width: 6.55px;
 }
 
-.welcome-orbit span:nth-child(3) {
-  border-color: rgba(var(--cyan-rgb), 0.25);
-  transform: rotate(90deg) scaleX(0.44);
+.hero-logo-pillar-left {
+  left: 5.45px;
+}
+
+.hero-logo-pillar-right {
+  left: 28px;
+}
+
+/* Cuboid gate: six rigid, flush faces (6.55 × 27.3 × 7). No backface
+   culling: the caps must stay solid at glancing angles. */
+.hero-logo-face {
+  background: currentColor;
+  position: absolute;
+}
+
+.hero-logo-face-front {
+  inset: 0;
+  transform: translateZ(3.5px);
+}
+
+.hero-logo-face-back {
+  inset: 0;
+  transform: rotateY(180deg) translateZ(3.5px);
+}
+
+.hero-logo-face-left,
+.hero-logo-face-right {
+  height: 100%;
+  left: calc(50% - 3.5px);
+  top: 0;
+  width: 7px;
+}
+
+.hero-logo-face-left {
+  transform: rotateY(-90deg) translateZ(3.275px);
+}
+
+.hero-logo-face-right {
+  transform: rotateY(90deg) translateZ(3.275px);
+}
+
+.hero-logo-face-top,
+.hero-logo-face-bottom {
+  height: 7px;
+  left: 0;
+  top: calc(50% - 3.5px);
+  width: 100%;
+}
+
+.hero-logo-face-top {
+  transform: rotateX(90deg) translateZ(13.65px);
+}
+
+.hero-logo-face-bottom {
+  transform: rotateX(-90deg) translateZ(13.65px);
+}
+
+/* Great-circle discs form a solid sphere silhouette and participate in the
+   scene's depth occlusion. Every surface is the same flat brand orange. */
+.hero-logo-pearl {
+  height: 10.9px;
+  left: 14.55px;
+  position: absolute;
+  top: 14.55px;
+  transform-style: preserve-3d;
+  width: 10.9px;
+}
+
+.hero-logo-pearl-disc {
+  background: var(--accent);
+  border-radius: 50%;
+  inset: 0;
+  position: absolute;
 }
 
 .welcome-panel h2 {
@@ -1351,6 +1524,27 @@ p {
   width: 100%;
 }
 
+.task-confirm-dialog {
+  max-width: 400px;
+  padding: var(--sp-6);
+}
+
+.task-confirm-dialog h2 {
+  font-size: var(--fs-card-title);
+  font-weight: 600;
+  margin: 0;
+}
+
+.task-confirm-dialog p {
+  color: var(--muted);
+  font-size: var(--fs-body);
+  margin: var(--sp-3) 0 var(--sp-6);
+}
+
+.task-confirm-actions {
+  justify-content: flex-end;
+}
+
 .modal-settings {
   display: flex;
   flex-direction: column;
@@ -1395,8 +1589,8 @@ p {
   gap: 7px;
 }
 
-.modal label input,
-.modal label textarea {
+.modal input,
+.modal textarea {
   font-weight: 400;
 }
 
@@ -1547,7 +1741,12 @@ p {
 }
 
 .model-settings-fields {
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.model-settings-fields .picker-field > label {
+  height: 16px;
+  justify-content: center;
 }
 
 .settings-account-fields {
@@ -1764,8 +1963,11 @@ p {
   font-size: 10px;
 }
 
-.modal .form-grid label select {
-  font-weight: 400;
+.picker-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
 }
 
 .picker-input-row {
@@ -1801,6 +2003,7 @@ p {
    桌面不受影响（detail-back 隐藏，workspace 仍是双栏 grid）。
    ══════════════════════════════════════════════════════════════ */
 .detail-back {
+  position: relative;
   align-items: center;
   background: none;
   border: 0;
@@ -1829,7 +2032,7 @@ p {
 
   .topbar {
     height: 60px;
-    padding: 0 16px;
+    padding: 0 var(--workspace-gutter);
   }
 
   .brand-caption {
@@ -1853,7 +2056,7 @@ p {
     border-right: 0;
     height: auto;
     overflow: visible;
-    padding: 20px 16px 32px;
+    padding: 20px var(--workspace-gutter) 32px;
     position: static;
   }
 
@@ -1929,6 +2132,7 @@ p {
   cursor: pointer;
   display: flex;
   font-size: 12px;
+  font-weight: 400;
   justify-content: space-between;
   padding: 10px 11px;
   text-align: left;
@@ -1975,6 +2179,7 @@ p {
   background: var(--panel-raised);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
+  font-weight: 400;
   box-shadow: var(--shadow);
   left: 0;
   list-style: none;
@@ -1993,6 +2198,7 @@ p {
   color: var(--text);
   cursor: pointer;
   font-size: 12px;
+  overflow-wrap: anywhere;
   padding: 8px 10px;
   transition: background 80ms ease;
 }
@@ -2038,10 +2244,8 @@ p {
 /* ══════════════════════════════════════════════════════════════
    侧栏任务列表滚动模式（Settings → Appearance → Task list）
    normal  ：常规滚动条滚动
-   stacked ：每滑一格吸附到下一组 3 张卡，
-             卡片进出视口时缩放/淡出，形成 Apple 后台式的折叠堆叠感。
-             列表布局与 normal 完全一致（仍填满侧栏），只改滚动步进。
-   只在卡片数 > STACKED_MIN_TASKS(10) 时启用 stacked（见 ui/scroll-mode.ts）。
+   stacked ：卡片在上下边缘重叠、缩小和淡出，中心卡片保持清晰。
+             保留原始滚动布局，以便滚动到每一张卡片。
    ══════════════════════════════════════════════════════════════ */
 .task-list {
   overscroll-behavior: contain;
@@ -2066,11 +2270,43 @@ p {
   background: var(--muted);
 }
 
+.task-list[data-scroll="normal"] {
+  scrollbar-width: none;
+}
+
+.task-list[data-scroll="normal"]::-webkit-scrollbar {
+  display: none;
+}
+
 /* ── stacked：折叠堆叠（动画由 useStackFold 逐帧驱动） ──
-   中心按可展示高度定焦约 5 张卡，范围外缩放/淡化/向边缘收拢成堆叠。
-   不改列表布局（仍填满侧栏），只叠加 transform/opacity。 */
+   上下预留卡边空间；实色卡面遮挡后层文字，形成真正的层叠。 */
+.task-list[data-scroll="stacked"] {
+  isolation: isolate;
+  /* Let rounded shadows finish before the rectangular scrollport clips. */
+  margin-inline: -8px;
+  padding: 8px;
+  position: relative;
+  scrollbar-width: none;
+}
+
+.task-list[data-scroll="stacked"]::-webkit-scrollbar {
+  display: none;
+}
+
 .task-list[data-scroll="stacked"] .task-list-item {
+  background-color: var(--panel);
+  border-color: var(--line-soft);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.08);
+  flex-shrink: 0;
   will-change: transform, opacity;
+}
+
+.task-list[data-scroll="stacked"] .task-list-item-selected {
+  border-color: rgba(var(--accent-rgb), 0.32);
+}
+
+.task-list[data-scroll="stacked"] .task-list-item > * {
+  opacity: var(--stack-content-opacity, 1);
 }
 
 /* Settings → Appearance → Task list 滚动模式选择 */

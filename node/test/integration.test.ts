@@ -379,6 +379,9 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     const created = await createAndApprove(base);
     const runId = requireRunId(created);
 
+    const prematureRecovery = await postJson<ApiErrorBody>(`${base}/api/v1/tasks/${created.id}/recover`, {});
+    expect(prematureRecovery.status).toBe(409);
+
     await waitUntil(
       async () =>
         (await timeline(base, created.id)).some((event) => event.type === "tool.completed"),
@@ -399,6 +402,17 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     ).toBe(true);
     const run = await dsh.client.getRun(runId);
     expect(run.state).toBe("cancelled");
+
+    const recovered = await postJson<TaskResource>(`${base}/api/v1/tasks/${created.id}/recover`, {});
+    expect(recovered.status).toBe(200);
+    expect(recovered.body).toMatchObject({ id: created.id, status: "cancelled", archived: false, current_run_id: runId });
+    expect(await timeline(base, created.id)).toEqual(events);
+    expect((await dsh.client.getRun(runId)).state).toBe("cancelled");
+
+    const archived = await postJson<TaskResource>(`${base}/api/v1/tasks/${created.id}/archive`, {});
+    expect(archived.status).toBe(200);
+    expect(archived.body).toMatchObject({ id: created.id, status: "cancelled", archived: true });
+    expect(await timeline(base, created.id)).toEqual(events);
   });
 
   test("a wall-clock timeout inside dsh projects timed_out", async () => {

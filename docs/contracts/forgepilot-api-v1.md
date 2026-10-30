@@ -71,6 +71,11 @@ The UI status enum is `queued`, `assessing_risk`, `awaiting_approval`,
 machine. `failed` is deliberately not a status: an execution failure is
 projected as its authoritative `stopped` or `timed_out` outcome.
 
+Cancelled tasks expose `archived`, a durable workspace visibility flag. It
+defaults to true for existing cancelled tasks. Restoring a task sets it to
+false without changing its terminal status, run, or event history; archiving
+it again sets the flag to true. Other task statuses omit this field.
+
 `pi_summary` is the display-safe projection for the latest settled Pi turn
 of the task's current run; free model turn text is never displayable
 (DAT-193 trust boundary) and the available path is the turn's validated
@@ -112,9 +117,15 @@ run summaries for that task; terminal grants are never reused.
 | `POST /api/v1/tasks/{task_id}/messages` | `{mode:"steer"|"follow_up",content:"..."}` | `202 {task_id, queued:true}` |
 | `POST /api/v1/tasks/{task_id}/approvals` | `{decision:"approve"|"reject",scope_digest:"sha256:..."}` | `200 Task` |
 | `POST /api/v1/tasks/{task_id}/cancel` | optional reason | `202 Task` |
+| `POST /api/v1/tasks/{task_id}/archive` | none | `200 Task` with `archived: true` |
+| `POST /api/v1/tasks/{task_id}/recover` | none | `200 Task` with `archived: false` |
 | `GET /api/v1/tasks/{task_id}/timeline` | none | `200 {items: TimelineEvent[]}` |
 | `GET /api/v1/tasks/{task_id}/artifacts/{artifact_id}` | none | `200 redacted artifact` |
 | `GET /api/v1/tasks/{task_id}/stream` | `Last-Event-ID` optional | `200 text/event-stream` |
+
+Archive and recover apply only to cancelled tasks and return `409` for other
+statuses. These operations move the existing task between workspace views;
+they do not resume or create a run.
 
 SSE events contain `event_id`, `sequence`, `occurred_at`, `task_id`,
 `task_version`, `type`, and redacted `data`. Types are `task.status_changed`,

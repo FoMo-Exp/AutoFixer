@@ -144,6 +144,14 @@ export class ForgePilotClient {
     });
   }
 
+  async archiveTask(taskId: string): Promise<Task> {
+    return this.request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}/archive`, { method: "POST" });
+  }
+
+  async recoverTask(taskId: string): Promise<Task> {
+    return this.request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}/recover`, { method: "POST" });
+  }
+
   async getTimeline(taskId: string): Promise<TaskEvent[]> {
     const result = await this.request<
       operations["getTaskTimeline"]["responses"][200]["content"]["application/json"]
