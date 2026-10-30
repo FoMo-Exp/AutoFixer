@@ -5,13 +5,12 @@
 
 ## 1. 设计基线
 
-- 基线方向：**Linear 暗色工作台**（`design-demos/dir-2.html`，选定记录 `design-demos/direction-approved.md`）
+- 基线方向：**Linear 暗色工作台**（选定的设计方向）
 - 参照气质：Qoder（近黑、克制、工程理性）——只借气质，不用它的配色
 - 品牌：**Signal 信号橙 #F25C05** 是唯一品牌色，与 logo A1 橙点同色
 - Logo：**A1 双柱穿珠**（两道闸门 + 穿过的橙点 = 一次 run 通过两道 deny-by-default 关卡）
   柱用 `currentColor` 随皮肤反转，橙点永远走 `--accent`。禁改图形、禁换色
-- 单一事实源：token 全部定义在 `web/src/styles.css` 的 `:root`，规格页
-  `design-demos/type-spacing.html` 与产品共用同一套 CSS 变量（看即所用）
+- 单一事实源：token 全部定义在 `web/src/styles.css` 的 `:root`，组件禁止另起炉灶硬编码
 
 ## 2. Design tokens（必须使用，禁止硬编码）
 
@@ -34,7 +33,7 @@
 - `--accent`（Signal 橙）只属于：品牌、主操作、focus 环、选中态、进度条、tab 指示器
 - 状态色只表达语义，**不得**用作品牌装饰；装饰性强调一律走 `--accent-text`
 - 深浅双皮肤靠 `[data-surface="light"]` 整套覆盖（中性/语义/阴影），语义色在浅色下加深，
-  保证正文对比度 **≥4.5:1**（实测值在 `design-demos/dir-2.html`）
+  保证正文对比度 **≥4.5:1**（深浅两个皮肤都要满足）
 
 ### 状态语义色（固定映射，勿乱改）
 
@@ -108,27 +107,18 @@
 
 ```sh
 cd web
-npm run typecheck    # 基线 2 个既有 TS 错误（settings-ipc.test / RepositoryPicker.test），不得新增
-npm test             # 必须 102/102
+npm run typecheck    # 不得新增 TS 错误
+npm test             # 全部通过
 npm run build        # vite + electron 主进程 + preload，须成功
 ```
 
 视觉验收：Electron 起真实 app 截图核对（深/浅两皮肤、375/1440 双视口）。
-设计体检工具 `python3 .agents/skills/huashu-design/scripts/design_lint.py check <html>`。
+设计体检用 huashu-design skill（装在个人目录，见 `.githooks/pre-commit` 的安装提示）。
 
-## 10. 参考材料索引
+## 10. Git 约束
 
-| 文件 | 内容 |
-|---|---|
-| `design-demos/direction-approved.md` | 所有设计决策 + 用户原话（改视觉前先读） |
-| `design-demos/type-spacing.html` | 字阶/间距/圆角规格页（与产品共用 CSS 变量） |
-| `design-demos/dir-2.html` | 设计基线原型（token 真相源之一） |
-| `design-demos/brand-spec.md` | 品牌/logo 设计约束 |
-| `design-demos/video-storyboard.md` | 对外视频分镜（界面改动需保持分镜截图可用） |
-| `web/src/styles.css` `:root` | design tokens 定义（唯一事实源） |
-
-## 11. Git 约束
-
-- 分支：`autofixer/workbench-visual-refresh`
-- 不要动 `ceda68a` 之前携带的 orchestrator model settings WIP（含 2 个已知 TS 错误）
 - 提交信息写清：改了什么、为什么、如何验证（typecheck/测试/截图）
+- 只提交与应用代码相关的文件。设计探索稿、agent skill 目录、系统缓存（`.DS_Store`）等
+  本地工作产物**禁止入库**，由 `.gitignore` 与 pre-commit hook 拦截
+- 设计/工程用的 agent skill 装到个人目录（如 `~/.claude/skills/`），不装进仓库；
+  团队成员按需自行安装（见 `.githooks/pre-commit` 的检查与安装提示）
