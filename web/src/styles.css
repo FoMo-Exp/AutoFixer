@@ -1546,29 +1546,12 @@ p {
   min-height: 14px;
 }
 
-.model-settings-fields,
-.settings-account-fields {
+.model-settings-fields {
   grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
 }
 
-.settings-field-note {
-  align-self: stretch;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  min-width: 0;
-}
-
-.settings-field-note > span {
-  color: var(--muted);
-  font-size: 9px;
-  font-weight: 700;
-}
-
-.settings-field-note p {
-  font-size: 10px;
-  line-height: 1.4;
-  margin: 5px 0 0;
+.settings-account-fields {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .modal-settings form {
@@ -1591,7 +1574,7 @@ p {
 .settings-account-list {
   display: grid;
   gap: 7px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   margin: 9px 0 12px;
 }
 
@@ -1705,8 +1688,6 @@ p {
 .settings-account-copy span {
   color: var(--muted);
   font-size: 10px;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

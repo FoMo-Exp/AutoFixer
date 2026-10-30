@@ -42,7 +42,7 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
   const [modelNotice, setModelNotice] = useState<string>();
   const [provider, setProvider] = useState<Provider>("github");
   const [token, setToken] = useState("");
-  const [instanceUrl, setInstanceUrl] = useState("");
+  const [tokenSaved, setTokenSaved] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
@@ -138,10 +138,9 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
       const account = await saveAccount({
         provider,
         token: token.trim(),
-        ...(instanceUrl.trim() ? { instanceUrl: instanceUrl.trim() } : {}),
       });
       setToken("");
-      setInstanceUrl("");
+      setTokenSaved(true);
       setNotice(`${PROVIDER_LABELS[account.provider]} account @${account.login} bound.`);
       await refresh();
       onChanged?.();
@@ -405,34 +404,16 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
                 />
               </label>
               <label>
-                Instance
-                <input
-                  value={instanceUrl}
-                  onChange={(event) => setInstanceUrl(event.target.value)}
-                  placeholder={provider === "github" ? "https://github.com" : "https://gitlab.com"}
-                />
-              </label>
-            </div>
-            <div className="form-grid settings-account-fields">
-              <label>
                 Access token
                 <input
                   type="password"
                   value={token}
                   onChange={(event) => setToken(event.target.value)}
-                  placeholder={provider === "github" ? "ghp_…" : "glpat-…"}
+                  placeholder={tokenSaved ? "••••••••" : provider === "github" ? "ghp_…" : "glpat-…"}
                   autoComplete="off"
                   required
                 />
               </label>
-              <div className="settings-field-note">
-                <span>Required access</span>
-                <p>
-                  {provider === "github"
-                    ? "GitHub: read access to repositories."
-                    : "GitLab: read_api scope."}
-                </p>
-              </div>
             </div>
             {error && (
               <div className="inline-error" role="alert">
