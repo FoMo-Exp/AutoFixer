@@ -23,6 +23,8 @@ import type { PiTurnRow } from "./ui/format";
 import { piSummaryHeadline, piSummaryStateLabel, resolvePiSummary } from "./ui/pi-summary";
 import { redactText, sanitizeValue } from "./ui/redaction";
 import { Select } from "./ui/Select";
+import { applyScrollMode, getScrollMode, STACKED_MIN_TASKS } from "./ui/scroll-mode";
+import type { ScrollMode } from "./ui/scroll-mode";
 
 const STATUS_FILTERS: Array<"all" | TaskStatus> = [
   "all",
@@ -60,6 +62,13 @@ export default function App(): ReactElement {
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
   /** 每次点击任务卡片递增，强制详情 effect 重新执行（selectedId 不变时也能刷新） */
   const [detailEpoch, setDetailEpoch] = useState(0);
+  /** 侧栏任务列表滚动模式：常规滚动条 / 每 3 张卡一组的折叠滚动 */
+  const [scrollMode, setScrollMode] = useState<ScrollMode>(() => getScrollMode());
+
+  const changeScrollMode = useCallback((mode: ScrollMode): void => {
+    setScrollMode(mode);
+    applyScrollMode(mode);
+  }, []);
   const selectedIdRef = useRef<string | undefined>(undefined);
   const [selectedTask, setSelectedTask] = useState<Task>();
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -210,6 +219,8 @@ export default function App(): ReactElement {
   );
 
   const visibleTasks = tasks.filter((task) => filter === "all" || task.status === filter);
+  /** 折叠滚动只在卡片数超过阈值时生效，短列表保持常规滚动 */
+  const stackedScroll = scrollMode === "stacked" && visibleTasks.length > STACKED_MIN_TASKS;
 
   async function handleCreate(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -324,7 +335,7 @@ export default function App(): ReactElement {
               </button>
             ))}
           </div>
-          <div className="task-list">
+          <div className="task-list" data-scroll={stackedScroll ? "stacked" : "normal"}>
             {visibleTasks.length === 0 ? (
               <div className="empty-sidebar">
                 <div className="empty-icon">⌁</div>
@@ -338,18 +349,19 @@ export default function App(): ReactElement {
                 </button>
               </div>
             ) : (
-              visibleTasks.map((task) => (
+              visibleTasks.map((task, index) => (
                 <TaskListItem
                   key={task.id}
                   task={task}
                   selected={task.id === selectedId}
+                  snapStart={index % 3 === 0}
                   onClick={() => selectTask(task.id)}
                 />
               ))
             )}
             {nextCursor && (
               <button
-                className="button button-quiet button-small"
+                className="button button-quiet button-small load-more"
                 onClick={() => void loadMoreTasks()}
                 disabled={isLoadingMore}
               >
@@ -441,6 +453,8 @@ export default function App(): ReactElement {
             setShowSettings(false);
             setSettingsEpoch((value) => value + 1);
           }}
+          scrollMode={scrollMode}
+          onScrollModeChange={changeScrollMode}
         />
       )}
     </div>
@@ -465,15 +479,17 @@ function ServiceBadge({ status }: { status: ServiceStatus }): ReactElement {
 function TaskListItem({
   task,
   selected,
+  snapStart,
   onClick,
 }: {
   task: Task;
   selected: boolean;
+  snapStart?: boolean;
   onClick: () => void;
 }): ReactElement {
   return (
     <button
-      className={`task-list-item ${selected ? "task-list-item-selected" : ""}`}
+      className={`task-list-item ${selected ? "task-list-item-selected" : ""}${snapStart ? " task-snap-start" : ""}`}
       onClick={onClick}
     >
       <div className="task-list-item-topline">

@@ -14,11 +14,15 @@ import { formatDate } from "../ui/format";
 import { applySurface, getSurface } from "../ui/surface";
 import type { Surface } from "../ui/surface";
 import { Select } from "../ui/Select";
+import type { ScrollMode } from "../ui/scroll-mode";
 
 interface SettingsDialogProps {
   onClose: () => void;
   /** Called after the account set changes so pickers can refresh. */
   onChanged?: () => void;
+  /** Sidebar task-list scroll mode (Appearance tab). */
+  scrollMode?: ScrollMode;
+  onScrollModeChange?: (mode: ScrollMode) => void;
 }
 
 type Provider = "github" | "gitlab";
@@ -26,7 +30,12 @@ type SettingsTab = "model" | "accounts" | "appearance";
 
 const PROVIDER_LABELS: Record<Provider, string> = { github: "GitHub", gitlab: "GitLab" };
 
-export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): ReactElement {
+export function SettingsDialog({
+  onClose,
+  onChanged,
+  scrollMode = "normal",
+  onScrollModeChange,
+}: SettingsDialogProps): ReactElement {
   const [activeTab, setActiveTab] = useState<SettingsTab>("model");
   const [surface, setSurfaceState] = useState<Surface>(() => getSurface());
   const [accounts, setAccounts] = useState<ProviderAccount[]>([]);
@@ -509,6 +518,30 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
                 <span className="surface-option-label">{value === "dark" ? "Dark" : "Light"}</span>
               </button>
             ))}
+          </div>
+          <div className="scroll-picker" role="radiogroup" aria-label="Task list scroll">
+            <span className="scroll-picker-label">Task list</span>
+            <div className="scroll-picker-options">
+              {(["normal", "stacked"] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={scrollMode === value}
+                  className={`scroll-option${scrollMode === value ? " selected" : ""}`}
+                  onClick={() => onScrollModeChange?.(value)}
+                >
+                  <span className={`scroll-preview scroll-preview-${value}`} aria-hidden="true">
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                  <span className="scroll-option-label">
+                    {value === "normal" ? "Normal" : "Stacked"}
+                  </span>
+                </button>
+              ))}
+            </div>
           </div>
         </section>
       </section>

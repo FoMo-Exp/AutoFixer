@@ -2034,3 +2034,183 @@ p {
 .custom-select-list::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
 }
+
+/* ══════════════════════════════════════════════════════════════
+   侧栏任务列表滚动模式（Settings → Appearance → Task list）
+   normal  ：常规滚动条滚动
+   stacked ：视口固定 3 张卡，每滑一格聚焦下一组 3 张，
+             卡片进出视口时缩放/淡出，形成 Apple 后台式的折叠堆叠感。
+   只在卡片数 > STACKED_MIN_TASKS(10) 时启用 stacked（见 ui/scroll-mode.ts）。
+   ══════════════════════════════════════════════════════════════ */
+.task-list {
+  overscroll-behavior: contain;
+  scrollbar-color: var(--faint) transparent;
+  scrollbar-width: thin;
+}
+
+.task-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.task-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.task-list::-webkit-scrollbar-thumb {
+  background: var(--faint);
+  border-radius: 3px;
+}
+
+.task-list::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+/* ── stacked：3 张卡一组的折叠滚动 ── */
+.task-list[data-scroll="stacked"] {
+  --stack-card-h: 88px;
+  flex: 0 0 auto;
+  height: calc(3 * var(--stack-card-h) + 12px);
+  scroll-behavior: smooth;
+  scroll-snap-type: y mandatory;
+}
+
+.task-list[data-scroll="stacked"] .task-list-item {
+  flex: 0 0 auto;
+  height: var(--stack-card-h);
+  overflow: hidden;
+  scroll-snap-align: none;
+}
+
+/* 只有每组第 1 张是吸附点，才能做到“滑一格聚焦下一组 3 张” */
+.task-list[data-scroll="stacked"] .task-list-item.task-snap-start {
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+}
+
+.task-list[data-scroll="stacked"] .task-list-item.load-more,
+.task-list[data-scroll="stacked"] .load-more {
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+}
+
+/* 折叠堆叠感：卡片越靠近视口边缘越缩小、变淡；静止时 3 张卡均在
+   15%–85% 区间内，保持完全不透明（对比度不受影响）。 */
+@supports (animation-timeline: view()) {
+  .task-list[data-scroll="stacked"] .task-list-item {
+    animation: stack-fold linear both;
+    animation-timeline: view();
+    animation-range: entry 0% exit 100%;
+  }
+}
+
+@keyframes stack-fold {
+  0% {
+    opacity: 0.45;
+    transform: scale(0.92);
+  }
+
+  15%,
+  85% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  100% {
+    opacity: 0.45;
+    transform: scale(0.92);
+  }
+}
+
+/* stacked 下 footer 固定到侧栏底部，腾出的空隙留在列表下方 */
+.task-list[data-scroll="stacked"] + .sidebar-footer {
+  margin-top: auto;
+}
+
+/* Settings → Appearance → Task list 滚动模式选择 */
+.scroll-picker {
+  align-items: center;
+  display: flex;
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
+}
+
+.scroll-picker-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 62px;
+}
+
+.scroll-picker-options {
+  display: flex;
+  gap: var(--sp-3);
+}
+
+.scroll-option {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  gap: var(--sp-2);
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
+  position: relative;
+  transition:
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+.scroll-option::after {
+  content: "";
+  inset: -2px;
+  position: absolute;
+}
+
+.scroll-option:hover {
+  border-color: var(--muted);
+}
+
+.scroll-option.selected {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.scroll-option:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.scroll-option-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* 迷你预览：normal = 三行等距；stacked = 三行紧挨成组 */
+.scroll-preview {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  height: 26px;
+  width: 22px;
+}
+
+.scroll-preview i {
+  background: currentColor;
+  border-radius: 1px;
+  display: block;
+  height: 5px;
+  opacity: 0.75;
+  width: 100%;
+}
+
+.scroll-preview-stacked {
+  gap: 1px;
+}
+
+.scroll-preview-stacked i:nth-child(2) {
+  opacity: 1;
+}
