@@ -25,6 +25,7 @@ import { redactText, sanitizeValue } from "./ui/redaction";
 import { Select } from "./ui/Select";
 import { applyScrollMode, getScrollMode, STACKED_MIN_TASKS } from "./ui/scroll-mode";
 import type { ScrollMode } from "./ui/scroll-mode";
+import { useStackFold } from "./ui/use-stack-fold";
 
 const STATUS_FILTERS: Array<"all" | TaskStatus> = [
   "all",
@@ -222,6 +223,11 @@ export default function App(): ReactElement {
   /** 折叠滚动只在卡片数超过阈值时生效，短列表保持常规滚动 */
   const stackedScroll = scrollMode === "stacked" && visibleTasks.length > STACKED_MIN_TASKS;
 
+  const taskListRef = useRef<HTMLDivElement | null>(null);
+
+  /** 折叠堆叠效果：中心按可展示高度定焦（约 5 张），范围外淡化收拢 */
+  useStackFold(taskListRef, stackedScroll, `${visibleTasks.length}:${filter}`);
+
   async function handleCreate(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (!form.summary.trim()) return;
@@ -335,7 +341,7 @@ export default function App(): ReactElement {
               </button>
             ))}
           </div>
-          <div className="task-list" data-scroll={stackedScroll ? "stacked" : "normal"}>
+          <div ref={taskListRef} className="task-list" data-scroll={stackedScroll ? "stacked" : "normal"}>
             {visibleTasks.length === 0 ? (
               <div className="empty-sidebar">
                 <div className="empty-icon">⌁</div>
@@ -349,12 +355,11 @@ export default function App(): ReactElement {
                 </button>
               </div>
             ) : (
-              visibleTasks.map((task, index) => (
+              visibleTasks.map((task) => (
                 <TaskListItem
                   key={task.id}
                   task={task}
                   selected={task.id === selectedId}
-                  snapStart={index % 3 === 0}
                   onClick={() => selectTask(task.id)}
                 />
               ))
@@ -479,17 +484,15 @@ function ServiceBadge({ status }: { status: ServiceStatus }): ReactElement {
 function TaskListItem({
   task,
   selected,
-  snapStart,
   onClick,
 }: {
   task: Task;
   selected: boolean;
-  snapStart?: boolean;
   onClick: () => void;
 }): ReactElement {
   return (
     <button
-      className={`task-list-item ${selected ? "task-list-item-selected" : ""}${snapStart ? " task-snap-start" : ""}`}
+      className={`task-list-item ${selected ? "task-list-item-selected" : ""}`}
       onClick={onClick}
     >
       <div className="task-list-item-topline">

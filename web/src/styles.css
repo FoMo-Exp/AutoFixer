@@ -2066,49 +2066,11 @@ p {
   background: var(--muted);
 }
 
-/* ── stacked：每滑一格聚焦下一组 3 张卡（布局不变，只改滚动） ── */
-.task-list[data-scroll="stacked"] {
-  scroll-behavior: smooth;
-  scroll-snap-type: y mandatory;
-}
-
-/* 只有每组第 1 张是吸附点，才能做到“滑一格聚焦下一组 3 张” */
-.task-list[data-scroll="stacked"] .task-list-item.task-snap-start {
-  scroll-snap-align: start;
-  scroll-snap-stop: always;
-}
-
-.task-list[data-scroll="stacked"] .load-more {
-  scroll-snap-align: start;
-  scroll-snap-stop: always;
-}
-
-/* 折叠堆叠感：卡片越靠近视口边缘越缩小、变淡；静止时 3 张卡均在
-   15%–85% 区间内，保持完全不透明（对比度不受影响）。 */
-@supports (animation-timeline: view()) {
-  .task-list[data-scroll="stacked"] .task-list-item {
-    animation: stack-fold linear both;
-    animation-timeline: view();
-    animation-range: entry 0% exit 100%;
-  }
-}
-
-@keyframes stack-fold {
-  0% {
-    opacity: 0.45;
-    transform: scale(0.92);
-  }
-
-  15%,
-  85% {
-    opacity: 1;
-    transform: scale(1);
-  }
-
-  100% {
-    opacity: 0.45;
-    transform: scale(0.92);
-  }
+/* ── stacked：折叠堆叠（动画由 useStackFold 逐帧驱动） ──
+   中心按可展示高度定焦约 5 张卡，范围外缩放/淡化/向边缘收拢成堆叠。
+   不改列表布局（仍填满侧栏），只叠加 transform/opacity。 */
+.task-list[data-scroll="stacked"] .task-list-item {
+  will-change: transform, opacity;
 }
 
 /* Settings → Appearance → Task list 滚动模式选择 */
