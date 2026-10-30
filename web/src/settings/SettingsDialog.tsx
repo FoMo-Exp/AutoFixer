@@ -211,7 +211,7 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
             aria-controls="settings-panel-accounts"
             onClick={() => setActiveTab("accounts")}
           >
-            Repository accounts
+            Repository Accounts
           </button>
           <button
             id="settings-tab-appearance"
@@ -379,8 +379,8 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
           <div className="settings-panel-heading">
             <div className="card-heading">
               <div>
-                <span className="eyebrow">Connected accounts</span>
-                <h3>Repository accounts</h3>
+                <span className="eyebrow">Account Management</span>
+                <h3>Remote Configuration</h3>
               </div>
               <span className="event-count">{accounts.length} bound</span>
             </div>
@@ -391,7 +391,7 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
             </div>
           )}
           <form onSubmit={(event) => void handleSave(event)}>
-            <div className="form-grid">
+            <div className="form-grid account-form-grid">
               <label>
                 Provider
                 <Select

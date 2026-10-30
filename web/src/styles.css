@@ -1554,6 +1554,10 @@ p {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.account-form-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
 .modal-settings form {
   gap: 10px;
 }
@@ -1696,11 +1700,10 @@ p {
 }
 
 .settings-bound-accounts-heading {
-  color: var(--muted);
-  font-size: 9px;
+  color: var(--text);
+  font-size: 17px;
   font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  line-height: 1.2;
 }
 
 .settings-bound-accounts .card-empty {
