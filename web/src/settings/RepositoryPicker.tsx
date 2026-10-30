@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
+import { Select } from "../ui/Select";
 import type { ProviderAccount, ProviderBranch, ProviderRepository } from "./client";
 import { discoverRepositories, listAccounts, listBranches, settingsAvailable } from "./client";
 import {
@@ -40,6 +41,8 @@ export function RepositoryPicker({
   onOpenSettings,
   refreshToken = 0,
 }: RepositoryPickerProps): ReactElement {
+  const repositoryFieldId = useId();
+  const branchFieldId = useId();
   const available = settingsAvailable();
   const [accounts, setAccounts] = useState<ProviderAccount[]>([]);
   const [repositoriesByAccount, setRepositoriesByAccount] = useState<
@@ -171,11 +174,12 @@ export function RepositoryPicker({
   return (
     <>
       <div className="form-grid">
-        <label>
-          Repository
+        <div className="picker-field">
+          <label htmlFor={repositoryFieldId}>Repository</label>
           {repositoryIsCustom ? (
             <div className="picker-input-row">
               <input
+                id={repositoryFieldId}
                 value={repositoryId}
                 onChange={(event) => onChange({ repositoryId: event.target.value })}
                 placeholder="github:owner/repo"
@@ -192,10 +196,14 @@ export function RepositoryPicker({
               )}
             </div>
           ) : (
-            <select
-              value={repositorySelectValue(selectedOption)}
-              onChange={(event) => {
-                const value = event.target.value;
+            <Select
+              id={repositoryFieldId}
+              value={repositorySelectValue(selectedOption) ?? CUSTOM_REPOSITORY}
+              options={[
+                ...options.map(({ value, label }) => ({ value, label })),
+                { value: CUSTOM_REPOSITORY, label: "Custom repository ID…" },
+              ]}
+              onChange={(value) => {
                 if (value === CUSTOM_REPOSITORY) {
                   // Switch to free-text input without discarding the current
                   // value, so choosing Custom never loses what is typed.
@@ -214,21 +222,15 @@ export function RepositoryPicker({
                   patch.baseRef = option.repository.defaultBranch;
                 onChange(patch);
               }}
-            >
-              {options.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-              <option value={CUSTOM_REPOSITORY}>Custom repository ID…</option>
-            </select>
+            />
           )}
-        </label>
-        <label>
-          Base ref
+        </div>
+        <div className="picker-field">
+          <label htmlFor={branchFieldId}>Base ref</label>
           {branchIsCustom ? (
             <div className="picker-input-row">
               <input
+                id={branchFieldId}
                 value={baseRef}
                 onChange={(event) => onChange({ baseRef: event.target.value })}
                 placeholder="main"
@@ -245,10 +247,17 @@ export function RepositoryPicker({
               )}
             </div>
           ) : (
-            <select
+            <Select
+              id={branchFieldId}
               value={branchSelectValue(baseRef, branchNames)}
-              onChange={(event) => {
-                const value = event.target.value;
+              options={[
+                ...branchNames.map((name) => ({
+                  value: name,
+                  label: `${name}${selectedOption?.repository.defaultBranch === name ? " (default)" : ""}`,
+                })),
+                { value: CUSTOM_BRANCH, label: "Custom ref…" },
+              ]}
+              onChange={(value) => {
                 if (value === CUSTOM_BRANCH) {
                   // Keep the current ref when switching to free-text input.
                   setBranchView("input");
@@ -257,17 +266,9 @@ export function RepositoryPicker({
                 setBranchView("auto");
                 onChange({ baseRef: value });
               }}
-            >
-              {branchNames.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                  {selectedOption?.repository.defaultBranch === name ? " (default)" : ""}
-                </option>
-              ))}
-              <option value={CUSTOM_BRANCH}>Custom ref…</option>
-            </select>
+            />
           )}
-        </label>
+        </div>
       </div>
       {available && (
         <div className="picker-toolbar">

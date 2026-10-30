@@ -12,9 +12,17 @@ interface SelectProps {
   onChange: (value: string) => void;
   disabled?: boolean;
   className?: string;
+  id?: string;
 }
 
-export function Select({ value, options, onChange, disabled, className }: SelectProps): ReactElement {
+export function Select({
+  value,
+  options,
+  onChange,
+  disabled,
+  className,
+  id,
+}: SelectProps): ReactElement {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -82,6 +90,7 @@ export function Select({ value, options, onChange, disabled, className }: Select
         ref={triggerRef}
         type="button"
         role="combobox"
+        id={id}
         aria-expanded={open}
         aria-haspopup="listbox"
         disabled={disabled}
@@ -92,7 +101,13 @@ export function Select({ value, options, onChange, disabled, className }: Select
         <span className="custom-select-value">{selectedLabel}</span>
         <span className="custom-select-chevron" aria-hidden="true">
           <svg width="10" height="6" viewBox="0 0 10 6" fill="none">
-            <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            <path
+              d="M1 1l4 4 4-4"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
           </svg>
         </span>
       </button>
@@ -104,7 +119,10 @@ export function Select({ value, options, onChange, disabled, className }: Select
               role="option"
               aria-selected={option.value === value}
               className={`custom-select-option${option.value === value ? " selected" : ""}`}
-              onClick={() => {
+              onClick={(event) => {
+                // A surrounding label would forward the option click to the
+                // trigger and reopen the menu immediately after selection.
+                event.preventDefault();
                 onChange(option.value);
                 close();
               }}
