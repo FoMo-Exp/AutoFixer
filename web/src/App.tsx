@@ -1029,7 +1029,7 @@ function CreateTaskDialog({
             refreshToken={refreshToken}
           />
           <label>
-            Task summary
+            <span className="label-text">Task summary <span className="required-dot">*</span></span>
             <textarea
               value={form.summary}
               onChange={(event) => onChange({ ...form, summary: event.target.value })}
@@ -1039,7 +1039,7 @@ function CreateTaskDialog({
             />
           </label>
           <label>
-            Source reference <span className="optional">optional</span>
+            Source reference
             <input
               value={form.sourceReference}
               onChange={(event) => onChange({ ...form, sourceReference: event.target.value })}
@@ -1047,7 +1047,7 @@ function CreateTaskDialog({
             />
           </label>
           <label>
-            Acceptance criteria <span className="optional">one per line · optional</span>
+            Acceptance criteria
             <textarea
               value={form.acceptanceCriteria}
               onChange={(event) => onChange({ ...form, acceptanceCriteria: event.target.value })}

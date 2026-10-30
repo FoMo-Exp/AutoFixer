@@ -206,7 +206,6 @@ select:focus-visible {
 .info-row > span,
 .artifact-copy span,
 .run-row,
-.optional,
 .modal-intro,
 .security-note span,
 .connection-banner span,
@@ -1407,8 +1406,20 @@ p {
   grid-template-columns: minmax(0, 1.5fr) minmax(120px, 0.8fr);
 }
 
-.optional {
-  font-weight: 400;
+/* 必填标记：主题色上标 *，替代旧 optional/required 文字 */
+.required-dot {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  margin-left: 3px;
+  vertical-align: super;
+}
+
+/* label 是 flex column，span 会独占一行；label-text wrapper 保持行内 */
+.label-text {
+  align-items: baseline;
+  display: inline-flex;
 }
 
 .modal-footer {

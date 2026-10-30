@@ -304,7 +304,7 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
             </div>
             <div className="form-grid model-settings-fields">
               <label>
-                API base URL <span className="optional">optional</span>
+                API base URL
                 <input
                   value={modelBaseUrl}
                   onChange={(event) => setModelBaseUrl(event.target.value)}
@@ -319,12 +319,7 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
                 />
               </label>
               <label>
-                API key{" "}
-                <span className="optional">
-                  {modelProvider === "openai-compatible"
-                    ? "optional for local endpoints"
-                    : "required"}
-                </span>
+                <span className="label-text">API key{modelProvider !== "openai-compatible" && <span className="required-dot">*</span>}</span>
                 <input
                   type="password"
                   value={modelApiKey}
@@ -410,7 +405,7 @@ export function SettingsDialog({ onClose, onChanged }: SettingsDialogProps): Rea
                 />
               </label>
               <label>
-                Instance <span className="optional">optional</span>
+                Instance
                 <input
                   value={instanceUrl}
                   onChange={(event) => setInstanceUrl(event.target.value)}
