@@ -2016,3 +2016,26 @@ p {
 .message-mode-select {
   max-width: 210px;
 }
+
+/* 下拉列表滚动条：深浅两种皮肤都走主题色 */
+.custom-select-list {
+  scrollbar-color: var(--faint) transparent;
+  scrollbar-width: thin;
+}
+
+.custom-select-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.custom-select-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-select-list::-webkit-scrollbar-thumb {
+  background: var(--faint);
+  border-radius: 3px;
+}
+
+.custom-select-list::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
