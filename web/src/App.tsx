@@ -58,6 +58,8 @@ export default function App(): ReactElement {
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   /** 窄屏钻取视图：list ↔ detail（≤900px 生效，桌面始终双栏并存） */
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
+  /** 每次点击任务卡片递增，强制详情 effect 重新执行（selectedId 不变时也能刷新） */
+  const [detailEpoch, setDetailEpoch] = useState(0);
   const selectedIdRef = useRef<string | undefined>(undefined);
   const [selectedTask, setSelectedTask] = useState<Task>();
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -94,13 +96,19 @@ export default function App(): ReactElement {
 
   const selectTask = useCallback((taskId: string | undefined): void => {
     taskDetailRequestRef.current += 1;
+    const previousId = selectedIdRef.current;
     selectedIdRef.current = taskId;
     setSelectedId(taskId);
-    setSelectedTask(undefined);
+    // 重新选中同一任务时保留现有详情，避免闪回 welcome 界面；
+    // 切换到不同任务时才清空，等待新详情加载。
+    if (previousId !== taskId) {
+      setSelectedTask(undefined);
+      setRuns([]);
+    }
     setMobileView(taskId ? "detail" : "list");
-    setRuns([]);
     setActionError(undefined);
     setActionBusy(undefined);
+    setDetailEpoch((n) => n + 1);
   }, []);
 
   const loadTasks = useCallback(async (showConnecting = false): Promise<void> => {
@@ -183,7 +191,7 @@ export default function App(): ReactElement {
       return;
     }
     void refreshSelectedTask();
-  }, [refreshSelectedTask, selectedId]);
+  }, [refreshSelectedTask, selectedId, detailEpoch]);
 
   const handleStreamEvent = useCallback(
     (event: TaskEvent): void => {
