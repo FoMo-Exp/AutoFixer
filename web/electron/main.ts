@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, safeStorage } from "electron";
 import type { ChildProcess } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createApiProxy, installApiProxy } from "./api-proxy.js";
@@ -21,7 +21,12 @@ let disposeApiProxy: () => void = () => undefined;
 let disposeSettingsIpc: () => void = () => undefined;
 let startupError = "";
 
+function appIconPath(): string {
+  return path.join(__dirname, "icon-1024.png");
+}
+
 function createWindow(): BrowserWindow {
+  const iconPath = appIconPath();
   const window = new BrowserWindow({
     width: 1440,
     height: 920,
@@ -29,6 +34,7 @@ function createWindow(): BrowserWindow {
     minHeight: 700,
     backgroundColor: "#0c1018",
     title: "ForgePilot Workbench",
+    ...(existsSync(iconPath) ? { icon: iconPath } : {}),
     show: process.env["FORGEPILOT_ELECTRON_WINDOW_SMOKE"] !== "1",
     webPreferences: {
       contextIsolation: true,
@@ -245,6 +251,11 @@ function runWindowSmoke(window: BrowserWindow): void {
 }
 
 void app.whenReady().then(async () => {
+  // A1 双柱穿珠：Signal 橙点穿过两道默认拒绝的闸门
+  const iconPath = appIconPath();
+  if (process.platform === "darwin" && app.dock && existsSync(iconPath)) {
+    app.dock.setIcon(iconPath);
+  }
   delete process.env["FORGEPILOT_API_STARTUP_ERROR"];
   const modelSettingsPath = path.join(app.getPath("userData"), "orchestrator-model.json");
   try {

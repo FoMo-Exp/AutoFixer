@@ -484,7 +484,6 @@ function TaskListItem({
       <div className="task-list-summary">{redactText(task.request.summary)}</div>
       <div className="task-list-repo">
         <span>{redactText(task.repository.display_name)}</span>
-        <span className="mono">{shortId(task.id, 13)}</span>
       </div>
     </button>
   );
