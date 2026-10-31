@@ -1,8 +1,8 @@
 import type http from "node:http";
 
 import type { StreamFn } from "@mariozechner/pi-agent-core";
-import { getEnvApiKey, getModel } from "@mariozechner/pi-ai";
-import type { Api, KnownProvider, Model } from "@mariozechner/pi-ai";
+import { getEnvApiKey } from "@mariozechner/pi-ai";
+import type { Api, Model } from "@mariozechner/pi-ai";
 
 import { buildOpenApiDocument } from "./api/openapi.js";
 import { readOrCreateApiToken } from "./api/auth.js";
@@ -12,6 +12,7 @@ import { TaskStore } from "./api/task-store.js";
 import type { OrchestratorConfig } from "./config.js";
 import { configFromEnv } from "./config.js";
 import { DshClient } from "./dsh/client.js";
+import { resolveConfiguredModel } from "./pi/model.js";
 
 export interface OrchestratorOptions {
   config: OrchestratorConfig;
@@ -101,44 +102,6 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       return promise;
     },
   };
-}
-
-/** Resolve the configured provider/model pair through pi-ai's registry. */
-function resolveConfiguredModel(config: OrchestratorConfig): Model<Api> | undefined {
-  if (!config.piModelProvider || !config.piModelId) {
-    return undefined;
-  }
-  if (config.piModelProvider === "openai-compatible") {
-    if (!config.piBaseUrl) {
-      throw new Error("OpenAI-compatible models require FORGEPILOT_PI_BASE_URL");
-    }
-    return {
-      id: config.piModelId,
-      name: config.piModelId,
-      api: "openai-completions",
-      provider: "openai",
-      baseUrl: config.piBaseUrl,
-      reasoning: false,
-      input: ["text"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 128_000,
-      maxTokens: 4_096,
-    };
-  }
-  try {
-    // Runtime lookup: the registry validates the pair and throws when the
-    // provider or model id is unknown to this pi-ai build.
-    const model = getModel(config.piModelProvider as KnownProvider, config.piModelId as never);
-    if (!model) {
-      throw new Error("the model id is not in the provider registry");
-    }
-    return config.piBaseUrl ? { ...model, baseUrl: config.piBaseUrl } : model;
-  } catch (error) {
-    throw new Error(
-      `Unknown Pi model ${config.piModelProvider}/${config.piModelId}: ` +
-        (error instanceof Error ? error.message : String(error)),
-    );
-  }
 }
 
 export { buildOpenApiDocument, configFromEnv, getEnvApiKey };

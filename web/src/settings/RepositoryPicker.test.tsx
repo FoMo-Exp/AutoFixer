@@ -45,6 +45,10 @@ function Harness({ initialRepo, initialRef }: { initialRepo: string; initialRef:
 
 function mockBridge(repo: typeof REPO, branches: Array<{ name: string; isDefault: boolean }>) {
   window.forgePilotSettings = {
+    getModelSettings: async () => ({ providers: [], secureStorageAvailable: false }),
+    saveModelSettings: async () => ({ providers: [], secureStorageAvailable: false }),
+    removeModelSettings: async () => undefined,
+    testModelConnection: async () => ({ ok: true, message: "Connected", latencyMs: 1 }),
     listAccounts: async () => [ACCOUNT],
     saveAccount: async () => ACCOUNT,
     removeAccount: async () => undefined,
@@ -58,15 +62,18 @@ const BRANCHES_MAIN_DEV = [
   { name: "dev", isDefault: false },
 ];
 
-function baseRefSelect(): HTMLSelectElement {
-  const [, ref] = screen.getAllByRole("combobox") as HTMLSelectElement[];
-  return ref;
+function baseRefSelect(): HTMLElement {
+  return screen.getByRole("combobox", { name: "Base ref" });
 }
 
-function optionLabels(select: HTMLSelectElement): string {
-  return Array.from(select.options)
+async function optionLabels(select: HTMLElement): Promise<string> {
+  await userEvent.click(select);
+  const labels = screen
+    .getAllByRole("option")
     .map((option) => option.textContent ?? "")
     .join(" ");
+  await userEvent.keyboard("{Escape}");
+  return labels;
 }
 
 afterEach(() => {
@@ -87,10 +94,11 @@ describe("auto-prefill when the default repository is not discovered", () => {
     await waitFor(() => {
       expect(screen.getAllByRole("combobox").length).toBe(2);
     });
-    const [repoSelect, refSelect] = screen.getAllByRole("combobox") as HTMLSelectElement[];
-    expect(repoSelect.value).toContain(REPO.id);
-    expect(optionLabels(refSelect)).toContain("main");
-    expect(optionLabels(refSelect)).toContain("dev");
+    const [repoSelect, refSelect] = screen.getAllByRole("combobox");
+    expect(repoSelect.textContent).toContain(`${REPO.owner}/${REPO.name}`);
+    const labels = await optionLabels(refSelect);
+    expect(labels).toContain("main");
+    expect(labels).toContain("dev");
   });
 
   it("leaves an already-discovered default untouched", async () => {
@@ -101,12 +109,51 @@ describe("auto-prefill when the default repository is not discovered", () => {
     await waitFor(() => {
       expect(screen.getAllByRole("combobox").length).toBe(2);
     });
-    const [repoSelect] = screen.getAllByRole("combobox") as HTMLSelectElement[];
-    expect(repoSelect.value).toContain(REPO.id);
+    const [repoSelect] = screen.getAllByRole("combobox");
+    expect(repoSelect.textContent).toContain(`${REPO.owner}/${REPO.name}`);
   });
 });
 
 describe("base-ref select across default-branch scenarios", () => {
+  it("selects a branch using the shared menu and preserves it in Custom mode", async () => {
+    mockBridge({ ...REPO, defaultBranch: "main" }, BRANCHES_MAIN_DEV);
+    render(<Harness initialRepo={REPO.id} initialRef="main" />);
+    const select = await screen.findByRole("combobox", { name: "Base ref" });
+    expect(select.classList.contains("custom-select-trigger")).toBe(true);
+    await userEvent.click(select);
+    await userEvent.click(screen.getByRole("option", { name: "dev" }));
+    expect(baseRefSelect().textContent).toBe("dev");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    await userEvent.click(baseRefSelect());
+    await userEvent.click(screen.getByRole("option", { name: "Custom ref…" }));
+    const input = await screen.findByPlaceholderText("main");
+    expect((input as HTMLInputElement).value).toBe("dev");
+    await userEvent.click(screen.getByRole("button", { name: "Choose from branches…" }));
+    expect(baseRefSelect().textContent).toBe("dev");
+  });
+
+  it("loads the selected repository's branches through the shared menu", async () => {
+    const otherRepo = {
+      ...REPO,
+      id: "github:FoMo-Exp/other",
+      name: "other",
+      defaultBranch: "release",
+    };
+    mockBridge({ ...REPO, defaultBranch: "main" }, BRANCHES_MAIN_DEV);
+    window.forgePilotSettings!.listRepositories = async () => [REPO, otherRepo];
+    window.forgePilotSettings!.listBranches = async ({ repositoryId }) =>
+      repositoryId === otherRepo.id ? [{ name: "release", isDefault: true }] : BRANCHES_MAIN_DEV;
+    render(<Harness initialRepo={REPO.id} initialRef="main" />);
+    const select = await screen.findByRole("combobox", { name: "Repository" });
+    expect(select.classList.contains("custom-select-trigger")).toBe(true);
+    await userEvent.click(select);
+    await userEvent.click(screen.getByRole("option", { name: /FoMo-Exp\/other/ }));
+    await waitFor(() => expect(baseRefSelect().textContent).toBe("release (default)"));
+    const labels = await optionLabels(baseRefSelect());
+    expect(labels).toContain("release");
+    expect(labels).not.toContain("dev");
+  });
+
   it("offers the branches when the default branch is known", async () => {
     mockBridge({ ...REPO, defaultBranch: "main" }, BRANCHES_MAIN_DEV);
     render(<Harness initialRepo={REPO.id} initialRef="main" />);
@@ -114,7 +161,7 @@ describe("base-ref select across default-branch scenarios", () => {
     await waitFor(() => {
       expect(screen.getAllByRole("combobox").length).toBe(2);
     });
-    const labels = optionLabels(baseRefSelect());
+    const labels = await optionLabels(baseRefSelect());
     expect(labels).toContain("main");
     expect(labels).toContain("dev");
   });
@@ -129,7 +176,7 @@ describe("base-ref select across default-branch scenarios", () => {
     await waitFor(() => {
       expect(screen.getAllByRole("combobox").length).toBe(2);
     });
-    const labels = optionLabels(baseRefSelect());
+    const labels = await optionLabels(baseRefSelect());
     expect(labels).toContain("main");
     expect(labels).toContain("dev");
   });
@@ -147,7 +194,7 @@ describe("base-ref select across default-branch scenarios", () => {
     await waitFor(() => {
       expect(screen.getAllByRole("combobox").length).toBe(2);
     });
-    const labels = optionLabels(baseRefSelect());
+    const labels = await optionLabels(baseRefSelect());
     expect(labels).toContain("dev");
     expect(labels).toContain("release");
   });
@@ -161,8 +208,9 @@ describe("Custom (free-text) mode keeps the typed value and offers a way back", 
     await waitFor(() => {
       expect(screen.getAllByRole("combobox").length).toBe(2);
     });
-    const [repoSelect] = screen.getAllByRole("combobox") as HTMLSelectElement[];
-    await userEvent.selectOptions(repoSelect, "__forgepilot_custom_repository__");
+    const [repoSelect] = screen.getAllByRole("combobox");
+    await userEvent.click(repoSelect);
+    await userEvent.click(screen.getByRole("option", { name: "Custom repository ID…" }));
 
     // In Custom/input view the field stays free text even when the typed id
     // matches a discovered repo — the input must not jump away mid-typing.
@@ -183,8 +231,9 @@ describe("Custom (free-text) mode keeps the typed value and offers a way back", 
     await waitFor(() => {
       expect(screen.getAllByRole("combobox").length).toBe(2);
     });
-    const [repoSelect] = screen.getAllByRole("combobox") as HTMLSelectElement[];
-    await userEvent.selectOptions(repoSelect, "__forgepilot_custom_repository__");
+    const [repoSelect] = screen.getAllByRole("combobox");
+    await userEvent.click(repoSelect);
+    await userEvent.click(screen.getByRole("option", { name: "Custom repository ID…" }));
 
     // The way back to the select is an explicit click, not typing.
     const backButton = await screen.findByText(/choose from discovered/i);

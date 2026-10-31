@@ -21,6 +21,7 @@ import {
   saveModelSettings,
 } from "./model-settings-store.js";
 import type { ModelSettingsInput } from "./model-settings-store.js";
+import { testModelConnection } from "./model-connection.js";
 
 /**
  * Settings IPC surface for provider account binding.
@@ -37,6 +38,7 @@ export interface SettingsIpcOptions {
   safeStorage: SafeStorage;
   client: ProviderClient;
   restartApp: () => void;
+  testConnection?: typeof testModelConnection;
   clock?: () => Date;
 }
 
@@ -100,6 +102,23 @@ export function installSettingsIpc(
     guard(event, async () => {
       removeModelSettings(options.modelSettingsPath);
       setTimeout(options.restartApp, 350);
+    });
+
+  let modelTestBusy = false;
+  const testModelSettingsHandler = (event: IpcMainInvokeEvent, input: unknown) =>
+    guard(event, async () => {
+      if (modelTestBusy) throw new Error("A connection test is already running.");
+      const parsed = parseModelSettingsInput(input, false);
+      modelTestBusy = true;
+      try {
+        return await (options.testConnection ?? testModelConnection)(
+          options.modelSettingsPath,
+          options.safeStorage,
+          parsed,
+        );
+      } finally {
+        modelTestBusy = false;
+      }
     });
 
   const saveAccountHandler = (
@@ -172,6 +191,7 @@ export function installSettingsIpc(
   ipcMain.handle("forgepilot:settings:get-model", getModelSettingsHandler);
   ipcMain.handle("forgepilot:settings:save-model", saveModelSettingsHandler);
   ipcMain.handle("forgepilot:settings:remove-model", removeModelSettingsHandler);
+  ipcMain.handle("forgepilot:settings:test-model", testModelSettingsHandler);
   ipcMain.handle("forgepilot:settings:save-account", saveAccountHandler);
   ipcMain.handle("forgepilot:settings:remove-account", removeAccountHandler);
   ipcMain.handle("forgepilot:settings:list-repositories", listRepositoriesHandler);
@@ -181,6 +201,7 @@ export function installSettingsIpc(
     ipcMain.removeHandler("forgepilot:settings:get-model");
     ipcMain.removeHandler("forgepilot:settings:save-model");
     ipcMain.removeHandler("forgepilot:settings:remove-model");
+    ipcMain.removeHandler("forgepilot:settings:test-model");
     ipcMain.removeHandler("forgepilot:settings:save-account");
     ipcMain.removeHandler("forgepilot:settings:remove-account");
     ipcMain.removeHandler("forgepilot:settings:list-repositories");
@@ -188,13 +209,18 @@ export function installSettingsIpc(
   };
 }
 
-function parseModelSettingsInput(input: unknown): ModelSettingsInput {
+function parseModelSettingsInput(input: unknown, requireModelId = true): ModelSettingsInput {
   const record = requireInputObject(input);
   const provider = record["provider"];
   const modelId = record["modelId"];
   const baseUrl = record["baseUrl"];
   const apiKey = record["apiKey"];
-  if (typeof provider !== "string" || typeof modelId !== "string") {
+  if (
+    typeof provider !== "string" ||
+    (requireModelId
+      ? typeof modelId !== "string"
+      : modelId !== undefined && typeof modelId !== "string")
+  ) {
     throw new Error("A model provider and model ID are required.");
   }
   if (baseUrl !== undefined && typeof baseUrl !== "string") {
@@ -205,7 +231,7 @@ function parseModelSettingsInput(input: unknown): ModelSettingsInput {
   }
   return {
     provider: provider as ModelSettingsInput["provider"],
-    modelId,
+    modelId: typeof modelId === "string" ? modelId : "",
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     ...(apiKey !== undefined ? { apiKey } : {}),
   };

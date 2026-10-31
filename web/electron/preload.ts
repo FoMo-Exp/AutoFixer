@@ -34,6 +34,8 @@ contextBridge.exposeInMainWorld("forgePilotSettings", {
   saveModelSettings: (input: unknown) =>
     ipcRenderer.invoke("forgepilot:settings:save-model", input),
   removeModelSettings: () => ipcRenderer.invoke("forgepilot:settings:remove-model"),
+  testModelConnection: (input: unknown) =>
+    ipcRenderer.invoke("forgepilot:settings:test-model", input),
   saveAccount: (input: unknown) => ipcRenderer.invoke("forgepilot:settings:save-account", input),
   removeAccount: (input: unknown) =>
     ipcRenderer.invoke("forgepilot:settings:remove-account", input),

@@ -4,12 +4,19 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { IpcMain, IpcMainInvokeEvent } from "electron";
+import type { IpcMain, IpcMainInvokeEvent, SafeStorage } from "electron";
 
 import type { ProviderClient, RepositorySummary } from "../../electron/git-providers.js";
 import { installSettingsIpc } from "../../electron/settings-ipc.js";
 
 const TRUSTED_URL = "file:///app/dist/index.html";
+const storage: SafeStorage = {
+  isEncryptionAvailable: () => true,
+  encryptString: (value) => Buffer.from(value),
+  decryptString: (value) => value.toString(),
+  getSelectedStorageBackend: () => "basic_text",
+  setUsePlainTextEncryption: () => undefined,
+};
 
 interface FakeWindow {
   isDestroyed: () => boolean;
@@ -60,6 +67,8 @@ describe("settings IPC surface", () => {
   let window: FakeWindow;
   let trustedWindow: FakeWindow;
   let dispose: () => void;
+  const restartApp = vi.fn();
+  const testConnection = vi.fn(async () => ({ ok: true, message: "Connected", latencyMs: 23 }));
 
   beforeEach(() => {
     directory = mkdtempSync(path.join(tmpdir(), "forgepilot-settings-ipc-"));
@@ -71,12 +80,18 @@ describe("settings IPC surface", () => {
     };
     trustedWindow = window;
     vi.mocked(client.verifyAccount).mockClear();
+    restartApp.mockClear();
+    testConnection.mockClear();
     dispose = installSettingsIpc(
       fakeIpcMain(handlers),
       () => window as never,
       (url) => url === TRUSTED_URL,
       {
         statePath,
+        modelSettingsPath: path.join(directory, "model.json"),
+        safeStorage: storage,
+        restartApp,
+        testConnection,
         client,
         clock: () => new Date("2026-02-03T04:05:06.000Z"),
       },
@@ -105,6 +120,44 @@ describe("settings IPC surface", () => {
     const handler = handlers.get("forgepilot:settings:list-accounts");
     expect(handler).toBeDefined();
     await expect(handler!(fakeEvent(rogue.webContents), undefined)).rejects.toThrow(/Untrusted/);
+  });
+
+  it("tests model settings through the guarded channel without restarting", async () => {
+    const input = { provider: "openai", modelId: "fixture", apiKey: "secret" };
+    expect(await invoke("forgepilot:settings:test-model", input)).toEqual({
+      ok: true,
+      message: "Connected",
+      latencyMs: 23,
+    });
+    expect(testConnection).toHaveBeenCalledWith(path.join(directory, "model.json"), storage, input);
+    expect(restartApp).not.toHaveBeenCalled();
+    const handler = handlers.get("forgepilot:settings:test-model")!;
+    await expect(
+      handler({ sender: {}, senderFrame: {} } as IpcMainInvokeEvent, input),
+    ).rejects.toThrow("Untrusted");
+    expect(testConnection).toHaveBeenCalledTimes(1);
+  });
+
+  it("validates model-test payloads and unregisters the channel on disposal", async () => {
+    for (const input of [
+      null,
+      { provider: "openai", modelId: 123 },
+      { provider: "openai", modelId: "x", apiKey: 123 },
+    ]) {
+      await expect(invoke("forgepilot:settings:test-model", input)).rejects.toThrow();
+    }
+    expect(testConnection).not.toHaveBeenCalled();
+    dispose();
+    expect(handlers.has("forgepilot:settings:test-model")).toBe(false);
+  });
+
+  it("accepts model discovery before a Model ID is selected", async () => {
+    await invoke("forgepilot:settings:test-model", { provider: "xiaomi", apiKey: "test-key" });
+    expect(testConnection).toHaveBeenCalledWith(path.join(directory, "model.json"), storage, {
+      provider: "xiaomi",
+      modelId: "",
+      apiKey: "test-key",
+    });
   });
 
   it("binds an account after verification and returns a token-free projection", async () => {

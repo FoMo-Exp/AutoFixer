@@ -2,22 +2,11 @@ import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "
 import path from "node:path";
 import type { SafeStorage } from "electron";
 
-export const MODEL_PROVIDERS = [
-  { id: "anthropic", label: "Anthropic", apiKeyEnv: "ANTHROPIC_API_KEY" },
-  { id: "openai", label: "OpenAI", apiKeyEnv: "OPENAI_API_KEY" },
-  { id: "google", label: "Google Gemini", apiKeyEnv: "GEMINI_API_KEY" },
-  { id: "openrouter", label: "OpenRouter", apiKeyEnv: "OPENROUTER_API_KEY" },
-  { id: "deepseek", label: "DeepSeek", apiKeyEnv: "DEEPSEEK_API_KEY" },
-  { id: "mistral", label: "Mistral", apiKeyEnv: "MISTRAL_API_KEY" },
-  { id: "groq", label: "Groq", apiKeyEnv: "GROQ_API_KEY" },
-  { id: "xai", label: "xAI", apiKeyEnv: "XAI_API_KEY" },
-  { id: "minimax", label: "MiniMax", apiKeyEnv: "MINIMAX_API_KEY" },
-  { id: "moonshotai", label: "Moonshot AI", apiKeyEnv: "MOONSHOT_API_KEY" },
-  { id: "zai", label: "Z.AI", apiKeyEnv: "ZAI_API_KEY" },
-  { id: "openai-compatible", label: "OpenAI-compatible", apiKeyEnv: "OPENAI_API_KEY" },
-] as const;
+import { MODEL_PROVIDERS } from "./model-providers.js";
+import type { ModelProviderId } from "./model-providers.js";
 
-export type ModelProviderId = (typeof MODEL_PROVIDERS)[number]["id"];
+export { MODEL_PROVIDERS } from "./model-providers.js";
+export type { ModelProviderId } from "./model-providers.js";
 
 export interface StoredModelSettings {
   version: 1;
@@ -34,8 +23,10 @@ export interface ModelSettingsInput {
   apiKey?: string;
 }
 
+export type ModelConnectionInput = Omit<ModelSettingsInput, "modelId"> & { modelId?: string };
+
 export interface ModelSettingsSnapshot {
-  providers: Array<{ id: ModelProviderId; label: string }>;
+  providers: Array<{ id: ModelProviderId; label: string; defaultBaseUrl?: string }>;
   current?: {
     provider: ModelProviderId;
     modelId: string;
@@ -70,7 +61,11 @@ export function getModelSettingsSnapshot(
 ): ModelSettingsSnapshot {
   const stored = loadModelSettings(filePath);
   return {
-    providers: MODEL_PROVIDERS.map(({ id, label }) => ({ id, label })),
+    providers: MODEL_PROVIDERS.map(({ id, label, defaultBaseUrl }) => ({
+      id,
+      label,
+      defaultBaseUrl,
+    })),
     ...(stored
       ? {
           current: {
@@ -90,18 +85,12 @@ export function saveModelSettings(
   safeStorage: SafeStorage,
   input: ModelSettingsInput,
 ): void {
+  input = normalizeModelSettingsInput(input);
   const provider = requireProvider(input.provider);
-  const modelId = requireText(input.modelId, "Model ID", MAX_MODEL_ID_LENGTH);
-  const baseUrl = normalizeBaseUrl(input.baseUrl);
-  if (provider.id === "openai-compatible" && !baseUrl) {
-    throw new Error("Base URL is required for an OpenAI-compatible model.");
-  }
+  const { modelId, baseUrl } = input;
 
   const previous = loadModelSettings(filePath);
   const apiKey = input.apiKey?.trim() ?? "";
-  if (apiKey.length > MAX_API_KEY_LENGTH) {
-    throw new Error(`API key must be at most ${MAX_API_KEY_LENGTH} characters.`);
-  }
 
   let encryptedApiKey: string | undefined;
   if (apiKey) {
@@ -114,7 +103,9 @@ export function saveModelSettings(
   }
 
   if (encryptedApiKey && !safeStorage.isEncryptionAvailable()) {
-    throw new Error("System secure storage is unavailable; re-enter the model API key in Settings.");
+    throw new Error(
+      "System secure storage is unavailable; re-enter the model API key in Settings.",
+    );
   }
   if (!encryptedApiKey && provider.id !== "openai-compatible") {
     throw new Error("Enter an API key for the selected provider.");
@@ -137,6 +128,53 @@ export function saveModelSettings(
   renameSync(temporaryPath, filePath);
 }
 
+export function normalizeModelSettingsInput(
+  input: ModelConnectionInput,
+  requireModelId = true,
+): ModelSettingsInput {
+  const provider = requireProvider(input.provider);
+  const modelId = requireModelId
+    ? requireText(input.modelId ?? "", "Model ID", MAX_MODEL_ID_LENGTH)
+    : "";
+  const baseUrl = normalizeBaseUrl(input.baseUrl) ?? provider.defaultBaseUrl;
+  if (provider.id === "openai-compatible" && !baseUrl) {
+    throw new Error("Base URL is required for an OpenAI-compatible model.");
+  }
+  const apiKey = input.apiKey?.trim() || undefined;
+  if (apiKey && apiKey.length > MAX_API_KEY_LENGTH) {
+    throw new Error(`API key must be at most ${MAX_API_KEY_LENGTH} characters.`);
+  }
+  return { provider: provider.id, modelId, baseUrl, apiKey };
+}
+
+/** Main-process only: the cleartext key must never be returned over IPC. */
+export function resolveModelConnectionSettings(
+  filePath: string,
+  safeStorage: SafeStorage,
+  input: ModelConnectionInput,
+): ModelSettingsInput & { apiKey: string } {
+  const normalized = normalizeModelSettingsInput(input, false);
+  const stored = loadModelSettings(filePath);
+  let apiKey = normalized.apiKey;
+  if (!apiKey && stored?.provider === normalized.provider && stored.encryptedApiKey) {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error("System secure storage is unavailable; re-enter the API key to test.");
+    }
+    try {
+      apiKey = safeStorage.decryptString(Buffer.from(stored.encryptedApiKey, "base64"));
+    } catch {
+      throw new Error("The saved API key could not be read; re-enter it to test.");
+    }
+  }
+  if (!apiKey) {
+    if (normalized.provider !== "openai-compatible" || !isLocalBaseUrl(normalized.baseUrl)) {
+      throw new Error("Enter an API key for the selected provider.");
+    }
+    apiKey = "local-openai-compatible";
+  }
+  return { ...normalized, apiKey };
+}
+
 export function removeModelSettings(filePath: string): void {
   try {
     unlinkSync(filePath);
@@ -156,7 +194,9 @@ export function modelSettingsEnvironment(
   let apiKey = "";
   if (stored.encryptedApiKey) {
     if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error("System secure storage is unavailable; re-enter the model API key in Settings.");
+      throw new Error(
+        "System secure storage is unavailable; re-enter the model API key in Settings.",
+      );
     }
     try {
       apiKey = safeStorage.decryptString(Buffer.from(stored.encryptedApiKey, "base64"));
@@ -170,7 +210,8 @@ export function modelSettingsEnvironment(
     apiKey || (stored.provider === "openai-compatible" ? "local-openai-compatible" : "");
   return {
     ...env,
-    FORGEPILOT_PI_PROVIDER: stored.provider === "openai-compatible" ? "openai-compatible" : provider.id,
+    FORGEPILOT_PI_PROVIDER:
+      stored.provider === "openai-compatible" ? "openai-compatible" : provider.id,
     FORGEPILOT_PI_MODEL: stored.modelId,
     FORGEPILOT_PI_BASE_URL: stored.baseUrl ?? "",
     [provider.apiKeyEnv]: effectiveApiKey,
@@ -186,7 +227,8 @@ function requireProvider(providerId: string): (typeof MODEL_PROVIDERS)[number] {
 function requireText(value: string, label: string, maxLength: number): string {
   const normalized = value.trim();
   if (!normalized) throw new Error(`${label} is required.`);
-  if (normalized.length > maxLength) throw new Error(`${label} must be at most ${maxLength} characters.`);
+  if (normalized.length > maxLength)
+    throw new Error(`${label} must be at most ${maxLength} characters.`);
   return normalized;
 }
 
@@ -205,10 +247,14 @@ function normalizeBaseUrl(value: string | undefined): string | undefined {
   if (!(["http:", "https:"].includes(url.protocol) && !url.username && !url.password)) {
     throw new Error("Base URL must use HTTP or HTTPS and must not contain credentials.");
   }
-  if (url.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname)) {
+  if (
+    url.protocol === "http:" &&
+    !["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname)
+  ) {
     throw new Error("Use HTTPS for a non-local model endpoint.");
   }
-  if (url.search || url.hash) throw new Error("Base URL must not include a query string or fragment.");
+  if (url.search || url.hash)
+    throw new Error("Base URL must not include a query string or fragment.");
   return url.toString().replace(/\/$/, "");
 }
 

@@ -1,7 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <!-- A1 双柱穿珠：两道闸门 + 穿过的 Signal 橙点 = 一次通过两道默认拒绝的关卡 -->
-  <rect width="1024" height="1024" rx="224" fill="#0c1018" />
-  <rect x="308" y="321" width="92" height="382" rx="30" fill="#e7ebf3" />
-  <rect x="627" y="321" width="92" height="382" rx="30" fill="#e7ebf3" />
-  <circle cx="512" cy="512" r="76" fill="#f25c05" />
+  <!-- macOS Dock optical bounds: 824px artwork, 100px transparent inset on a 1024px canvas. -->
+  <g transform="translate(100 100) scale(0.8046875)">
+    <rect width="1024" height="1024" rx="224" fill="#0c1018" />
+    <rect x="308" y="321" width="92" height="382" rx="30" fill="#e7ebf3" />
+    <rect x="627" y="321" width="92" height="382" rx="30" fill="#e7ebf3" />
+    <circle cx="512" cy="512" r="76" fill="#f25c05" />
+  </g>
 </svg>

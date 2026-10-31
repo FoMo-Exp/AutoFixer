@@ -44,18 +44,31 @@ task may target. The credential boundary for this feature is recorded in
 
 ## Orchestrator model settings
 
-The Electron Settings dialog lets an operator select a built-in Pi provider,
-enter a model ID, and optionally override the API base URL. An
-OpenAI-compatible option accepts custom model IDs and local or HTTPS endpoints.
+The Electron Settings dialog includes Xiaomi MiMo and the other built-in Pi
+providers. Provider and API base URL share an equal-width row; API key and
+Model ID share the row below. Selecting a provider fills its default endpoint;
+OpenAI-compatible leaves the endpoint blank for a local or HTTPS server.
 The API key is encrypted with Electron `safeStorage` in the app's user-data
 directory; it is never returned to renderer JavaScript. The main process passes
 it only to the local Node orchestrator child and restarts ForgePilot after a
 model configuration is saved or removed. In a plain browser the model settings
 are unavailable.
 
-For built-in providers, use a model ID registered by the bundled `pi-ai`
-version. OpenAI-compatible endpoints accept their own model IDs and use the
-OpenAI Chat Completions protocol.
+Registered models retain their Pi metadata. Newly discovered models use the
+selected provider's protocol at the configured endpoint, with conservative
+token limits. OpenAI-compatible endpoints use the OpenAI Chat Completions
+protocol.
+
+The **Test connection** button probes the current form values before saving.
+It reads the endpoint's model catalogue without requiring a Model ID, then
+turns the Model ID field into the shared dropdown. Anthropic and Gemini
+pagination and provider-specific authentication are supported. Editing the
+provider, endpoint or key invalidates the old catalogue. A failed discovery
+keeps manual Model ID entry available. Leaving the API key blank reuses the
+saved key for the same provider; an entered key is used for that test. The
+request times out after 20 seconds and returns only model IDs and safe status
+messages; it does not save settings or restart the app. Xiaomi discovery uses
+its [official model-list endpoint](https://mimo.mi.com/docs/en-US/api/model/list-models).
 
 For an Electron launch, the main process first checks the configured
 `FORGEPILOT_API_URL` / `FORGEPILOT_API_PORT`, then an optional
