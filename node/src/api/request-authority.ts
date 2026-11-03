@@ -7,15 +7,19 @@
  * removal, `subject_authority = removed`, and capability-grant revocation are
  * enforced on the request path, not just in the service layer.
  *
- * Enforcement policy, deliberately explicit:
+ * Enforcement policy, deliberately explicit (Architect ruling, round 3):
  *
- * - **When provider authority is in play** (a repository-scoped service
- *   integration is installed for the workspace), session actors must pass
- *   the effective-access gate for every action class. A denial is a 403 from
- *   the boundary — the route never runs.
- * - **When no integration is installed**, there is no provider roster and no
- *   provider authority to enforce: the surface keeps its pre-existing
- *   session-role behavior unchanged (local-prototype mode, ADR-0006).
+ * - **"Authority in play" is decided by existence, not by current status.**
+ *   Any `service_integration` row for the workspace — `active`, `suspended`,
+ *   or `uninstalled` — means this workspace has a provider roster and
+ *   subject authority, so every request goes through the gate. Only a
+ *   workspace with **zero rows** falls back to the pre-existing session-role
+ *   behavior (local-prototype mode, ADR-0006).
+ * - **A suspended or uninstalled integration fails closed.** The gate
+ *   resolves no active integration and denies everything with
+ *   `authority_unknown` + reconciliation required — the moment trust is
+ *   lowest is not the moment to fall open. Deliberate deactivation back to
+ *   prototype mode is a future, audited decision, never a status flip.
  * - The **local-operator bearer** is the deployment's own credential, not a
  *   provider subject; it is unchanged by provider membership.
  *
@@ -69,10 +73,12 @@ export interface RequestAuthorityDeps {
 
 export interface RequestAuthority {
   /**
-   * Whether provider authority is enforced right now: a repository-scoped
-   * service integration is installed for the workspace. Evaluated live —
-   * installing or uninstalling an integration changes enforcement on the
-   * next request.
+   * Whether provider authority is in play: the workspace has at least one
+   * `service_integration` row, whatever its status. Only zero rows falls
+   * back to the pre-existing session-role behavior; a suspended or
+   * uninstalled integration fails closed through the gate. This is the
+   * single predicate {@link RequestAuthority.check} uses — there is no
+   * second, weaker meaning of enforcement.
    */
   isEnforcing(): boolean;
   /** Non-throwing decision (used by live streams re-checking on change). */
@@ -167,18 +173,18 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
     return { ...scopeBase, actor_id: userId };
   }
 
-  // Live evaluation: an installed integration is what makes provider
-  // authority exist at all. Without one there is no provider roster to
-  // enforce, and the surface keeps its pre-existing session-role behavior.
-  function isEnforcing(): boolean {
-    return deps.access.integrations
-      .listByWorkspace(scopeFor("system"))
-      .some((integration) => integration.install_status === "active");
+  // Authority in play = at least one integration row exists (any status).
+  // Existence, not current status: a suspended or uninstalled integration is
+  // exactly when authority is least trustworthy and must fail closed — the
+  // gate resolves no active integration and denies everything pending
+  // reconciliation. Only a workspace with zero rows is a local prototype.
+  function authorityInPlay(): boolean {
+    return deps.access.integrations.listByWorkspace(scopeFor("system")).length > 0;
   }
 
   function check(userId: string, action: ActionKind): AccessDecision {
-    if (!isEnforcing()) {
-      // Nothing to enforce: provider authority is not in play for this
+    if (!authorityInPlay()) {
+      // Zero integration rows: no provider roster exists anywhere for this
       // workspace, so the request stays bounded by the session-role checks.
       return {
         allowed: true,
@@ -193,7 +199,7 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
 
   return {
     epoch,
-    isEnforcing,
+    isEnforcing: authorityInPlay,
     check,
     require(userId: string, action: ActionKind): void {
       const decision = check(userId, action);

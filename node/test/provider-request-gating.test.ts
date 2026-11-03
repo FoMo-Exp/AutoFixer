@@ -20,8 +20,9 @@ import type {
   ServiceIntegration,
 } from "../src/control-plane/index.js";
 import type { WorkspaceScope } from "../src/control-plane/types.js";
-import { applyProviderEvent } from "../src/provider-access/reconcile.js";
+import { applyProviderEvent, reconcileIntegration } from "../src/provider-access/reconcile.js";
 import { revokeAuthority } from "../src/provider-access/revocation.js";
+import { page, role, scriptedAdapter } from "./helpers/provider-access.js";
 import type {
   ProviderEvent,
   ProviderEventType,
@@ -396,5 +397,158 @@ describe("provider authority at the request boundary", () => {
     expect(read.status).toBe(200);
     // The boundary still reports provider authority as not in play.
     expect(authApp.orchestrator.providerAuthority?.isEnforcing()).toBe(false);
+  }, 60_000);
+});
+
+//
+// ---------------------------------------------------------------------------
+// Architect ruling (round 3) acceptance: a non-active integration is not an
+// escape hatch. Existence of any service_integration row keeps the gate in
+// play; suspension fails closed with AUTHORITY_RECHECK_REQUIRED, cuts live
+// streams, and only a re-activation plus a successful reconciliation
+// restores access.
+// ---------------------------------------------------------------------------
+
+describe("integration suspension fails closed and recovers", () => {
+  test("suspension denies every class with AUTHORITY_RECHECK_REQUIRED and recovers after re-activation + reconcile", async () => {
+    const authApp = await app();
+    const member = await webLogin(authApp);
+    expect(await grantMembership(authApp, member.userId, "admin")).toBe(200);
+    const fixture = installIntegration(authApp, member.userId);
+    const authority = authApp.orchestrator.providerAuthority;
+    if (!authority) {
+      throw new Error("provider authority boundary missing");
+    }
+    const taskId = (await createTask(authApp, cookieSessionHeaders(member))).taskId;
+
+    // A live SSE stream, opened before the event.
+    const connected = fetch(`${authApp.base}/api/v1/tasks/${taskId}/stream`, {
+      headers: { Cookie: `fp_session=${member.session}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    const ended = connected.then((response) => {
+      expect(response.status).toBe(200);
+      return response.text();
+    });
+    await connected;
+
+    // Production event path: the provider suspends the integration.
+    applyProviderEvent(
+      {
+        access: fixture.access,
+        identities: fixture.identities,
+        epoch: authority.epoch,
+      },
+      fixture.scope,
+      fixture.integration,
+      providerEvent(authApp, fixture, "integration_suspended", {}, "susp-1"),
+    );
+
+    // The already-open stream closes on the epoch notification.
+    await ended;
+
+    // Authority stays in play: a suspended integration is not a way out of
+    // the gate (Architect ruling: existence, not current status).
+    expect(authApp.orchestrator.providerAuthority?.isEnforcing()).toBe(true);
+
+    const cookie = { Cookie: `fp_session=${member.session}` };
+    const denial = async (response: { status: number; body: unknown }): Promise<void> => {
+      expect(response.status).toBe(403);
+      const error = (response.body as { error: { code: string; next_action: string | null } })
+        .error;
+      expect(error.code).toBe("AUTHORITY_RECHECK_REQUIRED");
+      expect(error.next_action).toBe("reconcile");
+    };
+
+    // read: list / detail / timeline / runs
+    await denial(await getJson(`${authApp.base}/api/v1/tasks`, cookie));
+    await denial(await getJson(`${authApp.base}/api/v1/tasks/${taskId}`, cookie));
+    await denial(await getJson(`${authApp.base}/api/v1/tasks/${taskId}/timeline`, cookie));
+    await denial(await getJson(`${authApp.base}/api/v1/tasks/${taskId}/runs`, cookie));
+    // artifact
+    await denial(await getJson(`${authApp.base}/api/v1/tasks/${taskId}/artifacts/probe`, cookie));
+    // approval
+    await denial(
+      await postJson(
+        `${authApp.base}/api/v1/tasks/${taskId}/approvals`,
+        { decision: "approve", scope_digest: "probe" },
+        { "Content-Type": "application/json", ...cookieSessionHeaders(member) },
+      ),
+    );
+    // write: create / steer / cancel / archive
+    await denial(
+      await postJson(
+        `${authApp.base}/api/v1/tasks`,
+        { repository_id: REPOSITORY_ID, base_ref: "main", summary: "suspended probe" },
+        { "Content-Type": "application/json", ...cookieSessionHeaders(member) },
+      ),
+    );
+    await denial(
+      await postJson(
+        `${authApp.base}/api/v1/tasks/${taskId}/messages`,
+        { mode: "steer", content: "halt" },
+        { "Content-Type": "application/json", ...cookieSessionHeaders(member) },
+      ),
+    );
+    await denial(
+      await postJson(
+        `${authApp.base}/api/v1/tasks/${taskId}/cancel`,
+        { reason: "probe" },
+        { "Content-Type": "application/json", ...cookieSessionHeaders(member) },
+      ),
+    );
+    await denial(
+      await postJson(
+        `${authApp.base}/api/v1/tasks/${taskId}/archive`,
+        {},
+        { "Content-Type": "application/json", ...cookieSessionHeaders(member) },
+      ),
+    );
+
+    // New SSE connections are refused the same way.
+    const stream = await fetch(`${authApp.base}/api/v1/tasks/${taskId}/stream`, {
+      headers: cookie,
+      signal: AbortSignal.timeout(10_000),
+    });
+    expect(stream.status).toBe(403);
+    const streamBody = (await stream.json()) as { error: { code: string } };
+    expect(streamBody.error.code).toBe("AUTHORITY_RECHECK_REQUIRED");
+
+    // Recovery path: re-activate the integration, then one successful
+    // reconciliation re-verifies authority. The same requests recover —
+    // suspension never permanently locks the workspace.
+    const fresh = fixture.access.integrations.getById(fixture.scope, fixture.integration.id);
+    if (!fresh) {
+      throw new Error("integration missing");
+    }
+    fixture.access.integrations.setStatus(
+      fixture.scope,
+      fresh.id,
+      { install_status: "active", actor_id: "usr_test_operator" },
+      fresh.version,
+    );
+    const summary = await reconcileIntegration(
+      {
+        access: fixture.access,
+        identities: fixture.identities,
+        epoch: authority.epoch,
+      },
+      fixture.scope,
+      fixture.access.integrations.getById(fixture.scope, fresh.id) ?? fresh,
+      scriptedAdapter({
+        pages: [page([role(SUBJECT, "direct_collaborator", "admin", REPOSITORY_ID)])],
+      }),
+      { now: new Date() },
+    );
+    expect(summary.status).toBe("completed");
+
+    const recoveredRead = await getJson(`${authApp.base}/api/v1/tasks/${taskId}`, cookie);
+    expect(recoveredRead.status).toBe(200);
+    const recoveredWrite = await postJson(
+      `${authApp.base}/api/v1/tasks`,
+      { repository_id: REPOSITORY_ID, base_ref: "main", summary: "recovered probe" },
+      { "Content-Type": "application/json", ...cookieSessionHeaders(member) },
+    );
+    expect(recoveredWrite.status).toBe(201);
   }, 60_000);
 });

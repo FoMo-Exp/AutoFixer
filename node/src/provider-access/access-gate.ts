@@ -159,8 +159,11 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
     integrationId: string | undefined,
   ): { integration_id: string; provider_instance_id: string; repository_id: string } | null {
     if (integrationId) {
+      // A non-active integration resolves to null exactly like a missing
+      // one: suspended or uninstalled installs fail closed (authority_unknown
+      // + reconciliation required), they are never a way back in.
       const integration = access.integrations.getById(scope, integrationId);
-      return integration
+      return integration && integration.install_status === "active"
         ? {
             integration_id: integration.id,
             provider_instance_id: integration.provider_instance_id,
@@ -169,8 +172,8 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
         : null;
     }
     // One integration per workspace is the normal shape; pick the first
-    // active one. Workspaces without an installed integration have no
-    // repository authority at all.
+    // active one. A workspace whose only integrations are suspended or
+    // uninstalled has no verifiable repository authority and fails closed.
     const [integration] = access.integrations
       .listByWorkspace(scope)
       .filter((row) => row.install_status === "active");
