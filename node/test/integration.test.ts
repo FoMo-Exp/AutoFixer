@@ -13,6 +13,7 @@ import { ModelDispatchError } from "../src/index.js";
 import type { OrchestratorConfig } from "../src/config.js";
 import { configFromEnv } from "../src/config.js";
 import type { ApiErrorBody } from "../src/api/errors.js";
+import { DSH_SAFE_MESSAGES } from "../src/api/errors.js";
 import type { RunSummary, TaskResource, TimelineItem } from "../src/api/task-store.js";
 import { DshClient } from "../src/dsh/client.js";
 import { DshError } from "../src/dsh/client.js";
@@ -719,6 +720,55 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
       } finally {
         spy.mockRestore();
       }
+    }
+  });
+
+  test("a prohibited create and its idempotent replay serve the identical refusal", async () => {
+    const { base } = await startApp([]);
+    const marker = "SECRET_MARKER_DSH_DIAGNOSTIC";
+    const spy = vi.spyOn(DshClient.prototype, "createRun").mockRejectedValueOnce(
+      new DshError(
+        422,
+        "DSH_RISK_PROHIBITED",
+        `risk rejected: ${marker}`,
+        {
+          reason: marker,
+          decision_code: "risk_high",
+          run_id: null,
+          evidence_bundle_available: true,
+        },
+        false,
+        "req_dsh",
+      ),
+    );
+    try {
+      const body = {
+        repository_id: REPOSITORY_ID,
+        base_ref: "main",
+        summary: "Fix the export",
+        acceptance_criteria: ["export works"],
+      };
+      const headers = { "Idempotency-Key": "prohibited-refusal-key" };
+      const first = await postJson<ApiErrorBody>(`${base}/api/v1/tasks`, body, headers);
+      expect(first.status).toBe(422);
+      const replay = await postJson<ApiErrorBody>(`${base}/api/v1/tasks`, body, headers);
+      expect(replay.status).toBe(422);
+      for (const response of [first, replay]) {
+        expect(response.body.error.code).toBe("DSH_RISK_PROHIBITED");
+        expect(response.body.error.message).toBe(DSH_SAFE_MESSAGES.DSH_RISK_PROHIBITED);
+        expect([...Object.keys(response.body.error.details)].sort()).toEqual([
+          "dsh_code",
+          "task_id",
+        ]);
+        expect(response.body.error.details["dsh_code"]).toBe("DSH_RISK_PROHIBITED");
+        expect(JSON.stringify(response.body)).not.toContain("risk_");
+        expect(JSON.stringify(response.body)).not.toContain(marker);
+      }
+      // request_id may vary per request; code/message/details must be identical.
+      expect(replay.body.error.message).toBe(first.body.error.message);
+      expect(replay.body.error.details).toEqual(first.body.error.details);
+    } finally {
+      spy.mockRestore();
     }
   });
 });

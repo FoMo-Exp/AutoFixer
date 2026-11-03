@@ -2,13 +2,14 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 
 import { createOrchestrator } from "../src/index.js";
 import type { OrchestratorHandle } from "../src/index.js";
 import type { OrchestratorConfig } from "../src/config.js";
 import type { ApiErrorBody } from "../src/api/errors.js";
 import type { TaskResource, TimelineItem } from "../src/api/task-store.js";
+import { DshClient, DshError } from "../src/dsh/client.js";
 import type { DshServerHandle } from "./helpers/dsh-server.js";
 import { startDshServer } from "./helpers/dsh-server.js";
 import {
@@ -516,6 +517,52 @@ describe("create idempotency (M3 acceptance 3)", () => {
     );
     expect(conflicting.status).toBe(409);
     expect(conflicting.body.error.code).toBe("IDEMPOTENCY_CONFLICT");
+  });
+
+  test("a prohibited refusal replays identically after a restart", async () => {
+    const stateFile = freshStateFile();
+    const body = {
+      repository_id: REPOSITORY_ID,
+      base_ref: "main",
+      summary: "Prohibited across restart",
+      acceptance_criteria: ["durable refusal"],
+    };
+    const headers = { "Idempotency-Key": "client-key-prohibited" };
+    const first = await startApp(stateFile, []);
+    const spy = vi
+      .spyOn(DshClient.prototype, "createRun")
+      .mockRejectedValueOnce(
+        new DshError(
+          422,
+          "DSH_RISK_PROHIBITED",
+          "risk rejected: internal detail",
+          { reason: "internal detail", decision_code: "risk_high" },
+          false,
+          "req_dsh",
+        ),
+      );
+    const initial = await postJson<ApiErrorBody>(
+      `${first.base}/api/v1/tasks`,
+      body,
+      headers,
+    ).finally(() => {
+      spy.mockRestore();
+    });
+    expect(initial.status).toBe(422);
+    await apps.pop()?.stop();
+
+    const second = await startApp(stateFile, []);
+    const replayed = await postJson<ApiErrorBody>(`${second.base}/api/v1/tasks`, body, headers);
+    expect(replayed.status).toBe(422);
+    // request_id may vary per request; code/message/details must be identical
+    // across the restart, and never carry the persisted risk projection or
+    // dsh diagnostics.
+    expect(replayed.body.error.code).toBe("DSH_RISK_PROHIBITED");
+    expect(replayed.body.error.message).toBe(initial.body.error.message);
+    expect(replayed.body.error.details).toEqual(initial.body.error.details);
+    expect([...Object.keys(replayed.body.error.details)].sort()).toEqual(["dsh_code", "task_id"]);
+    expect(JSON.stringify(replayed.body)).not.toContain("risk_");
+    expect(JSON.stringify(replayed.body)).not.toContain("internal detail");
   });
 
   test("an Idempotency-Key longer than 256 characters is rejected with 400", async () => {
