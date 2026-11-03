@@ -29,6 +29,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { scrubSecrets } from "../gateway/redact.js";
+import { createPatternSecretScanner, defaultSecretDetectors } from "../gateway/pattern-scanner.js";
+import type { SecretDetector } from "../gateway/pattern-scanner.js";
 import {
   assertIndependentReview,
   assertSeparateAdministrator,
@@ -39,12 +41,20 @@ import type { SecurityDutyDirectory } from "./duties.js";
 import { correctionLineage, validateRuleCorrection } from "./rules.js";
 import type {
   ActiveRuleCorrection,
+  DetectorConstraints,
   RegressionEvidence,
   RuleCorrectionDraft,
   RuleEvent,
   RuleEventType,
   RuleRevision,
+  TrueSecretSample,
 } from "./rules.js";
+import {
+  corpusDigest,
+  defaultRegressionSamples,
+  ruleDigest,
+  runRegressionEvidence,
+} from "./regression.js";
 import { SecurityError, requireNonEmpty } from "./types.js";
 import type { SecurityActor } from "./types.js";
 
@@ -53,6 +63,16 @@ export interface RuleServiceDeps {
   /** JSON state file; every mutation persists atomically when set. */
   persistencePath?: string;
   now?: () => Date;
+  /**
+   * Trusted regression inputs. The evidence behind an activation is always
+   * computed here, from this corpus and detector set — a proposal or
+   * persisted state can never supply passing results. Defaults to the
+   * built-in corpus and the built-in detector set.
+   */
+  regression?: {
+    samples?: readonly TrueSecretSample[];
+    detectors?: readonly SecretDetector[];
+  };
 }
 
 const SCHEMA_VERSION = 1;
@@ -118,6 +138,30 @@ export class RuleCorrectionService {
     const scope = requireScope(draft.scope);
     requireDuty("rule.propose", author, this.deps.directory, scope);
     const lineage = [draft.detectorId, scope.enterpriseId, scope.workspaceId].join("|");
+    // Evidence is computed here, from the trusted corpus, for exactly this
+    // rule content — a proposal carries no evidence results of its own.
+    const samples = this.regressionSamplesFor(draft.detectorId);
+    const evidence = samples.length === 0 ? [] : this.computeEvidence({ ...draft, scope }, at);
+    const failed = evidence.find((entry) => entry.result !== "pass");
+    if (evidence.length === 0 || failed !== undefined) {
+      const code = evidence.length === 0 ? "RULE_EVIDENCE_MISSING" : "RULE_EVIDENCE_FAILED";
+      this.appendEvent(lineage, "rule.proposal_rejected", author, "security_handler", {
+        code,
+        detectorId: draft.detectorId,
+        ...(failed !== undefined ? { testRef: failed.testRef } : {}),
+      });
+      this.persist();
+      throw new SecurityError(
+        code,
+        evidence.length === 0
+          ? "no trusted regression samples cover this detector"
+          : "regression evidence shows true-secret detection no longer effective",
+        {
+          detectorId: draft.detectorId,
+          ...(failed !== undefined ? { testRef: failed.testRef } : {}),
+        },
+      );
+    }
     const revision: RuleRevision = {
       lineage,
       version: this.nextVersion(lineage),
@@ -129,7 +173,16 @@ export class RuleCorrectionService {
       reason: scrubSecrets(draft.reason),
       expiresAt: draft.expiresAt,
       ...(draft.reviewAt !== undefined ? { reviewAt: draft.reviewAt } : {}),
-      regressionEvidence: draft.regressionEvidence,
+      regressionEvidence: evidence,
+      regressionBinding: {
+        ruleDigest: ruleDigest({
+          detectorId: draft.detectorId,
+          scope,
+          constraints: draft.constraints,
+        }),
+        corpusDigest: corpusDigest(samples),
+        at,
+      },
       authorId: requireNonEmpty(author.actorId, "author.actorId"),
       proposedAt: at,
     };
@@ -142,7 +195,7 @@ export class RuleCorrectionService {
       expiresAt: revision.expiresAt,
     });
     this.persist();
-    return { ...revision };
+    return structuredClone(revision);
   }
 
   /**
@@ -227,7 +280,7 @@ export class RuleCorrectionService {
       }
     }
     this.persist();
-    return { ...revision };
+    return structuredClone(revision);
   }
 
   /**
@@ -273,20 +326,52 @@ export class RuleCorrectionService {
           { lineage, version, status: revision.status },
         );
       }
-      const evidence: readonly RegressionEvidence[] = revision.regressionEvidence ?? [];
-      if (evidence.length === 0) {
+      // Evidence is re-computed and re-bound server-side: persisted or
+      // proposal-supplied result fields are records, never authority.
+      const samples = this.regressionSamplesFor(revision.detectorId);
+      const binding = revision.regressionBinding;
+      if (samples.length === 0 || binding === undefined) {
         throw new SecurityError(
           "RULE_EVIDENCE_MISSING",
-          "activation requires regression evidence that true-secret detection remains effective",
+          "activation requires trusted regression evidence for this detector",
           { lineage, version },
         );
       }
+      const contentDigest = ruleDigest({
+        detectorId: revision.detectorId,
+        scope: requireScope(revision.scope),
+        constraints: revision.constraints,
+      });
+      if (contentDigest !== binding.ruleDigest) {
+        // The reviewed content is no longer what the evidence — and the
+        // approval — actually covered.
+        throw new SecurityError(
+          "RULE_EVIDENCE_INVALID",
+          "the committed evidence no longer covers this correction's content",
+          { lineage, version },
+        );
+      }
+      if (corpusDigest(samples) !== binding.corpusDigest) {
+        throw new SecurityError(
+          "RULE_EVIDENCE_STALE",
+          "the trusted regression corpus changed since this evidence was computed",
+          { lineage, version },
+        );
+      }
+      const evidence = this.computeEvidence(
+        {
+          detectorId: revision.detectorId,
+          scope: requireScope(revision.scope),
+          constraints: revision.constraints,
+        },
+        this.timestamp(),
+      );
       const failed = evidence.find((entry) => entry.result !== "pass");
-      if (failed) {
+      if (evidence.length === 0 || failed !== undefined) {
         throw new SecurityError(
           "RULE_EVIDENCE_FAILED",
-          "activation requires passing regression evidence",
-          { lineage, version, testRef: failed.testRef },
+          "regression evidence shows true-secret detection no longer effective",
+          { lineage, version, ...(failed !== undefined ? { testRef: failed.testRef } : {}) },
         );
       }
       if (Date.parse(revision.expiresAt) <= this.now().getTime()) {
@@ -338,7 +423,7 @@ export class RuleCorrectionService {
       reviewerId: revision.review?.reviewerId ?? "",
     });
     this.persist();
-    return { ...revision };
+    return structuredClone(revision);
   }
 
   /**
@@ -417,7 +502,7 @@ export class RuleCorrectionService {
       rolledBackBy: administrator.actorId,
     });
     this.persist();
-    return { ...entry };
+    return structuredClone(entry);
   }
 
   /**
@@ -446,7 +531,7 @@ export class RuleCorrectionService {
           version: revision.version,
           expiresAt: revision.expiresAt,
         });
-        expired.push({ ...revision });
+        expired.push(structuredClone(revision));
       }
     }
     if (expired.length > 0) this.persist();
@@ -471,7 +556,10 @@ export class RuleCorrectionService {
             lineage: revision.lineage,
             version: revision.version,
             detectorId: revision.detectorId,
-            constraints: revision.constraints,
+            scope: { ...revision.scope },
+            // Deep copy: a caller can never mutate activated policy through
+            // the value it consumes.
+            constraints: structuredClone(revision.constraints),
           });
         }
       }
@@ -481,17 +569,56 @@ export class RuleCorrectionService {
 
   revision(lineage: string, version: number): RuleRevision | undefined {
     const found = this.lineageOf(lineage).find((entry) => entry.version === version);
-    return found ? { ...found } : undefined;
+    return found ? structuredClone(found) : undefined;
   }
 
-  /** One lineage's version history (copies; later mutations never leak). */
+  /** One lineage's version history (deep copies; later mutations never leak). */
   lineage(lineage: string): readonly RuleRevision[] {
-    return this.lineageOf(lineage).map((entry) => ({ ...entry }));
+    return this.lineageOf(lineage).map((entry) => structuredClone(entry));
   }
 
-  /** One lineage's append-only audit history. */
+  /** One lineage's append-only audit history (deep copies). */
   history(lineage: string): readonly RuleEvent[] {
-    return [...(this.events.get(lineage) ?? [])];
+    return structuredClone(this.events.get(lineage) ?? []);
+  }
+
+  /** The trusted samples that prove this detector still catches secrets. */
+  private regressionSamplesFor(detectorId: string): readonly TrueSecretSample[] {
+    const corpus = this.deps.regression?.samples ?? defaultRegressionSamples();
+    return corpus.filter((sample) => sample.detectorId === detectorId);
+  }
+
+  /**
+   * Compute evidence for the exact rule content against the trusted corpus.
+   * The scanner applies the correction only to a scan resolved for the rule's
+   * own scope, and evidence results are produced here — never read from a
+   * proposal or from persisted state.
+   */
+  private computeEvidence(
+    content: {
+      detectorId: string;
+      scope: { enterpriseId: string; workspaceId: string };
+      constraints: DetectorConstraints;
+    },
+    at: string,
+  ): RegressionEvidence[] {
+    const samples = this.regressionSamplesFor(content.detectorId);
+    if (samples.length === 0) return [];
+    const scanner = createPatternSecretScanner({
+      detectors: this.deps.regression?.detectors ?? defaultSecretDetectors(),
+      corrections: () => [
+        {
+          lineage: [content.detectorId, content.scope.enterpriseId, content.scope.workspaceId].join(
+            "|",
+          ),
+          version: 0,
+          detectorId: content.detectorId,
+          scope: content.scope,
+          constraints: content.constraints,
+        },
+      ],
+    });
+    return runRegressionEvidence(scanner, samples, at, content.scope);
   }
 
   private supersede(lineage: string, revision: RuleRevision): void {

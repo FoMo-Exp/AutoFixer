@@ -14,9 +14,9 @@
  *   correction (`RULE_BLANKET_EXEMPTION`).
  * - Corrections only ever narrow a detector's matching; {@link constrainDetector}
  *   can widen nothing and can never turn a detector off.
- * - Regression evidence is computed, not asserted: {@link runRegressionEvidence}
- *   runs true-secret samples through the corrected scanner and records
- *   whether each one is still detected.
+ * - Regression evidence is computed, not asserted: the service runs trusted
+ *   true-secret samples through the corrected scanner (`regression.ts`) and
+ *   never accepts evidence results from a proposal.
  *
  * Rule changes are policy changes, not run grants: the same complete-request
  * checks apply before and after activation.
@@ -24,7 +24,7 @@
 
 import { SecurityError } from "./types.js";
 import type { SecretDetector } from "../gateway/pattern-scanner.js";
-import type { SecretScanReport, SecretScanner } from "../gateway/scan.js";
+import type { RegressionEvidence } from "./regression.js";
 
 /** Boundary parse: unvalidated proposal input must be a JSON object. */
 function asRecord(value: unknown, field: string): Record<string, unknown> {
@@ -32,13 +32,6 @@ function asRecord(value: unknown, field: string): Record<string, unknown> {
     throw new SecurityError("RULE_PROPOSAL_INVALID", `rule ${field} must be a JSON object`);
   }
   return value as Record<string, unknown>;
-}
-
-function asNonEmptyString(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new SecurityError("RULE_PROPOSAL_INVALID", `rule ${field} must be a non-empty string`);
-  }
-  return value;
 }
 
 /** Narrowing match constraints one correction may add to one detector. */
@@ -54,30 +47,17 @@ export interface DetectorConstraints {
 }
 
 /** Machine-checked proof that true-secret detection still works. */
-export interface RegressionEvidence {
-  /** Reference to the regression sample/corpus entry (never secret material). */
-  testRef: string;
-  /** What true-secret class this sample proves still detected. */
-  description: string;
-  /** The detector that must still fire on the sample. */
-  detectorId: string;
-  result: "pass" | "fail";
-  at: string;
-}
-
-/** One true-secret sample the regression evidence is computed from. */
-export interface TrueSecretSample {
-  testRef: string;
-  description: string;
-  detectorId: string;
-  /** Exact true-secret material that must still be detected. Never retained. */
-  material: string;
-}
+export type { RegressionEvidence, TrueSecretSample } from "./regression.js";
 
 /**
  * The proposal as submitted, before validation. Accepted as an untyped record
  * precisely so disguised exemption shapes can be identified and named in the
  * rejection instead of failing some generic type error.
+ *
+ * A proposal carries no regression evidence: the service computes evidence
+ * itself from the trusted corpus at proposal and activation time
+ * (`regression.ts`), so request-supplied `result` fields can never open the
+ * activation gate.
  */
 export interface RuleCorrectionDraft {
   detectorId: string;
@@ -88,7 +68,6 @@ export interface RuleCorrectionDraft {
   expiresAt: string;
   /** Optional interim review date; must not exceed the expiry. */
   reviewAt?: string;
-  regressionEvidence: readonly RegressionEvidence[];
 }
 
 /** Lifecycle status of one versioned rule revision. */
@@ -128,7 +107,17 @@ export interface RuleRevision {
   reason: string;
   expiresAt: string;
   reviewAt?: string;
+  /** Evidence the service computed at proposal time (never client input). */
   regressionEvidence: readonly RegressionEvidence[];
+  /**
+   * Commitment binding the evidence to the exact rule content and the exact
+   * trusted corpus it was computed against; activation re-verifies both.
+   */
+  regressionBinding?: {
+    ruleDigest: string;
+    corpusDigest: string;
+    at: string;
+  };
   /** Proposing human principal (security handler). */
   authorId: string;
   proposedAt: string;
@@ -173,12 +162,15 @@ export interface RuleEvent {
 
 /**
  * One active correction as the scanner consumes it: the lineage's activated,
- * unexpired revision, already narrowed and version-tagged.
+ * unexpired revision, already narrowed and version-tagged. The scope is part
+ * of the value so the scanner applies a correction only to scans resolved for
+ * exactly that enterprise *and* workspace.
  */
 export interface ActiveRuleCorrection {
   lineage: string;
   version: number;
   detectorId: string;
+  scope: { enterpriseId: string; workspaceId: string };
   constraints: DetectorConstraints;
 }
 
@@ -245,38 +237,60 @@ const KNOWN_KEYS: Record<string, true> = {
   reason: true,
   expiresat: true,
   reviewat: true,
-  regressionevidence: true,
-  testref: true,
-  description: true,
-  result: true,
-  at: true,
 };
 
 function normalizeKey(key: string): string {
   return key.toLowerCase().replace(/[_\-\s]/g, "");
 }
 
+/** Offending key paths of a raw proposal, classified by rejection reason. */
+export interface DisguisedExemptionScan {
+  /** Selectors for one invocation/case/request/secret value. */
+  targeted: string[];
+  /** Detector-disable / allow-everything shapes. */
+  blanket: string[];
+  /** Fields outside the closed proposal schema. */
+  unknown: string[];
+}
+
 /**
- * Recursively identify disguised exemption selectors anywhere in a raw
- * proposal. Returns the offending key paths; a non-empty result is a rejected
- * proposal (`RULE_TARGETED_EXEMPTION` or `RULE_BLANKET_EXEMPTION`).
+ * Recursively classify every key of a raw proposal: targeted-exemption
+ * selectors, blanket-allow/detector-disable shapes, and unknown fields are
+ * each named by path so the rejection can say exactly what it refused.
+ */
+export function scanDisguisedExemptions(raw: unknown, path = "proposal"): DisguisedExemptionScan {
+  const offenders: DisguisedExemptionScan = { targeted: [], blanket: [], unknown: [] };
+  const walk = (value: unknown, here: string): void => {
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) => walk(entry, `${here}[${index}]`));
+      return;
+    }
+    if (value === null || typeof value !== "object") return;
+    for (const [key, entry] of Object.entries(asRecord(value, here))) {
+      const normalized = normalizeKey(key);
+      const keyPath = `${here}.${key}`;
+      if (TARGETED_SELECTOR_KEYS[normalized]) {
+        offenders.targeted.push(keyPath);
+      } else if (BLANKET_KEYS[normalized]) {
+        offenders.blanket.push(keyPath);
+      } else if (!KNOWN_KEYS[normalized]) {
+        offenders.unknown.push(keyPath);
+      } else {
+        walk(entry, keyPath);
+      }
+    }
+  };
+  walk(raw, path);
+  return offenders;
+}
+
+/**
+ * Every offending key path (targeted, blanket, or unknown) in a raw proposal
+ * — the flat view used by diagnostics and tests.
  */
 export function findDisguisedExemptions(raw: unknown, path = "proposal"): string[] {
-  if (Array.isArray(raw)) {
-    return raw.flatMap((entry, index) => findDisguisedExemptions(entry, `${path}[${index}]`));
-  }
-  if (raw === null || typeof raw !== "object") return [];
-  const offenders: string[] = [];
-  for (const [key, value] of Object.entries(asRecord(raw, path))) {
-    const normalized = normalizeKey(key);
-    const here = `${path}.${key}`;
-    if (TARGETED_SELECTOR_KEYS[normalized] || BLANKET_KEYS[normalized] || !KNOWN_KEYS[normalized]) {
-      offenders.push(here);
-      continue;
-    }
-    offenders.push(...findDisguisedExemptions(value, here));
-  }
-  return offenders;
+  const scan = scanDisguisedExemptions(raw, path);
+  return [...scan.targeted, ...scan.blanket, ...scan.unknown];
 }
 
 /**
@@ -323,21 +337,33 @@ function looksLikeValueSelector(value: string): boolean {
  * - `RULE_BLANKET_EXEMPTION` when the draft disables a detector or allows
  *   everything;
  * - `RULE_PROPOSAL_INVALID` for missing reason, unbounded applicability,
- *   missing expiry, or missing regression evidence;
- * - `RULE_EVIDENCE_FAILED` when recorded evidence does not pass.
+ *   missing expiry, or any field outside the closed schema — including
+ *   client-supplied regression-evidence results, which are never accepted.
+ *
+ * Regression evidence itself is computed by the service (`regression.ts`),
+ * never taken from the proposal.
  */
 export function validateRuleCorrection(raw: unknown, now: Date): RuleCorrectionDraft {
-  const offenders = findDisguisedExemptions(raw);
-  if (offenders.length > 0) {
-    const blanket = offenders.some(
-      (path) => BLANKET_KEYS[normalizeKey(path.slice(path.lastIndexOf(".") + 1))],
-    );
+  const offenders = scanDisguisedExemptions(raw);
+  if (offenders.blanket.length > 0) {
     throw new SecurityError(
-      blanket ? "RULE_BLANKET_EXEMPTION" : "RULE_TARGETED_EXEMPTION",
-      blanket
-        ? "a blanket allow or detector disable is not a false-positive correction"
-        : "a rule cannot target an invocation, case, request digest, or individual secret value",
-      { paths: offenders },
+      "RULE_BLANKET_EXEMPTION",
+      "a blanket allow or detector disable is not a false-positive correction",
+      { paths: offenders.blanket },
+    );
+  }
+  if (offenders.targeted.length > 0) {
+    throw new SecurityError(
+      "RULE_TARGETED_EXEMPTION",
+      "a rule cannot target an invocation, case, request digest, or individual secret value",
+      { paths: offenders.targeted },
+    );
+  }
+  if (offenders.unknown.length > 0) {
+    throw new SecurityError(
+      "RULE_PROPOSAL_INVALID",
+      "a proposal may not carry fields outside the closed correction schema",
+      { paths: offenders.unknown },
     );
   }
   const record = asRecord(raw, "proposal");
@@ -384,52 +410,6 @@ export function validateRuleCorrection(raw: unknown, now: Date): RuleCorrectionD
       });
     }
   }
-  const evidenceRaw = record["regressionEvidence"];
-  const evidence: RegressionEvidence[] = [];
-  if (Array.isArray(evidenceRaw)) {
-    for (const entry of evidenceRaw) {
-      const entryRecord = asRecord(entry, "regressionEvidence entry");
-      const testRef = asNonEmptyString(entryRecord["testRef"], "regressionEvidence.testRef");
-      const description = asNonEmptyString(
-        entryRecord["description"],
-        "regressionEvidence.description",
-      );
-      const evidenceDetectorId = asNonEmptyString(
-        entryRecord["detectorId"],
-        "regressionEvidence.detectorId",
-      );
-      const result = entryRecord["result"];
-      const at = entryRecord["at"];
-      if (
-        (result !== "pass" && result !== "fail") ||
-        typeof at !== "string" ||
-        Number.isNaN(Date.parse(at))
-      ) {
-        throw new SecurityError("RULE_PROPOSAL_INVALID", "malformed regression evidence entry");
-      }
-      if (evidenceDetectorId !== detectorId) {
-        throw new SecurityError(
-          "RULE_PROPOSAL_INVALID",
-          "regression evidence must cover the corrected detector",
-          { detectorId, evidenceDetectorId },
-        );
-      }
-      if (result === "fail") {
-        throw new SecurityError(
-          "RULE_EVIDENCE_FAILED",
-          "regression evidence shows true-secret detection no longer effective",
-          { testRef },
-        );
-      }
-      evidence.push({ testRef, description, detectorId: evidenceDetectorId, result, at });
-    }
-  }
-  if (evidence.length === 0) {
-    throw new SecurityError(
-      "RULE_PROPOSAL_INVALID",
-      "a correction needs regression evidence that true-secret detection remains effective",
-    );
-  }
   return {
     detectorId,
     scope,
@@ -437,7 +417,6 @@ export function validateRuleCorrection(raw: unknown, now: Date): RuleCorrectionD
     reason,
     expiresAt,
     ...(reviewAt !== undefined ? { reviewAt } : {}),
-    regressionEvidence: evidence,
   };
 }
 
@@ -574,39 +553,4 @@ export function constrainDetector(
     narrowed[key] = longer;
   }
   return narrowed;
-}
-
-/**
- * Compute regression evidence: run each true-secret sample through the
- * scanner carrying the proposed correction and record whether the sample's
- * detector still fires. The samples' material is never retained or copied
- * into the evidence.
- */
-export async function runRegressionEvidence(
-  scanner: SecretScanner,
-  samples: readonly TrueSecretSample[],
-  at: string,
-): Promise<RegressionEvidence[]> {
-  const evidence: RegressionEvidence[] = [];
-  for (const sample of samples) {
-    const report: SecretScanReport = await scanner.scan({
-      segments: [
-        {
-          id: `regression-${sample.testRef}`,
-          path: ["regression"],
-          text: sample.material,
-          dataClasses: [],
-        },
-      ],
-    });
-    const detected = report.findings.some((finding) => finding.detector === sample.detectorId);
-    evidence.push({
-      testRef: sample.testRef,
-      description: sample.description,
-      detectorId: sample.detectorId,
-      result: detected ? "pass" : "fail",
-      at,
-    });
-  }
-  return evidence;
 }

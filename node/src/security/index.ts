@@ -88,12 +88,13 @@ export {
   constrainDetector,
   correctionLineage,
   findDisguisedExemptions,
-  runRegressionEvidence,
+  scanDisguisedExemptions,
   validateRuleCorrection,
 } from "./rules.js";
 export type {
   ActiveRuleCorrection,
   DetectorConstraints,
+  DisguisedExemptionScan,
   RegressionEvidence,
   RuleCorrectionDraft,
   RuleEvent,
@@ -103,6 +104,13 @@ export type {
   RuleReview,
   TrueSecretSample,
 } from "./rules.js";
+
+export {
+  corpusDigest,
+  defaultRegressionSamples,
+  ruleDigest,
+  runRegressionEvidence,
+} from "./regression.js";
 
 export { RuleCorrectionService } from "./rule-service.js";
 export type { RuleServiceDeps } from "./rule-service.js";

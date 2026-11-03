@@ -144,11 +144,14 @@ function narrowedDetector(
  * the gateway treats it as unavailable — never as clean.
  */
 export function createPatternSecretScanner(options?: {
-  detectors?: SecretDetector[];
+  detectors?: readonly SecretDetector[];
   /**
    * Live active rule corrections (DAT-211), evaluated per scan so an
-   * activation takes effect without re-composing the gateway. Corrections
-   * only narrow detectors; the complete-request checks all still apply.
+   * activation takes effect without re-composing the gateway. A correction
+   * applies only to a scan whose trusted `SecretScanRequest.scope` matches
+   * its enterprise *and* workspace exactly; a missing request scope applies
+   * none (stock detectors — fail closed). Corrections only narrow detectors;
+   * the complete-request checks all still apply.
    */
   corrections?: () => readonly ActiveRuleCorrection[];
 }): SecretScanner {
@@ -158,7 +161,15 @@ export function createPatternSecretScanner(options?: {
     ruleVersion: PATTERN_SCANNER_RULE_VERSION,
     scan(request: SecretScanRequest): SecretScanReport {
       const findings: SecretFinding[] = [];
-      const corrections = options?.corrections?.() ?? [];
+      const scope = request.scope;
+      const corrections =
+        scope === undefined
+          ? []
+          : (options?.corrections?.() ?? []).filter(
+              (correction) =>
+                correction.scope.enterpriseId === scope.enterpriseId &&
+                correction.scope.workspaceId === scope.workspaceId,
+            );
       const effectiveDetectors = detectors.map((detector) =>
         narrowedDetector(
           detector,

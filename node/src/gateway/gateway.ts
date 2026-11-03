@@ -469,6 +469,9 @@ export class ModelGateway {
       ...(this.deps.scanner ? { scanner: this.deps.scanner } : {}),
       ...(this.deps.scanPolicy ? { scanPolicy: this.deps.scanPolicy } : {}),
       ...(this.deps.scanTimeoutMs !== undefined ? { scanTimeoutMs: this.deps.scanTimeoutMs } : {}),
+      // Scope-specific scanner policy (reviewed rule corrections) applies
+      // only to the scope this request was resolved for (DAT-211).
+      scope: { enterpriseId: identity.enterpriseId, workspaceId: identity.workspaceId },
     });
     if (!gate.ok) {
       // Every scan-gate denial blocks on uncertain sensitive content (or the

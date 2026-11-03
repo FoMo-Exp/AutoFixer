@@ -4,9 +4,10 @@
  * ADR-0005 §4).
  *
  * Acceptance: targeted exemption rules are identified and rejected, blanket
- * allows are rejected, activation without regression evidence is rejected,
- * and a rollback never restores a superseded approval. Every proposal,
- * review, activation, and rollback is audited.
+ * allows are rejected, activation without trusted regression evidence is
+ * rejected, and a rollback never restores a superseded approval. Every
+ * proposal, review, activation, and rollback is audited, and evidence is
+ * computed server-side from a trusted corpus — never taken from a proposal.
  */
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,7 +23,9 @@ import {
   validateRuleCorrection,
   type SecurityActor,
   type SecurityDutyDirectory,
+  type TrueSecretSample,
 } from "../src/security/index.js";
+import type { SecretDetector } from "../src/gateway/index.js";
 
 const SCOPE = { enterpriseId: "ent_test", workspaceId: "ws_test" };
 const HANDLER: SecurityActor = { actorId: "human_handler", actorKind: "human" };
@@ -35,7 +38,38 @@ const IN_30_DAYS = "2026-12-03T00:00:00.000Z";
 const IN_7_DAYS = "2026-11-10T00:00:00.000Z";
 const YESTERDAY = "2026-11-02T00:00:00.000Z";
 
-function buildService(options: { directory?: SecurityDutyDirectory } = {}) {
+/**
+ * Deterministic trusted regression inputs for the suite: one test detector
+ * and one 64-distinct-character sample (Shannon entropy exactly 6 bits/char),
+ * so evidence computation is pinned rather than dependent on the built-in
+ * corpus.
+ */
+const TEST_DETECTOR: SecretDetector = {
+  id: "high-entropy-token",
+  version: "1",
+  classification: "secret_suspected",
+  pattern: /[A-Za-z0-9+/=]{28,}/g,
+  minShannonEntropy: 4,
+};
+const TRUE_SECRET_SAMPLE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const TEST_SAMPLES: readonly TrueSecretSample[] = [
+  {
+    testRef: "corpus/true-secret-class",
+    description: "true-secret class still detected",
+    detectorId: "high-entropy-token",
+    material: TRUE_SECRET_SAMPLE,
+  },
+];
+
+const LINEAGE = "high-entropy-token|ent_test|ws_test";
+
+function buildService(
+  options: {
+    directory?: SecurityDutyDirectory;
+    samples?: readonly TrueSecretSample[];
+    persistencePath?: string;
+  } = {},
+) {
   const directory =
     options.directory ??
     staticDutyDirectory({
@@ -43,7 +77,15 @@ function buildService(options: { directory?: SecurityDutyDirectory } = {}) {
       reviewers: ["human_reviewer"],
       admins: ["human_admin"],
     });
-  const service = new RuleCorrectionService({ directory, now: () => NOW });
+  const service = new RuleCorrectionService({
+    directory,
+    now: () => NOW,
+    regression: {
+      samples: options.samples ?? TEST_SAMPLES,
+      detectors: [TEST_DETECTOR],
+    },
+    ...(options.persistencePath !== undefined ? { persistencePath: options.persistencePath } : {}),
+  });
   return { service, directory };
 }
 
@@ -55,15 +97,6 @@ function proposal(overrides: Record<string, unknown> = {}): Record<string, unkno
     reason: "fixture generator material is high-entropy but never a secret",
     expiresAt: IN_30_DAYS,
     reviewAt: IN_7_DAYS,
-    regressionEvidence: [
-      {
-        testRef: "corpus/provider-keys",
-        description: "provider-shaped keys still detected",
-        detectorId: "high-entropy-token",
-        result: "pass",
-        at: YESTERDAY,
-      },
-    ],
     ...overrides,
   };
 }
@@ -78,7 +111,10 @@ function expectRuleCode(fn: () => unknown, code: string): void {
   }
 }
 
-const LINEAGE = "high-entropy-token|ent_test|ws_test";
+/** One temporary persisted-state file for tampering scenarios. */
+function stateFilePath(): string {
+  return path.join(mkdtempSync(path.join(tmpdir(), "dat211-rules-")), "state.json");
+}
 
 describe("disguised exemption identification (DAT-211)", () => {
   test("rules targeting an invocation, case, request digest, or secret value are identified and rejected", () => {
@@ -88,18 +124,6 @@ describe("disguised exemption identification (DAT-211)", () => {
       proposal({ requestDigest: "a1b2c3d4e5f6a7b8c9d0" }),
       proposal({ secretValue: "sk-live-abcdef1234567890" }),
       proposal({ constraints: { minShannonEntropy: 5.5, case_id: "case_1" } }),
-      proposal({
-        regressionEvidence: [
-          {
-            testRef: "t",
-            description: "d",
-            detectorId: "high-entropy-token",
-            result: "pass",
-            at: YESTERDAY,
-            matchedSecret: "value",
-          },
-        ],
-      }),
     ];
     for (const raw of targeted) {
       expectRuleCode(() => validateRuleCorrection(raw, NOW), "RULE_TARGETED_EXEMPTION");
@@ -155,7 +179,30 @@ describe("disguised exemption identification (DAT-211)", () => {
     expect(offenders).toContain("proposal.constraints.secretValue");
   });
 
-  test("a proposal needs reason, bounded applicability, expiry, and regression evidence", () => {
+  test("a proposal may not carry regression-evidence results of its own", () => {
+    // Evidence is service-computed; client-supplied results are rejected as
+    // fields outside the closed schema.
+    expectRuleCode(
+      () =>
+        validateRuleCorrection(
+          proposal({
+            regressionEvidence: [
+              {
+                testRef: "corpus/provider-keys",
+                description: "forged pass",
+                detectorId: "high-entropy-token",
+                result: "pass",
+                at: YESTERDAY,
+              },
+            ],
+          }),
+          NOW,
+        ),
+      "RULE_PROPOSAL_INVALID",
+    );
+  });
+
+  test("a proposal needs reason, bounded applicability, and a bounded expiry", () => {
     expectRuleCode(
       () => validateRuleCorrection(proposal({ reason: "  " }), NOW),
       "RULE_PROPOSAL_INVALID",
@@ -173,50 +220,134 @@ describe("disguised exemption identification (DAT-211)", () => {
       "RULE_PROPOSAL_INVALID",
     );
     expectRuleCode(
-      () => validateRuleCorrection(proposal({ regressionEvidence: [] }), NOW),
-      "RULE_PROPOSAL_INVALID",
-    );
-    expectRuleCode(
       () => validateRuleCorrection(proposal({ reviewAt: IN_30_DAYS, expiresAt: IN_7_DAYS }), NOW),
       "RULE_PROPOSAL_INVALID",
     );
-    // Evidence must cover the corrected detector and must pass.
+  });
+});
+
+describe("trusted regression evidence (DAT-211)", () => {
+  test("the service computes evidence and binds it to the rule content and corpus", () => {
+    const { service } = buildService();
+    const proposed = service.propose(HANDLER, proposal());
+    expect(proposed.regressionEvidence).toMatchObject([
+      { testRef: "corpus/true-secret-class", result: "pass" },
+    ]);
+    expect(proposed.regressionBinding?.ruleDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(proposed.regressionBinding?.corpusDigest).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  test("a correction that would suppress a true-secret sample cannot be proposed", () => {
+    const { service } = buildService();
+    // minLength 100 excludes the 64-character true-secret sample class.
     expectRuleCode(
-      () =>
-        validateRuleCorrection(
-          proposal({
-            regressionEvidence: [
-              {
-                testRef: "corpus/other",
-                description: "other detector",
-                detectorId: "aws-access-key-id",
-                result: "pass",
-                at: YESTERDAY,
-              },
-            ],
-          }),
-          NOW,
-        ),
-      "RULE_PROPOSAL_INVALID",
+      () => service.propose(HANDLER, proposal({ constraints: { minLength: 100 } })),
+      "RULE_EVIDENCE_FAILED",
     );
+    const rejected = service
+      .history(LINEAGE)
+      .find((entry) => entry.type === "rule.proposal_rejected");
+    expect(rejected?.detail["code"]).toBe("RULE_EVIDENCE_FAILED");
+    expect(service.lineage(LINEAGE)).toHaveLength(0);
+  });
+
+  test("a detector without trusted samples cannot be proposed", () => {
+    const { service } = buildService();
     expectRuleCode(
-      () =>
-        validateRuleCorrection(
-          proposal({
+      () => service.propose(HANDLER, proposal({ detectorId: "unknown-detector" })),
+      "RULE_EVIDENCE_MISSING",
+    );
+  });
+
+  test("activation re-verifies evidence: forged stored results are not authority", () => {
+    const stateFile = stateFilePath();
+    const { service } = buildService({ persistencePath: stateFile });
+    service.propose(HANDLER, proposal());
+    service.review(LINEAGE, 1, REVIEWER, true, "fine");
+    // Tamper only the recorded evidence entries: the service recomputes from
+    // the trusted corpus, so activation still succeeds and ignores them.
+    const revision = service.revision(LINEAGE, 1);
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        schema_version: 1,
+        revisions: [
+          {
+            ...revision,
             regressionEvidence: [
               {
-                testRef: "corpus/provider-keys",
-                description: "missed a true secret",
+                testRef: "forged/pass",
+                description: "forged",
                 detectorId: "high-entropy-token",
                 result: "fail",
                 at: YESTERDAY,
               },
             ],
-          }),
-          NOW,
-        ),
-      "RULE_EVIDENCE_FAILED",
+          },
+        ],
+        events: service.history(LINEAGE),
+      }),
     );
+    const reopened = buildService({ persistencePath: stateFile }).service;
+    expect(reopened.activate(LINEAGE, 1, ADMIN).status).toBe("activated");
+  });
+
+  test("activation rejects a correction whose content changed after its evidence", () => {
+    const stateFile = stateFilePath();
+    const { service } = buildService({ persistencePath: stateFile });
+    service.propose(HANDLER, proposal());
+    service.review(LINEAGE, 1, REVIEWER, true, "fine");
+    const revision = service.revision(LINEAGE, 1);
+    // Widening/narrowing the stored constraints invalidates the commitment:
+    // the reviewed content is no longer what the evidence covered.
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        schema_version: 1,
+        revisions: [{ ...revision, constraints: { minShannonEntropy: 4.5 } }],
+        events: service.history(LINEAGE),
+      }),
+    );
+    const reopened = buildService({ persistencePath: stateFile }).service;
+    expectRuleCode(() => reopened.activate(LINEAGE, 1, ADMIN), "RULE_EVIDENCE_INVALID");
+  });
+
+  test("activation rejects evidence computed against a different trusted corpus", () => {
+    const stateFile = stateFilePath();
+    const { service } = buildService({ persistencePath: stateFile });
+    service.propose(HANDLER, proposal());
+    service.review(LINEAGE, 1, REVIEWER, true, "fine");
+    // A changed corpus invalidates the commitment: the evidence is stale and
+    // the correction needs re-proposal and re-review.
+    const changedCorpus: TrueSecretSample[] = [
+      {
+        testRef: "corpus/true-secret-class",
+        description: "true-secret class still detected",
+        detectorId: "high-entropy-token",
+        material: "QWERTYUIOPASDFGHJKLZXCVBNMqwertyuiopasdfghjklzxcvbnm1234567890+/",
+      },
+    ];
+    const reopened = buildService({ persistencePath: stateFile, samples: changedCorpus }).service;
+    expectRuleCode(() => reopened.activate(LINEAGE, 1, ADMIN), "RULE_EVIDENCE_STALE");
+  });
+
+  test("activation without a committed evidence binding is rejected", () => {
+    const stateFile = stateFilePath();
+    const { service } = buildService({ persistencePath: stateFile });
+    service.propose(HANDLER, proposal());
+    service.review(LINEAGE, 1, REVIEWER, true, "fine");
+    const revision = service.revision(LINEAGE, 1);
+    const { regressionBinding: _binding, ...unbound } = revision ?? {};
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        schema_version: 1,
+        revisions: [unbound],
+        events: service.history(LINEAGE),
+      }),
+    );
+    const reopened = buildService({ persistencePath: stateFile }).service;
+    expectRuleCode(() => reopened.activate(LINEAGE, 1, ADMIN), "RULE_EVIDENCE_MISSING");
   });
 });
 
@@ -231,7 +362,12 @@ describe("versioned correction lifecycle (DAT-211)", () => {
     const activated = service.activate(LINEAGE, 1, ADMIN);
     expect(activated.status).toBe("activated");
     expect(service.activeCorrections()).toMatchObject([
-      { detectorId: "high-entropy-token", version: 1, constraints: { minShannonEntropy: 5.5 } },
+      {
+        detectorId: "high-entropy-token",
+        version: 1,
+        scope: SCOPE,
+        constraints: { minShannonEntropy: 5.5 },
+      },
     ]);
     const types = service.history(LINEAGE).map((event) => event.type);
     expect(types).toEqual(["rule.proposed", "rule.review_approved", "rule.activated"]);
@@ -323,50 +459,11 @@ describe("versioned correction lifecycle (DAT-211)", () => {
     expectRuleCode(() => reviewed.propose(OWNER_ACTOR, proposal()), "SOD_DUTY_REQUIRED");
   });
 
-  test("activation without regression evidence cannot happen, even on tampered state", () => {
-    // The evidence gate at activation time is the second line of defense
-    // behind the proposal gate: a persisted revision without evidence never
-    // activates.
-    const directory = staticDutyDirectory({
-      handlers: ["human_handler"],
-      reviewers: ["human_reviewer"],
-      admins: ["human_admin"],
-    });
-    const stateFile = path.join(
-      mkdtempSync(path.join(tmpdir(), "rule-corrections-")),
-      "state.json",
-    );
-    const service = new RuleCorrectionService({
-      directory,
-      now: () => NOW,
-      persistencePath: stateFile,
-    });
-    service.propose(HANDLER, proposal());
-    service.review(LINEAGE, 1, REVIEWER, true, "fine");
-    // Simulate tampering: reopen over state whose revision carries no
-    // evidence at all.
-    const revision = service.revision(LINEAGE, 1);
-    writeFileSync(
-      stateFile,
-      JSON.stringify({
-        schema_version: 1,
-        revisions: [{ ...revision, regressionEvidence: [] }],
-        events: service.history(LINEAGE),
-      }),
-    );
-    const reopened = new RuleCorrectionService({
-      directory,
-      now: () => NOW,
-      persistencePath: stateFile,
-    });
-    expectRuleCode(() => reopened.activate(LINEAGE, 1, ADMIN), "RULE_EVIDENCE_MISSING");
-  });
-
   test("a newer approval supersedes the older one; superseded approvals never come back", () => {
     const { service } = buildService();
     service.propose(HANDLER, proposal());
     service.review(LINEAGE, 1, REVIEWER, true, "v1 fine");
-    const second = service.propose(HANDLER, proposal({ constraints: { minShannonEntropy: 6 } }));
+    const second = service.propose(HANDLER, proposal({ constraints: { minShannonEntropy: 5.2 } }));
     expect(second.version).toBe(2);
     service.review(LINEAGE, 2, REVIEWER, true, "v2 fine");
     // The earlier approval is superseded by the newer review line.
@@ -381,7 +478,7 @@ describe("versioned correction lifecycle (DAT-211)", () => {
     service.propose(HANDLER, proposal());
     service.review(LINEAGE, 1, REVIEWER, true, "v1");
     service.activate(LINEAGE, 1, ADMIN);
-    service.propose(HANDLER, proposal({ constraints: { minShannonEntropy: 6 } }));
+    service.propose(HANDLER, proposal({ constraints: { minShannonEntropy: 5.2 } }));
     service.review(LINEAGE, 2, REVIEWER, true, "v2");
     service.activate(LINEAGE, 2, ADMIN);
     expect(service.revision(LINEAGE, 1)?.status).toBe("superseded");
@@ -398,7 +495,7 @@ describe("versioned correction lifecycle (DAT-211)", () => {
     expectRuleCode(() => service.activate(LINEAGE, 2, ADMIN), "RULE_APPROVAL_SUPERSEDED");
     expectRuleCode(() => service.rollback(LINEAGE, ADMIN), "RULE_NOTHING_TO_ROLL_BACK");
     // Re-establishing the correction needs a fresh proposal and review.
-    service.propose(HANDLER, proposal({ constraints: { minShannonEntropy: 6 } }));
+    service.propose(HANDLER, proposal({ constraints: { minShannonEntropy: 5.2 } }));
     service.review(LINEAGE, 4, REVIEWER, true, "fresh");
     expect(service.activate(LINEAGE, 4, ADMIN).status).toBe("activated");
     const types = service.history(LINEAGE).map((event) => event.type);
@@ -426,7 +523,11 @@ describe("versioned correction lifecycle (DAT-211)", () => {
       reviewers: ["human_reviewer"],
       admins: ["human_admin"],
     });
-    const service = new RuleCorrectionService({ directory, now: () => new Date(clock) });
+    const service = new RuleCorrectionService({
+      directory,
+      now: () => new Date(clock),
+      regression: { samples: TEST_SAMPLES, detectors: [TEST_DETECTOR] },
+    });
     service.propose(HANDLER, proposal({ expiresAt: IN_7_DAYS, reviewAt: undefined }));
     service.review(LINEAGE, 1, REVIEWER, true, "fine");
     service.activate(LINEAGE, 1, ADMIN);
@@ -439,5 +540,49 @@ describe("versioned correction lifecycle (DAT-211)", () => {
     expect(service.history(LINEAGE).map((event) => event.type)).toContain("rule.expired");
     // An expired approval is also never restored.
     expectRuleCode(() => service.activate(LINEAGE, 1, ADMIN), "RULE_REVISION_EXPIRED");
+  });
+});
+
+describe("query snapshots (DAT-211)", () => {
+  test("callers cannot rewrite activated policy or the audit trail through query results", () => {
+    const { service } = buildService();
+    service.propose(HANDLER, proposal());
+    service.review(LINEAGE, 1, REVIEWER, true, "fine");
+    service.activate(LINEAGE, 1, ADMIN);
+    // Mutating the active view must not change what the scanner consumes.
+    const active = service.activeCorrections()[0];
+    expect(active).toBeDefined();
+    if (active) {
+      active.constraints.minShannonEntropy = 0.1;
+      active.constraints.minLength = 1;
+      active.scope.workspaceId = "ws_other";
+    }
+    const again = service.activeCorrections()[0];
+    expect(again?.constraints).toEqual({ minShannonEntropy: 5.5 });
+    expect(again?.scope).toEqual(SCOPE);
+    // Mutating a returned revision must not rewrite internal state…
+    const revision = service.revision(LINEAGE, 1);
+    expect(revision).toBeDefined();
+    if (revision) {
+      revision.status = "superseded";
+      revision.constraints.minLength = 99;
+      if (revision.review) revision.review.approved = false;
+    }
+    expect(service.revision(LINEAGE, 1)?.status).toBe("activated");
+    expect(service.revision(LINEAGE, 1)?.constraints).toEqual({ minShannonEntropy: 5.5 });
+    expect(service.revision(LINEAGE, 1)?.review?.approved).toBe(true);
+    // …nor must mutating history or lineage snapshots.
+    const history = service.history(LINEAGE);
+    const firstEvent = history[0];
+    if (firstEvent) {
+      firstEvent.type = "rule.rolled_back";
+      if (firstEvent.actor) firstEvent.actor.principalId = "stranger";
+    }
+    expect(service.history(LINEAGE)[0]?.type).toBe("rule.proposed");
+    expect(service.history(LINEAGE)[0]?.actor).toMatchObject({ principalId: "human_handler" });
+    const lineage = service.lineage(LINEAGE);
+    const firstRevision = lineage[0];
+    if (firstRevision) firstRevision.status = "rejected";
+    expect(service.lineage(LINEAGE)[0]?.status).toBe("activated");
   });
 });
