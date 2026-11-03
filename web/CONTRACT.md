@@ -1,24 +1,31 @@
 ## Node-to-UI contract checklist
 
 The workbench uses `src/api/contracts/openapi.json` and its generated
-`schema.d.ts` as the only API source. The contract baseline is `main` at
-`5828f92ca6fbff0b462d05896e689b9aad66362f` (DAT-193 #21, OpenAPI `0.5.0`,
-merge-base `af2ac8e`), which contains DAT-191 (#18, `705b4a0`), DAT-192 (#19,
-`af2ac8e`) and the DAT-188 M3 baseline `8734984`. No UI fixture invents a
-field outside this baseline.
+`schema.d.ts` as the only API source. The identity/session contract baseline is
+`0bf66c2b4382d78577c5e23c158907579f8c228d` (DAT-202 #39, OpenAPI `0.6.0`),
+merged on top of the DAT-193 `0.5.0` baseline `5828f92`; work on this surface
+targets `main` at `7f85830533aeebf8552451428f86cb5cb1d0d8c7` (DAT-205,
+OpenAPI `0.7.0`). No UI fixture invents a field outside this baseline.
 
-| Endpoint                                              | Request fields                                                                                                         | Response type                  | Status |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ------ |
-| `POST /api/v1/tasks`                                  | `repository_id`, `base_ref`, `summary`, optional `source_reference`, `acceptance_criteria[]`; `Idempotency-Key` header | `Task`                         | ✅     |
-| `GET /api/v1/tasks?cursor=&status=`                   | optional `cursor`, `status`                                                                                            | `{items: Task[], next_cursor}` | ✅     |
-| `GET /api/v1/tasks/{task_id}`                         | `task_id` path                                                                                                         | `Task`                         | ✅     |
-| `GET /api/v1/tasks/{task_id}/runs`                    | `task_id` path                                                                                                         | `{items: RunSummary[]}`        | ✅     |
-| `POST /api/v1/tasks/{task_id}/messages`               | `mode`, `content`                                                                                                      | `{task_id, queued}`            | ✅     |
-| `POST /api/v1/tasks/{task_id}/approvals`              | `decision`, `scope_digest`                                                                                             | `Task`                         | ✅     |
-| `POST /api/v1/tasks/{task_id}/cancel`                 | optional `reason`                                                                                                      | `Task`                         | ✅     |
-| `GET /api/v1/tasks/{task_id}/timeline`                | `task_id` path                                                                                                         | `{items: TaskEvent[]}`         | ✅     |
-| `GET /api/v1/tasks/{task_id}/artifacts/{artifact_id}` | `task_id`, `artifact_id` path                                                                                          | redacted artifact object       | ✅     |
-| `GET /api/v1/tasks/{task_id}/stream`                  | `task_id` path; optional `Last-Event-ID` header                                                                        | SSE `TaskEvent` envelopes      | ✅     |
+| Endpoint                                              | Request fields                                                                                                         | Response type                   | Status |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------- | ------ |
+| `POST /api/v1/tasks`                                  | `repository_id`, `base_ref`, `summary`, optional `source_reference`, `acceptance_criteria[]`; `Idempotency-Key` header | `Task`                          | ✅     |
+| `GET /api/v1/tasks?cursor=&status=`                   | optional `cursor`, `status`                                                                                            | `{items: Task[], next_cursor}`  | ✅     |
+| `GET /api/v1/tasks/{task_id}`                         | `task_id` path                                                                                                         | `Task`                          | ✅     |
+| `GET /api/v1/tasks/{task_id}/runs`                    | `task_id` path                                                                                                         | `{items: RunSummary[]}`         | ✅     |
+| `POST /api/v1/tasks/{task_id}/messages`               | `mode`, `content`                                                                                                      | `{task_id, queued}`             | ✅     |
+| `POST /api/v1/tasks/{task_id}/approvals`              | `decision`, `scope_digest`                                                                                             | `Task`                          | ✅     |
+| `POST /api/v1/tasks/{task_id}/cancel`                 | optional `reason`                                                                                                      | `Task`                          | ✅     |
+| `GET /api/v1/tasks/{task_id}/timeline`                | `task_id` path                                                                                                         | `{items: TaskEvent[]}`          | ✅     |
+| `GET /api/v1/tasks/{task_id}/artifacts/{artifact_id}` | `task_id`, `artifact_id` path                                                                                          | redacted artifact object        | ✅     |
+| `GET /api/v1/tasks/{task_id}/stream`                  | `task_id` path; optional `Last-Event-ID` header                                                                        | SSE `TaskEvent` envelopes       | ✅     |
+| `GET /api/v1/auth/providers`                          | none                                                                                                                   | `{items: LoginProvider[]}`      | ✅     |
+| `GET /api/v1/auth/login`                              | `provider_instance_id`, optional `return_to`, `desktop_flow`                                                           | 302 + `fp_oauth_binding` cookie | ✅     |
+| `GET /api/v1/auth/callback`                           | `code`, `state`                                                                                                        | 302 + HttpOnly `fp_session`     | ✅     |
+| `GET /api/v1/auth/session`                            | session cookie or bearer                                                                                               | `SessionInfo`                   | ✅     |
+| `POST /api/v1/auth/logout`                            | `X-CSRF-Token` for cookie sessions                                                                                     | 204                             | ✅     |
+| `POST /api/v1/auth/desktop/flows`                     | optional `provider_instance_id`                                                                                        | `DesktopFlow`                   | ✅     |
+| `POST /api/v1/auth/desktop/flows/{flow_id}/exchange`  | `secret`                                                                                                               | session grant                   | ✅     |
 
 The Electron main process discovers an existing loopback service from launch
 configuration or a discovery file, or starts the local Node entrypoint with a

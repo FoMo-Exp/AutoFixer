@@ -2399,3 +2399,181 @@ p {
 .scroll-preview-stacked i:nth-child(2) {
   opacity: 1;
 }
+
+/* ══════════════════════════════════════════════════════════════
+   Enterprise sign-in (ADR-0006): one gate for browser and desktop.
+   Tokens never enter this surface — only provider choices and state.
+   ══════════════════════════════════════════════════════════════ */
+.auth-shell {
+  align-items: center;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(var(--accent-rgb), 0.08), transparent 34rem), var(--bg);
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 48px 20px;
+}
+
+.auth-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 36px;
+  width: min(460px, 100%);
+}
+
+.auth-brand {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.auth-card h1 {
+  font-size: 24px;
+  letter-spacing: -0.04em;
+  line-height: 1.18;
+}
+
+.auth-lede {
+  color: var(--muted);
+  font-size: var(--fs-body);
+  line-height: 1.55;
+}
+
+.auth-message {
+  background: rgba(var(--amber-rgb), 0.1);
+  border: 1px solid rgba(var(--amber-rgb), 0.28);
+  border-radius: var(--r-sm);
+  color: var(--amber);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  padding: 9px 11px;
+}
+
+.auth-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.button-provider {
+  align-items: flex-start;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 56px;
+  padding: 10px 14px;
+  text-align: left;
+}
+
+.button-provider:hover:not(:disabled) {
+  background: var(--panel-hover);
+  border-color: var(--accent);
+}
+
+.provider-name {
+  font-size: var(--fs-body);
+  font-weight: 650;
+}
+
+.provider-host {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+}
+
+.auth-empty {
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  font-size: var(--fs-meta);
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 8px;
+}
+
+.auth-footnote {
+  border-top: 1px solid var(--line-soft);
+  color: var(--faint);
+  font-size: 11px;
+  line-height: 1.5;
+  margin-top: 4px;
+  padding-top: 12px;
+}
+
+.workspace-switcher {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+.workspace-switcher-label {
+  color: var(--faint);
+  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.workspace-switcher .custom-select-trigger {
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.workspace-switcher .custom-select-value {
+  font-size: var(--fs-meta);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-chip {
+  align-items: center;
+  border-left: 1px solid var(--line-soft);
+  display: flex;
+  gap: 10px;
+  padding-left: 14px;
+}
+
+.account-name {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-banner {
+  background: rgba(var(--amber-rgb), 0.1);
+  border-color: rgba(var(--amber-rgb), 0.28);
+}
+
+.permission-banner .banner-dot {
+  background: var(--amber);
+}
+
+@media (max-width: 900px) {
+  .auth-card {
+    padding: 26px 20px;
+  }
+
+  .account-name {
+    display: none;
+  }
+}

@@ -3,6 +3,11 @@ import type { FormEvent, ReactElement } from "react";
 import { ApiConfigurationError, ApiError, ForgePilotClient } from "./api/client";
 import type { ArtifactMetadata, RunSummary, Task, TaskEvent, TaskStatus } from "./api/client";
 import { resolveApiConfig } from "./api/config";
+import type { ApiConfig } from "./api/config";
+import { useAuth } from "./auth/useAuth";
+import type { AuthApi } from "./auth/useAuth";
+import { AuthLoadingScreen, LoginScreen, NoWorkspaceScreen } from "./auth/LoginScreen";
+import { WorkspaceSwitcher } from "./auth/WorkspaceSwitcher";
 import { useTaskStream } from "./api/hooks";
 import { CreateIdempotencyKeys } from "./api/idempotency";
 import { RepositoryPicker } from "./settings/RepositoryPicker";
@@ -62,8 +67,65 @@ function isTaskArchived(task: Task): boolean {
   return task.archived ?? task.status === "cancelled";
 }
 
+interface WorkbenchProps {
+  config: ApiConfig;
+  auth: AuthApi;
+}
+
 export default function App(): ReactElement {
-  const client = useMemo(() => new ForgePilotClient(resolveApiConfig()), []);
+  const config = useMemo(resolveApiConfig, []);
+  const auth = useAuth(config);
+
+  if (config.startupError && auth.status !== "signed_in" && auth.status !== "legacy") {
+    return <Workbench config={config} auth={auth} />;
+  }
+  if (auth.status === "checking") return <AuthLoadingScreen />;
+  if (auth.status === "no_workspace") {
+    return (
+      <NoWorkspaceScreen
+        displayName={auth.session?.user.display_name}
+        onRetry={auth.retry}
+        onSignOut={auth.signOut}
+      />
+    );
+  }
+  if (
+    auth.status === "signed_out" ||
+    auth.status === "signing_in" ||
+    auth.status === "expired" ||
+    auth.status === "error"
+  ) {
+    return (
+      <LoginScreen
+        status={auth.status}
+        providers={auth.providers}
+        message={auth.message}
+        desktop={auth.desktop}
+        onSignIn={auth.signIn}
+        onCancel={auth.cancelSignIn}
+        onRetry={auth.retry}
+      />
+    );
+  }
+  return <Workbench config={config} auth={auth} />;
+}
+
+function Workbench({ config, auth }: WorkbenchProps): ReactElement {
+  const authRef = useRef(auth);
+  authRef.current = auth;
+  const client = useMemo(
+    () =>
+      new ForgePilotClient({
+        baseUrl: config.baseUrl,
+        token: config.token,
+        ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
+        csrfToken: () => authRef.current.csrfToken(),
+        refreshCsrfToken: () => authRef.current.refreshCsrfToken(),
+        onUnauthorized: () => authRef.current.handleUnauthorized(),
+        onForbidden: (error) => authRef.current.handleForbidden(error.message),
+      }),
+    [config],
+  );
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   /** 窄屏钻取视图：list ↔ detail（≤900px 生效，桌面始终双栏并存） */
@@ -135,6 +197,12 @@ export default function App(): ReactElement {
     setDetailEpoch((n) => n + 1);
   }, []);
 
+  const reportRequestError = useCallback((caught: unknown): void => {
+    // 401 flips the auth gate; 403 is reported by the permission banner.
+    if (caught instanceof ApiError && (caught.status === 401 || caught.status === 403)) return;
+    setActionError(errorMessage(caught));
+  }, []);
+
   const loadTasks = useCallback(
     async (showConnecting = false): Promise<void> => {
       const requestId = ++listRequestRef.current;
@@ -148,6 +216,12 @@ export default function App(): ReactElement {
         setServiceError(undefined);
       } catch (caught) {
         if (requestId !== listRequestRef.current) return;
+        if (caught instanceof ApiError && caught.status === 401) return;
+        if (caught instanceof ApiError && caught.status === 403) {
+          setServiceStatus("connected");
+          setServiceError(undefined);
+          return;
+        }
         setServiceStatus("offline");
         setServiceError(errorMessage(caught));
       }
@@ -169,11 +243,11 @@ export default function App(): ReactElement {
       });
       setNextCursor(page.next_cursor);
     } catch (caught) {
-      if (listRequestId === listRequestRef.current) setActionError(errorMessage(caught));
+      if (listRequestId === listRequestRef.current) reportRequestError(caught);
     } finally {
       setIsLoadingMore(false);
     }
-  }, [client, isLoadingMore, nextCursor]);
+  }, [client, isLoadingMore, nextCursor, reportRequestError]);
 
   useEffect(() => {
     void loadTasks(true);
@@ -200,9 +274,9 @@ export default function App(): ReactElement {
       if (selectedIdRef.current !== requestedId || taskDetailRequestRef.current !== requestId) {
         return;
       }
-      setActionError(errorMessage(caught));
+      reportRequestError(caught);
     }
-  }, [client]);
+  }, [client, reportRequestError]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -267,7 +341,7 @@ export default function App(): ReactElement {
         setSelectedTask(cancelled);
       }
     } catch (caught) {
-      setActionError(errorMessage(caught));
+      reportRequestError(caught);
     } finally {
       setCancellingTaskId(undefined);
     }
@@ -288,7 +362,7 @@ export default function App(): ReactElement {
         setSelectedTask(recovered);
       }
     } catch (caught) {
-      setActionError(errorMessage(caught));
+      reportRequestError(caught);
     } finally {
       setCancellingTaskId(undefined);
     }
@@ -328,7 +402,7 @@ export default function App(): ReactElement {
       setForm(INITIAL_FORM);
       await loadTasks();
     } catch (caught) {
-      setActionError(errorMessage(caught));
+      reportRequestError(caught);
     } finally {
       setIsCreating(false);
     }
@@ -357,7 +431,7 @@ export default function App(): ReactElement {
       }
       setTasks((current) => current.map((entry) => (entry.id === task.id ? task : entry)));
     } catch (caught) {
-      if (selectedIdRef.current === taskId) setActionError(errorMessage(caught));
+      if (selectedIdRef.current === taskId) reportRequestError(caught);
     } finally {
       if (selectedIdRef.current === taskId) setActionBusy(undefined);
     }
@@ -380,6 +454,19 @@ export default function App(): ReactElement {
           </div>
         </div>
         <div className="topbar-actions">
+          {auth.session && (
+            <div className="account-chip">
+              <span className="account-name" title={auth.session.user.display_name}>
+                {auth.session.user.display_name}
+              </span>
+              <button
+                className="button button-quiet button-small"
+                onClick={() => void auth.signOut()}
+              >
+                Sign out
+              </button>
+            </div>
+          )}
           <ServiceBadge status={serviceStatus} />
           <button
             className="button button-quiet button-small"
@@ -435,6 +522,13 @@ export default function App(): ReactElement {
 
       <div className="workspace" data-view={mobileView}>
         <aside className="sidebar">
+          {auth.session && auth.session.memberships.length > 0 && (
+            <WorkspaceSwitcher
+              memberships={auth.session.memberships}
+              selected={auth.workspace}
+              onChange={auth.setWorkspace}
+            />
+          )}
           <div className="sidebar-heading">
             <div>
               <span className="eyebrow">Workspace</span>
@@ -507,6 +601,18 @@ export default function App(): ReactElement {
         </aside>
 
         <main className="main-panel">
+          {auth.notice && (
+            <div className="connection-banner permission-banner" role="alert">
+              <span className="banner-dot" />
+              <div>
+                <strong>Permission denied</strong>
+                <span>{auth.notice}</span>
+              </div>
+              <button className="button button-quiet button-small" onClick={auth.dismissNotice}>
+                Dismiss
+              </button>
+            </div>
+          )}
           {serviceStatus === "offline" && (
             <div className="connection-banner" role="alert">
               <span className="banner-dot" />

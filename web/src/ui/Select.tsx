@@ -13,6 +13,7 @@ interface SelectProps {
   disabled?: boolean;
   className?: string;
   id?: string;
+  ariaLabel?: string;
 }
 
 export function Select({
@@ -22,6 +23,7 @@ export function Select({
   disabled,
   className,
   id,
+  ariaLabel,
 }: SelectProps): ReactElement {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -91,6 +93,7 @@ export function Select({
         type="button"
         role="combobox"
         id={id}
+        aria-label={ariaLabel}
         aria-expanded={open}
         aria-haspopup="listbox"
         disabled={disabled}

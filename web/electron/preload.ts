@@ -44,6 +44,22 @@ contextBridge.exposeInMainWorld("forgePilotSettings", {
   listBranches: (input: unknown) => ipcRenderer.invoke("forgepilot:settings:list-branches", input),
 });
 
+contextBridge.exposeInMainWorld("forgePilotAuth", {
+  getState: () => ipcRenderer.invoke("forgepilot:auth-state"),
+  signIn: (input: unknown) => ipcRenderer.invoke("forgepilot:auth-sign-in", input),
+  cancelSignIn: () => ipcRenderer.invoke("forgepilot:auth-cancel"),
+  signOut: () => ipcRenderer.invoke("forgepilot:auth-sign-out"),
+  expire: () => ipcRenderer.invoke("forgepilot:auth-expire"),
+  retry: () => ipcRenderer.invoke("forgepilot:auth-retry"),
+  onStateChanged: (callback: (state: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: unknown): void => {
+      callback(state);
+    };
+    ipcRenderer.on("forgepilot:auth-changed", listener);
+    return () => ipcRenderer.removeListener("forgepilot:auth-changed", listener);
+  },
+});
+
 contextBridge.exposeInMainWorld("forgePilotApi", {
   request: (request: unknown) => ipcRenderer.invoke("forgepilot:api-request", request),
   abort: (requestId: string) => ipcRenderer.send("forgepilot:api-abort", requestId),

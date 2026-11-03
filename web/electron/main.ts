@@ -1,9 +1,10 @@
-import { app, BrowserWindow, ipcMain, safeStorage } from "electron";
+import { app, BrowserWindow, ipcMain, safeStorage, shell } from "electron";
 import type { ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createApiProxy, installApiProxy } from "./api-proxy.js";
+import { createDesktopAuth, installDesktopAuthIpc } from "./auth.js";
 import { createProviderClient } from "./git-providers.js";
 import { modelSettingsEnvironment } from "./model-settings-store.js";
 import { discoverNodeService, NodeServiceStartupError } from "./service-discovery.js";
@@ -19,6 +20,9 @@ let nodeChild: ChildProcess | undefined;
 let mainWindow: BrowserWindow | undefined;
 let disposeApiProxy: () => void = () => undefined;
 let disposeSettingsIpc: () => void = () => undefined;
+let disposeAuthIpc: () => void = () => undefined;
+let disposeDesktopAuth: () => void = () => undefined;
+let unsubscribeAuth: () => void = () => undefined;
 let startupError = "";
 
 function appIconPath(): string {
@@ -282,10 +286,30 @@ void app.whenReady().then(async () => {
     console.error("ForgePilot Node service discovery failed:", error);
   }
   const apiBaseUrl = process.env["FORGEPILOT_API_URL"] ?? "";
-  const apiToken = readApiToken();
+  const launchToken = readApiToken();
+  const desktopAuth = createDesktopAuth({
+    apiBaseUrl,
+    openExternal: (url) => shell.openExternal(url),
+  });
+  await desktopAuth.initialize();
+  unsubscribeAuth = desktopAuth.subscribe((state) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send("forgepilot:auth-changed", state);
+  });
+  disposeDesktopAuth = () => desktopAuth.dispose();
+  disposeAuthIpc = installDesktopAuthIpc(
+    ipcMain,
+    () => mainWindow,
+    desktopAuth,
+    isTrustedRendererUrl,
+  );
   const proxy = createApiProxy({
     apiBaseUrl,
-    apiToken,
+    getApiToken: () =>
+      desktopAuth.getApiToken() ?? (desktopAuth.getState().status === "legacy" ? launchToken : ""),
+    onUnauthorized: () => {
+      void desktopAuth.expire();
+    },
     publish: (requestId, message) => {
       if (!mainWindow || mainWindow.isDestroyed()) return;
       mainWindow.webContents.send(`forgepilot:api-stream:${requestId}`, message);
@@ -312,6 +336,9 @@ void app.whenReady().then(async () => {
 app.on("before-quit", () => {
   disposeApiProxy();
   disposeSettingsIpc();
+  disposeAuthIpc();
+  disposeDesktopAuth();
+  unsubscribeAuth();
   nodeChild?.kill();
 });
 
