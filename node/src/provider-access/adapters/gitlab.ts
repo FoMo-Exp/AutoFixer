@@ -44,6 +44,7 @@ import {
   type ProviderAdapter,
   type ProviderAdapterCapabilities,
   type ProviderCallContext,
+  type ProviderRoleSourceKind,
   type RawProviderRole,
   type RepositoryRef,
   type RosterPage,
@@ -309,13 +310,27 @@ export function createGitLabAdapter(options: GitLabAdapterOptions): ProviderAdap
           const groupResponse = await request(ctx, groupUrl);
           assertProviderStatus("gitlab", groupResponse, groupUrl);
           if (groupResponse.status === 404) {
-            continue; // visibility of an ancestor is gone; its members cannot be enumerated
+            // An ancestor group we cannot read hides an unknown number of
+            // members who do have access to this project. Continuing would
+            // hand `reconcile` a "complete" roster with those people missing,
+            // and it would record them as `removed`. The verification must
+            // fail instead: stale, nothing written.
+            throw new MissingPermissionError(
+              "visibility",
+              `gitlab ancestor group ${ancestorPath} of ${coords.canonical} is not visible to this integration (HTTP 404)`,
+            );
           }
           const group = parseJsonBody<Record<string, unknown>>(groupResponse.body, groupUrl);
           const groupId = stringValue(group["id"]);
-          if (groupId !== "") {
-            groups.push({ id: groupId, path: ancestorPath });
+          if (groupId === "") {
+            // Without the id the group's members cannot be enumerated, which
+            // is the same incompleteness as an unreadable group.
+            throw new MissingPermissionError(
+              "visibility",
+              `gitlab ancestor group ${ancestorPath} of ${coords.canonical} returned no id`,
+            );
           }
+          groups.push({ id: groupId, path: ancestorPath });
         }
       }
 
@@ -469,36 +484,102 @@ export function createGitLabAdapter(options: GitLabAdapterOptions): ProviderAdap
           : decodeCursor(cursor);
       return fetchPage(ctx, decoded);
     },
+    /**
+     * One subject's effective permission, with **real** provenance.
+     *
+     * `/projects/:id/members/all/:user_id` returns the aggregated effective
+     * permission without saying where it comes from. Recording that as a
+     * direct project membership would fabricate provenance for everyone who
+     * only reaches the project through a group, so the adapter instead asks
+     * the source-identifying endpoints in order:
+     *
+     * 1. direct project membership → `direct_collaborator` / `project:<id>`
+     * 2. each group on the ancestor chain, nearest first → `group` (own group)
+     *    or `inherited_role` with `inherited_from` (ancestor group)
+     *
+     * Only when no level claims the user is the aggregated endpoint consulted,
+     * to distinguish "no access" (404 → null) from "access exists but this
+     * integration cannot attribute it" (throws: a visibility gap, never a
+     * removal).
+     */
     async fetchEffectivePermission(
       ctx: ProviderCallContext,
       _repository: RepositoryRef,
       subject: string,
     ): Promise<RawProviderRole | null> {
       const repo = await discover(ctx);
-      const url = `${base}/projects/${repo.project_id}/members/all/${encodeURIComponent(subject)}`;
-      const response = await request(ctx, url);
-      assertProviderStatus("gitlab", response, url);
-      if (response.status === 404) {
-        // GitLab's documented answer for "this user has no membership".
-        return null;
-      }
-      const record = parseJsonBody<Record<string, unknown>>(response.body, url);
-      if (!isActiveMember(record)) {
-        return null;
-      }
-      const role = memberRole(record, "member");
-      if (role === undefined) {
-        return null;
-      }
-      const { subject: resolved, login } = memberSubject(record, "member");
-      return {
-        subject: resolved,
-        login,
-        kind: "direct_collaborator",
-        provider_role: role,
-        authority_ref: `project:${repo.project_id}`,
-        inherited_from: null,
+      const encodedSubject = encodeURIComponent(subject);
+
+      const read = async (
+        url: string,
+        kind: ProviderRoleSourceKind,
+        authorityRef: string,
+        inheritedFrom: string | null,
+      ): Promise<RawProviderRole | null> => {
+        const response = await request(ctx, url);
+        assertProviderStatus("gitlab", response, url);
+        if (response.status === 404) {
+          return null;
+        }
+        const record = parseJsonBody<Record<string, unknown>>(response.body, url);
+        if (!isActiveMember(record)) {
+          return null;
+        }
+        const role = memberRole(record, "member");
+        if (role === undefined) {
+          return null;
+        }
+        const { subject: resolved, login } = memberSubject(record, "member");
+        return {
+          subject: resolved,
+          login,
+          kind,
+          provider_role: role,
+          authority_ref: authorityRef,
+          inherited_from: inheritedFrom,
+        };
       };
+
+      const direct = await read(
+        `${base}/projects/${repo.project_id}/members/${encodedSubject}`,
+        "direct_collaborator",
+        `project:${repo.project_id}`,
+        null,
+      );
+      if (direct !== null) {
+        return direct;
+      }
+
+      for (let index = 0; index < repo.groups.length; index += 1) {
+        const group = repo.groups[index];
+        if (group === undefined) {
+          continue;
+        }
+        const parent = repo.groups[index - 1];
+        const member = await read(
+          `${base}/groups/${group.id}/members/${encodedSubject}`,
+          index === 0 ? "group" : "inherited_role",
+          `group:${group.id}`,
+          index === 0 || parent === undefined ? null : `group:${parent.id}`,
+        );
+        if (member !== null) {
+          return member;
+        }
+      }
+
+      // No level attributes the user. Ask the aggregate endpoint whether they
+      // have access at all — the answer decides between "no permission" and
+      // "cannot tell".
+      const aggregateUrl = `${base}/projects/${repo.project_id}/members/all/${encodedSubject}`;
+      const aggregate = await request(ctx, aggregateUrl);
+      assertProviderStatus("gitlab", aggregate, aggregateUrl);
+      if (aggregate.status === 404) {
+        return null;
+      }
+      throw new MissingPermissionError(
+        "permission_query",
+        `gitlab reports access for subject ${JSON.stringify(subject)} on ${coords.canonical} but the integration cannot attribute it to a project, group, or ancestor group`,
+      );
     },
   };
 }

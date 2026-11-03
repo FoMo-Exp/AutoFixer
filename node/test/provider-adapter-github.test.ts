@@ -73,13 +73,20 @@ const COLLABORATOR = {
 
 const ORG_OWNER = { id: 4242, login: "octocat" };
 
+const ORG_REPO = { id: 9001, owner: { id: 7, login: "Luthiel", type: "Organization" } };
+const PERSONAL_REPO = { id: 9002, owner: { id: 8, login: "Luthiel", type: "User" } };
+
 describe("github adapter paths and credentials", () => {
   test("requests the repository and roster by exact API paths with the exact credential", async () => {
     provider = await startFakeProvider(
       exactRoutes({
         [REPO_URL]: {
           status: 200,
-          body: { id: 9001, full_name: "Luthiel/AutoFixer", owner: { id: 7, login: "Luthiel" } },
+          body: {
+            id: 9001,
+            full_name: "Luthiel/AutoFixer",
+            owner: { id: 7, login: "Luthiel", type: "Organization" },
+          },
         },
         [COLLABORATORS_URL]: { status: 200, body: [COLLABORATOR] },
         [OWNERS_URL]: { status: 200, body: [ORG_OWNER] },
@@ -143,6 +150,30 @@ describe("github adapter paths and credentials", () => {
     expect(provider.requests).toHaveLength(0);
   });
 
+  test("a personal-account repository has no organization owners to query", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        [REPO_URL]: { status: 200, body: PERSONAL_REPO },
+        [COLLABORATORS_URL]: { status: 200, body: [COLLABORATOR] },
+      }),
+    );
+
+    const roster = await collectRoster(adapterFor(provider.base_url), ctx, repository, {
+      available_token_scope: [
+        "metadata:read",
+        "contents:read",
+        "members:read",
+        "administration:read",
+      ],
+    });
+
+    // The collaborator list IS the complete roster for a user-owned
+    // repository; /orgs/{owner}/members does not exist there, so hitting it
+    // would turn every reconciliation into an outage.
+    expect(provider.urls()).toEqual([REPO_URL, COLLABORATORS_URL]);
+    expect(roster.entries.map((entry) => entry.kind)).toEqual(["direct_collaborator"]);
+  });
+
   test("a GitHub Enterprise origin addresses /api/v3, public GitHub addresses api.github.com", () => {
     expect(githubApiBaseUrl({ provider_origin: "https://github.com" })).toBe(
       "https://api.github.com",
@@ -158,7 +189,7 @@ describe("github provider failure semantics", () => {
   test("401 is a missing-scope failure, never an empty roster", async () => {
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         [COLLABORATORS_URL]: { status: 401, body: { message: "Bad credentials" } },
       }),
     );
@@ -173,7 +204,7 @@ describe("github provider failure semantics", () => {
   test("403 is a permission failure, and produces no removed fact", async () => {
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         [COLLABORATORS_URL]: { status: 403, body: { message: "Resource not accessible" } },
       }),
     );
@@ -188,7 +219,7 @@ describe("github provider failure semantics", () => {
   test("429 is unavailable, distinct from an incomplete roster", async () => {
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         [COLLABORATORS_URL]: {
           status: 429,
           headers: { "retry-after": "120" },
@@ -241,7 +272,7 @@ describe("github provider failure semantics", () => {
     }));
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         [COLLABORATORS_URL]: {
           status: 200,
           headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1800000000" },
@@ -265,7 +296,7 @@ describe("github provider failure semantics", () => {
     }));
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         [COLLABORATORS_URL]: { status: 200, body: fullPage },
       }),
     );
@@ -299,7 +330,7 @@ describe("github provider failure semantics", () => {
     let collaboratorCalls = 0;
     provider = await startFakeProvider((request) => {
       if (request.url === REPO_URL) {
-        return { status: 200, body: { id: 9001 } };
+        return { status: 200, body: ORG_REPO };
       }
       if (request.url === OWNERS_URL) {
         return { status: 200, body: [] };
@@ -335,7 +366,7 @@ describe("github effective permission", () => {
   test("asks for the exact collaborator path and returns the provider role", async () => {
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         "/repos/Luthiel/AutoFixer/collaborators/octocat": { status: 200, body: COLLABORATOR },
       }),
     );
@@ -360,7 +391,7 @@ describe("github effective permission", () => {
   test("a 404 collaborator means no permission", async () => {
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         "/repos/Luthiel/AutoFixer/collaborators/octocat": {
           status: 404,
           body: { message: "Not Found" },
@@ -375,7 +406,7 @@ describe("github effective permission", () => {
 
   test("an unbound subject is a visibility gap, not an absence of access", async () => {
     provider = await startFakeProvider(
-      exactRoutes({ [REPO_URL]: { status: 200, body: { id: 9001 } } }),
+      exactRoutes({ [REPO_URL]: { status: 200, body: ORG_REPO } }),
     );
 
     const error = await fetchEffectivePermission(

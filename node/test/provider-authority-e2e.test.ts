@@ -46,6 +46,8 @@ const REPO_URL = "/repos/Luthiel/AutoFixer";
 const COLLABORATORS_URL = "/repos/Luthiel/AutoFixer/collaborators?per_page=100&page=1";
 const OWNERS_URL = "/orgs/Luthiel/members?role=admin&per_page=100&page=1";
 
+const ORG_REPO = { id: 9001, owner: { id: 7, login: "Luthiel", type: "Organization" } };
+
 const credentials = createStaticServiceCredentialStore({ [CREDENTIAL_REF]: SECRET });
 
 let provider: FakeProvider | null = null;
@@ -119,7 +121,7 @@ describe("reconcile → subject_authority → redemption", () => {
     const { userId } = await seedMember(fixture);
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         [COLLABORATORS_URL]: { status: 200, body: [member("push")] },
         [OWNERS_URL]: { status: 200, body: [] },
       }),
@@ -160,7 +162,7 @@ describe("reconcile → subject_authority → redemption", () => {
     await seedMember(fixture);
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         [COLLABORATORS_URL]: { status: 200, body: [member("push")] },
         [OWNERS_URL]: { status: 200, body: [] },
       }),
@@ -177,7 +179,7 @@ describe("reconcile → subject_authority → redemption", () => {
     await provider.close();
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         [COLLABORATORS_URL]: { status: 200, body: [] },
         [OWNERS_URL]: { status: 200, body: [] },
       }),
@@ -201,7 +203,7 @@ describe("reconcile → subject_authority → redemption", () => {
     await seedMember(fixture);
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         [COLLABORATORS_URL]: { status: 200, body: [member("push")] },
         [OWNERS_URL]: { status: 200, body: [] },
       }),
@@ -243,7 +245,7 @@ describe("reconcile → subject_authority → redemption", () => {
     await seedMember(fixture);
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         [COLLABORATORS_URL]: { status: 401, body: { message: "Bad credentials" } },
       }),
     );
@@ -275,7 +277,7 @@ describe("reconcile → subject_authority → redemption", () => {
     // First: a complete roster establishes the fact.
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         [COLLABORATORS_URL]: { status: 200, body: [member("push")] },
         [OWNERS_URL]: { status: 200, body: [] },
       }),
@@ -340,13 +342,104 @@ function authorityState(fixture: Fixture) {
   return fixture.access.roster.getAuthority(fixture.scope, fixture.integration.id, SUBJECT)?.state;
 }
 
+describe("gitlab ancestor invisibility degrades to stale, never to removals", () => {
+  const GITLAB_CANONICAL = "gitlab:acme/platform/api";
+  const GITLAB_PROJECT_URL = "/api/v4/projects/acme%2Fplatform%2Fapi";
+  const GITLAB_PARENT_URL = "/api/v4/groups/acme";
+  const GITLAB_PROJECT = {
+    id: 414,
+    path_with_namespace: "acme/platform/api",
+    namespace: { id: 57, full_path: "acme/platform", kind: "group" },
+  };
+
+  function gitlabReconcileDeps(fixture: Fixture) {
+    return {
+      access: fixture.access,
+      identities: fixture.identity.identities,
+      epoch: fixture.epoch,
+      clock: () => fixture.clock.now,
+      available_token_scope: ["read_api"],
+    };
+  }
+
+  function gitlabAdapter(fixture: Fixture, baseUrl: string) {
+    return createIntegrationAdapter({
+      integration: fixture.integration,
+      canonical_repository_id: GITLAB_CANONICAL,
+      credentials,
+      provider_origin: baseUrl,
+    });
+  }
+
+  function gitlabRoutes(groupMembers: Record<string, unknown>) {
+    return exactRoutes({
+      [GITLAB_PROJECT_URL]: { status: 200, body: GITLAB_PROJECT },
+      [GITLAB_PARENT_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+      "/api/v4/projects/414/members?per_page=100&page=1": {
+        status: 200,
+        body: [{ id: 900, username: "dev", access_level: 30, state: "active" }],
+      },
+      "/api/v4/groups/57/members?per_page=100&page=1": { status: 200, body: [] },
+      "/api/v4/groups/12/members?per_page=100&page=1": { status: 200, body: [groupMembers] },
+    });
+  }
+
+  test("a hidden ancestor group leaves the last fact stale and keeps the member", async () => {
+    const fixture = setupFixture({ provider_type: "gitlab" });
+    const { userId } = addMember(fixture, { subject: "902", login: "ancestor", role: "member" });
+    provider = await startFakeProvider(
+      gitlabRoutes({ id: 902, username: "ancestor", access_level: 20, state: "active" }),
+    );
+    const first = await reconcileIntegration(
+      gitlabReconcileDeps(fixture),
+      fixture.scope,
+      fixture.integration,
+      gitlabAdapter(fixture, provider.base_url),
+    );
+    expect(first.status).toBe("completed");
+    expect(redemptionEligibility(fixture, "902")).toEqual({ status: 200, reason: "ok" });
+
+    // The ancestor group becomes unreadable: its members can no longer be
+    // enumerated, so the roster is not complete and nothing may be applied.
+    await provider.close();
+    provider = await startFakeProvider(
+      exactRoutes({
+        [GITLAB_PROJECT_URL]: { status: 200, body: GITLAB_PROJECT },
+        [GITLAB_PARENT_URL]: { status: 404, body: { message: "404 Group Not Found" } },
+      }),
+    );
+
+    const error = await reconcileIntegration(
+      gitlabReconcileDeps(fixture),
+      fixture.scope,
+      fixture.integration,
+      gitlabAdapter(fixture, provider.base_url),
+    ).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(ReconcileIncompleteError);
+    expect((error as ReconcileIncompleteError).code).toBe("PROVIDER_PERMISSION_MISSING");
+
+    const authority = fixture.access.roster.getAuthority(
+      fixture.scope,
+      fixture.integration.id,
+      "902",
+    );
+    expect(authority?.state).toBe("stale");
+    expect(authority?.user_id).toBe(userId);
+    expect(authority?.state).not.toBe("removed");
+    expect(redemptionEligibility(fixture, "902")).toEqual({
+      status: 403,
+      reason: "authority_stale",
+    });
+  });
+});
+
 describe("per-subject refresh before a sensitive action", () => {
   test("a fresh provider confirmation makes the subject active and fresh immediately", async () => {
     const fixture = setupFixture();
     await seedMember(fixture);
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         "/repos/Luthiel/AutoFixer/collaborators/octocat": { status: 200, body: member("push") },
       }),
     );
@@ -376,7 +469,7 @@ describe("per-subject refresh before a sensitive action", () => {
     await seedMember(fixture);
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         [COLLABORATORS_URL]: { status: 200, body: [member("push")] },
         [OWNERS_URL]: { status: 200, body: [] },
       }),
@@ -392,7 +485,7 @@ describe("per-subject refresh before a sensitive action", () => {
     await provider.close();
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         "/repos/Luthiel/AutoFixer/collaborators/octocat": { status: 404, body: {} },
       }),
     );
@@ -417,7 +510,7 @@ describe("per-subject refresh before a sensitive action", () => {
     await seedMember(fixture);
     provider = await startFakeProvider(
       exactRoutes({
-        [REPO_URL]: { status: 200, body: { id: 9001 } },
+        [REPO_URL]: { status: 200, body: ORG_REPO },
         [COLLABORATORS_URL]: { status: 200, body: [member("push")] },
         [OWNERS_URL]: { status: 200, body: [] },
       }),
@@ -458,7 +551,7 @@ describe("per-subject refresh before a sensitive action", () => {
   test("an unbound subject is a visibility gap, not a removal", async () => {
     const fixture = setupFixture();
     provider = await startFakeProvider(
-      exactRoutes({ [REPO_URL]: { status: 200, body: { id: 9001 } } }),
+      exactRoutes({ [REPO_URL]: { status: 200, body: ORG_REPO } }),
     );
 
     const error = await refreshSubjectAuthority(

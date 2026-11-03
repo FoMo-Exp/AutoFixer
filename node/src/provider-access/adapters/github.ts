@@ -52,6 +52,7 @@ import {
   IncompleteRosterError,
   MissingPermissionError,
   NormalizationError,
+  ProviderUnavailableError,
   type ProviderAdapter,
   type ProviderAdapterCapabilities,
   type ProviderCallContext,
@@ -113,6 +114,12 @@ export interface GitHubAdapterOptions {
 interface GitHubCursor {
   source: "collaborators" | "org_owners";
   page: number;
+}
+
+/** What the adapter needs to know about the bound repository. */
+interface GitHubRepository {
+  owner_type: "organization" | "user";
+  owner_login: string;
 }
 
 const CURSOR_VERSION = 1;
@@ -267,7 +274,7 @@ export function createGitHubAdapter(options: GitHubAdapterOptions): ProviderAdap
   }
 
   /**
-   * Verify the repository itself is addressable by this installation.
+   * Read the repository itself: identity and owner type.
    *
    * `GET /repos/{owner}/{repo}` is the canonical GitHub repository read —
    * never `/repositories/github:<owner>/<repo>`. A 404 here means the
@@ -275,17 +282,23 @@ export function createGitHubAdapter(options: GitHubAdapterOptions): ProviderAdap
    * a visibility failure (fail closed, keep prior authority), not an empty
    * roster and not a removal.
    *
+   * The owner type decides the roster sources: an organization repository also
+   * has organization owners (`/orgs/{owner}/members` exists), while a
+   * personal-account repository has no such endpoint — its complete roster is
+   * the collaborator list alone. Querying `/orgs/{user}` for a personal repo
+   * answers 404 and must not turn the whole reconciliation into an outage.
+   *
    * The result is memoized: repository identity is immutable for an
    * integration, and a failed check is not cached.
    */
-  let visibility: Promise<void> | null = null;
+  let metadata: Promise<GitHubRepository> | null = null;
 
-  function ensureRepositoryVisible(ctx: ProviderCallContext): Promise<void> {
-    if (visibility !== null) {
-      return visibility;
+  function ensureRepositoryVisible(ctx: ProviderCallContext): Promise<GitHubRepository> {
+    if (metadata !== null) {
+      return metadata;
     }
     const url = `${base}/repos/${repoPath}`;
-    const pending = (async (): Promise<void> => {
+    const pending = (async (): Promise<GitHubRepository> => {
       const response = await request(ctx, url);
       assertProviderStatus("github", response, url);
       if (response.status === 404) {
@@ -294,11 +307,26 @@ export function createGitHubAdapter(options: GitHubAdapterOptions): ProviderAdap
           `github repository ${coords.canonical} is not visible to this integration (HTTP 404)`,
         );
       }
-      parseJsonBody<Record<string, unknown>>(response.body, url);
+      const payload = parseJsonBody<Record<string, unknown>>(response.body, url);
+      const owner =
+        typeof payload["owner"] === "object" && payload["owner"] !== null
+          ? (payload["owner"] as Record<string, unknown>)
+          : {};
+      const ownerType = typeof owner["type"] === "string" ? owner["type"] : "";
+      if (ownerType !== "Organization" && ownerType !== "User") {
+        throw new ProviderUnavailableError(
+          "unexpected_status",
+          `github repository payload for ${url} has no usable owner.type`,
+        );
+      }
+      return {
+        owner_type: ownerType === "Organization" ? "organization" : "user",
+        owner_login: typeof owner["login"] === "string" ? owner["login"] : coords.owner,
+      };
     })();
-    visibility = pending;
+    metadata = pending;
     pending.catch(() => {
-      visibility = null;
+      metadata = null;
     });
     return pending;
   }
@@ -310,11 +338,12 @@ export function createGitHubAdapter(options: GitHubAdapterOptions): ProviderAdap
    * walked past internally instead of surfacing as a page.
    */
   async function fetchOnePage(ctx: ProviderCallContext, cursor: GitHubCursor): Promise<RosterPage> {
+    const repository = await ensureRepositoryVisible(ctx);
     const query = `per_page=${String(perPage)}&page=${String(cursor.page)}`;
     const url =
       cursor.source === "collaborators"
         ? `${base}/repos/${repoPath}/collaborators?${query}`
-        : `${base}/orgs/${encodeURIComponent(coords.owner)}/members?role=admin&${query}`;
+        : `${base}/orgs/${encodeURIComponent(repository.owner_login)}/members?role=admin&${query}`;
 
     const response = await request(ctx, url);
     assertProviderStatus("github", response, url);
@@ -352,11 +381,19 @@ export function createGitHubAdapter(options: GitHubAdapterOptions): ProviderAdap
             };
           });
 
+    // Only an organization repository has organization owners to enumerate;
+    // for a personal repository the collaborator list is the complete roster.
+    const sources: GitHubCursor["source"][] =
+      repository.owner_type === "organization"
+        ? ["collaborators", "org_owners"]
+        : ["collaborators"];
+    const nextSource = sources[sources.indexOf(cursor.source) + 1];
+
     let next: GitHubCursor | null = null;
     if (hasMore) {
       next = { source: cursor.source, page: cursor.page + 1 };
-    } else if (cursor.source === "collaborators") {
-      next = { source: "org_owners", page: 1 };
+    } else if (nextSource !== undefined) {
+      next = { source: nextSource, page: 1 };
     }
 
     return {

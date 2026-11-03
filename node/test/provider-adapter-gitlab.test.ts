@@ -231,6 +231,25 @@ describe("gitlab provider failure semantics", () => {
     expect((error as MissingPermissionError).detail).toBe("visibility");
   });
 
+  test("an unreadable ancestor group fails the verification instead of yielding a short roster", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        [PROJECT_URL]: { status: 200, body: PROJECT },
+        // The ancestor group is not visible: its members cannot be enumerated.
+        [PARENT_GROUP_URL]: { status: 404, body: { message: "404 Group Not Found" } },
+      }),
+    );
+
+    const error = await collectRoster(adapterFor(provider.base_url), ctx, repository).catch(
+      (thrown: unknown) => thrown,
+    );
+    // Treating the remaining pages as complete would make reconcile record
+    // every member of that group as `removed`.
+    expect(error).toBeInstanceOf(MissingPermissionError);
+    expect((error as MissingPermissionError).detail).toBe("visibility");
+    expect((error as Error).message).toContain("acme");
+  });
+
   test("401 is a missing-scope failure", async () => {
     provider = await startFakeProvider(
       exactRoutes({ [PROJECT_URL]: { status: 401, body: { message: "401 Unauthorized" } } }),
@@ -325,31 +344,30 @@ describe("gitlab provider failure semantics", () => {
 });
 
 describe("gitlab effective permission", () => {
-  test("asks for the exact members/all path for the subject", async () => {
+  function adapterForSubjectChecks(baseUrl: string) {
+    return createGitLabAdapter({
+      canonical_repository_id: CANONICAL,
+      credential_ref: CREDENTIAL_REF,
+      credentials,
+      provider_origin: baseUrl,
+    });
+  }
+
+  test("a direct project member is recorded as a direct collaborator", async () => {
     provider = await startFakeProvider(
       exactRoutes({
         [PROJECT_URL]: { status: 200, body: PROJECT },
         [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
-        "/api/v4/projects/414/members/all/900": {
-          status: 200,
-          body: { id: 900, username: "dev", access_level: 30, state: "active" },
-        },
+        "/api/v4/projects/414/members/900": { status: 200, body: PROJECT_MEMBER },
       }),
     );
 
     const role = await fetchEffectivePermission(
-      adapterFor(provider.base_url),
+      adapterForSubjectChecks(provider.base_url),
       ctx,
       repository,
       "900",
     );
-    // Project metadata, then the ancestor lookup that completes the chain,
-    // then the per-subject query.
-    expect(provider.urls()).toEqual([
-      PROJECT_URL,
-      PARENT_GROUP_URL,
-      "/api/v4/projects/414/members/all/900",
-    ]);
     expect(role).toEqual({
       subject: "900",
       login: "dev",
@@ -360,17 +378,102 @@ describe("gitlab effective permission", () => {
     });
   });
 
-  test("a 404 member means no permission", async () => {
+  test("group-inherited access keeps the group as provenance, never the aggregate endpoint", async () => {
     provider = await startFakeProvider(
       exactRoutes({
         [PROJECT_URL]: { status: 200, body: PROJECT },
         [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        "/api/v4/projects/414/members/901": { status: 404, body: {} },
+        "/api/v4/groups/57/members/901": { status: 200, body: GROUP_MEMBER },
+        "/api/v4/groups/12/members/901": { status: 404, body: {} },
+      }),
+    );
+
+    const role = await fetchEffectivePermission(
+      adapterForSubjectChecks(provider.base_url),
+      ctx,
+      repository,
+      "901",
+    );
+    expect(role).toEqual({
+      subject: "901",
+      login: "groupie",
+      kind: "group",
+      provider_role: "maintainer",
+      authority_ref: "group:57",
+      inherited_from: null,
+    });
+    // The unfiltered aggregate endpoint is never used when a level answers.
+    expect(provider.urls().some((url) => url.includes("/members/all/"))).toBe(false);
+  });
+
+  test("ancestor-group access is inherited_role with inherited_from", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        [PROJECT_URL]: { status: 200, body: PROJECT },
+        [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        "/api/v4/projects/414/members/902": { status: 404, body: {} },
+        "/api/v4/groups/57/members/902": { status: 404, body: {} },
+        "/api/v4/groups/12/members/902": { status: 200, body: ANCESTOR_MEMBER },
+      }),
+    );
+
+    const role = await fetchEffectivePermission(
+      adapterForSubjectChecks(provider.base_url),
+      ctx,
+      repository,
+      "902",
+    );
+    expect(role).toEqual({
+      subject: "902",
+      login: "ancestor",
+      kind: "inherited_role",
+      provider_role: "reporter",
+      authority_ref: "group:12",
+      inherited_from: "group:57",
+    });
+  });
+
+  test("no membership anywhere means no permission", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        [PROJECT_URL]: { status: 200, body: PROJECT },
+        [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        "/api/v4/projects/414/members/999": { status: 404, body: {} },
+        "/api/v4/groups/57/members/999": { status: 404, body: {} },
+        "/api/v4/groups/12/members/999": { status: 404, body: {} },
         "/api/v4/projects/414/members/all/999": { status: 404, body: { message: "404 Not found" } },
       }),
     );
 
     await expect(
-      fetchEffectivePermission(adapterFor(provider.base_url), ctx, repository, "999"),
+      fetchEffectivePermission(adapterForSubjectChecks(provider.base_url), ctx, repository, "999"),
     ).resolves.toBeNull();
+  });
+
+  test("access that no level can be attributed to is a visibility gap, not a removal", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        [PROJECT_URL]: { status: 200, body: PROJECT },
+        [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        "/api/v4/projects/414/members/904": { status: 404, body: {} },
+        "/api/v4/groups/57/members/904": { status: 404, body: {} },
+        "/api/v4/groups/12/members/904": { status: 404, body: {} },
+        // e.g. the project is shared with a group outside the ancestor chain.
+        "/api/v4/projects/414/members/all/904": {
+          status: 200,
+          body: { id: 904, username: "shared", access_level: 30, state: "active" },
+        },
+      }),
+    );
+
+    const error = await fetchEffectivePermission(
+      adapterForSubjectChecks(provider.base_url),
+      ctx,
+      repository,
+      "904",
+    ).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(MissingPermissionError);
+    expect((error as MissingPermissionError).detail).toBe("permission_query");
   });
 });
