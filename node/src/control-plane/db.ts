@@ -214,6 +214,181 @@ const MIGRATIONS: Migration[] = [
         ON auth_audit(enterprise_id)`,
     ],
   },
+  {
+    // Workspace memory (DAT-232): immutable versions, evidence, links, audit
+    // events, embeddings, and erasure tombstones. Every content row carries
+    // enterprise_id + workspace_id so scope filters hold at the row level;
+    // memory content rows reference the workspace with ON DELETE CASCADE so a
+    // deleted workspace can never leave items or embeddings behind.
+    // memory_events and memory_tombstones intentionally carry plain scope IDs
+    // without foreign keys: audit and tombstones must survive the deletion of
+    // the rows they describe.
+    version: 3,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS memory_items (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        status TEXT NOT NULL CHECK (
+          status IN ('proposed', 'candidate', 'active', 'deprecated', 'retired', 'quarantined')
+        ),
+        current_version INTEGER NOT NULL,
+        support_count INTEGER NOT NULL DEFAULT 0,
+        contradiction_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_items_scope
+        ON memory_items(enterprise_id, workspace_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_items_workspace_status
+        ON memory_items(workspace_id, status)`,
+      // One row per immutable content version. Everything the memory item
+      // contract requires — kind, applicability scope, statement, provenance,
+      // trust, sensitivity, temporal validity, content hash, review — lives on
+      // the version so any historical run can be rebuilt exactly. Only
+      // valid_to is ever written after creation, and it is set at most once
+      // when a successor version or supersession closes the window.
+      `CREATE TABLE IF NOT EXISTS memory_item_versions (
+        item_id TEXT NOT NULL REFERENCES memory_items(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (
+          kind IN ('fact', 'lesson', 'playbook', 'anti_pattern', 'episode', 'policy')
+        ),
+        scope TEXT NOT NULL,
+        statement TEXT NOT NULL,
+        preconditions TEXT NOT NULL,
+        provenance TEXT NOT NULL,
+        trust TEXT NOT NULL CHECK (
+          trust IN ('human', 'agent', 'enterprise_template', 'system')
+        ),
+        sensitivity TEXT NOT NULL CHECK (
+          sensitivity IN ('internal', 'confidential', 'restricted')
+        ),
+        valid_from TEXT NOT NULL,
+        valid_to TEXT,
+        content_hash TEXT NOT NULL,
+        source_run_id TEXT,
+        review TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        PRIMARY KEY (item_id, version),
+        UNIQUE (item_id, content_hash)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_item_versions_run
+        ON memory_item_versions(source_run_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_item_versions_scope
+        ON memory_item_versions(enterprise_id, workspace_id)`,
+      `CREATE TABLE IF NOT EXISTS memory_evidence (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        item_id TEXT NOT NULL REFERENCES memory_items(id) ON DELETE CASCADE,
+        evidence_type TEXT NOT NULL CHECK (
+          evidence_type IN ('run', 'issue', 'pr', 'commit', 'test', 'reviewer_decision', 'incident')
+        ),
+        reference TEXT NOT NULL,
+        note TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_evidence_item
+        ON memory_evidence(item_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_evidence_scope
+        ON memory_evidence(enterprise_id, workspace_id)`,
+      // Links stay inside one workspace: both endpoints are scope-checked at
+      // write time and the row itself carries the workspace, so a link can
+      // never bridge two workspaces.
+      `CREATE TABLE IF NOT EXISTS memory_links (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        item_id TEXT NOT NULL REFERENCES memory_items(id) ON DELETE CASCADE,
+        target_item_id TEXT NOT NULL REFERENCES memory_items(id) ON DELETE CASCADE,
+        link_type TEXT NOT NULL CHECK (
+          link_type IN ('supersedes', 'contradicts', 'related', 'derived_from')
+        ),
+        reason TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        UNIQUE (item_id, target_item_id, link_type),
+        CHECK (item_id <> target_item_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_links_item
+        ON memory_links(item_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_links_target
+        ON memory_links(target_item_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_links_scope
+        ON memory_links(enterprise_id, workspace_id)`,
+      // Append-only audit trail. No foreign keys: the audit of a deletion or
+      // erasure must outlive the rows it describes. Detail is metadata only —
+      // opaque IDs, fixed enums, and counts; never statements, provenance
+      // payloads, free-text reasons, or other memory content.
+      `CREATE TABLE IF NOT EXISTS memory_events (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        item_id TEXT,
+        item_version INTEGER,
+        event_type TEXT NOT NULL CHECK (
+          event_type IN (
+            'item_created', 'version_created', 'version_reviewed', 'evidence_added',
+            'link_created', 'status_changed', 'embedding_written',
+            'item_deleted', 'workspace_erased'
+          )
+        ),
+        actor_id TEXT NOT NULL,
+        run_id TEXT,
+        detail TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_events_scope
+        ON memory_events(enterprise_id, workspace_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_events_item
+        ON memory_events(item_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_events_run
+        ON memory_events(run_id)`,
+      // Derived sensitive data: the composite foreign key ties every embedding
+      // to the exact source version, and cascades keep the embedding lifecycle
+      // identical to its source item.
+      `CREATE TABLE IF NOT EXISTS memory_embeddings (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        item_id TEXT NOT NULL REFERENCES memory_items(id) ON DELETE CASCADE,
+        item_version INTEGER NOT NULL,
+        model TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        vector TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        FOREIGN KEY (item_id, item_version)
+          REFERENCES memory_item_versions(item_id, version) ON DELETE CASCADE,
+        UNIQUE (item_id, item_version, model)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_embeddings_item
+        ON memory_embeddings(item_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_embeddings_scope
+        ON memory_embeddings(enterprise_id, workspace_id)`,
+      // Minimal non-sensitive tombstones kept after purge: opaque IDs, reason,
+      // and who purged when. No content, hashes, or provenance.
+      `CREATE TABLE IF NOT EXISTS memory_tombstones (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        reason TEXT NOT NULL CHECK (reason IN ('item_deleted', 'workspace_erased')),
+        purged_at TEXT NOT NULL,
+        purged_by TEXT NOT NULL,
+        UNIQUE (workspace_id, item_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_tombstones_scope
+        ON memory_tombstones(enterprise_id, workspace_id)`,
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
