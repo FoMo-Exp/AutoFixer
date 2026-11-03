@@ -6,16 +6,22 @@ import type { Static } from "typebox";
 
 import type { DshClient } from "../dsh/client.js";
 import { DshError } from "../dsh/client.js";
-import type { DshState } from "../dsh/types.js";
+import type { DshExecutionResult, DshState } from "../dsh/types.js";
 
 export const dshRequestActionSchema = Type.Object({
   tool_id: Type.String({
     description:
-      'Registered dsh tool identity to request, for example "echo" or "sleep". Never a shell or command name.',
+      'Registered dsh tool identity to request: "repo.read" (read a file), ' +
+      '"repo.search" (search the tree), "workspace.patch" (edit a file), ' +
+      '"test.run" (run a registered test profile), or "dep.prepare" (prepare ' +
+      "dependencies). Never a shell or command name.",
   }),
   arguments: Type.Record(Type.String(), Type.Unknown(), {
     description:
-      "Structured arguments for the requested tool; each value must be an allowed enum member.",
+      "Structured arguments for the requested tool: enum values from the " +
+      "registered vocabulary, repository-relative paths, and bounded text. " +
+      "Test and dependency commands come from registered profiles — you " +
+      "cannot name a command.",
   }),
   path_scope: Type.Array(Type.String(), {
     minItems: 1,
@@ -38,6 +44,10 @@ export interface DshRequestActionDetails {
   action_id: string;
   state?: DshState;
   audit_event_reference?: string;
+  /** Bound result record for structured operations (revision + environment). */
+  result?: DshExecutionResult;
+  /** Redacted, bounded output: file content, search matches, or tool output. */
+  output?: string;
 }
 
 /** One observed dsh decision for a requested action, forwarded to the task timeline. */
@@ -125,19 +135,28 @@ export function createDshRequestActionTool(
           state: response.state,
           auditEventReference: response.audit_event_reference,
         });
+        const binding = response.result
+          ? ` Result bound to revision ${response.result.revision?.base_sha ?? "unknown"}` +
+            (response.result.environment
+              ? ` in ${response.result.environment.backend} isolation (network: ${response.result.environment.network}).`
+              : ".")
+          : "";
+        const output = response.output ? `\n\nOutput:\n${response.output}` : "";
         return {
           content: [
             {
               type: "text",
               text:
                 `dsh accepted action ${actionId} for tool "${params.tool_id}" (run state: ${response.state}). ` +
-                `Execution evidence: ${response.audit_event_reference}.`,
+                `Execution evidence: ${response.audit_event_reference}.${binding}${output}`,
             },
           ],
           details: {
             action_id: response.action_id,
             state: response.state,
             audit_event_reference: response.audit_event_reference,
+            result: response.result,
+            output: response.output,
           },
         };
       } catch (error) {

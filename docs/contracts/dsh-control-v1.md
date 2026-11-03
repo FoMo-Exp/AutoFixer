@@ -77,8 +77,27 @@ TASK_STATE_CONFLICT|APPROVAL_ALREADY_RECORDED|DSH_APPROVAL_SCOPE_MISMATCH`,
 {"action_id":"act_01J...","agent":{"runtime":"pi","session_id":"pis_01J...","turn_id":"turn_17"},"intent":{"tool_id":"test.run","arguments":{"target":"web/src/export/export-button.test.ts","mode":"focused"},"path_scope":["web/src/export/export-button.test.ts"],"network_destinations":[],"rationale":"Verify the regression."}}
 ```
 
-Returns `202` with `action_id`, `state`, `accepted_tool_id`, and an audit event
-reference. Completion is observed through events, never inferred from `202`.
+The registered tool surface is the frozen `tools.json` fixture
+(`docs/fixtures/dsh-control-v1/tools.json`): the structured operations
+`repo.read`, `repo.search`, `workspace.patch`, `test.run`, and `dep.prepare`
+that replace raw shell and file access, plus the M0 enum fixtures. Test and
+dependency commands come only from registered sandbox profiles (`go.test`,
+`node.test`, `go.mod`, `node.package`); a request may pick a profile, mode,
+and target but can never name a command, and an over-privileged request
+(missing target, unknown mode, unregistered profile, escaping path) is
+refused with `403 DSH_TOOL_NOT_ALLOWLISTED` and a run-stopping evidence
+record. Paths are lexically and symlink contained; secret-looking paths and
+`.git` are prohibited for every tool; dependency and migration edits require
+an elevated run and workflow/governance edits are never allowed.
+
+Returns `202` with `action_id`, `state`, `accepted_tool_id`, an audit event
+reference, and — for structured operations — `result` and `output`.
+`result` binds the outcome to the exact revision (`revision`:
+repository/base SHA/tree digest) and, for test and dependency runs, the test
+environment (`environment`: OS isolation backend, applied-profile digest,
+network policy, limits) under one tamper-evident `digest`. `output` is the
+redacted, bounded output (file content, search matches, tool output).
+Completion is observed through events, never inferred from `202`.
 Errors: `400 INVALID_ACTION_INTENT|INVALID_TOOL_ARGUMENTS`, `404
 RUN_NOT_FOUND|TOOL_NOT_REGISTERED`, `403
 DSH_SCOPE_DENIED|DSH_POLICY_DENIED|DSH_TOOL_NOT_ALLOWLISTED`, `409
