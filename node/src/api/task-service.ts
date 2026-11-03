@@ -518,7 +518,11 @@ export class TaskService {
   setTaskArchived(taskId: string, archived: boolean): TaskResource {
     const record = this.requireRecord(taskId);
     if (record.status !== "cancelled") {
-      throw new ApiError(409, "TASK_STATE_CONFLICT", "Only cancelled tasks can be moved to or from the archive.");
+      throw new ApiError(
+        409,
+        "TASK_STATE_CONFLICT",
+        "Only cancelled tasks can be moved to or from the archive.",
+      );
     }
     if ((record.archived ?? true) !== archived) {
       record.archived = archived;

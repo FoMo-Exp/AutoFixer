@@ -379,7 +379,10 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     const created = await createAndApprove(base);
     const runId = requireRunId(created);
 
-    const prematureRecovery = await postJson<ApiErrorBody>(`${base}/api/v1/tasks/${created.id}/recover`, {});
+    const prematureRecovery = await postJson<ApiErrorBody>(
+      `${base}/api/v1/tasks/${created.id}/recover`,
+      {},
+    );
     expect(prematureRecovery.status).toBe(409);
 
     await waitUntil(
@@ -403,9 +406,17 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     const run = await dsh.client.getRun(runId);
     expect(run.state).toBe("cancelled");
 
-    const recovered = await postJson<TaskResource>(`${base}/api/v1/tasks/${created.id}/recover`, {});
+    const recovered = await postJson<TaskResource>(
+      `${base}/api/v1/tasks/${created.id}/recover`,
+      {},
+    );
     expect(recovered.status).toBe(200);
-    expect(recovered.body).toMatchObject({ id: created.id, status: "cancelled", archived: false, current_run_id: runId });
+    expect(recovered.body).toMatchObject({
+      id: created.id,
+      status: "cancelled",
+      archived: false,
+      current_run_id: runId,
+    });
     expect(await timeline(base, created.id)).toEqual(events);
     expect((await dsh.client.getRun(runId)).state).toBe("cancelled");
 
