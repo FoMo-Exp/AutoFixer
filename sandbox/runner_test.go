@@ -419,9 +419,9 @@ func TestExecuteEnvironmentIsolatesHomeAndCredentials(t *testing.T) {
 	if !res.Decision.Allowed {
 		t.Fatalf("decision = %+v, want allowed", res.Decision)
 	}
-	// HOME is redirected into the workspace and no host credential
-	// variable reaches the child.
-	want := ws + "|||"
+	// HOME is redirected into the workspace home role and no host
+	// credential variable reaches the child.
+	want := filepath.Join(ws, "home") + "|||"
 	if string(res.Output) != want {
 		t.Errorf("output = %q, want %q (HOME redirected, credentials stripped)", res.Output, want)
 	}

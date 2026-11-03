@@ -287,3 +287,19 @@ func TestEvaluateActionEnforcesEditPathClassAgainstRisk(t *testing.T) {
 		t.Errorf("low-risk read of dependency path: decision = %+v, want allow", d)
 	}
 }
+
+func TestEvaluateActionDeniesProhibitedPathsForEveryRequest(t *testing.T) {
+	now := time.Date(2026, 10, 21, 9, 30, 0, 0, time.UTC)
+	ctx := runningContext(now)
+
+	// Secret-looking paths and version-control internals are refused for
+	// every action, not only edits, even inside the granted paths.
+	for _, path := range []string{"harness/.env", "harness/.git/config"} {
+		req := withinGrantRequest()
+		req.Paths = []string{path}
+		d := EvaluateAction(ctx, req)
+		if d.Allowed || d.Code != DenyPathClassForbidden || d.StopCode != StopCodeOutOfGrant {
+			t.Errorf("request touching %q: decision = %+v, want deny %q + stop %q", path, d, DenyPathClassForbidden, StopCodeOutOfGrant)
+		}
+	}
+}

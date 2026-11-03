@@ -134,6 +134,14 @@ func EvaluateAction(ctx ActionContext, req ActionRequest) Decision {
 			return deny(DenyPathNotPermitted, StopCodeOutOfGrant)
 		}
 	}
+	// No request may touch prohibited paths at all: secret-looking content
+	// and version-control internals are unreadable and uneditable whatever
+	// the tool, the granted paths, or the assessed class.
+	for _, p := range req.Paths {
+		if !ReadableFor(ClassifyPath(p)) {
+			return deny(DenyPathClassForbidden, StopCodeOutOfGrant)
+		}
+	}
 	// Edit intents additionally keep each path's FP-01 class: dependency and
 	// migration changes need an elevated assessment, workflow and governance
 	// content is never editable, and an unknown class fails closed. This is
