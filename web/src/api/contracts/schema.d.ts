@@ -948,6 +948,7 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
             current_run_id: string | null;
+            /** @description Relative run-history URL on the route family that served the task: `/api/v1/tasks/{task_id}/runs` on the legacy family and `/api/v1/workspaces/{workspace_id}/tasks/{task_id}/runs` on the workspace-scoped family. Following it never crosses into another workspace's route family. */
             run_history_url: string;
             repository: {
                 id: string;

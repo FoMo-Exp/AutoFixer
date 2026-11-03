@@ -357,7 +357,15 @@ const taskSchema: JsonObject = {
     created_at: { type: "string", format: "date-time" },
     updated_at: { type: "string", format: "date-time" },
     current_run_id: { type: ["string", "null"] },
-    run_history_url: { type: "string" },
+    run_history_url: {
+      type: "string",
+      description:
+        "Relative run-history URL on the route family that served the task: " +
+        "`/api/v1/tasks/{task_id}/runs` on the legacy family and " +
+        "`/api/v1/workspaces/{workspace_id}/tasks/{task_id}/runs` on the " +
+        "workspace-scoped family. Following it never crosses into another " +
+        "workspace's route family.",
+    },
     repository: {
       type: "object",
       required: ["id", "display_name", "base_ref", "base_sha"],

@@ -135,6 +135,11 @@ Endpoints (details in the OpenAPI document):
 }
 ```
 
+`run_history_url` is relative to the route family that served the task:
+`/api/v1/tasks/{task_id}/runs` on the legacy compatibility family and
+`/api/v1/workspaces/{workspace_id}/tasks/{task_id}/runs` on the
+workspace-scoped family, so following it can never cross workspaces.
+
 `workspace_id` is the task's durable workspace ownership. It is always equal
 to the workspace in a workspace-scoped path, is never a request input, and can
 never be changed: a task read through another workspace's route family is

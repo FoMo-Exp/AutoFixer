@@ -13,7 +13,7 @@ import {
   requireString,
   writeJson,
 } from "./http-util.js";
-import type { TaskEvent } from "./task-store.js";
+import type { TaskEvent, TaskResource } from "./task-store.js";
 import type { TaskService } from "./task-service.js";
 import { actionForRequest } from "./request-authority.js";
 import type { RequestAuthority } from "./request-authority.js";
@@ -117,6 +117,22 @@ interface TaskRequestContext {
 }
 
 /**
+ * Present a task on the route family that served it. The scoped family links
+ * to its own workspace's run history, so following `run_history_url` cannot
+ * fall through to the configured-workspace compatibility seam and 404. The
+ * legacy family keeps its historical URL.
+ */
+function presentTask(ctx: TaskRequestContext, task: TaskResource): TaskResource {
+  if (!ctx.scoped) {
+    return task;
+  }
+  return {
+    ...task,
+    run_history_url: `/api/v1/workspaces/${ctx.workspaceId}/tasks/${task.id}/runs`,
+  };
+}
+
+/**
  * Serve one task request. `tail` is the route suffix after the workspace
  * prefix (`[]` for a list, `[task_id, sub, artifact_id?]` otherwise), which
  * makes the legacy and workspace-scoped families share one implementation
@@ -163,7 +179,11 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
     if (req.method === "GET") {
       const cursor = url.searchParams.get("cursor");
       const status = url.searchParams.get("status");
-      writeJson(res, 200, service.listTasks(cursor, status, workspaceId));
+      const page = service.listTasks(cursor, status, workspaceId);
+      writeJson(res, 200, {
+        ...page,
+        items: page.items.map((task) => presentTask(ctx, task)),
+      });
       return;
     }
   }
@@ -174,7 +194,7 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
 
   // GET .../tasks/{task_id}
   if (req.method === "GET" && tail.length === 1) {
-    writeJson(res, 200, service.getTask(taskId, workspaceId));
+    writeJson(res, 200, presentTask(ctx, service.getTask(taskId, workspaceId)));
     return;
   }
 
@@ -205,19 +225,23 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
       },
       workspaceId,
     );
-    writeJson(res, 200, approved);
+    writeJson(res, 200, presentTask(ctx, approved));
     return;
   }
 
   if (tail.length === 2 && req.method === "POST" && sub === "cancel") {
     const body = await readJsonBody(req);
     const reason = typeof body["reason"] === "string" ? body["reason"] : undefined;
-    writeJson(res, 202, await service.cancelTask(taskId, reason, workspaceId));
+    writeJson(res, 202, presentTask(ctx, await service.cancelTask(taskId, reason, workspaceId)));
     return;
   }
 
   if (tail.length === 2 && req.method === "POST" && (sub === "archive" || sub === "recover")) {
-    writeJson(res, 200, service.setTaskArchived(taskId, sub === "archive", workspaceId));
+    writeJson(
+      res,
+      200,
+      presentTask(ctx, service.setTaskArchived(taskId, sub === "archive", workspaceId)),
+    );
     return;
   }
 

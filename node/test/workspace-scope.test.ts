@@ -153,6 +153,79 @@ describe("workspace-scoped task surface (DAT-244)", () => {
     expect(readB.body.workspace_id).toBe(workspaceB);
   });
 
+  test("run_history_url follows the route family that served the task", async () => {
+    const authApp = await app();
+    const workspaceA = authApp.workspaceId;
+    const workspaceB = addWorkspace(authApp, "Beta").id;
+    const member = await webLogin(authApp);
+    expect(await grantMembership(authApp, workspaceA, member.userId, "member")).toBe(200);
+    expect(await grantMembership(authApp, workspaceB, member.userId, "member")).toBe(200);
+
+    const taskA = await createLegacyTask(authApp);
+    expect(taskA.run_history_url).toBe(`/api/v1/tasks/${taskA.id}/runs`);
+    seedTaskInWorkspace(authApp, workspaceB, "tsk_ws_b_task");
+
+    // Legacy responses keep the historical URL.
+    const legacyRead = await getJson<TaskResource>(
+      `${authApp.base}/api/v1/tasks/${taskA.id}`,
+      cookie(member),
+    );
+    expect(legacyRead.status).toBe(200);
+    expect(legacyRead.body.run_history_url).toBe(`/api/v1/tasks/${taskA.id}/runs`);
+
+    // Scoped responses point at their own workspace, and the URL is usable.
+    const scopedA = await getJson<TaskResource>(
+      `${authApp.base}/api/v1/workspaces/${workspaceA}/tasks/${taskA.id}`,
+      cookie(member),
+    );
+    expect(scopedA.status).toBe(200);
+    expect(scopedA.body.run_history_url).toBe(
+      `/api/v1/workspaces/${workspaceA}/tasks/${taskA.id}/runs`,
+    );
+    const followed = await getJson(
+      `${authApp.base}${scopedA.body.run_history_url}`,
+      cookie(member),
+    );
+    expect(followed.status).toBe(200);
+
+    const scopedB = await getJson<TaskResource>(
+      `${authApp.base}/api/v1/workspaces/${workspaceB}/tasks/tsk_ws_b_task`,
+      cookie(member),
+    );
+    expect(scopedB.status).toBe(200);
+    expect(scopedB.body.run_history_url).toBe(
+      `/api/v1/workspaces/${workspaceB}/tasks/tsk_ws_b_task/runs`,
+    );
+
+    const listA = await getJson<{ items: TaskResource[] }>(
+      `${authApp.base}/api/v1/workspaces/${workspaceA}/tasks`,
+      cookie(member),
+    );
+    expect(listA.status).toBe(200);
+    expect(listA.body.items[0]?.run_history_url).toBe(
+      `/api/v1/workspaces/${workspaceA}/tasks/${taskA.id}/runs`,
+    );
+    const listB = await getJson<{ items: TaskResource[] }>(
+      `${authApp.base}/api/v1/workspaces/${workspaceB}/tasks`,
+      cookie(member),
+    );
+    expect(listB.status).toBe(200);
+    expect(listB.body.items[0]?.run_history_url).toBe(
+      `/api/v1/workspaces/${workspaceB}/tasks/tsk_ws_b_task/runs`,
+    );
+
+    // State-changing scoped responses carry the same scoped link.
+    const cancelled = await postJson<TaskResource>(
+      `${authApp.base}/api/v1/workspaces/${workspaceA}/tasks/${taskA.id}/cancel`,
+      {},
+      { "Content-Type": "application/json", ...cookieSessionHeaders(member) },
+    );
+    expect(cancelled.status).toBe(202);
+    expect(cancelled.body.run_history_url).toBe(
+      `/api/v1/workspaces/${workspaceA}/tasks/${taskA.id}/runs`,
+    );
+  });
+
   test("a foreign task id is 404 on every scoped subresource", async () => {
     const authApp = await app();
     const workspaceA = authApp.workspaceId;
