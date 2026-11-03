@@ -79,25 +79,34 @@ export function providerCredentialEnvVars(env: NodeJS.ProcessEnv): string[] {
  * be widened by a planted symlink or a world-readable secret.
  */
 export function readCredentialFile(file: string): GatewayCredentialStore {
-  const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new Error(`refusing to read gateway credentials from non-regular file ${file}`);
-  }
-  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
-    throw new Error(
-      `gateway credentials file ${path.basename(file)} must have owner-only permissions (0600)`,
-    );
-  }
-  const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error("gateway credentials file must be a JSON object of credentialRef -> secret");
-  }
-  const entries: Record<string, string> = {};
-  for (const [ref, secret] of Object.entries(parsed)) {
-    if (ref.trim() === "" || typeof secret !== "string" || secret === "") {
-      throw new Error("gateway credentials file entries must map a non-empty ref to a secret");
+  // One fd for the permission check and the read, opened without following
+  // symlinks: a planted symlink cannot swap in between check and use.
+  const flags =
+    fs.constants.O_RDONLY | (process.platform === "win32" ? 0 : fs.constants.O_NOFOLLOW);
+  const fd = fs.openSync(file, flags);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) {
+      throw new Error(`refusing to read gateway credentials from non-regular file ${file}`);
     }
-    entries[ref] = secret;
+    if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+      throw new Error(
+        `gateway credentials file ${path.basename(file)} must have owner-only permissions (0600)`,
+      );
+    }
+    const parsed: unknown = JSON.parse(fs.readFileSync(fd, "utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error("gateway credentials file must be a JSON object of credentialRef -> secret");
+    }
+    const entries: Record<string, string> = {};
+    for (const [ref, secret] of Object.entries(parsed)) {
+      if (ref.trim() === "" || typeof secret !== "string" || secret === "") {
+        throw new Error("gateway credentials file entries must map a non-empty ref to a secret");
+      }
+      entries[ref] = secret;
+    }
+    return createStaticCredentialStore(entries);
+  } finally {
+    fs.closeSync(fd);
   }
-  return createStaticCredentialStore(entries);
 }

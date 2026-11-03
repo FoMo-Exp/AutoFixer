@@ -4,6 +4,7 @@ import type { StreamFn } from "@mariozechner/pi-agent-core";
 import { createAssistantMessageEventStream } from "@mariozechner/pi-ai";
 import type {
   Api,
+  AssistantMessage,
   AssistantMessageEvent,
   AssistantMessageEventStream,
   Context,
@@ -48,8 +49,10 @@ interface DestinationSlot {
   fallback?: GatewayFallback;
 }
 
+type TerminalOutcome = { outcome: "dispatched" | "failed"; detail?: string };
+
 type AttemptResult =
-  | { status: "dispatched"; stream: AssistantMessageEventStream }
+  | { status: "handed_off"; stream: AssistantMessageEventStream }
   | { status: "failed"; detail: string; retryable: boolean };
 
 const CONTENT_EVENTS = new Set<AssistantMessageEvent["type"]>([
@@ -59,10 +62,50 @@ const CONTENT_EVENTS = new Set<AssistantMessageEvent["type"]>([
 ]);
 
 /** Client-side errors a retry cannot fix; everything else transport-shaped retries. */
-const NON_RETRYABLE_MARKERS = /\b(?:400|401|403|404|422)\b|content_filter|invalid api key/i;
+const NON_RETRYABLE_MARKERS =
+  /\b(?:HTTP|status)\s*[:=]?\s*(?:400|401|403|404|422)\b|content_filter|invalid api key/i;
 
 function isTerminalEvent(event: AssistantMessageEvent): boolean {
   return event.type === "done" || event.type === "error";
+}
+
+/**
+ * The recorded outcome of a terminal event: a stream that ends in an error is
+ * a failed invocation — including a caller abort, distinguished by its
+ * detail — never a successful dispatch.
+ */
+function outcomeFromTerminal(event: AssistantMessageEvent): TerminalOutcome {
+  if (event.type === "error") {
+    return {
+      outcome: "failed",
+      detail:
+        event.error.errorMessage ??
+        (event.reason === "aborted" ? "aborted" : "provider stream failed"),
+    };
+  }
+  return { outcome: "dispatched" };
+}
+
+/** Terminal error message for a mid-stream transport failure after handoff. */
+function syntheticErrorMessage(model: Model<Api>, detail: string): AssistantMessage {
+  return {
+    role: "assistant",
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    timestamp: Date.now(),
+    content: [],
+    stopReason: "error",
+    errorMessage: detail,
+  };
 }
 
 /**
@@ -115,6 +158,7 @@ export class ModelGateway {
         1,
         primary.deny,
         `model ${model.provider}/${model.id} has no approved endpoint`,
+        { policyRevision: schedulePolicy.revision },
       );
     }
     const slots: DestinationSlot[] = [
@@ -129,6 +173,10 @@ export class ModelGateway {
     let attempt = 0;
     let lastDetail = "model dispatch failed";
     let lastRetryable = true;
+    // The retry budget is fixed by the policy the call started with; every
+    // attempt still re-resolves the policy for its checks, so a mid-call
+    // policy change can deny an attempt but cannot extend or shrink this
+    // call's retry/fallback schedule.
     for (const slot of slots) {
       for (let round = 0; round < schedulePolicy.retry.maxAttempts; round += 1) {
         attempt += 1;
@@ -138,7 +186,7 @@ export class ModelGateway {
           throw prepared;
         }
         const result = await this.runAttempt(prepared, context);
-        if (result.status === "dispatched") {
+        if (result.status === "handed_off") {
           return result.stream;
         }
         lastDetail = result.detail;
@@ -201,6 +249,7 @@ export class ModelGateway {
         attempt,
         match.deny,
         `destination ${slot.endpointId}/${slot.modelId} is not approved`,
+        { policyRevision: policy.revision },
       );
     }
     const endpoint = match.endpoint;
@@ -210,14 +259,17 @@ export class ModelGateway {
         attempt,
         "ENDPOINT_NOT_APPROVED",
         "the policy no longer approves the planned destination",
+        { policyRevision: policy.revision },
       );
     }
+    const destination = this.destinationOf(endpoint, slot.modelId);
     if (options?.apiKey) {
       return this.deny(
         identity,
         attempt,
         "CALLER_CREDENTIAL_SUPPLIED",
         "the caller must not supply provider credentials",
+        { policyRevision: policy.revision, destination },
       );
     }
     const credential = this.deps.credentials.get(endpoint.credentialRef);
@@ -227,9 +279,9 @@ export class ModelGateway {
         attempt,
         "CREDENTIAL_MISSING",
         `no credential for ${endpoint.credentialRef}`,
+        { policyRevision: policy.revision, destination },
       );
     }
-    const destination = this.destinationOf(endpoint, slot.modelId);
     const pre: GatewayAttemptEvent = {
       phase: "pre_dispatch",
       identity,
@@ -246,6 +298,7 @@ export class ModelGateway {
         attempt,
         "AUDIT_UNAVAILABLE",
         "required pre-dispatch audit evidence could not be recorded",
+        { policyRevision: policy.revision, destination },
       );
     }
     return {
@@ -284,23 +337,22 @@ export class ModelGateway {
     context: Context,
   ): Promise<AttemptResult> {
     const { identity, attempt, endpoint, modelId, policyRevision, credential } = prepared;
+    const record = (outcome: TerminalOutcome): Promise<void> =>
+      this.recordOutcome(identity, attempt, policyRevision, endpoint, modelId, outcome);
     try {
       const inner = await this.deps.adapter.stream(
         prepared.pinnedModel,
         context,
         prepared.adapterOptions,
       );
-      const head = await this.consumeHead(inner);
+      const head = await this.consumeHead(inner, prepared.pinnedModel, record);
       if (head.status === "failed") {
-        await this.recordOutcome(identity, attempt, policyRevision, endpoint, modelId, {
+        await record({
           outcome: "failed",
           detail: scrubSecrets(head.detail, [credential]),
         });
         return head;
       }
-      await this.recordOutcome(identity, attempt, policyRevision, endpoint, modelId, {
-        outcome: "dispatched",
-      });
       return head;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -309,21 +361,24 @@ export class ModelGateway {
         const flagged = error.retryable;
         if (typeof flagged === "boolean") retryable = flagged;
       }
-      await this.recordOutcome(identity, attempt, policyRevision, endpoint, modelId, {
-        outcome: "failed",
-        detail: scrubSecrets(detail, [credential]),
-      });
+      await record({ outcome: "failed", detail: scrubSecrets(detail, [credential]) });
       return { status: "failed", detail: scrubSecrets(detail, [credential]), retryable };
     }
   }
 
   /**
    * Buffer the head of a provider stream until content starts or the stream
-   * terminates. A transport failure before any content is retryable per
-   * policy; once content is flowing the attempt's stream is forwarded as-is
-   * and never replayed.
+   * terminates, then hand the stream to the caller immediately. A transport
+   * failure before any content is retryable per policy; once content is
+   * flowing the attempt's stream is forwarded incrementally and never
+   * replayed. The attempt's outcome is recorded from the terminal event (a
+   * stream that ends in an error is a failed invocation, not a dispatch).
    */
-  private async consumeHead(inner: AssistantMessageEventStream): Promise<AttemptResult> {
+  private async consumeHead(
+    inner: AssistantMessageEventStream,
+    model: Model<Api>,
+    record: (outcome: TerminalOutcome) => Promise<void>,
+  ): Promise<AttemptResult> {
     const out = createAssistantMessageEventStream();
     const iterator = inner[Symbol.asyncIterator]();
     const buffered: AssistantMessageEvent[] = [];
@@ -331,8 +386,9 @@ export class ModelGateway {
       const next = await iterator.next();
       if (next.done) {
         for (const event of buffered) out.push(event);
+        await record({ outcome: "dispatched" });
         out.end();
-        return { status: "dispatched", stream: out };
+        return { status: "handed_off", stream: out };
       }
       const event = next.value;
       if (isTerminalEvent(event)) {
@@ -344,24 +400,60 @@ export class ModelGateway {
           };
         }
         for (const bufferedEvent of buffered) out.push(bufferedEvent);
+        await record(outcomeFromTerminal(event));
         out.push(event);
         out.end();
-        return { status: "dispatched", stream: out };
+        return { status: "handed_off", stream: out };
       }
       buffered.push(event);
       if (!CONTENT_EVENTS.has(event.type)) {
         continue;
       }
+      // Content is flowing: flush the buffered head and hand the stream over
+      // now. The rest streams through in the background; the outcome is
+      // recorded when the terminal event arrives.
       for (const bufferedEvent of buffered) out.push(bufferedEvent);
-      for (;;) {
-        const rest = await iterator.next();
-        if (rest.done) break;
-        out.push(rest.value);
-        if (isTerminalEvent(rest.value)) break;
-      }
-      out.end();
-      return { status: "dispatched", stream: out };
+      this.forwardRest(iterator, out, model, record);
+      return { status: "handed_off", stream: out };
     }
+  }
+
+  /**
+   * Forward the remainder of a handed-off stream, recording the terminal
+   * outcome before the terminal event reaches the caller. A mid-stream
+   * transport failure after handoff is never replayed: it is recorded as a
+   * failed attempt and forwarded as an error event.
+   */
+  private forwardRest(
+    iterator: AsyncIterator<AssistantMessageEvent>,
+    out: AssistantMessageEventStream,
+    model: Model<Api>,
+    record: (outcome: TerminalOutcome) => Promise<void>,
+  ): void {
+    void (async () => {
+      try {
+        for (;;) {
+          const next = await iterator.next();
+          if (next.done) {
+            await record({ outcome: "dispatched" });
+            out.end();
+            return;
+          }
+          if (isTerminalEvent(next.value)) {
+            await record(outcomeFromTerminal(next.value));
+            out.push(next.value);
+            out.end();
+            return;
+          }
+          out.push(next.value);
+        }
+      } catch (error) {
+        const detail = scrubSecrets(error instanceof Error ? error.message : String(error));
+        await record({ outcome: "failed", detail });
+        out.push({ type: "error", reason: "error", error: syntheticErrorMessage(model, detail) });
+        out.end();
+      }
+    })();
   }
 
   /** Record the per-attempt outcome; a failure raises an incident, never a replay. */
@@ -402,13 +494,14 @@ export class ModelGateway {
     attempt: number,
     reason: GatewayDenyReason,
     detail: string,
+    resolved?: { policyRevision: string; destination?: GatewayAttemptDestination },
   ): ModelEgressDeniedError {
     const event: GatewayAttemptEvent = {
       phase: "outcome",
       identity,
       attempt,
-      policyRevision: null,
-      destination: null,
+      policyRevision: resolved?.policyRevision ?? null,
+      destination: resolved?.destination ?? null,
       outcome: "denied",
       denyReason: reason,
       detail: scrubSecrets(detail),

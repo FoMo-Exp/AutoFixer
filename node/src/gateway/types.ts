@@ -140,6 +140,13 @@ export type GatewayAttemptEvent =
       policyRevision: string | null;
       /** Null when the attempt was denied before a destination was resolved. */
       destination: GatewayAttemptDestination | null;
+      /**
+       * Derived from the terminal event: `dispatched` means the request went
+       * out and the provider stream completed; `failed` means the attempt
+       * failed — a dispatch error, or a stream that terminated in an error
+       * (a caller abort is `failed` with detail "aborted"); `denied` is a
+       * gateway refusal.
+       */
       outcome: "dispatched" | "failed" | "denied";
       denyReason?: GatewayDenyReason;
       /** Redacted failure detail; never contains provider credentials. */

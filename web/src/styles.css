@@ -480,7 +480,9 @@ p {
   left: 13px;
   top: 50%;
   transform: translateY(-50%);
-  transition: opacity 100ms ease, transform 100ms ease;
+  transition:
+    opacity 100ms ease,
+    transform 100ms ease;
   visibility: hidden;
   z-index: 1;
 }

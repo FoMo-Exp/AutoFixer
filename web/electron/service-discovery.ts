@@ -178,8 +178,7 @@ function spawnAndDiscover(
     });
     child.once("error", (error) => finish(error));
     child.once("exit", (code) => {
-      if (!settled)
-        finish(new NodeServiceStartupError(startupFailureMessage(stderrBuffer, code)));
+      if (!settled) finish(new NodeServiceStartupError(startupFailureMessage(stderrBuffer, code)));
     });
   });
 }

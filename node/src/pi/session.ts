@@ -54,6 +54,15 @@ export class PiSession {
   private disposed = false;
 
   constructor(options: PiSessionOptions) {
+    // Runtime guard behind the required type: pi-agent-core silently falls
+    // back to pi-ai's live streaming (and its environment credential lookup)
+    // when no streamFn is configured, which would reopen the direct-connection
+    // bypass the gateway exists to close. A missing streamFn is always a bug.
+    if (!options.streamFn) {
+      throw new Error(
+        "PiSession requires the gateway-bound streamFn; model egress may only go through the gateway",
+      );
+    }
     this.sessionId = options.sessionId;
     this.listener = options.listener;
     this.agent = new Agent({

@@ -14,6 +14,8 @@ import type {
 import { describe, expect, test } from "vitest";
 
 import type { OrchestratorConfig } from "../src/config.js";
+import type { PiSessionOptions } from "../src/pi/session.js";
+import { PiSession } from "../src/pi/session.js";
 import {
   ModelDispatchError,
   ModelEgressDeniedError,
@@ -323,7 +325,17 @@ describe("gateway denials", () => {
     }
     expect(calls).toHaveLength(0);
     const outcome = events.find((event) => event.phase === "outcome");
-    expect(outcome).toMatchObject({ outcome: "denied", denyReason: "CREDENTIAL_MISSING" });
+    expect(outcome).toMatchObject({
+      outcome: "denied",
+      denyReason: "CREDENTIAL_MISSING",
+      policyRevision: "test-policy-1",
+      destination: {
+        endpointId: "ep_test",
+        provider: "openai",
+        modelId: "scripted",
+        internal: false,
+      },
+    });
   });
 
   test("a caller-supplied credential is an attempted bypass and is rejected", async () => {
@@ -439,8 +451,10 @@ describe("gateway retry, fallback, and model switching", () => {
     expect(retried.calls).toHaveLength(2);
 
     const streamed = spyAdapter(() => contentThenFailingStream("partial work", "late failure"));
+    const { sink, events: sinkEvents } = recordingSink();
     const strictGateway = gatewayWith(streamed.adapter, {
       policy: testPolicyFor(TEST_MODEL, { retry: { maxAttempts: 3 } }),
+      sink,
     });
     const stream = await strictGateway.bind(TEST_BINDING)(TEST_MODEL, CONTEXT, undefined);
     const events = [];
@@ -450,6 +464,65 @@ describe("gateway retry, fallback, and model switching", () => {
     expect(streamed.calls).toHaveLength(1);
     expect(events).toContain("text_start");
     expect(events).toContain("error");
+    // A stream that terminates in an error is a failed invocation, not a
+    // dispatch — even though content already flowed.
+    const outcome = sinkEvents.find((event) => event.phase === "outcome");
+    expect(outcome).toMatchObject({ outcome: "failed", detail: "late failure" });
+  });
+
+  test("hands the stream to the caller while the provider is still generating", async () => {
+    const inner = createAssistantMessageEventStream();
+    inner.push({ type: "start", partial: { ...assistantMessage("first"), content: [] } });
+    inner.push({ type: "text_start", contentIndex: 0, partial: assistantMessage("first") });
+    const { adapter } = spyAdapter(() => inner);
+    const { sink, events } = recordingSink();
+    const gateway = gatewayWith(adapter, { sink });
+
+    // No terminal event exists on `inner` yet: a buffered implementation could
+    // never resolve this call, only a streaming handoff at first content does.
+    const stream = await gateway.bind(TEST_BINDING)(TEST_MODEL, CONTEXT, undefined);
+    // The attempt's outcome is not knowable before the terminal event.
+    expect(events.some((event) => event.phase === "outcome")).toBe(false);
+
+    const seen: string[] = [];
+    const consumed = (async () => {
+      for await (const event of stream) {
+        if (event.type === "text_delta") seen.push(event.delta);
+      }
+    })();
+    inner.push({
+      type: "text_delta",
+      contentIndex: 0,
+      delta: "first",
+      partial: assistantMessage("first"),
+    });
+    inner.push({ type: "done", reason: "stop", message: assistantMessage("first") });
+    await consumed;
+
+    expect(seen).toEqual(["first"]);
+    const outcome = events.find((event) => event.phase === "outcome");
+    expect(outcome).toMatchObject({ outcome: "dispatched" });
+  });
+
+  test("retry classification only reads structured client-error markers", async () => {
+    const retried = spyAdapter((call) =>
+      call === 1 ? failingStream("404 tests failed in CI") : okStream("recovered"),
+    );
+    const gateway = gatewayWith(retried.adapter, {
+      policy: testPolicyFor(TEST_MODEL, { retry: { maxAttempts: 2 } }),
+    });
+    await (await gateway.bind(TEST_BINDING)(TEST_MODEL, CONTEXT, undefined)).result();
+    // Bare numbers in prose are not client errors: the attempt retried.
+    expect(retried.calls).toHaveLength(2);
+
+    const auth = spyAdapter(() => failingStream("HTTP 401 from provider"));
+    const authGateway = gatewayWith(auth.adapter, {
+      policy: testPolicyFor(TEST_MODEL, { retry: { maxAttempts: 3 } }),
+    });
+    await expect(
+      Promise.resolve(authGateway.bind(TEST_BINDING)(TEST_MODEL, CONTEXT, undefined)),
+    ).rejects.toMatchObject({ code: "MODEL_DISPATCH_FAILED", retryable: false });
+    expect(auth.calls).toHaveLength(1);
   });
 
   test("exhausted retryable failures fall back to the approved fallback destination", async () => {
@@ -718,6 +791,21 @@ describe("adapter option hardening", () => {
       sessionId: "sess",
       timeoutMs: 5000,
     });
+  });
+});
+
+describe("pi session egress boundary", () => {
+  test("PiSession refuses to run without the gateway-bound streamFn", () => {
+    // Deliberately erase the type for this runtime-guard test: JS callers and
+    // type assertions can still hand the constructor options without streamFn.
+    const withoutStreamFn = {
+      sessionId: "session_test",
+      systemPrompt: "prompt",
+      model: TEST_MODEL,
+      tools: [],
+      listener: () => undefined,
+    } as unknown as PiSessionOptions;
+    expect(() => new PiSession(withoutStreamFn)).toThrow(/gateway-bound streamFn/);
   });
 });
 
