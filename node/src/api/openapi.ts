@@ -129,7 +129,11 @@ const taskSchema: JsonObject = {
       },
     },
     status: { type: "string", enum: [...UI_STATUSES] },
-    archived: { type: "boolean", description: "Whether the cancelled task is in the archive view; the run status is unchanged." },
+    archived: {
+      type: "boolean",
+      description:
+        "Whether the cancelled task is in the archive view; the run status is unchanged.",
+    },
     status_reason: { type: ["string", "null"] },
     risk: {
       type: ["object", "null"],
@@ -678,7 +682,10 @@ export function buildOpenApiDocument(): OpenApiDocument {
         summary: "Restore a cancelled task to the workspace",
         parameters: [{ name: "task_id", in: "path", required: true, schema: { type: "string" } }],
         responses: {
-          200: { description: "Task after restoring its visibility", ...jsonRef("#/components/schemas/Task") },
+          200: {
+            description: "Task after restoring its visibility",
+            ...jsonRef("#/components/schemas/Task"),
+          },
           404: errorResponse("Task not found"),
           409: errorResponse("Task is not cancelled"),
         },
