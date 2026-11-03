@@ -15,9 +15,24 @@
 
 import type { Context } from "@mariozechner/pi-ai";
 
+import { scrubSecrets } from "./redact.js";
 import type { DataClass, RequestScanEvidence, SecretClassification } from "./types.js";
 
 const REDACTED = "[redacted]";
+
+/**
+ * Safe identifier format for anything a scanner or policy report may name and
+ * the gate may record in audit evidence (detector ids, rule versions, scanner
+ * ids, policy ids). Pluggable scanners and request-carried provenance are
+ * untrusted text sources: identifiers must be token-shaped, deny details never
+ * contain them at all, so request content can never ride them into
+ * user-visible errors, logs, or the audit/analytics stream.
+ */
+const SAFE_IDENTIFIER = /^[A-Za-z0-9._-]{1,64}$/;
+
+function isSafeIdentifier(value: unknown): value is string {
+  return typeof value === "string" && SAFE_IDENTIFIER.test(value);
+}
 
 const SEVERITY: Record<SecretClassification, number> = {
   clean: 0,
@@ -135,8 +150,13 @@ export interface SecretScanRequest {
 
 export interface SecretFinding {
   classification: "secret_suspected" | "secret_confirmed" | "unknown";
-  /** Detector identity (audit); never the matched value. */
+  /**
+   * Detector identity (audit only). Must be token-shaped
+   * (`[A-Za-z0-9._-]{1,64}`); anything else invalidates the report. Never the
+   * matched value — deny details contain no scanner-provided text at all.
+   */
   detector: string;
+  /** Rule version; token-shaped like `detector`. */
   ruleVersion: string;
   segmentId: string;
   /**
@@ -159,7 +179,9 @@ export interface SecretScanReport {
  * gate cannot validate. Reports must cover every segment of the request.
  */
 export interface SecretScanner {
+  /** Token-shaped identity (`[A-Za-z0-9._-]{1,64}`); unsafe identities fail closed. */
   readonly id: string;
+  /** Token-shaped rule version. */
   readonly ruleVersion: string;
   scan(request: SecretScanRequest): SecretScanReport | Promise<SecretScanReport>;
 }
@@ -206,6 +228,39 @@ export function tagDerivedSummary<M extends object>(
 
 function isDerivedProvenance(value: unknown): value is DerivedProvenance {
   return typeof value === "object" && value !== null;
+}
+
+/**
+ * Normalize request-carried derivation provenance at the collection seam.
+ * Source classifications outside the closed vocabulary become `unknown` (the
+ * fail-closed value) and policy references that are not token-shaped are
+ * dropped: untrusted text can never reach audit evidence or error details.
+ */
+function normalizeDerivedProvenance(raw: unknown): DerivedProvenance {
+  if (
+    !isDerivedProvenance(raw) ||
+    !Array.isArray((raw as DerivedProvenance).sourceClassifications)
+  ) {
+    return { sourceClassifications: [] };
+  }
+  const provenance = raw as DerivedProvenance;
+  const { classificationPolicy, sourceRefs, ...rest } = provenance;
+  const sourceClassifications = provenance.sourceClassifications.map(
+    (classification): SecretClassification =>
+      classification in SEVERITY ? classification : "unknown",
+  );
+  const policyRef =
+    classificationPolicy !== undefined &&
+    isSafeIdentifier(classificationPolicy.id) &&
+    isSafeIdentifier(classificationPolicy.version)
+      ? { id: classificationPolicy.id, version: classificationPolicy.version }
+      : undefined;
+  return {
+    ...rest,
+    sourceClassifications,
+    ...(Array.isArray(sourceRefs) ? { sourceRefs } : {}),
+    ...(policyRef ? { classificationPolicy: policyRef } : {}),
+  };
 }
 
 const DIFF_PATTERN =
@@ -342,11 +397,7 @@ export function collectRequestSegments(context: Context): CollectedRequest {
     // marker still derives — with unestablishable source classification.
     let derived: DerivedProvenance | undefined;
     if ("derived" in record) {
-      const raw = record["derived"];
-      derived =
-        isDerivedProvenance(raw) && Array.isArray((raw as DerivedProvenance).sourceClassifications)
-          ? (raw as DerivedProvenance)
-          : { sourceClassifications: [] };
+      derived = normalizeDerivedProvenance(record["derived"]);
     }
     collectValue(message, ["messages", index], [base], derived, segments);
   });
@@ -371,9 +422,14 @@ function isValidReport(
   const entry = report as Record<string, unknown>;
   const classification = entry["classification"];
   if (typeof classification !== "string" || !(classification in SEVERITY)) return false;
+  // Scanner-named identifiers that may surface in errors or audit evidence
+  // must be token-shaped; a report smuggling text (e.g. matched material)
+  // through them is invalid and blocks.
+  if (entry["scanner"] !== undefined && !isSafeIdentifier(entry["scanner"])) return false;
+  if (entry["ruleVersion"] !== undefined && !isSafeIdentifier(entry["ruleVersion"])) return false;
   const findings = entry["findings"];
   if (!Array.isArray(findings)) return false;
-  const ids = new Set(segments.map((segment) => segment.id));
+  const byId = new Map(segments.map((segment) => [segment.id, segment]));
   for (const finding of findings) {
     if (typeof finding !== "object" || finding === null) return false;
     const item = finding as Record<string, unknown>;
@@ -381,14 +437,22 @@ function isValidReport(
     if (found !== "secret_suspected" && found !== "secret_confirmed" && found !== "unknown") {
       return false;
     }
-    if (typeof item["detector"] !== "string" || item["detector"].length === 0) return false;
-    if (typeof item["ruleVersion"] !== "string" || item["ruleVersion"].length === 0) return false;
-    if (typeof item["segmentId"] !== "string" || !ids.has(item["segmentId"])) return false;
-    if (
-      item["match"] !== undefined &&
-      (typeof item["match"] !== "string" || item["match"] === "")
-    ) {
-      return false;
+    if (!isSafeIdentifier(item["detector"])) return false;
+    if (!isSafeIdentifier(item["ruleVersion"])) return false;
+    if (typeof item["segmentId"] !== "string" || !byId.has(item["segmentId"])) return false;
+    if (item["match"] !== undefined) {
+      // A finding's exact material must actually occur in its own segment:
+      // a match that is not there can never be removed, so a report claiming
+      // one is invalid — never a basis for dispatching the request.
+      const segment = byId.get(item["segmentId"]);
+      if (
+        typeof item["match"] !== "string" ||
+        item["match"] === "" ||
+        !segment ||
+        !segment.text.includes(item["match"])
+      ) {
+        return false;
+      }
     }
   }
   return true;
@@ -421,22 +485,30 @@ async function scanSegments(
   segments: ScannableSegment[],
   timeoutMs: number,
 ): Promise<{ report: SecretScanReport } | { unavailable: string }> {
-  if (!scanner || typeof scanner.scan !== "function") {
-    return { unavailable: "no secret scanner is configured" };
+  // The scanner's own identity is untrusted text like any other: reject
+  // scanners that do not carry token-shaped identifiers, and never echo
+  // scanner-provided text into denials.
+  if (
+    !scanner ||
+    typeof scanner.scan !== "function" ||
+    !isSafeIdentifier(scanner.id) ||
+    !isSafeIdentifier(scanner.ruleVersion)
+  ) {
+    return { unavailable: "no usable secret scanner is configured" };
   }
   let report: SecretScanReport;
   try {
     report = await withTimeout(Promise.resolve(scanner.scan({ segments })), timeoutMs);
   } catch {
-    return { unavailable: `the secret scanner failed or timed out (${scanner.id})` };
+    return { unavailable: "the secret scanner failed or timed out" };
   }
   if (!isValidReport(report, segments)) {
-    return { unavailable: `the secret scanner returned an invalid report (${scanner.id})` };
+    return { unavailable: "the secret scanner returned an invalid report" };
   }
   return {
     report: {
-      scanner: report.scanner || scanner.id,
-      ruleVersion: report.ruleVersion || scanner.ruleVersion,
+      scanner: isSafeIdentifier(report.scanner) ? report.scanner : scanner.id,
+      ruleVersion: isSafeIdentifier(report.ruleVersion) ? report.ruleVersion : scanner.ruleVersion,
       classification: report.classification,
       findings: report.findings,
     },
@@ -459,8 +531,13 @@ function removalEligible(
 ): boolean {
   const minimization = policy?.minimization;
   if (!minimization || !minimization.authorized) return false;
+  // The policy's own identity reaches audit evidence and must be token-shaped.
+  if (!isSafeIdentifier(minimization.id) || !isSafeIdentifier(minimization.version)) return false;
   if (finding.classification !== "secret_suspected") return false;
   if (typeof finding.match !== "string" || finding.match.length === 0) return false;
+  // The exact material must actually occur in its own segment: material that
+  // is not there can never be removed.
+  if (!segment.text.includes(finding.match)) return false;
   if (!minimization.appliesTo.detectors.includes(finding.detector)) return false;
   const bounds = minimization.appliesTo.dataClasses;
   if (bounds && !segment.dataClasses.some((dataClass) => bounds.includes(dataClass))) return false;
@@ -535,7 +612,7 @@ function evaluateReport(
         } else if (declared && authorized && !authorized.authorized) {
           blockOnce(
             "AUTHORIZATION_MISSING",
-            `derived summary policy ${declared.id} is not authorized; source classification is inherited`,
+            "a derived summary policy is not authorized; source classification is inherited",
           );
         } else {
           blockOnce(
@@ -550,28 +627,25 @@ function evaluateReport(
     overall = joinClassification(overall, effective);
   }
 
-  const detectors = [...new Set(report.findings.map((finding) => finding.detector))].sort();
+  // Denial details are fully static: scanner- and request-provided text
+  // (detector names, policy ids, matched material) never enters user-visible
+  // errors or logs. The same identifiers reach audit evidence only through
+  // the token-shape validation above.
   const removals: SecretFinding[] = [];
   for (const finding of report.findings) {
     const segment = segments.find((candidate) => candidate.id === finding.segmentId);
     if (finding.classification === "unknown") {
-      blockOnce(
-        "CLASSIFICATION_UNKNOWN",
-        `detector ${finding.detector} returned an unknown classification`,
-      );
+      blockOnce("CLASSIFICATION_UNKNOWN", "a detector returned an unknown classification");
       continue;
     }
     if (finding.classification === "secret_confirmed") {
-      blockOnce(
-        "SENSITIVE_DATA_UNCERTAIN",
-        `detected secret material (detectors: ${detectors.join(", ")}); removal is not established`,
-      );
+      blockOnce("SENSITIVE_DATA_UNCERTAIN", "detected secret material; removal is not established");
       continue;
     }
     if (!segment || !removalEligible(finding, segment, policy)) {
       blockOnce(
         "SENSITIVE_DATA_UNCERTAIN",
-        `suspected secret material (detectors: ${detectors.join(", ")}); removal cannot be confirmed`,
+        "suspected secret material; removal cannot be confirmed",
       );
       continue;
     }
@@ -580,7 +654,7 @@ function evaluateReport(
     } else {
       blockOnce(
         "SENSITIVE_DATA_UNCERTAIN",
-        `suspected secret material (detectors: ${detectors.join(", ")}); removal cannot be confirmed`,
+        "suspected secret material; removal cannot be confirmed",
       );
     }
   }
@@ -611,9 +685,12 @@ function evidenceOf(
   minimization?: RequestScanEvidence["minimization"],
 ): RequestScanEvidence {
   const findings = report?.findings ?? [];
+  // Belt and braces: identifiers are already token-shape validated at the
+  // report seam; scrubbing credential-shaped material keeps even a validly
+  // shaped secret out of the audit/analytics stream.
   return {
-    scanner,
-    ruleVersion,
+    scanner: scrubSecrets(scanner),
+    ruleVersion: scrubSecrets(ruleVersion),
     classification,
     segments: segments.length,
     dataClasses: [...new Set(segments.flatMap((segment) => segment.dataClasses))].sort(),
@@ -622,10 +699,22 @@ function evidenceOf(
       confirmed: findings.filter((finding) => finding.classification === "secret_confirmed").length,
       unknown: findings.filter((finding) => finding.classification === "unknown").length,
     },
-    detectors: [...new Set(findings.map((finding) => finding.detector))].sort(),
+    detectors: [...new Set(findings.map((finding) => scrubSecrets(finding.detector)))].sort(),
     derivedSegments: evaluation?.derivedSegments ?? 0,
-    classificationChanges: evaluation?.changes ?? [],
-    ...(minimization ? { minimization } : {}),
+    classificationChanges: (evaluation?.changes ?? []).map((change) => ({
+      ...change,
+      policyId: scrubSecrets(change.policyId),
+      policyVersion: scrubSecrets(change.policyVersion),
+    })),
+    ...(minimization
+      ? {
+          minimization: {
+            ...minimization,
+            policyId: scrubSecrets(minimization.policyId),
+            policyVersion: scrubSecrets(minimization.policyVersion),
+          },
+        }
+      : {}),
   };
 }
 
@@ -639,8 +728,10 @@ export async function runRequestScanGate(
   deps: ScanGateDeps,
 ): Promise<ScanGateResult> {
   const timeoutMs = deps.scanTimeoutMs ?? DEFAULT_SCAN_TIMEOUT_MS;
-  const scannerId = deps.scanner?.id ?? "none";
-  const scannerRuleVersion = deps.scanner?.ruleVersion ?? "n/a";
+  const scannerId = isSafeIdentifier(deps.scanner?.id) ? deps.scanner.id : "none";
+  const scannerRuleVersion = isSafeIdentifier(deps.scanner?.ruleVersion)
+    ? deps.scanner.ruleVersion
+    : "n/a";
 
   // Collecting the complete request must never fail open: a request the gate
   // cannot flatten is a request it cannot clear.
@@ -702,23 +793,61 @@ export async function runRequestScanGate(
   }
 
   // Deterministic minimization: remove exactly the detected material, then
-  // prove removal with a fresh scan of the complete minimized request. Any
-  // residual finding, any leftover match, or any scanner failure keeps the
-  // request blocked — removal that cannot be confirmed sends zero bytes.
+  // prove the request actually changed and prove removal with a fresh scan of
+  // the complete minimized request. A removal that cannot be applied to its
+  // own segment, a request left byte-identical, any residual finding, any
+  // leftover match, or any scanner failure keeps the request blocked —
+  // removal that cannot be confirmed sends zero bytes.
   const minimizationPolicy = deps.scanPolicy?.minimization;
-  for (const finding of evaluation.removals) {
-    const segment = collected.segments.find((candidate) => candidate.id === finding.segmentId);
-    if (!segment || typeof finding.match !== "string") continue;
-    writeLeaf(collected.context, segment.path, segment.text.split(finding.match).join(REDACTED));
-  }
-  const minimized = collectRequestSegments(collected.context);
-  const rescan = await scanSegments(deps.scanner, minimized.segments, timeoutMs);
   const removal = {
-    policyId: minimizationPolicy?.id ?? "unknown",
-    policyVersion: minimizationPolicy?.version ?? "unknown",
+    policyId:
+      minimizationPolicy && isSafeIdentifier(minimizationPolicy.id)
+        ? minimizationPolicy.id
+        : "unknown",
+    policyVersion:
+      minimizationPolicy && isSafeIdentifier(minimizationPolicy.version)
+        ? minimizationPolicy.version
+        : "unknown",
     removedFindings: evaluation.removals.length,
     verified: false,
   };
+  const unconfirmed = (segments: readonly ScannableSegment[]): ScanGateResult => ({
+    ok: false,
+    reason: "SENSITIVE_DATA_UNCERTAIN",
+    detail:
+      "removal of suspected secret material could not be confirmed; the request stays blocked",
+    evidence: evidenceOf(
+      scan.report.scanner,
+      scan.report.ruleVersion,
+      "secret_suspected",
+      segments,
+      scan.report,
+      evaluation,
+      removal,
+    ),
+  });
+  for (const finding of evaluation.removals) {
+    const segment = collected.segments.find((candidate) => candidate.id === finding.segmentId);
+    if (!segment || typeof finding.match !== "string" || !segment.text.includes(finding.match)) {
+      return unconfirmed(collected.segments);
+    }
+    writeLeaf(collected.context, segment.path, segment.text.split(finding.match).join(REDACTED));
+  }
+  const minimized = collectRequestSegments(collected.context);
+  // The replacement must actually have changed the request: a minimization
+  // that would dispatch byte-identical content confirms nothing.
+  const beforeById = new Map(collected.segments.map((segment) => [segment.id, segment.text]));
+  const applied = evaluation.removals.every((finding) => {
+    if (typeof finding.match !== "string") return false;
+    const before = beforeById.get(finding.segmentId) ?? "";
+    const after =
+      minimized.segments.find((segment) => segment.id === finding.segmentId)?.text ?? "";
+    return before.includes(finding.match) && after !== before && !after.includes(finding.match);
+  });
+  if (!applied) {
+    return unconfirmed(minimized.segments);
+  }
+  const rescan = await scanSegments(deps.scanner, minimized.segments, timeoutMs);
   if ("unavailable" in rescan) {
     return {
       ok: false,

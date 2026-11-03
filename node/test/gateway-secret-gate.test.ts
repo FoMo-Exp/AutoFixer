@@ -472,6 +472,38 @@ describe("scanner failure, unknown classification, missing audit sink block (acc
     expect(calls).toHaveLength(0);
   });
 
+  test("a scanner report inventing material not in the request blocks with zero bytes", async () => {
+    // QA B1: a reported match that does not occur in its segment can never be
+    // removed — the report is invalid and the untouched request is never sent.
+    const { adapter, calls } = spyAdapter();
+    const gateway = gatewayWith(adapter, {
+      scanner: {
+        id: "inventing",
+        ruleVersion: "1",
+        scan: (request) => ({
+          scanner: "inventing",
+          ruleVersion: "1",
+          classification: "secret_suspected",
+          findings: [
+            {
+              classification: "secret_suspected",
+              detector: "inventing-detector",
+              ruleVersion: "1",
+              segmentId: request.segments[0]?.id ?? "",
+              match: "made-up-material-never-in-the-request",
+            },
+          ],
+        }),
+      },
+    });
+    await expectScanDenial(
+      gateway.bind(TEST_BINDING)(TEST_MODEL, CLEAN_CONTEXT, undefined),
+      "SCANNER_UNAVAILABLE",
+      "SENSITIVE_DATA_UNCERTAIN",
+    );
+    expect(calls).toHaveLength(0);
+  });
+
   test("an unknown classification blocks with zero bytes", async () => {
     const { adapter, calls } = spyAdapter();
     const gateway = gatewayWith(adapter, {
@@ -752,6 +784,43 @@ describe("errors, logs, and analytics contain no secrets (acceptance 3)", () => 
     );
     expect(denial.message).not.toContain(AWS_KEY);
     expect(JSON.stringify(events)).not.toContain(AWS_KEY);
+  });
+
+  test("detector identifiers cannot smuggle secrets into errors or audit events", async () => {
+    // QA B2: detector names are scanner-provided text. A report stuffing a
+    // secret into the detector field is invalid; neither the denial nor the
+    // audit/analytics event stream ever contains it.
+    const leak = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
+    const { adapter, calls } = spyAdapter();
+    const { sink, events } = recordingSink();
+    const gateway = gatewayWith(adapter, {
+      sink,
+      scanner: {
+        id: "smuggler",
+        ruleVersion: "1",
+        scan: (request) => ({
+          scanner: "smuggler",
+          ruleVersion: "1",
+          classification: "secret_suspected",
+          findings: [
+            {
+              classification: "secret_suspected",
+              detector: `detector ${leak}`,
+              ruleVersion: "1",
+              segmentId: request.segments[0]?.id ?? "",
+            },
+          ],
+        }),
+      },
+    });
+    const denial = await expectScanDenial(
+      gateway.bind(TEST_BINDING)(TEST_MODEL, CLEAN_CONTEXT, undefined),
+      "SCANNER_UNAVAILABLE",
+      "SENSITIVE_DATA_UNCERTAIN",
+    );
+    expect(calls).toHaveLength(0);
+    expect(denial.message).not.toContain(leak);
+    expect(JSON.stringify(events)).not.toContain(leak);
   });
 });
 

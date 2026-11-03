@@ -267,6 +267,63 @@ describe("scan gate fail-closed behavior", () => {
     if (gate.ok) return;
     expect(gate.detail).not.toContain("plaintext-secret-123456");
   });
+
+  test("scanner identifiers must be token-shaped or the scanner is unusable", async () => {
+    const leak = "spilled secret material in an identifier";
+    const gate = await runRequestScanGate(cleanContext, {
+      scanner: { id: `scanner ${leak}`, ruleVersion: "1", scan: () => report("clean") },
+    });
+    expect(gate).toMatchObject({ ok: false, reason: "SCANNER_UNAVAILABLE" });
+    if (!gate.ok) {
+      expect(gate.detail).not.toContain(leak);
+      expect(JSON.stringify(gate.evidence)).not.toContain(leak);
+    }
+  });
+
+  test("a report smuggling text through detector identifiers is invalid and blocks", async () => {
+    // QA B2: the detector field is scanner-provided text — anything but a
+    // token-shaped identifier invalidates the report, and the text never
+    // reaches the denial detail or the audit evidence.
+    const leak = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
+    const gate = await runRequestScanGate(cleanContext, {
+      scanner: stubScanner((request) =>
+        report("secret_suspected", [
+          {
+            classification: "secret_suspected",
+            detector: `detector ${leak}`,
+            ruleVersion: "1",
+            segmentId: request.segments[0]?.id ?? "",
+          },
+        ]),
+      ),
+    });
+    expect(gate).toMatchObject({ ok: false, reason: "SCANNER_UNAVAILABLE" });
+    if (gate.ok) return;
+    expect(gate.detail).not.toContain(leak);
+    expect(JSON.stringify(gate.evidence)).not.toContain(leak);
+  });
+
+  test("credential-shaped identifiers are scrubbed from audit evidence", async () => {
+    // A token-shaped identifier can still be a credential value: the evidence
+    // belt scrubs credential-shaped material before the audit/analytics sink.
+    const token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
+    const gate = await runRequestScanGate(cleanContext, {
+      scanner: stubScanner((request) =>
+        report("secret_suspected", [
+          {
+            classification: "secret_suspected",
+            detector: token,
+            ruleVersion: "1",
+            segmentId: request.segments[0]?.id ?? "",
+          },
+        ]),
+      ),
+    });
+    expect(gate).toMatchObject({ ok: false, reason: "SENSITIVE_DATA_UNCERTAIN" });
+    const evidence = JSON.stringify(gate.evidence);
+    expect(evidence).not.toContain("a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8");
+    expect(evidence).toContain("[redacted]");
+  });
 });
 
 describe("derived summaries inherit source classification", () => {
@@ -382,7 +439,7 @@ describe("deterministic minimization is separately authorized and verified", () 
             classification: "secret_confirmed",
             detector: "stub-detector",
             ruleVersion: "1",
-            segmentId: request.segments[0]?.id ?? "",
+            segmentId: request.segments.find((segment) => segment.text.includes(SECRET))?.id ?? "",
             match: SECRET,
           },
         ]),
@@ -393,20 +450,61 @@ describe("deterministic minimization is separately authorized and verified", () 
   });
 
   test("removal that cannot be verified on the full re-scan still blocks", async () => {
-    // The detector keeps flagging after removal: the minimized request does
-    // not come back clean, so nothing is sent.
-    const always = stubScanner((request) => {
-      const findings: SecretFinding[] = request.segments.map((segment) => ({
-        classification: "secret_suspected" as const,
-        detector: "stub-detector",
-        ruleVersion: "1",
-        segmentId: segment.id,
-        match: SECRET,
-      }));
+    // The detector also flags the redaction placeholder, so the minimized
+    // request does not come back clean: nothing is sent.
+    const placeholder = stubScanner((request) => {
+      const findings: SecretFinding[] = [];
+      for (const segment of request.segments) {
+        for (const needle of [SECRET, "[redacted]"]) {
+          if (segment.text.includes(needle)) {
+            findings.push({
+              classification: "secret_suspected",
+              detector: "stub-detector",
+              ruleVersion: "1",
+              segmentId: segment.id,
+              match: needle,
+            });
+          }
+        }
+      }
       return report(findings.length > 0 ? "secret_suspected" : "clean", findings);
     });
     const gate = await runRequestScanGate(context, {
-      scanner: always,
+      scanner: placeholder,
+      scanPolicy: authorizedPolicy,
+    });
+    expect(gate).toMatchObject({ ok: false, reason: "SENSITIVE_DATA_UNCERTAIN" });
+  });
+
+  test("a finding whose match is not in its own segment is an invalid report and blocks", async () => {
+    // QA B1: material that is not in the request can never be removed, so a
+    // report claiming one must never be a basis for dispatching anything.
+    const gate = await runRequestScanGate(context, {
+      scanner: stubScanner((request) =>
+        report("secret_suspected", [
+          {
+            classification: "secret_suspected",
+            detector: "stub-detector",
+            ruleVersion: "1",
+            segmentId: request.segments.find((segment) => segment.text.includes(SECRET))?.id ?? "",
+            match: "material-that-is-not-in-the-request",
+          },
+        ]),
+      ),
+      scanPolicy: authorizedPolicy,
+    });
+    expect(gate).toMatchObject({ ok: false, reason: "SCANNER_UNAVAILABLE" });
+  });
+
+  test("a minimization that would not change the request is unconfirmed and blocks", async () => {
+    // QA B1: the flagged material is already exactly the redaction
+    // placeholder — "replacing" it is a no-op, so the dispatch copy would be
+    // byte-identical to the unminimized request and must not be sent.
+    const placeholderContext: Context = {
+      messages: [{ role: "user", content: "log line [redacted] end", timestamp: 1 }],
+    };
+    const gate = await runRequestScanGate(placeholderContext, {
+      scanner: flaggingScanner("[redacted]"),
       scanPolicy: authorizedPolicy,
     });
     expect(gate).toMatchObject({ ok: false, reason: "SENSITIVE_DATA_UNCERTAIN" });
