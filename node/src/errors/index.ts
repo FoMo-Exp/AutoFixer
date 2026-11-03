@@ -47,11 +47,14 @@ export {
   type RetryRefusalReason,
 } from "./retry.js";
 export {
+  DENY_ALL_DIAGNOSTICS,
+  DiagnosticGrant,
+  DiagnosticsAuthorizer,
   DiagnosticsVault,
   SensitiveDiagnosticsAccessDenied,
   readSensitiveDiagnostics,
   sealDiagnostics,
-  type DiagnosticAccess,
+  type DiagnosticAccessPolicy,
   type SealDiagnosticsInput,
   type SensitiveDiagnostics,
 } from "./diagnostics.js";

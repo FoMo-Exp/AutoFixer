@@ -95,15 +95,25 @@ The origin code and raw detail survive as sealed diagnostics and correlation
 (`error_code` on `tool.denied` events stays the origin code); they never leak
 into envelope texts.
 
-## 4. Sensitive diagnostics behind a separate access check
+## 4. Sensitive diagnostics behind a trusted authorizer
 
 Raw failure detail is sealed at capture time (`sealDiagnostics`, which also
-redacts secret-shaped material) and released only through
-`readSensitiveDiagnostics(record, access)`, which requires an explicit
-`DiagnosticAccess` grant (`subject` plus `mayReadSensitiveDiagnostics`). The
-check runs before the lookup, so an unauthorized caller cannot probe which
-cases exist. Reading a task, a timeline, or an envelope never implies
-diagnostics access.
+redacts secret-shaped material) and released only with a `DiagnosticGrant`
+that a `DiagnosticsAuthorizer` minted after its server-side
+`DiagnosticAccessPolicy` check:
+
+- The caller names an authenticated **subject**, never a permission. The
+  policy — injected at service bootstrap, fail-closed by default (`DENY_ALL_DIAGNOSTICS`) — decides; there is no caller-asserted boolean anywhere in
+  the read path (`TaskService.readDiagnostics(subject, caseRef)` delegates to
+  the authorizer).
+- A grant is capability-shaped: only authorizer-minted instances are
+  accepted. A caller-constructed `DiagnosticGrant`, a plain object, or
+  another authorizer's grant is refused — before the record lookup, so an
+  unauthorized caller cannot probe which cases exist either.
+- Grants are bound to the authorizer that minted them; a vault only accepts
+  its own authorizer's grants.
+
+Reading a task, a timeline, or an envelope never implies diagnostics access.
 
 ## 5. Retry and stop semantics: the service decides
 
@@ -123,6 +133,26 @@ catalog (category and retry policy) plus verified service facts:
 - Unknown outcomes (`MODEL_USAGE_UNKNOWN`, `DELIVERY_OUTCOME_UNKNOWN`) refuse
   with `unknown_requires_reconciliation`; harness stop conditions refuse with
   `stop_condition`; denials refuse with `denied`.
+
+The governor is wired into the controlled retry entry — the
+`dsh_request_action` tool (`node/src/pi/dsh-request-action-tool.ts`), the one
+path where an agent can re-issue a failed intent:
+
+- Every failure is adjudicated before the model sees it, and the envelope
+  reflects the actual service decision: while the governor authorizes a
+  bounded retry, `retryable` is true and `retry_after_ms` carries the
+  service-imposed delay; once it refuses (exhausted, deadline, guard,
+  denial), `retryable` drops and `next_action` falls back to the code's
+  exhausted action.
+- A re-invocation of an identical failed intent (same tool, arguments and
+  scope — one case) is gated **before dispatch**: it runs only if the
+  service authorized that retry, its `retry_after_ms` delay has passed, and
+  the run deadline has not. Anything else is refused without a dsh call, so
+  attempt counting, the deadline, and `retry_after_ms` are enforced at the
+  entry, not merely described.
+- A denied intent is final: an identical re-issue is blocked. A different
+  intent is a different case and dispatches normally. A success closes the
+  case and refunds its attempt budget.
 
 ## 6. Localization
 
@@ -145,9 +175,10 @@ Migrations are additive; a shipped migration is never modified in place.
 ## 8. Surfaces
 
 - **Agent:** the `dsh_request_action` tool renders every refusal (and every
-  unexpected failure) as envelope text — safe message, authorized
+  unexpected failure) as envelope text — safe message, the service-decided
   `next_action`, and agent guidance — with the origin code for correlation.
-  Raw dsh detail never reaches the model.
+  Raw dsh detail never reaches the model, and no retry of a failed intent
+  dispatches unless the governor authorized it (§5).
 - **Humans:** `tool.denied` task events carry `error_envelope` (with the safe
   `message` and the origin `error_code`); the timeline shows actionable,
   non-secret guidance for every example error.

@@ -108,6 +108,11 @@ export class RetryGovernor {
     return this.attempts.get(caseId) ?? 0;
   }
 
+  /** The governor's clock reading (ms epoch); callers keep one time source. */
+  now(): number {
+    return this.clock();
+  }
+
   /** Forget a case's accounting (e.g. after reconciliation). */
   release(caseId: string): void {
     this.attempts.delete(caseId);
