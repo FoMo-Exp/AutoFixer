@@ -32,17 +32,25 @@ function parseSseTypes(markdown: string): string[] {
   return [...sentence.matchAll(/`([a-z_]+(?:\.[a-z_]+)+)`/g)].flatMap((m) => (m[1] ? [m[1]] : []));
 }
 
-/** Pull the endpoint rows (`METHOD /path`) from the endpoints table. */
-function parseEndpoints(markdown: string): Array<[method: string, path: string]> {
-  const tableSection = /## Endpoints([\s\S]*?)\n## /.exec(markdown);
-  const table = tableSection?.[1];
-  if (!table) {
-    throw new Error("could not locate the endpoints table in the M0 contract");
-  }
-  const rows = [...table.matchAll(/^\|\s*`(GET|POST) ([^`?`]+)[^`]*`\s*\|/gm)];
+/** Pull the endpoint rows (`METHOD /path`) from one endpoints table. */
+function parseTableEndpoints(table: string): Array<[method: string, path: string]> {
+  const rows = [...table.matchAll(/^\|\s*`(GET|POST|PUT|DELETE) ([^`?`]+)[^`]*`\s*\|/gm)];
   return rows.flatMap((m) =>
     m[1] && m[2] ? [[m[1].toLowerCase(), m[2].trim()] as [string, string]] : [],
   );
+}
+
+/** Pull every endpoint row from the contract's task and identity tables. */
+function parseEndpoints(markdown: string): Array<[method: string, path: string]> {
+  const taskTable = /## Endpoints([\s\S]*?)\n## /.exec(markdown)?.[1];
+  const identityTable =
+    /## Enterprise identity, sessions, and administration \(DAT-202\)([\s\S]*?)\n## /.exec(
+      markdown,
+    )?.[1];
+  if (!taskTable || !identityTable) {
+    throw new Error("could not locate the endpoints tables in the contract");
+  }
+  return [...parseTableEndpoints(taskTable), ...parseTableEndpoints(identityTable)];
 }
 
 /** Pull the UI status enum from its sentence. */
@@ -171,10 +179,13 @@ describe("independent conformance to the normative M0 contract", () => {
     expect(scheme.scheme).toBe("bearer");
   });
 
-  test("every operation requires the bearer scheme and documents a 401", () => {
+  test("every M0 operation requires the bearer scheme and documents a 401", () => {
     expect(document.security).toContainEqual({ bearerAuth: [] });
     const operations: string[] = [];
     for (const [docPath, methods] of Object.entries(document.paths)) {
+      if (!docPath.startsWith("/api/v1/tasks")) {
+        continue;
+      }
       for (const [method, operation] of Object.entries(methods)) {
         operations.push(`${method.toUpperCase()} ${docPath}`);
         const op = operation as {
@@ -187,8 +198,32 @@ describe("independent conformance to the normative M0 contract", () => {
         expect(op.responses?.["401"], `missing 401 on ${method} ${docPath}`).toBeDefined();
       }
     }
-    // Sanity: the full endpoint set is actually being checked.
+    // Sanity: the full M0 endpoint set is actually being checked.
     expect(operations).toHaveLength(12);
+  });
+
+  test("every identity-surface operation declares explicit auth", () => {
+    // The identity surface authenticates with sessions or the deployment
+    // bootstrap token, and the login flows are deliberately anonymous — but
+    // every operation must still state its requirement explicitly.
+    let checked = 0;
+    for (const [docPath, methods] of Object.entries(document.paths)) {
+      if (docPath.startsWith("/api/v1/tasks")) {
+        continue;
+      }
+      for (const [method, operation] of Object.entries(methods)) {
+        checked += 1;
+        const op = operation as {
+          security?: Array<Record<string, string[]>>;
+          responses?: Record<string, unknown>;
+        };
+        expect(Array.isArray(op.security), `missing security on ${method} ${docPath}`).toBe(true);
+        if ((op.security ?? []).length > 0) {
+          expect(op.responses?.["401"], `missing 401 on ${method} ${docPath}`).toBeDefined();
+        }
+      }
+    }
+    expect(checked).toBe(14);
   });
 
   test("the committed openapi.json also carries the auth scheme", () => {

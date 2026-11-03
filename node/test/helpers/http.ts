@@ -70,9 +70,42 @@ export async function postRaw(
   return { status: response.status, body: parsed };
 }
 
-export async function getJson<T = unknown>(url: string): Promise<JsonResponse<T>> {
-  const response = await fetch(url, { headers: authHeaders() });
+export async function getJson<T = unknown>(
+  url: string,
+  headers: Record<string, string> = {},
+): Promise<JsonResponse<T>> {
+  const response = await fetch(url, { headers: { ...authHeaders(), ...headers } });
   return { status: response.status, body: (await response.json()) as T };
+}
+
+export interface RawResponse {
+  status: number;
+  headers: Headers;
+  text: string;
+}
+
+/** Raw GET with full header control and no redirect following — for login/callback flows. */
+export async function getRaw(
+  url: string,
+  init: { headers?: Record<string, string> } = {},
+): Promise<RawResponse> {
+  const response = await fetch(url, {
+    redirect: "manual",
+    headers: { ...authHeaders(), ...(init.headers ?? {}) },
+  });
+  return { status: response.status, headers: response.headers, text: await response.text() };
+}
+
+/** Extract one cookie's value from a response's Set-Cookie headers. */
+export function cookieValue(headers: Headers, name: string): string | undefined {
+  for (const entry of headers.getSetCookie()) {
+    const pair = entry.split(";")[0] ?? "";
+    const separator = pair.indexOf("=");
+    if (separator > 0 && pair.slice(0, separator) === name) {
+      return decodeURIComponent(pair.slice(separator + 1));
+    }
+  }
+  return undefined;
 }
 
 export interface SseFrame {
@@ -97,7 +130,12 @@ export interface SseReadResult {
  */
 export async function readSseResult(
   url: string,
-  options: { lastEventId?: string; untilType?: string; timeoutMs?: number } = {},
+  options: {
+    lastEventId?: string;
+    untilType?: string;
+    timeoutMs?: number;
+    headers?: Record<string, string>;
+  } = {},
 ): Promise<SseReadResult> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 15_000);
@@ -107,6 +145,7 @@ export async function readSseResult(
       headers: {
         ...authHeaders(),
         ...(options.lastEventId ? { "Last-Event-ID": options.lastEventId } : {}),
+        ...(options.headers ?? {}),
       },
       signal: controller.signal,
     });

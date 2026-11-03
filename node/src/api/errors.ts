@@ -1,4 +1,11 @@
 import type { DshError } from "../dsh/client.js";
+import type { ControlPlaneError } from "../control-plane/errors.js";
+import {
+  ConflictError,
+  NotFoundError,
+  ValidationError,
+  VersionConflictError,
+} from "../control-plane/errors.js";
 
 /** forgepilot-api/v1 error envelope (M0 contract). */
 export interface ApiErrorBody {
@@ -44,6 +51,26 @@ export class ApiError extends Error {
       },
     };
   }
+}
+
+/**
+ * Translate a control-plane domain failure into the product API's error
+ * envelope without leaking storage internals.
+ */
+export function apiErrorFromControlPlane(error: ControlPlaneError): ApiError {
+  if (error instanceof NotFoundError) {
+    return new ApiError(404, "NOT_FOUND", error.message);
+  }
+  if (error instanceof ConflictError) {
+    return new ApiError(409, "CONFLICT", error.message, error.details);
+  }
+  if (error instanceof VersionConflictError) {
+    return new ApiError(409, "VERSION_CONFLICT", error.message);
+  }
+  if (error instanceof ValidationError) {
+    return new ApiError(400, "INVALID_REQUEST", error.message);
+  }
+  return new ApiError(403, "FORBIDDEN", error.message);
 }
 
 /**

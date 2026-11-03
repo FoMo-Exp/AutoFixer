@@ -105,6 +105,116 @@ const MIGRATIONS: Migration[] = [
     ],
   },
   {
+    version: 2,
+    statements: [
+      // Identity: a user is a person; an identity binds one provider instance
+      // plus a stable provider subject. Account matching is only ever by
+      // (provider_instance_id, subject) — never by email or display name.
+      `CREATE TABLE IF NOT EXISTS app_user (
+        id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1
+      )`,
+      `CREATE TABLE IF NOT EXISTS user_identity (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES app_user(id),
+        provider_instance_id TEXT NOT NULL REFERENCES provider_instance(id),
+        subject TEXT NOT NULL,
+        login TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        UNIQUE (provider_instance_id, subject)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_user_identity_user
+        ON user_identity(user_id)`,
+      // Enterprise administration is separate from workspace membership:
+      // holding it never grants repository data access by itself.
+      `CREATE TABLE IF NOT EXISTS enterprise_role (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        user_id TEXT NOT NULL REFERENCES app_user(id),
+        role TEXT NOT NULL CHECK (role IN ('admin')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        UNIQUE (enterprise_id, user_id)
+      )`,
+      // Server-side sessions: only the SHA-256 digest of the bearer token is
+      // stored. The CSRF token is stored in the clear because possession of
+      // it without the HttpOnly cookie is useless.
+      `CREATE TABLE IF NOT EXISTS auth_session (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES app_user(id),
+        kind TEXT NOT NULL CHECK (kind IN ('web', 'desktop')),
+        token_hash TEXT NOT NULL UNIQUE,
+        csrf_token TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT,
+        revoked_reason TEXT,
+        user_agent TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_session_user
+        ON auth_session(user_id)`,
+      // One authorization-code flow: state and browser binding are compared
+      // as digests, `consumed_at` makes the callback single-use.
+      `CREATE TABLE IF NOT EXISTS oauth_flow (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('web', 'desktop')),
+        provider_instance_id TEXT NOT NULL REFERENCES provider_instance(id),
+        state_hash TEXT NOT NULL UNIQUE,
+        binding_hash TEXT NOT NULL,
+        pkce_verifier TEXT NOT NULL,
+        redirect_uri TEXT NOT NULL,
+        return_to TEXT NOT NULL,
+        desktop_flow_id TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_oauth_flow_desktop
+        ON oauth_flow(desktop_flow_id)`,
+      // Desktop system-browser binding: the desktop holds `secret` out of
+      // band; the browser login marks the flow ready; one exchange consumes
+      // it and mints the desktop session.
+      `CREATE TABLE IF NOT EXISTS desktop_auth_flow (
+        id TEXT PRIMARY KEY,
+        secret_hash TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'ready', 'consumed')),
+        user_id TEXT REFERENCES app_user(id),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT
+      )`,
+      // Append-only authentication/authorization audit. Details must never
+      // carry bearer tokens, authorization codes, states, or verifiers.
+      `CREATE TABLE IF NOT EXISTS auth_audit (
+        id TEXT PRIMARY KEY,
+        at TEXT NOT NULL,
+        event TEXT NOT NULL,
+        enterprise_id TEXT,
+        actor_kind TEXT NOT NULL CHECK (actor_kind IN ('user', 'deployment', 'anonymous')),
+        actor_user_id TEXT,
+        subject_user_id TEXT,
+        provider_instance_id TEXT,
+        details TEXT NOT NULL DEFAULT '{}'
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_audit_at
+        ON auth_audit(at)`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_audit_enterprise
+        ON auth_audit(enterprise_id)`,
+    ],
+  },
+  {
     // Workspace memory (DAT-232): immutable versions, evidence, links, audit
     // events, embeddings, and erasure tombstones. Every content row carries
     // enterprise_id + workspace_id so scope filters hold at the row level;
@@ -113,7 +223,7 @@ const MIGRATIONS: Migration[] = [
     // memory_events and memory_tombstones intentionally carry plain scope IDs
     // without foreign keys: audit and tombstones must survive the deletion of
     // the rows they describe.
-    version: 2,
+    version: 3,
     statements: [
       `CREATE TABLE IF NOT EXISTS memory_items (
         id TEXT PRIMARY KEY,

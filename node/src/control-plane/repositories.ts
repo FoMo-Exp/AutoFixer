@@ -86,6 +86,8 @@ export interface MembershipRepository {
   getById(scope: WorkspaceScope, id: MembershipId): Membership | undefined;
   getByUser(scope: WorkspaceScope, userId: UserId): Membership | undefined;
   list(scope: WorkspaceScope): Membership[];
+  /** Every membership of one user across the scope's enterprise. */
+  listForUser(scope: EnterpriseScope, userId: UserId): Membership[];
   updateRole(
     scope: WorkspaceScope,
     id: MembershipId,
@@ -819,6 +821,16 @@ class SqliteMembershipRepository implements MembershipRepository {
          WHERE m.workspace_id = ? AND w.enterprise_id = ? ORDER BY m.created_at`,
       )
       .all(scope.workspace_id, scope.enterprise_id) as unknown as MembershipRow[];
+    return rows.map(toMembership);
+  }
+
+  listForUser(scope: EnterpriseScope, userId: UserId): Membership[] {
+    const rows = this.db
+      .prepare(
+        `SELECT m.* FROM membership m JOIN workspace w ON m.workspace_id = w.id
+         WHERE m.user_id = ? AND w.enterprise_id = ? ORDER BY m.created_at`,
+      )
+      .all(userId, scope.enterprise_id) as unknown as MembershipRow[];
     return rows.map(toMembership);
   }
 

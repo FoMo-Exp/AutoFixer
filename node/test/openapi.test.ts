@@ -30,6 +30,29 @@ const M0_ENDPOINTS: Array<[method: string, path: string]> = [
   ["get", "/api/v1/tasks/{task_id}/stream"],
 ];
 
+/** Identity, session, and administration surface (DAT-202). */
+const AUTH_ENDPOINTS: Array<[method: string, path: string]> = [
+  ["get", "/api/v1/auth/providers"],
+  ["get", "/api/v1/auth/login"],
+  ["get", "/api/v1/auth/callback"],
+  ["get", "/api/v1/auth/session"],
+  ["post", "/api/v1/auth/logout"],
+  ["post", "/api/v1/auth/desktop/flows"],
+  ["post", "/api/v1/auth/desktop/flows/{flow_id}/exchange"],
+  ["post", "/api/v1/admin/enterprises/{enterprise_id}/bootstrap"],
+  ["post", "/api/v1/admin/enterprises/{enterprise_id}/provider-instances"],
+  ["get", "/api/v1/admin/enterprises/{enterprise_id}/auth-audit"],
+  ["put", "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}"],
+  [
+    "delete",
+    "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}",
+  ],
+  ["post", "/api/v1/admin/users/{user_id}/suspend"],
+  ["post", "/api/v1/admin/users/{user_id}/activate"],
+];
+
+const ALL_ENDPOINTS = [...M0_ENDPOINTS, ...AUTH_ENDPOINTS];
+
 describe("forgepilot-api/v1 OpenAPI document", () => {
   const document = buildOpenApiDocument();
 
@@ -40,7 +63,14 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
     }
   });
 
-  test("documents no endpoint outside the M0 contract", () => {
+  test("documents every identity/session endpoint", () => {
+    for (const [method, path] of AUTH_ENDPOINTS) {
+      expect(document.paths[path], `missing path ${path}`).toBeDefined();
+      expect(document.paths[path]?.[method], `missing ${method} ${path}`).toBeDefined();
+    }
+  });
+
+  test("documents no endpoint outside the contract", () => {
     const documented: Array<[string, string]> = [];
     for (const [path, methods] of Object.entries(document.paths)) {
       for (const method of Object.keys(methods)) {
@@ -48,8 +78,31 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
       }
     }
     expect(documented.sort()).toEqual(
-      [...M0_ENDPOINTS].map(([method, path]) => [method, path]).sort(),
+      [...ALL_ENDPOINTS].map(([method, path]) => [method, path]).sort(),
     );
+  });
+
+  test("the login surface is anonymous while sessions and admin declare their schemes", () => {
+    for (const path of [
+      "/api/v1/auth/providers",
+      "/api/v1/auth/login",
+      "/api/v1/auth/callback",
+      "/api/v1/auth/desktop/flows",
+      "/api/v1/auth/desktop/flows/{flow_id}/exchange",
+    ]) {
+      const methods = document.paths[path] as Record<string, { security: unknown[] }>;
+      for (const [method, operation] of Object.entries(methods)) {
+        expect(operation.security, `${method} ${path}`).toEqual([]);
+      }
+    }
+    const session = document.paths["/api/v1/auth/session"]?.["get"] as { security: unknown[] };
+    expect(session.security).toContainEqual({ sessionCookie: [] });
+    const bootstrap = document.paths["/api/v1/admin/enterprises/{enterprise_id}/bootstrap"]?.[
+      "post"
+    ] as { security: unknown[] };
+    expect(bootstrap.security).toEqual([{ bootstrapToken: [] }]);
+    expect(document.components.securitySchemes["sessionCookie"]).toBeDefined();
+    expect(document.components.securitySchemes["bootstrapToken"]).toBeDefined();
   });
 
   test("Task.status enum matches the contract's UI status vocabulary", () => {

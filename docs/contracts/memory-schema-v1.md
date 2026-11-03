@@ -6,7 +6,7 @@ are enforced at the storage layer; upper slices (capture, retrieval, templates,
 RSI) build on them and cannot weaken them.
 
 Storage lives in the control-plane SQLite database (`node/src/control-plane`,
-migration version 2) and is accessed only through the scoped repositories in
+migration version 3) and is accessed only through the scoped repositories in
 `node/src/memory/`. No handler or service writes SQL directly, and there is no
 unscoped read surface.
 
@@ -114,7 +114,7 @@ item's open validity window, and deprecates it — except a `quarantined` or
 ## Migrations
 
 Control-plane migrations are versioned in an ordered list and recorded in
-`schema_migrations`; version 2 creates the memory tables. Re-running on an
+`schema_migrations`; version 3 creates the memory tables. Re-running on an
 existing database is a no-op and preserves data.
 
 ## Bounds

@@ -134,7 +134,7 @@ describe("Memory migrations", () => {
       .prepare("SELECT version FROM schema_migrations ORDER BY version")
       .all()
       .map((row) => (row as { version: number }).version);
-    expect(applied).toEqual([1, 2]);
+    expect(applied).toEqual([1, 2, 3]);
   });
 });
 
