@@ -70,9 +70,46 @@ export interface GatewayScope {
 }
 
 /**
+ * Authority for one caller's authenticated enterprise/workspace scope
+ * (DAT-241). The production implementation wraps `resolveRequestScope` over
+ * the request's session-derived principal; the gateway calls it on every
+ * dispatch and every attempt so revocation, suspension, and membership
+ * changes take effect in the same request path with no cached verdict, no
+ * default scope, and no per-call override.
+ */
+export interface GatewayScopeAuthority {
+  /**
+   * The caller's authenticated scope, re-resolved from live membership state
+   * on every call. Throws when no scope can be resolved — missing or revoked
+   * membership, a suspended account, an ambiguous or cross-tenant state — and
+   * never returns an empty or default scope (fail closed).
+   */
+  resolve(): GatewayScope;
+}
+
+/**
+ * The scope half of a run binding: the enterprise/workspace the run claims to
+ * act in — sourced from the authenticated request at bind time, never from
+ * deployment configuration — plus the authority that resolves the caller's
+ * authenticated scope live. The claim is only ever compared against the
+ * authority's resolution; a claim that disagrees is a cross-tenant binding
+ * and is denied before any policy or credential is touched.
+ */
+export interface GatewayScopeBinding extends GatewayScope {
+  scopeAuthority: GatewayScopeAuthority;
+}
+
+/**
  * Identity carried by every gateway request, for audit and metering reuse.
  * The gateway mints one `invocationId` per dispatch attempt; the calling run
  * supplies the rest when it binds to the gateway.
+ *
+ * The enterprise/workspace recorded on attempt events is always the
+ * authenticated scope resolved from {@link GatewayScopeAuthority} — never the
+ * binding's claim and never deployment configuration. Only a denial for which
+ * no scope could be resolved at all records the binding's claimed values
+ * (with `SCOPE_UNAVAILABLE`), because in that case no authenticated scope
+ * exists to attribute the attempt to.
  */
 export interface GatewayRequestIdentity extends GatewayScope {
   issueId: string;
@@ -82,7 +119,11 @@ export interface GatewayRequestIdentity extends GatewayScope {
 }
 
 /** Identity of the calling run; the gateway mints invocation ids per attempt. */
-export type GatewayBindingIdentity = Omit<GatewayRequestIdentity, "invocationId">;
+export interface GatewayBindingIdentity extends GatewayScopeBinding {
+  issueId: string;
+  runId: string;
+  traceId: string;
+}
 
 /**
  * One explicitly registered model endpoint. Registration is the only evidence
@@ -130,6 +171,10 @@ export interface GatewayPolicy {
 }
 
 export type GatewayDenyReason =
+  /** No authenticated scope could be resolved (missing, revoked, ambiguous, or not session-derived). */
+  | "SCOPE_UNAVAILABLE"
+  /** The binding's claimed scope is not the authenticated scope (cross-tenant). */
+  | "SCOPE_CROSS_TENANT"
   /** No policy resolved for the scope (missing or incomplete configuration). */
   | "POLICY_UNAVAILABLE"
   /** The requested model is not approved anywhere in the policy. */

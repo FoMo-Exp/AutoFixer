@@ -20,6 +20,8 @@ import {
   createRepositories,
   openControlPlaneDb,
 } from "./control-plane/index.js";
+import type { AuthenticatedPrincipal, RequestScopeDeps } from "./control-plane/request-scope.js";
+import { resolveRequestScope } from "./control-plane/request-scope.js";
 import { DshClient } from "./dsh/client.js";
 import {
   createFileEventSink,
@@ -32,7 +34,7 @@ import {
   providerCredentialEnvVars,
   readCredentialFile,
 } from "./gateway/index.js";
-import type { ModelGateway } from "./gateway/index.js";
+import type { GatewayScope, GatewayScopeBinding, ModelGateway } from "./gateway/index.js";
 import { resolveConfiguredModel } from "./pi/model.js";
 
 export interface OrchestratorOptions {
@@ -45,6 +47,13 @@ export interface OrchestratorOptions {
   gateway?: ModelGateway;
   /** Explicit Pi model; unset resolves from config, then PI_UNAVAILABLE. */
   model?: Model<Api>;
+  /**
+   * Explicit run scope binding (tests exercise runs behind the real gateway
+   * checks). Unset binds each run's scope from the authenticated request's
+   * live membership through the DAT-241 helper; requests without an
+   * authenticated scope dispatch nothing (fail closed).
+   */
+  runScope?: (principal: AuthenticatedPrincipal | null) => GatewayScopeBinding;
   /** Injectable provider HTTP for the OAuth login surface (tests). */
   authFetchImpl?: typeof fetch;
   /** Injectable DNS lookup for the provider-origin policy (tests). */
@@ -78,7 +87,10 @@ export interface OrchestratorHandle {
 
 /**
  * The deployment model gateway: policy and credentials come from the
- * protected gateway files only.
+ * protected gateway files only. Policies are scope-bound (DAT-242): the file
+ * carries one policy per enterprise/workspace pair and resolution is keyed by
+ * the caller's authenticated scope — there is no deployment-config scope and
+ * no single-scope default path.
  *
  * Deployment-layer direct-connection block: the orchestrator refuses to run
  * while provider credentials are present in the environment, because an
@@ -94,10 +106,9 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
         "configure FORGEPILOT_GATEWAY_CREDENTIALS_FILE and unset these variables",
     );
   }
-  const scope = { enterpriseId: config.enterpriseId, workspaceId: config.workspaceId };
   return createModelGateway({
     policyResolver: config.gatewayPolicyFile
-      ? loadGatewayPolicyFile(config.gatewayPolicyFile, scope)
+      ? loadGatewayPolicyFile(config.gatewayPolicyFile)
       : denyAllPolicyResolver,
     credentials: config.gatewayCredentialsFile
       ? readCredentialFile(config.gatewayCredentialsFile)
@@ -109,6 +120,49 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
     scanner: createPatternSecretScanner(),
     ...(config.gatewayAuditFile ? { sink: createFileEventSink(config.gatewayAuditFile) } : {}),
   });
+}
+
+/**
+ * Run scope binding for the deployment (DAT-242): the binding's
+ * enterprise/workspace comes from the authenticated request's live membership
+ * resolution (DAT-241 `resolveRequestScope`) — never from deployment
+ * configuration — and every dispatch re-resolves the same way.
+ *
+ * A request without a session-derived scope (the local-operator bearer, or an
+ * identity-less deployment) binds the deny-everything scope: its model
+ * dispatches resolve no authenticated scope, deny `MODEL_EGRESS_DENIED`, and
+ * never fall back to a configured default (fail closed).
+ */
+function deploymentRunScope(
+  scopeDeps: RequestScopeDeps | undefined,
+): (principal: AuthenticatedPrincipal | null) => GatewayScopeBinding {
+  return (principal) => {
+    if (principal === null || scopeDeps === undefined) {
+      return {
+        enterpriseId: "",
+        workspaceId: "",
+        scopeAuthority: {
+          resolve(): GatewayScope {
+            throw new Error("this request carries no authenticated enterprise/workspace scope");
+          },
+        },
+      };
+    }
+    const bound = resolveRequestScope(scopeDeps, principal);
+    return {
+      enterpriseId: bound.enterprise_id,
+      workspaceId: bound.workspace_id,
+      scopeAuthority: {
+        resolve(): GatewayScope {
+          // Re-resolved from live membership state on every dispatch:
+          // revocation, suspension, and role changes deny the next attempt in
+          // the same request path (no cached verdict, no default scope).
+          const live = resolveRequestScope(scopeDeps, principal);
+          return { enterpriseId: live.enterprise_id, workspaceId: live.workspace_id };
+        },
+      },
+    };
+  };
 }
 
 /**
@@ -127,28 +181,22 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     socketPath: config.dshSocketPath,
     ...(config.dshTokenFile ? { tokenFile: config.dshTokenFile } : {}),
   });
-  const model = options.model ?? resolveConfiguredModel(config);
-  const gateway = options.gateway ?? deploymentGateway(config);
-  const service = new TaskService({
-    config,
-    dsh,
-    store,
-    gateway,
-    ...(model ? { model } : {}),
-  });
-  // Fresh per-process token: possessing it is what authorizes API callers,
-  // approvals included; the configured dsh identity alone is not proof of a
-  // human decision.
-  const apiToken = readOrCreateApiToken(config.apiTokenFile);
   // Enterprise identity (ADR-0006) is enabled by the OAuth client file; its
   // absence keeps the local-operator surface exactly as before.
   let auth: AuthService | undefined;
   let controlPlane: ControlPlaneDb | undefined;
   let providerAuthority: RequestAuthority | undefined;
+  let requestScopeDeps: RequestScopeDeps | undefined;
   if (config.oauthClientsFile !== undefined) {
     controlPlane = openControlPlaneDb({ path: config.controlPlaneFile ?? ":memory:" });
     const repos = createRepositories(controlPlane);
     const identity = createIdentityRepositories(controlPlane);
+    requestScopeDeps = {
+      sessions: identity.sessions,
+      users: identity.users,
+      memberships: repos.memberships,
+      workspaces: repos.workspaces,
+    };
     auth = new AuthService({
       repos,
       identity,
@@ -180,6 +228,20 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       workspaceId: config.workspaceId,
     });
   }
+  const model = options.model ?? resolveConfiguredModel(config);
+  const gateway = options.gateway ?? deploymentGateway(config);
+  const service = new TaskService({
+    config,
+    dsh,
+    store,
+    gateway,
+    ...(model ? { model } : {}),
+    runScope: options.runScope ?? deploymentRunScope(requestScopeDeps),
+  });
+  // Fresh per-process token: possessing it is what authorizes API callers,
+  // approvals included; the configured dsh identity alone is not proof of a
+  // human decision.
+  const apiToken = readOrCreateApiToken(config.apiTokenFile);
   const server = createApiServer({
     service,
     apiToken,

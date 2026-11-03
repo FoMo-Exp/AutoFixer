@@ -17,34 +17,50 @@ import { DATA_CLASSES } from "./types.js";
  * egress for one scope. The gateway never accepts a policy from its callers;
  * it asks this resolver and fails closed when nothing resolves.
  *
- * Temporary constraint (Architect ruling on DAT-208, 2026-11-03): deployment
- * is single-enterprise/single-workspace and this seam is served by a static
- * resolver. Before multi-tenant enablement the authoritative authenticated
- * scope pipeline must be wired in (DAT-241 helper → DAT-242 gateway
- * integration); until DAT-242 merges, this deployment must not serve more
- * than one enterprise or workspace. A binding's scope is never caller
- * authority: non-configured scopes resolve nothing and are denied.
+ * The scope handed to {@link GatewayPolicyResolver.resolve} always comes from
+ * the authoritative request-scope pipeline (DAT-241 `resolveRequestScope` via
+ * {@link GatewayScopeAuthority}) — never from deployment configuration and
+ * never from caller input. A scope with no configured policy resolves nothing
+ * and is denied; a multi-tenant deployment serves one policy per
+ * enterprise/workspace pair and cross-scope access is structurally impossible
+ * (DAT-242).
  */
 export interface GatewayPolicyResolver {
   resolve(scope: GatewayScope): GatewayPolicy | undefined | Promise<GatewayPolicy | undefined>;
 }
 
+/** One policy bound to the authenticated scope it governs. */
+export interface ScopedPolicyBinding {
+  scope: GatewayScope;
+  policy: GatewayPolicy;
+}
+
 /**
- * A resolver that serves one validated policy for exactly one scope. Any
- * other scope resolves to nothing and is denied; swapping in DAT-242's
- * authoritative scope-backed resolver replaces only this factory.
+ * The scope-backed resolver (DAT-242): serves one validated policy per
+ * enterprise/workspace pair. Resolution is keyed by the authenticated scope,
+ * so workspace A's identity can only ever resolve workspace A's policy; any
+ * scope with no binding resolves nothing and is denied. Duplicate scope
+ * entries are a configuration error and fail at construction.
  */
-export function createStaticPolicyResolver(
-  policy: GatewayPolicy,
-  scope: GatewayScope,
+export function createScopeBackedPolicyResolver(
+  bindings: readonly ScopedPolicyBinding[],
 ): GatewayPolicyResolver {
-  const frozen = validateGatewayPolicy(policy);
+  // Runtime-populated registry: entries come from the deployment's policy
+  // configuration, and the composite key serializes the scope pair the same
+  // way at insertion (below) and lookup (resolve).
+  const byScope = new Map<string, GatewayPolicy>();
+  for (const binding of bindings) {
+    const key = JSON.stringify([binding.scope.enterpriseId, binding.scope.workspaceId]);
+    if (byScope.has(key)) {
+      throw new Error(
+        `gateway policy scope ${binding.scope.enterpriseId}/${binding.scope.workspaceId} is registered twice`,
+      );
+    }
+    byScope.set(key, validateGatewayPolicy(binding.policy));
+  }
   return {
     resolve(requested: GatewayScope): GatewayPolicy | undefined {
-      return requested.enterpriseId === scope.enterpriseId &&
-        requested.workspaceId === scope.workspaceId
-        ? frozen
-        : undefined;
+      return byScope.get(JSON.stringify([requested.enterpriseId, requested.workspaceId]));
     },
   };
 }
@@ -209,10 +225,49 @@ export function validateGatewayPolicy(raw: unknown): GatewayPolicy {
   return policy;
 }
 
-/** Load, validate, and scope-bind a policy JSON file. */
-export function loadGatewayPolicyFile(file: string, scope: GatewayScope): GatewayPolicyResolver {
-  const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-  return createStaticPolicyResolver(validateGatewayPolicy(parsed), scope);
+/**
+ * Parse the scoped policy set of a policy file:
+ * `{"policies": [{"scope": {"enterpriseId", "workspaceId"}, ...policy}, ...]}`.
+ * Each entry binds one validated policy to the enterprise/workspace pair it
+ * governs; there is no unscoped entry, no default scope, and no legacy
+ * single-policy shape (DAT-242). Throws on anything malformed so a broken
+ * deployment configuration fails at startup instead of at dispatch.
+ */
+export function parseScopedPolicies(raw: unknown): ScopedPolicyBinding[] {
+  if (typeof raw !== "object" || raw === null) {
+    throw new Error("gateway policy file must be an object with a policies array");
+  }
+  const file: Record<string, unknown> = Object.fromEntries(Object.entries(raw));
+  const policiesRaw = file["policies"];
+  if (!Array.isArray(policiesRaw) || policiesRaw.length === 0) {
+    throw new Error("gateway policy file policies must be a non-empty array");
+  }
+  return policiesRaw.map((rawPolicy, index) => {
+    const label = `gateway policy file policies[${index}]`;
+    if (typeof rawPolicy !== "object" || rawPolicy === null) {
+      throw new Error(`${label} must be an object`);
+    }
+    const policyEntry: Record<string, unknown> = Object.fromEntries(Object.entries(rawPolicy));
+    const scopeRaw = policyEntry["scope"];
+    if (typeof scopeRaw !== "object" || scopeRaw === null) {
+      throw new Error(`${label}.scope must bind enterpriseId and workspaceId`);
+    }
+    const scope: Record<string, unknown> = Object.fromEntries(Object.entries(scopeRaw));
+    return {
+      scope: {
+        enterpriseId: requireString(scope["enterpriseId"], `${label}.scope.enterpriseId`),
+        workspaceId: requireString(scope["workspaceId"], `${label}.scope.workspaceId`),
+      },
+      policy: validateGatewayPolicy(rawPolicy),
+    };
+  });
+}
+
+/** Load and validate a scoped policy set from a JSON file. */
+export function loadGatewayPolicyFile(file: string): GatewayPolicyResolver {
+  return createScopeBackedPolicyResolver(
+    parseScopedPolicies(JSON.parse(fs.readFileSync(file, "utf8"))),
+  );
 }
 
 function normalizeUrlForMatch(value: string): string | undefined {

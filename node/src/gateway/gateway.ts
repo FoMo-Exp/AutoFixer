@@ -33,6 +33,7 @@ import type {
   GatewayEventSink,
   GatewayFallback,
   GatewayRequestIdentity,
+  GatewayScope,
   RequestScanEvidence,
 } from "./types.js";
 import {
@@ -177,11 +178,20 @@ export class ModelGateway {
     options: SimpleStreamOptions | undefined,
     binding: GatewayBindingIdentity,
   ): Promise<AssistantMessageEventStream> {
-    const scope = { enterpriseId: binding.enterpriseId, workspaceId: binding.workspaceId };
+    // The authenticated scope (DAT-241) is resolved from live membership
+    // state on every dispatch and every attempt: revocation, suspension, and
+    // membership changes take effect in this request path with no cached
+    // verdict, and a binding whose claim disagrees with the authenticated
+    // scope is a cross-tenant binding — denied before any policy, credential,
+    // or provider adapter is touched.
+    const scope = this.resolveScope(binding, 1);
+    if (scope instanceof ModelEgressDeniedError) {
+      throw scope;
+    }
     const schedulePolicy = await this.deps.policyResolver.resolve(scope);
     if (!schedulePolicy) {
       throw this.deny(
-        this.mintIdentity(binding),
+        this.mintIdentity(binding, scope),
         1,
         "POLICY_UNAVAILABLE",
         "no model egress policy for this scope",
@@ -190,7 +200,7 @@ export class ModelGateway {
     const primary = matchEndpoint(schedulePolicy, model);
     if ("deny" in primary) {
       throw this.deny(
-        this.mintIdentity(binding),
+        this.mintIdentity(binding, scope),
         1,
         primary.deny,
         `model ${model.provider}/${model.id} has no approved endpoint`,
@@ -216,8 +226,7 @@ export class ModelGateway {
     for (const slot of slots) {
       for (let round = 0; round < schedulePolicy.retry.maxAttempts; round += 1) {
         attempt += 1;
-        const identity = this.mintIdentity(binding);
-        const prepared = await this.prepare(slot, model, options, identity, attempt, context);
+        const prepared = await this.prepare(slot, model, options, binding, attempt, context);
         if (prepared instanceof ModelEgressDeniedError) {
           throw prepared;
         }
@@ -242,17 +251,18 @@ export class ModelGateway {
   }
 
   /**
-   * Per-attempt checks against a freshly resolved policy. Returns either the
-   * fully resolved attempt inputs or the denial to throw. Nothing about a
-   * previous attempt is reused: a retry, fallback, or model switch re-resolves
-   * policy, endpoint, and credential from scratch — and re-runs the complete
-   * request scan gate over the full request, so no path around the checks.
+   * Per-attempt checks against a freshly resolved scope and policy. Returns
+   * either the fully resolved attempt inputs or the denial to throw. Nothing
+   * about a previous attempt is reused: a retry, fallback, or model switch
+   * re-resolves the authenticated scope, policy, endpoint, and credential
+   * from scratch — and re-runs the complete request scan gate over the full
+   * request, so no path around the checks.
    */
   private async prepare(
     slot: DestinationSlot,
     model: Model<Api>,
     options: SimpleStreamOptions | undefined,
-    identity: GatewayRequestIdentity,
+    binding: GatewayBindingIdentity,
     attempt: number,
     context: Context,
   ): Promise<
@@ -270,7 +280,11 @@ export class ModelGateway {
         context: Context;
       }
   > {
-    const scope = { enterpriseId: identity.enterpriseId, workspaceId: identity.workspaceId };
+    const scope = this.resolveScope(binding, attempt);
+    if (scope instanceof ModelEgressDeniedError) {
+      return scope;
+    }
+    const identity = this.mintIdentity(binding, scope);
     const policy = await this.deps.policyResolver.resolve(scope);
     if (!policy) {
       return this.deny(
@@ -568,9 +582,65 @@ export class ModelGateway {
     }
   }
 
-  private mintIdentity(binding: GatewayBindingIdentity): GatewayRequestIdentity {
+  /**
+   * Resolve the binding's authoritative scope (DAT-241) for one attempt.
+   * Every failure — missing, revoked, ambiguous, or cross-tenant membership;
+   * a claim that disagrees with the authenticated scope — is a denial:
+   * `MODEL_EGRESS_DENIED` with a scope deny reason, never a default scope and
+   * never a fallback to the binding's claim. The denial's identity carries
+   * the authenticated scope whenever one resolved (the claim is only recorded
+   * when no authenticated scope exists at all).
+   */
+  private resolveScope(
+    binding: GatewayBindingIdentity,
+    attempt: number,
+  ): GatewayScope | ModelEgressDeniedError {
+    let resolved: GatewayScope;
+    try {
+      resolved = binding.scopeAuthority.resolve();
+    } catch (error) {
+      return this.deny(
+        this.mintIdentity(binding, {
+          enterpriseId: binding.enterpriseId,
+          workspaceId: binding.workspaceId,
+        }),
+        attempt,
+        "SCOPE_UNAVAILABLE",
+        `no authenticated scope for this binding: ${scrubSecrets(
+          error instanceof Error ? error.message : String(error),
+        )}`,
+      );
+    }
+    if (
+      resolved.enterpriseId !== binding.enterpriseId ||
+      resolved.workspaceId !== binding.workspaceId
+    ) {
+      return this.deny(
+        this.mintIdentity(binding, resolved),
+        attempt,
+        "SCOPE_CROSS_TENANT",
+        `binding claims ${binding.enterpriseId}/${binding.workspaceId} but the authenticated scope is ${resolved.enterpriseId}/${resolved.workspaceId}`,
+      );
+    }
+    return resolved;
+  }
+
+  /**
+   * One attempt's identity: the run's issue/run/trace ids and the
+   * authenticated enterprise/workspace scope recorded for audit and metering
+   * attribution. The binding's scope claim and its authority are never
+   * carried into events.
+   */
+  private mintIdentity(
+    binding: GatewayBindingIdentity,
+    scope: GatewayScope,
+  ): GatewayRequestIdentity {
     return {
-      ...binding,
+      enterpriseId: scope.enterpriseId,
+      workspaceId: scope.workspaceId,
+      issueId: binding.issueId,
+      runId: binding.runId,
+      traceId: binding.traceId,
       invocationId: this.deps.newInvocationId ? this.deps.newInvocationId() : randomUUID(),
     };
   }

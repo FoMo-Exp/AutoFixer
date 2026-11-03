@@ -17,7 +17,7 @@ import { startDshServer } from "./helpers/dsh-server.js";
 import { getJson, postJson, readSse, setAuthToken, waitUntil } from "./helpers/http.js";
 import type { ScriptedTurn } from "./helpers/scripted-stream.js";
 import { scriptedStream, TEST_MODEL } from "./helpers/scripted-stream.js";
-import { scriptedGateway } from "./helpers/test-gateway.js";
+import { scriptedGateway, testRunScope } from "./helpers/test-gateway.js";
 
 /**
  * DAT-194 end to end: verifiable provenance for `pi_summary` against the
@@ -107,6 +107,7 @@ async function startApp(stateFile: string, turns: ScriptedTurn[] = []) {
     config: baseConfig(stateFile),
     model: TEST_MODEL,
     gateway: scriptedGateway(TEST_MODEL, scripted.streamFn),
+    runScope: testRunScope(),
   });
   apps.push(orchestrator);
   setAuthToken(orchestrator.apiToken);

@@ -6,7 +6,8 @@ import type { OrchestratorConfig } from "../config.js";
 import { DshError } from "../dsh/client.js";
 import type { DshClient } from "../dsh/client.js";
 import type { DshGrantSummary, DshProposedWork, DshRunResponse, DshState } from "../dsh/types.js";
-import type { ModelGateway } from "../gateway/index.js";
+import type { AuthenticatedPrincipal } from "../control-plane/request-scope.js";
+import type { GatewayScopeBinding, ModelGateway } from "../gateway/index.js";
 import {
   DENY_ALL_DIAGNOSTICS,
   DiagnosticsAuthorizer,
@@ -58,11 +59,20 @@ export interface CreateTaskOptions {
    * 409 IDEMPOTENCY_CONFLICT.
    */
   idempotencyKey?: string;
+  /**
+   * The authenticated request principal this run binds its gateway scope to
+   * (DAT-242). Unset means the request carried no authenticated membership —
+   * the run still materializes, but its model dispatches resolve no scope and
+   * are denied (fail closed, never a deployment-config scope).
+   */
+  principal?: AuthenticatedPrincipal | null;
 }
 
 export interface ApproveTaskInput {
   decision: "approve" | "reject";
   scope_digest: string;
+  /** Same scope binding as {@link CreateTaskOptions.principal}. */
+  principal?: AuthenticatedPrincipal | null;
 }
 
 export interface TaskPage {
@@ -103,6 +113,15 @@ export interface TaskServiceDeps {
    * permissions — the policy decides.
    */
   diagnosticsPolicy?: DiagnosticAccessPolicy;
+  /**
+   * Run scope binding for gateway dispatches (DAT-242): derives the binding's
+   * enterprise/workspace and its authoritative scope resolution from the
+   * authenticated request — never from deployment configuration. A request
+   * without an authenticated scope binds the deny-everything scope so its
+   * model dispatches fail closed; a binding that loses its scope later is
+   * denied at the next dispatch.
+   */
+  runScope: (principal: AuthenticatedPrincipal | null) => GatewayScopeBinding;
 }
 
 /**
@@ -328,7 +347,7 @@ export class TaskService {
 
     const key = options.idempotencyKey?.trim();
     if (!key) {
-      return this.executeCreate(normalized);
+      return this.executeCreate(normalized, options.principal);
     }
     // The dsh run is bound to the client key too: even if Node's own ledger
     // were bypassed, dsh replays the recorded response instead of minting a
@@ -361,7 +380,7 @@ export class TaskService {
     if (existing) {
       return this.replayCreatedTask(existing);
     }
-    const promise = this.executeCreate(normalized, dshIdempotencyKey)
+    const promise = this.executeCreate(normalized, options.principal, dshIdempotencyKey)
       .then((resource) => {
         this.store.rememberIdempotentTask(key, fingerprint, resource.id);
         return resource;
@@ -397,8 +416,13 @@ export class TaskService {
 
   private async executeCreate(
     input: CreateTaskInput,
+    principal: AuthenticatedPrincipal | null | undefined,
     dshIdempotencyKey?: string,
   ): Promise<TaskResource> {
+    // The run's gateway scope is bound to this authenticated request before
+    // any dsh state exists (DAT-242): an unresolvable scope fails the request
+    // here (401/403 via RequestScopeError), never a half-created run.
+    const scopeBinding = this.deps.runScope(principal ?? null);
     const summary = input.summary;
     const acceptanceCriteria = input.acceptance_criteria ?? [];
     const taskId = newTaskId();
@@ -443,7 +467,7 @@ export class TaskService {
         created,
       );
       if (created.state === "approved" && created.grant) {
-        this.startPi(record, created.grant);
+        this.startPi(record, created.grant, scopeBinding);
       }
       return toTaskResource(record);
     } catch (error) {
@@ -486,6 +510,11 @@ export class TaskService {
     if (!this.deps.model && input.decision === "approve") {
       throw new ApiError(503, "PI_UNAVAILABLE", "No Pi model is configured for this orchestrator");
     }
+    // The approval that starts a run binds its gateway scope to this
+    // authenticated request (DAT-242); resolving before recordApproval means
+    // an unresolvable scope fails the request (401/403) without mutating any
+    // dsh or task state.
+    const scopeBinding = this.deps.runScope(input.principal ?? null);
     const now = this.deps.now ? this.deps.now() : new Date();
     try {
       const approved = await this.deps.dsh.recordApproval(record.runId, {
@@ -508,7 +537,7 @@ export class TaskService {
         }
         record.scopeDigest = null;
         this.projectDshState(record, approved.state, null);
-        this.startPi(record, approved.grant);
+        this.startPi(record, approved.grant, scopeBinding);
       } else {
         this.projectDshState(record, approved.state, `approval ${input.decision} recorded by dsh`);
       }
@@ -809,7 +838,11 @@ export class TaskService {
     return record;
   }
 
-  private startPi(record: TaskRecord, grant: DshGrantSummary): void {
+  private startPi(
+    record: TaskRecord,
+    grant: DshGrantSummary,
+    scopeBinding: GatewayScopeBinding,
+  ): void {
     if (!this.deps.model || !record.runId) {
       this.store.setStatus(record, "stopped", "PI_UNAVAILABLE: no Pi model configured");
       this.finalizeIfTerminal(record);
@@ -880,11 +913,11 @@ export class TaskService {
       model: this.deps.model,
       tools: [tool, reportTool],
       // Every model call this session makes goes through the gateway, bound to
-      // this run's identity. The session cannot reach a provider any other way:
-      // no env credential lookup, no SDK default endpoint, no caller-supplied key.
+      // this run's identity and its authenticated scope (DAT-242). The session
+      // cannot reach a provider any other way: no env credential lookup, no SDK
+      // default endpoint, no caller-supplied key, no deployment-config scope.
       streamFn: this.deps.gateway.bind({
-        enterpriseId: this.deps.config.enterpriseId,
-        workspaceId: this.deps.config.workspaceId,
+        ...scopeBinding,
         issueId: record.id,
         runId: record.runId,
         traceId: randomUUID(),

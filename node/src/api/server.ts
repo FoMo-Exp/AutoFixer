@@ -6,6 +6,7 @@ import type { AuthService, SessionContext } from "./auth-service.js";
 import { handleAuthRequest, requireSessionActor } from "./auth-http.js";
 import { ApiError, apiErrorFromControlPlane } from "./errors.js";
 import { ControlPlaneError } from "../control-plane/errors.js";
+import { principalFromSession } from "../control-plane/request-scope.js";
 import {
   isApiError,
   optionalStringArray,
@@ -184,7 +185,15 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
               : {}),
             acceptance_criteria: optionalStringArray(body, "acceptance_criteria"),
           },
-          typeof idempotencyKey === "string" && idempotencyKey.length > 0 ? { idempotencyKey } : {},
+          {
+            ...(typeof idempotencyKey === "string" && idempotencyKey.length > 0
+              ? { idempotencyKey }
+              : {}),
+            // The run's gateway scope binds to this authenticated request
+            // (DAT-242); a request without a session carries no scope and its
+            // model dispatches fail closed.
+            principal: actor.kind === "session" ? principalFromSession(actor.ctx) : null,
+          },
         );
         writeJson(res, 201, created);
         return;
@@ -230,6 +239,7 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
         const approved = await service.approveTask(taskId, {
           decision,
           scope_digest: requireString(body, "scope_digest"),
+          principal: actor.kind === "session" ? principalFromSession(actor.ctx) : null,
         });
         writeJson(res, 200, approved);
         return;
