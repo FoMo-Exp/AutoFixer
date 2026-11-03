@@ -15,7 +15,7 @@ import { createHash } from "node:crypto";
  * dedup index instead of silently reinterpreting history.
  */
 
-export const SIGNAL_FINGERPRINT_VERSION = 1;
+export const SIGNAL_FINGERPRINT_VERSION = 2;
 
 const SIGNATURE_MESSAGE_MAX = 200;
 

@@ -101,7 +101,7 @@ describe("manual submission", () => {
     const result = intake.submitManual(submission());
 
     expect(result.kind).toBe("issue_created");
-    expect(result.signal_key).toMatch(/^fp1:/);
+    expect(result.signal_key).toMatch(/^fp2:/);
     expect(machine.listIssues()).toHaveLength(1);
   });
 

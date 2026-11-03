@@ -4,6 +4,8 @@ import path from "node:path";
 
 import type { ConnectorCursor } from "./connector.js";
 import { IntakeError } from "./errors.js";
+import { CURRENT_SCHEMA_VERSION, normalizePersistedState } from "./migration.js";
+import type { NormalizedState } from "./migration.js";
 import type {
   BudgetDenial,
   DeferredSignal,
@@ -68,6 +70,10 @@ interface BudgetBook {
   workspace_creations: Map<string, string[]>;
   last_source_creation: Map<string, string>;
   last_workspace_creation: Map<string, string>;
+  /** Migrated stamps with no workspace attribution; counted for every workspace. */
+  legacy_workspace_creations: string[];
+  /** Migrated global cooldown floor; applies to every workspace. */
+  legacy_last_workspace_creation: string | null;
 }
 
 interface PersistedState {
@@ -79,18 +85,21 @@ interface PersistedState {
   suppressions: SuppressionRecord[];
   gaps: GapRecord[];
   deferred: DeferredSignal[];
-  budget: {
-    source_creations: [string, string[]][];
-    workspace_creations: [string, string[]][];
-    last_source_creation: [string, string][];
-    last_workspace_creation: [string, string][];
-  };
+  budget: NormalizedState["budget"];
 }
-
-const SCHEMA_VERSION = 1;
 
 function workspaceKey(workspace: WorkspaceScope): string {
   return JSON.stringify([workspace.enterprise_id, workspace.workspace_id]);
+}
+
+function laterIso(a: string | null, b: string | null): string | null {
+  if (a === null) {
+    return b;
+  }
+  if (b === null) {
+    return a;
+  }
+  return Date.parse(b) > Date.parse(a) ? b : a;
 }
 
 function eventIdentity(
@@ -106,6 +115,18 @@ function eventIdentity(
   ]);
 }
 
+/** Legacy (pre-scoped) dedup key kept reachable for migrated schema-1 events. */
+function legacyEventIdentity(sourceId: string, providerEventId: string): string {
+  return JSON.stringify([sourceId, providerEventId]);
+}
+
+/** Migrated events with empty scope keep their legacy key; the rest are scoped. */
+function eventKeyFor(record: EventRecord): string {
+  return record.enterprise_id === "" && record.workspace_id === ""
+    ? legacyEventIdentity(record.source_id, record.provider_event_id)
+    : eventIdentity(record, record.source_id, record.provider_event_id);
+}
+
 export class IntakeStore {
   private readonly sources = new Map<string, SourceState>();
   private readonly events = new Map<string, EventRecord>();
@@ -119,6 +140,8 @@ export class IntakeStore {
     workspace_creations: new Map(),
     last_source_creation: new Map(),
     last_workspace_creation: new Map(),
+    legacy_workspace_creations: [],
+    legacy_last_workspace_creation: null,
   };
   private readonly persistencePath: string | undefined;
   private readonly clock: () => Date;
@@ -222,11 +245,18 @@ export class IntakeStore {
     sourceId: string,
     providerEventId: string,
   ): EventRecord | undefined {
-    return this.events.get(eventIdentity(workspace, sourceId, providerEventId));
+    return (
+      this.events.get(eventIdentity(workspace, sourceId, providerEventId)) ??
+      // Migrated schema-1 events without workspace attribution stay reachable
+      // under their legacy key so replayed deliveries still deduplicate. A
+      // legacy hit only ever skips processing; it never links signals across
+      // workspaces.
+      this.events.get(legacyEventIdentity(sourceId, providerEventId))
+    );
   }
 
   recordEvent(record: EventRecord): void {
-    this.events.set(eventIdentity(record, record.source_id, record.provider_event_id), record);
+    this.events.set(eventKeyFor(record), record);
   }
 
   // ----------------------------------------------------------------- signals
@@ -351,7 +381,9 @@ export class IntakeStore {
     if (sourceUsed >= config.source_max_new_issues) {
       return { reason: "source_window_exhausted", source_id: sourceId };
     }
-    const workspaceUsed = (this.budget.workspace_creations.get(key) ?? []).filter(inWindow).length;
+    const workspaceUsed =
+      (this.budget.workspace_creations.get(key) ?? []).filter(inWindow).length +
+      this.budget.legacy_workspace_creations.filter(inWindow).length;
     if (workspaceUsed >= config.workspace_max_new_issues) {
       return { reason: "workspace_window_exhausted", source_id: sourceId };
     }
@@ -363,10 +395,13 @@ export class IntakeStore {
     ) {
       return { reason: "source_cooldown", source_id: sourceId };
     }
-    const lastWorkspace = this.budget.last_workspace_creation.get(key);
+    const lastWorkspace = laterIso(
+      this.budget.last_workspace_creation.get(key) ?? null,
+      this.budget.legacy_last_workspace_creation,
+    );
     if (
       config.workspace_cooldown_seconds > 0 &&
-      lastWorkspace !== undefined &&
+      lastWorkspace !== null &&
       Date.parse(point) - Date.parse(lastWorkspace) < config.workspace_cooldown_seconds * 1000
     ) {
       return { reason: "workspace_cooldown", source_id: sourceId };
@@ -389,12 +424,17 @@ export class IntakeStore {
       window_seconds: config.window_seconds,
       source_used: (this.budget.source_creations.get(sourceId) ?? []).filter(inWindow).length,
       source_limit: config.source_max_new_issues,
-      workspace_used: (this.budget.workspace_creations.get(key) ?? []).filter(inWindow).length,
+      workspace_used:
+        (this.budget.workspace_creations.get(key) ?? []).filter(inWindow).length +
+        this.budget.legacy_workspace_creations.filter(inWindow).length,
       workspace_limit: config.workspace_max_new_issues,
       source_cooldown_seconds: config.source_cooldown_seconds,
       workspace_cooldown_seconds: config.workspace_cooldown_seconds,
       last_source_creation: this.budget.last_source_creation.get(sourceId) ?? null,
-      last_workspace_creation: this.budget.last_workspace_creation.get(key) ?? null,
+      last_workspace_creation: laterIso(
+        this.budget.last_workspace_creation.get(key) ?? null,
+        this.budget.legacy_last_workspace_creation,
+      ),
       deferred_count: this.deferredQueue.length,
     };
   }
@@ -430,7 +470,7 @@ export class IntakeStore {
       return;
     }
     const state: PersistedState = {
-      schema_version: SCHEMA_VERSION,
+      schema_version: CURRENT_SCHEMA_VERSION,
       sources: [...this.sources.values()].map((source) => structuredClone(source)),
       events: [...this.events.values()].map((event) => structuredClone(event)),
       signals: [...this.signals.values()].map((signal) => structuredClone(signal)),
@@ -449,6 +489,8 @@ export class IntakeStore {
         ]),
         last_source_creation: [...this.budget.last_source_creation.entries()],
         last_workspace_creation: [...this.budget.last_workspace_creation.entries()],
+        legacy_workspace_creations: [...this.budget.legacy_workspace_creations],
+        legacy_last_workspace_creation: this.budget.legacy_last_workspace_creation,
       },
     };
     fs.mkdirSync(path.dirname(this.persistencePath), { recursive: true, mode: 0o700 });
@@ -457,6 +499,11 @@ export class IntakeStore {
     fs.renameSync(temporary, this.persistencePath);
   }
 
+  /**
+   * Load and, for older schemas, migrate. Schema 1 (both of its shapes) is
+   * normalized field by field before ingestion — never reinterpreted in place;
+   * anything newer than this build is refused instead of misread.
+   */
   private load(): void {
     const raw = JSON.parse(fs.readFileSync(this.persistencePath as string, "utf8")) as unknown;
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
@@ -464,40 +511,40 @@ export class IntakeStore {
     }
     const value = raw as Record<string, unknown>;
     const version = value["schema_version"];
-    if (version !== SCHEMA_VERSION) {
+    if (typeof version !== "number" || !Number.isInteger(version) || version < 1) {
       throw new Error(
-        `intake state schema ${String(version)} is not supported (${SCHEMA_VERSION})`,
+        `intake state schema ${String(version)} is not supported (${CURRENT_SCHEMA_VERSION})`,
       );
     }
-    for (const source of (value["sources"] as SourceState[]) ?? []) {
+    const state = normalizePersistedState(value, version);
+    for (const source of state.sources) {
       this.sources.set(source.source_id, source);
     }
-    for (const event of (value["events"] as EventRecord[]) ?? []) {
-      this.events.set(eventIdentity(event, event.source_id, event.provider_event_id), event);
+    for (const event of state.events) {
+      this.events.set(eventKeyFor(event), event);
     }
-    for (const signal of (value["signals"] as SignalRecord[]) ?? []) {
+    for (const signal of state.signals) {
       this.signals.set(signal.signal_key, signal);
     }
-    for (const record of (value["triage"] as TriageRecord[]) ?? []) {
+    for (const record of state.triage) {
       this.triage.set(record.triage_id, record);
     }
-    this.suppressions.push(...((value["suppressions"] as SuppressionRecord[]) ?? []));
-    this.gapRecords.push(...((value["gaps"] as GapRecord[]) ?? []));
-    this.deferredQueue.push(...((value["deferred"] as DeferredSignal[]) ?? []));
-    const budget = value["budget"] as PersistedState["budget"] | undefined;
-    if (budget) {
-      for (const [key, stamps] of budget.source_creations) {
-        this.budget.source_creations.set(key, [...stamps]);
-      }
-      for (const [key, stamps] of budget.workspace_creations) {
-        this.budget.workspace_creations.set(key, [...stamps]);
-      }
-      for (const [key, stamp] of budget.last_source_creation) {
-        this.budget.last_source_creation.set(key, stamp);
-      }
-      for (const [key, stamp] of budget.last_workspace_creation) {
-        this.budget.last_workspace_creation.set(key, stamp);
-      }
+    this.suppressions.push(...state.suppressions);
+    this.gapRecords.push(...state.gaps);
+    this.deferredQueue.push(...state.deferred);
+    for (const [key, stamps] of state.budget.source_creations) {
+      this.budget.source_creations.set(key, [...stamps]);
     }
+    for (const [key, stamps] of state.budget.workspace_creations) {
+      this.budget.workspace_creations.set(key, [...stamps]);
+    }
+    for (const [key, stamp] of state.budget.last_source_creation) {
+      this.budget.last_source_creation.set(key, stamp);
+    }
+    for (const [key, stamp] of state.budget.last_workspace_creation) {
+      this.budget.last_workspace_creation.set(key, stamp);
+    }
+    this.budget.legacy_workspace_creations.push(...state.budget.legacy_workspace_creations);
+    this.budget.legacy_last_workspace_creation = state.budget.legacy_last_workspace_creation;
   }
 }

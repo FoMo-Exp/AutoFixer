@@ -135,7 +135,7 @@ describe("signal fingerprint", () => {
 
   test("is version-prefixed", () => {
     expect(signalFingerprint(identity).startsWith(`fp${SIGNAL_FINGERPRINT_VERSION}:`)).toBe(true);
-    expect(SIGNAL_FINGERPRINT_VERSION).toBe(1);
+    expect(SIGNAL_FINGERPRINT_VERSION).toBe(2);
   });
 
   test("is stable for equal identities regardless of key order", () => {

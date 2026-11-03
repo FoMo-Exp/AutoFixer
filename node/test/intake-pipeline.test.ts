@@ -141,7 +141,7 @@ describe("issue creation and deduplication", () => {
 
     expect(report.outcomes[0]?.kind).toBe("issue_created");
     const signalKey = report.outcomes[0]?.signal_key ?? "";
-    expect(signalKey).toMatch(/^fp1:/);
+    expect(signalKey).toMatch(/^fp2:/);
     const issues = machine.listIssues();
     expect(issues).toHaveLength(1);
     expect(issues[0]?.product_state).toBe("triage");

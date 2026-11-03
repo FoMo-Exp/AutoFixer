@@ -54,6 +54,8 @@ export type {
 } from "./rules.js";
 export { IntakeStore } from "./store.js";
 export type { BudgetConfig, BudgetStatusView, IntakeStoreOptions } from "./store.js";
+export { CURRENT_SCHEMA_VERSION, normalizePersistedState } from "./migration.js";
+export type { NormalizedState } from "./migration.js";
 export { LogIntake, MANUAL_SOURCE_ID, validateProviderEvent } from "./pipeline.js";
 export type {
   BatchReport,
