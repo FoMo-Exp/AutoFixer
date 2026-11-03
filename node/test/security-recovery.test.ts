@@ -9,7 +9,7 @@
  * audit distinguishes an approval from an actual send; the scan is bound to an
  * immutable final request so the adapter cannot add unchecked content.
  */
-import { mkdtempSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -24,7 +24,9 @@ import {
   RecoveryService,
   SecurityCaseStore,
   SecurityError,
+  createFileRecoveryAuditSink,
   createMemoryRecoveryAuditSink,
+  verifyRecoveryAuditLog,
 } from "../src/security/index.js";
 import type {
   ActiveRuleCorrection,
@@ -60,6 +62,8 @@ const ADMIN: SecurityActor = { actorId: "human_admin", actorKind: "human" };
 const SERVICE: SecurityActor = { actorId: "model-gateway", actorKind: "service" };
 
 const KEY = Buffer.alloc(32, 11);
+/** The harness clock's starting instant, for stores created outside it. */
+const AT_APPROVAL = (): Date => new Date("2026-11-03T12:00:00.000Z");
 const DESTINATION = { endpointId: "ep_test", modelId: TEST_MODEL.id };
 
 // Assembled at runtime: repository secret scanners would flag literals.
@@ -156,6 +160,11 @@ interface Harness {
   advance(ms: number): void;
   duties: ReturnType<typeof mutableDuties>;
   authorizations: RecoveryAuthorizationStore;
+  makeService(
+    store: RecoveryAuthorizationStore,
+    overrides?: { audit?: RecoveryAuditSink; allowTestAuditSink?: boolean },
+  ): RecoveryService;
+  auditSink: RecoveryAuditSink;
 }
 
 function buildHarness(
@@ -168,9 +177,19 @@ function buildHarness(
     dispatchTimeoutMs?: number;
     authorizations?: RecoveryAuthorizationStore;
     identityStatus?: boolean;
+    /** Runs inside the audit write, so a test can change bound facts mid-flight. */
+    onAudit?: (record: RecoveryAuditRecord) => void;
+    allowTestAuditSink?: boolean;
   } = {},
 ): Harness {
   const audit = createMemoryRecoveryAuditSink();
+  if (options.onAudit) {
+    const wrapped = audit.audit.record.bind(audit.audit);
+    audit.audit.record = (record: RecoveryAuditRecord): void => {
+      options.onAudit?.(record);
+      wrapped(record);
+    };
+  }
   let context = options.context ?? cleanContext();
   let policy: GatewayPolicy | undefined = testPolicyFor(TEST_MODEL);
   let corrections: ActiveRuleCorrection[] = [];
@@ -207,32 +226,40 @@ function buildHarness(
         : {}),
       now: () => clock,
     });
-  const service = new RecoveryService({
-    authorizations,
-    cases,
-    duties,
-    source,
-    policyResolver: { resolve: () => policy },
-    credentials: createStaticCredentialStore({ [TEST_CREDENTIAL_REF]: TEST_CREDENTIAL }),
-    adapter: {
-      stream(model, request, streamOptions) {
-        return baseAdapter.stream(model, request, streamOptions);
+  const makeService = (
+    store: RecoveryAuthorizationStore,
+    overrides: { audit?: RecoveryAuditSink; allowTestAuditSink?: boolean } = {},
+  ): RecoveryService =>
+    new RecoveryService({
+      authorizations: store,
+      cases,
+      duties,
+      source,
+      policyResolver: { resolve: () => policy },
+      credentials: createStaticCredentialStore({ [TEST_CREDENTIAL_REF]: TEST_CREDENTIAL }),
+      adapter: {
+        stream(model, request, streamOptions) {
+          return baseAdapter.stream(model, request, streamOptions);
+        },
       },
-    },
-    audit: options.audit ?? audit.audit,
-    correlationKey: KEY,
-    rules: { activeCorrections: () => corrections },
-    ...(options.scanner !== undefined
-      ? { scanner: options.scanner }
-      : { scanner: createPatternSecretScanner() }),
-    ...(options.dispatchTimeoutMs !== undefined
-      ? { dispatchTimeoutMs: options.dispatchTimeoutMs }
-      : {}),
-    identityStatus: { isActive: () => identityActive },
-    now: () => clock,
-  });
+      audit: overrides.audit ?? options.audit ?? audit.audit,
+      allowTestAuditSink: overrides.allowTestAuditSink ?? options.allowTestAuditSink ?? true,
+      correlationKey: KEY,
+      rules: { activeCorrections: () => corrections },
+      ...(options.scanner !== undefined
+        ? { scanner: options.scanner }
+        : { scanner: createPatternSecretScanner() }),
+      ...(options.dispatchTimeoutMs !== undefined
+        ? { dispatchTimeoutMs: options.dispatchTimeoutMs }
+        : {}),
+      identityStatus: { isActive: () => identityActive },
+      now: () => clock,
+    });
+  const service = makeService(authorizations);
   return {
     service,
+    makeService,
+    auditSink: audit.audit,
     cases,
     caseId: opened.caseId,
     audit,
@@ -359,6 +386,7 @@ describe("recovery approval (DAT-212)", () => {
 
   test("an audit failure leaves no usable approval", async () => {
     const failingAudit: RecoveryAuditSink = {
+      durability: "test",
       record(record) {
         if (record.event === "recovery.approval_recorded") throw new Error("audit down");
         return undefined;
@@ -838,6 +866,7 @@ describe("complete request rescan (DAT-212)", () => {
 
   test("a failing pre-dispatch audit write blocks the send and keeps the approval", async () => {
     const failingAudit: RecoveryAuditSink = {
+      durability: "test",
       record(record) {
         if (record.event === "recovery.pre_dispatch") throw new Error("audit sink down");
         return undefined;
@@ -1129,5 +1158,395 @@ describe("recovery audit boundary (DAT-212)", () => {
     expect(dispatched[0]?.outcome).toBe("failed");
     expect((await handle.outcome).kind).toBe("failed");
     expect(TEST_ENDPOINT_BASE_URL).toBe("https://gateway.test/v1");
+  });
+});
+
+describe("cross-worker single use (DAT-212)", () => {
+  test("two independent stores over one state file: exactly one consumption wins", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-claim-"));
+    const stateFile = path.join(directory, "recovery.json");
+    const harness = buildHarness({ scanner: cleanScanner(), persistencePath: stateFile });
+    const authorization = await harness.service.approve({
+      caseId: harness.caseId,
+      reviewer: REVIEWER,
+      destination: DESTINATION,
+    });
+
+    const workerA = new RecoveryAuthorizationStore({
+      persistencePath: stateFile,
+      now: AT_APPROVAL,
+    });
+    const workerB = new RecoveryAuthorizationStore({
+      persistencePath: stateFile,
+      now: AT_APPROVAL,
+    });
+    const first = workerA.consume(authorization.authorizationId, "worker-a");
+    const second = workerB.consume(authorization.authorizationId, "worker-b");
+    expect(first.ok).toBe(true);
+    expect(second).toEqual({ ok: false, reason: "already_consumed" });
+    // The loser sees the winner's decision, not its stale snapshot.
+    expect(workerB.statusAt(authorization.authorizationId)).toBe("consumed");
+  });
+
+  test("a second service on the same state file cannot dispatch the same approval", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-claim-svc-"));
+    const stateFile = path.join(directory, "recovery.json");
+    const harness = buildHarness({ scanner: cleanScanner(), persistencePath: stateFile });
+    const authorization = await harness.service.approve({
+      caseId: harness.caseId,
+      reviewer: REVIEWER,
+      destination: DESTINATION,
+    });
+    const secondStore = new RecoveryAuthorizationStore({
+      persistencePath: stateFile,
+      now: AT_APPROVAL,
+    });
+    const secondService = harness.makeService(secondStore);
+
+    const results = await Promise.allSettled([
+      harness.service.recover({
+        authorizationId: authorization.authorizationId,
+        identity: REQUEST_IDENTITY,
+        workerId: "worker-a",
+        model: TEST_MODEL,
+      }),
+      secondService.recover({
+        authorizationId: authorization.authorizationId,
+        identity: REQUEST_IDENTITY,
+        workerId: "worker-b",
+        model: TEST_MODEL,
+      }),
+    ]);
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter((result) => result.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(
+      ((rejected[0] as PromiseRejectedResult).reason as RecoveryApprovalInvalidError).reason,
+    ).toBe("already_consumed");
+    expect(harness.calls).toHaveLength(1);
+    const winner = (
+      fulfilled[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof harness.service.recover>>>
+    ).value;
+    expect((await winner.outcome).kind).toBe("dispatched");
+    // Neither service will ever dispatch this approval again.
+    for (const service of [harness.service, secondService]) {
+      await expectApprovalInvalid(
+        service.recover({
+          authorizationId: authorization.authorizationId,
+          identity: REQUEST_IDENTITY,
+          workerId: "worker-again",
+          model: TEST_MODEL,
+        }),
+        "already_consumed",
+      );
+    }
+    expect(harness.calls).toHaveLength(1);
+  });
+
+  test("a worker that crashed after claiming cannot donate the approval back", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-crash-"));
+    const stateFile = path.join(directory, "recovery.json");
+    const harness = buildHarness({ scanner: cleanScanner(), persistencePath: stateFile });
+    const authorization = await harness.service.approve({
+      caseId: harness.caseId,
+      reviewer: REVIEWER,
+      destination: DESTINATION,
+    });
+    // Model a crash between the claim and the state-file write: take the
+    // pre-consume file, consume (which writes the claim), then restore it.
+    const before = readFileSync(stateFile, "utf8");
+    const consumed = harness.authorizations.consume(
+      authorization.authorizationId,
+      "worker-before-crash",
+    );
+    expect(consumed.ok).toBe(true);
+    writeFileSync(stateFile, before, "utf8");
+
+    // The stored record says `approved` again, but the claim ledger refuses.
+    const restarted = new RecoveryAuthorizationStore({
+      persistencePath: stateFile,
+      now: AT_APPROVAL,
+    });
+    expect(restarted.consume(authorization.authorizationId, "worker-after-crash")).toEqual({
+      ok: false,
+      reason: "already_consumed",
+    });
+    expect(restarted.consume(authorization.authorizationId, "worker-after-crash").ok).toBe(false);
+  });
+
+  test("revocation arbitrates against consumption instead of racing it", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-revoke-"));
+    const stateFile = path.join(directory, "recovery.json");
+    const harness = buildHarness({ scanner: cleanScanner(), persistencePath: stateFile });
+    const authorization = await harness.service.approve({
+      caseId: harness.caseId,
+      reviewer: REVIEWER,
+      destination: DESTINATION,
+    });
+    const worker = new RecoveryAuthorizationStore({ persistencePath: stateFile, now: AT_APPROVAL });
+    expect(worker.consume(authorization.authorizationId, "worker-a").ok).toBe(true);
+    // A revoke after the claim is refused outright: the claim decided.
+    expect(() => harness.service.revoke(authorization.authorizationId, ADMIN, "too late")).toThrow(
+      /only an unconsumed/,
+    );
+    expect(worker.statusAt(authorization.authorizationId)).toBe("consumed");
+  });
+});
+
+describe("bound facts revalidated before consumption (DAT-212)", () => {
+  test("a policy change during the pre-dispatch audit blocks the send", async () => {
+    const harness = buildHarness({
+      scanner: cleanScanner(),
+      onAudit: (record) => {
+        if (record.event === "recovery.pre_dispatch") {
+          harness.setPolicy(testPolicyFor(TEST_MODEL, { revision: "policy-changed-mid-audit" }));
+        }
+      },
+    });
+    const authorization = await harness.service.approve({
+      caseId: harness.caseId,
+      reviewer: REVIEWER,
+      destination: DESTINATION,
+    });
+    await expectApprovalInvalid(
+      harness.service.recover({
+        authorizationId: authorization.authorizationId,
+        identity: REQUEST_IDENTITY,
+        workerId: "worker-1",
+        model: TEST_MODEL,
+      }),
+      "policy_changed",
+    );
+    expect(harness.calls).toHaveLength(0);
+  });
+
+  test("a revoked reviewer role during the pre-dispatch audit blocks the send", async () => {
+    const harness = buildHarness({
+      scanner: cleanScanner(),
+      onAudit: (record) => {
+        if (record.event === "recovery.pre_dispatch") {
+          harness.duties.lists.reviewers = [];
+        }
+      },
+    });
+    const authorization = await harness.service.approve({
+      caseId: harness.caseId,
+      reviewer: REVIEWER,
+      destination: DESTINATION,
+    });
+    await expectApprovalInvalid(
+      harness.service.recover({
+        authorizationId: authorization.authorizationId,
+        identity: REQUEST_IDENTITY,
+        workerId: "worker-1",
+        model: TEST_MODEL,
+      }),
+      "approval_principal_no_longer_authorized",
+    );
+    expect(harness.calls).toHaveLength(0);
+  });
+
+  test("a case that reverts to handling during the pre-dispatch audit blocks the send", async () => {
+    const harness = buildHarness({
+      scanner: cleanScanner(),
+      onAudit: (record) => {
+        if (record.event === "recovery.pre_dispatch") {
+          harness.cases.transition(harness.caseId, "handling", REVIEWER);
+        }
+      },
+    });
+    const authorization = await harness.service.approve({
+      caseId: harness.caseId,
+      reviewer: REVIEWER,
+      destination: DESTINATION,
+    });
+    await expectApprovalInvalid(
+      harness.service.recover({
+        authorizationId: authorization.authorizationId,
+        identity: REQUEST_IDENTITY,
+        workerId: "worker-1",
+        model: TEST_MODEL,
+      }),
+      "case_changed",
+    );
+    expect(harness.calls).toHaveLength(0);
+  });
+
+  test("a changed rule revision during the pre-dispatch audit blocks the send", async () => {
+    const harness = buildHarness({
+      scanner: cleanScanner(),
+      onAudit: (record) => {
+        if (record.event === "recovery.pre_dispatch") {
+          harness.setCorrections([
+            {
+              lineage: `detector-mid|${SCOPE.enterpriseId}|${SCOPE.workspaceId}`,
+              version: 1,
+              detectorId: "detector-mid",
+              scope: SCOPE,
+              constraints: { minLength: 40 },
+            },
+          ]);
+        }
+      },
+    });
+    const authorization = await harness.service.approve({
+      caseId: harness.caseId,
+      reviewer: REVIEWER,
+      destination: DESTINATION,
+    });
+    await expectApprovalInvalid(
+      harness.service.recover({
+        authorizationId: authorization.authorizationId,
+        identity: REQUEST_IDENTITY,
+        workerId: "worker-1",
+        model: TEST_MODEL,
+      }),
+      "rules_changed",
+    );
+    expect(harness.calls).toHaveLength(0);
+  });
+
+  test("a revoked identity during the pre-dispatch audit blocks the send", async () => {
+    const harness = buildHarness({
+      scanner: cleanScanner(),
+      onAudit: (record) => {
+        if (record.event === "recovery.pre_dispatch") harness.setIdentityActive(false);
+      },
+    });
+    const authorization = await harness.service.approve({
+      caseId: harness.caseId,
+      reviewer: REVIEWER,
+      destination: DESTINATION,
+    });
+    await expectApprovalInvalid(
+      harness.service.recover({
+        authorizationId: authorization.authorizationId,
+        identity: REQUEST_IDENTITY,
+        workerId: "worker-1",
+        model: TEST_MODEL,
+      }),
+      "identity_revoked",
+    );
+    expect(harness.calls).toHaveLength(0);
+  });
+});
+
+describe("durable audit sink integrity (DAT-212)", () => {
+  function sampleRecord(overrides: Partial<RecoveryAuditRecord> = {}): RecoveryAuditRecord {
+    return {
+      event: "recovery.approval_recorded",
+      at: "2026-11-03T12:00:00.000Z",
+      authorizationId: "auth_1",
+      caseId: "case_1",
+      invocationId: null,
+      traceId: null,
+      scope: CASE_SCOPE,
+      actor: REVIEWER,
+      approval: {
+        contextRevision: "k1.request-context.x",
+        policyRevision: "policy-1",
+        rulesRevision: "k1.rule-revisions.y",
+        scanPolicyRevision: "k1.scan-policy.z",
+        approvedBy: REVIEWER.actorId,
+        approvedAt: "2026-11-03T12:00:00.000Z",
+        expiresAt: "2026-11-03T12:15:00.000Z",
+      },
+      destination: {
+        endpointId: "ep_test",
+        provider: "openai",
+        api: "openai-completions",
+        modelId: TEST_MODEL.id,
+        internal: false,
+      },
+      requestDigest: null,
+      scan: null,
+      outcome: "approved",
+      reason: "approved",
+      detail: {},
+      ...overrides,
+    };
+  }
+
+  function auditFile(): { directory: string; file: string } {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-audit-"));
+    return { directory, file: path.join(directory, "audit.jsonl") };
+  }
+
+  test("records are hash-chained, anchored, and verify cleanly", () => {
+    const { file } = auditFile();
+    const sink = createFileRecoveryAuditSink(file);
+    sink.record(sampleRecord());
+    sink.record(sampleRecord({ event: "recovery.pre_dispatch", outcome: null }));
+    const verified = verifyRecoveryAuditLog(file);
+    expect(verified.records).toHaveLength(2);
+    expect(verified.seq).toBe(2);
+    expect(verified.records[1]?.event).toBe("recovery.pre_dispatch");
+  });
+
+  test("an edited record is detected", () => {
+    const { file } = auditFile();
+    const sink = createFileRecoveryAuditSink(file);
+    sink.record(sampleRecord());
+    sink.record(sampleRecord({ event: "recovery.dispatch_outcome", outcome: "dispatched" }));
+    const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
+    const first = JSON.parse(lines[0] as string);
+    first.record.outcome = "unknown";
+    lines[0] = JSON.stringify(first);
+    writeFileSync(file, `${lines.join("\n")}\n`, { mode: 0o600 });
+    expect(() => verifyRecoveryAuditLog(file)).toThrow(/modified after it was written/);
+    expect(() => createFileRecoveryAuditSink(file)).toThrow(/integrity/);
+  });
+
+  test("deleting an anchored record is detected", () => {
+    const { file } = auditFile();
+    const sink = createFileRecoveryAuditSink(file);
+    sink.record(sampleRecord());
+    sink.record(sampleRecord({ event: "recovery.dispatch_outcome" }));
+    const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
+    writeFileSync(file, `${lines[0] as string}\n`, { mode: 0o600 });
+    expect(() => verifyRecoveryAuditLog(file)).toThrow(/removed from the end/);
+  });
+
+  test("emptying an anchored log is detected", () => {
+    const { file } = auditFile();
+    const sink = createFileRecoveryAuditSink(file);
+    sink.record(sampleRecord());
+    writeFileSync(file, "", { mode: 0o600 });
+    expect(() => verifyRecoveryAuditLog(file)).toThrow(/every anchored audit record was removed/);
+  });
+
+  test("a group- or world-readable log and a symlink are refused", () => {
+    const { file } = auditFile();
+    createFileRecoveryAuditSink(file).record(sampleRecord());
+    chmodSync(file, 0o644);
+    expect(() => createFileRecoveryAuditSink(file)).toThrow(/beyond its owner/);
+
+    const target = path.join(path.dirname(file), "target.jsonl");
+    createFileRecoveryAuditSink(target).record(sampleRecord());
+    const link = path.join(path.dirname(file), "link.jsonl");
+    symlinkSync(target, link);
+    expect(() => createFileRecoveryAuditSink(link)).toThrow(/regular file/);
+  });
+
+  test("a keyed chain cannot be re-forged without the key", () => {
+    const { file } = auditFile();
+    const key = Buffer.alloc(32, 3);
+    const sink = createFileRecoveryAuditSink(file, { key });
+    sink.record(sampleRecord());
+    const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
+    const first = JSON.parse(lines[0] as string);
+    first.record.outcome = "unknown";
+    lines[0] = JSON.stringify(first);
+    writeFileSync(file, `${lines.join("\n")}\n`, { mode: 0o600 });
+    expect(() => verifyRecoveryAuditLog(file, { key })).toThrow(/modified/);
+    expect(() => verifyRecoveryAuditLog(file)).toThrow(/modified/);
+  });
+
+  test("a deployment cannot silently audit into memory", () => {
+    const harness = buildHarness({ scanner: cleanScanner() });
+    expect(() =>
+      harness.makeService(harness.authorizations, { allowTestAuditSink: false }),
+    ).toThrow(/durable audit sink/);
   });
 });

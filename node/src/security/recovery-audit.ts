@@ -10,16 +10,29 @@
  *
  * Records carry identifiers, revisions, keyed digests, scan evidence, and
  * redacted details only. They never carry request content or secret material,
- * and the durable sink is required: when the pre-dispatch record cannot be
- * written, the dispatch does not happen.
+ * and the sink is required: when the pre-dispatch record cannot be written,
+ * the dispatch does not happen.
+ *
+ * The durable sink is tamper-*evident*: every line is hash-chained to its
+ * predecessor and the head is anchored in a separate owner-only file, so an
+ * ordinary edit, reordering, deletion of an anchored record, or a clean
+ * truncation is detected when the log is opened or verified — and a detected
+ * log refuses to accept new records, which blocks the dispatch that depended
+ * on it. Protection against an attacker who runs as the same OS identity and
+ * rewrites both files is out of scope for any in-repo file sink: deployments
+ * must inject an append-only/WORM backend for that guarantee, which is why
+ * {@link RecoveryAuditSink} carries an explicit `durability` marker and the
+ * service refuses an unmarked test sink unless a test opts in.
  */
 
+import { createHash, createHmac } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
 import { scrubSecrets } from "../gateway/redact.js";
 import type { RequestScanEvidence } from "../gateway/types.js";
 import type { RecoveryDestination, RecoveryScope } from "./recovery-authorization.js";
+import { SecurityError } from "./types.js";
 import type { SecurityActor } from "./types.js";
 
 /** Every distinct recovery event type (approval is never a dispatch). */
@@ -75,9 +88,12 @@ export interface RecoveryAuditRecord {
 
 /**
  * Durable audit seam. Recording is awaited before dispatch; a throwing sink
- * blocks the send instead of letting unaudited bytes leave.
+ * blocks the send instead of letting unaudited bytes leave. `durability` is a
+ * structural marker: `test` sinks are only accepted by an explicit test opt-in
+ * on the recovery service, never by a deployment default.
  */
 export interface RecoveryAuditSink {
+  readonly durability: "durable" | "test";
   record(record: RecoveryAuditRecord): void | Promise<void>;
 }
 
@@ -94,22 +110,254 @@ export function scrubAuditRecord(record: RecoveryAuditRecord): RecoveryAuditReco
   };
 }
 
+/** One hash-chained line of the durable audit log. */
+interface AuditLine {
+  seq: number;
+  prev: string;
+  record: RecoveryAuditRecord;
+  hash: string;
+}
+
+/** The anchored chain head, kept outside the log so truncation is detectable. */
+interface AuditAnchor {
+  seq: number;
+  hash: string;
+}
+
+const GENESIS = "genesis";
+const HASH_PREFIX = "h1.";
+/** A log line larger than this is not a record this sink wrote. */
+const MAX_LINE_BYTES = 512 * 1024;
+
+export interface RecoveryAuditSinkOptions {
+  /**
+   * Optional service key. A keyed chain cannot be recomputed by somebody who
+   * can only edit the log (an unkeyed chain can be re-forged by anyone).
+   */
+  key?: Buffer;
+}
+
+function chainHash(
+  key: Buffer | undefined,
+  prev: string,
+  seq: number,
+  record: RecoveryAuditRecord,
+): string {
+  const canonical = JSON.stringify([prev, seq, record]);
+  const digest = (key ? createHmac("sha256", key) : createHash("sha256")).update(canonical);
+  return `${HASH_PREFIX}${digest.digest("base64url")}`;
+}
+
+function integrityError(detail: string, details: Record<string, unknown> = {}): SecurityError {
+  return new SecurityError(
+    "RECOVERY_AUDIT_LOG_TAMPERED",
+    `recovery audit log failed integrity verification: ${detail}`,
+    details,
+  );
+}
+
+function isMissing(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === "ENOENT";
+}
+
+/** Owner-only regular file; a symlink or a group/world-readable log is refused. */
+function assertProtectedLogFile(file: string): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(file);
+  } catch (error) {
+    if (isMissing(error)) return;
+    throw error;
+  }
+  if (!stat.isFile()) {
+    throw new SecurityError(
+      "RECOVERY_AUDIT_LOG_UNPROTECTED",
+      "the recovery audit log must be a regular file owned by the service",
+      { file },
+    );
+  }
+  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
+    throw new SecurityError(
+      "RECOVERY_AUDIT_LOG_UNPROTECTED",
+      "the recovery audit log is readable or writable beyond its owner; fix its mode (0600) first",
+      { file, mode: (stat.mode & 0o777).toString(8) },
+    );
+  }
+}
+
+function readAnchor(file: string): AuditAnchor | undefined {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(`${file}.anchor`, "utf8");
+  } catch (error) {
+    if (isMissing(error)) return undefined;
+    throw error;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<AuditAnchor>;
+    if (typeof parsed.seq !== "number" || typeof parsed.hash !== "string") {
+      throw new Error("bad anchor");
+    }
+    return { seq: parsed.seq, hash: parsed.hash };
+  } catch {
+    throw integrityError("the audit anchor is not a valid anchor record", { file });
+  }
+}
+
+function writeAnchor(file: string, anchor: AuditAnchor): void {
+  const target = `${file}.anchor`;
+  const temporary = `${target}.${process.pid}.tmp`;
+  const fd = fs.openSync(temporary, "w", 0o600);
+  try {
+    fs.writeSync(fd, JSON.stringify(anchor));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(temporary, target);
+}
+
+interface VerifiedLog {
+  records: RecoveryAuditRecord[];
+  seq: number;
+  hash: string;
+  /** Bytes of a trailing torn line that must be dropped before appending. */
+  tornBytes: number;
+}
+
 /**
- * Deployment-grade durable sink: one JSONL line per audit record, created
- * with owner-only permissions. A write failure propagates to the service,
- * which blocks the dispatch when the failing record is required
- * pre-dispatch evidence.
+ * Verify the whole hash chain and its anchor. A complete line that does not
+ * verify, a reordering, an anchored truncation, or a forged head raises
+ * `RECOVERY_AUDIT_LOG_TAMPERED`. A trailing partial line (a crash mid-write,
+ * no final newline) is reported separately so the writer can drop exactly
+ * those bytes instead of bricking the log.
  */
-export function createFileRecoveryAuditSink(file: string): RecoveryAuditSink {
-  fs.mkdirSync(path.dirname(file), { mode: 0o700, recursive: true });
+export function verifyRecoveryAuditLog(
+  file: string,
+  options: RecoveryAuditSinkOptions = {},
+): VerifiedLog {
+  let raw = "";
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+  }
+  const lines = raw.split("\n");
+  const records: RecoveryAuditRecord[] = [];
+  const hashes: string[] = [];
+  let tornBytes = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const isLast = index === lines.length - 1;
+    if (isLast && line === "") break;
+    if (isLast && !raw.endsWith("\n")) {
+      // Trailing bytes without a newline: a torn append. Only their size is
+      // trusted; the writer drops exactly those bytes.
+      tornBytes = Buffer.byteLength(line, "utf8");
+      break;
+    }
+    if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) {
+      throw integrityError("an audit line exceeds the maximum record size", { seq: index + 1 });
+    }
+    let parsed: AuditLine;
+    try {
+      parsed = JSON.parse(line) as AuditLine;
+    } catch {
+      throw integrityError("an audit line is not valid JSON", { seq: index + 1 });
+    }
+    if (parsed.seq !== index + 1) {
+      throw integrityError("audit sequence numbers are not contiguous", {
+        expected: index + 1,
+        found: parsed.seq,
+      });
+    }
+    const prev = index === 0 ? GENESIS : hashes[index - 1];
+    if (parsed.prev !== prev) {
+      throw integrityError("an audit line does not chain to its predecessor", { seq: parsed.seq });
+    }
+    const expectedHash = chainHash(options.key, prev as string, parsed.seq, parsed.record);
+    if (parsed.hash !== expectedHash) {
+      throw integrityError("an audit line was modified after it was written", { seq: parsed.seq });
+    }
+    records.push(parsed.record);
+    hashes.push(parsed.hash);
+  }
+  const seq = records.length;
+  const hash = seq === 0 ? GENESIS : (hashes[seq - 1] as string);
+  const anchor = readAnchor(file);
+  if (seq === 0) {
+    // An empty log with a non-empty anchor means every anchored record was
+    // removed; an empty log with no anchor is a fresh log.
+    if (anchor && anchor.seq > 0) {
+      throw integrityError("every anchored audit record was removed", { anchored: anchor.seq });
+    }
+    return { records, seq, hash, tornBytes };
+  }
+  if (!anchor) {
+    throw integrityError("the audit anchor is missing; the log head cannot be trusted");
+  }
+  if (anchor.seq > seq) {
+    throw integrityError("audit records were removed from the end of the anchored log", {
+      anchored: anchor.seq,
+      present: seq,
+    });
+  }
+  if (anchor.seq > 0 && hashes[anchor.seq - 1] !== anchor.hash) {
+    throw integrityError("the audit anchor does not match the record it names", {
+      seq: anchor.seq,
+    });
+  }
+  return { records, seq, hash, tornBytes };
+}
+
+/**
+ * Durable, tamper-evident audit sink: one hash-chained JSONL line per record,
+ * owner-only permissions, fsynced appends, and an anchored head. Opening a
+ * log that fails verification throws, so the recovery service cannot dispatch
+ * on top of a corrupted audit trail.
+ */
+export function createFileRecoveryAuditSink(
+  file: string,
+  options: RecoveryAuditSinkOptions = {},
+): RecoveryAuditSink {
+  assertProtectedLogFile(file);
+  const verified = verifyRecoveryAuditLog(file, options);
+  if (verified.tornBytes > 0) {
+    // A crash left a partial line: drop exactly those bytes. The complete
+    // chain before it has already been verified, so nothing anchored is lost.
+    const size = fs.statSync(file).size;
+    fs.truncateSync(file, Math.max(0, size - verified.tornBytes));
+  }
+  let seq = verified.seq;
+  let hash = verified.hash;
+  if (seq > 0) writeAnchor(file, { seq, hash });
   return {
+    durability: "durable",
     record(record: RecoveryAuditRecord): void {
-      fs.appendFileSync(file, `${JSON.stringify(scrubAuditRecord(record))}\n`, { mode: 0o600 });
+      const nextSeq = seq + 1;
+      const scrubbed = scrubAuditRecord(record);
+      const nextHash = chainHash(options.key, hash, nextSeq, scrubbed);
+      const line: AuditLine = { seq: nextSeq, prev: hash, record: scrubbed, hash: nextHash };
+      const fd = fs.openSync(file, "a", 0o600);
+      try {
+        fs.writeSync(fd, `${JSON.stringify(line)}\n`);
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      seq = nextSeq;
+      hash = nextHash;
+      writeAnchor(file, { seq, hash });
     },
   };
 }
 
-/** In-memory sink for tests and for wiring checks; never a production default. */
+/**
+ * In-memory sink for tests and for wiring checks. It is explicitly marked
+ * `test`: the recovery service refuses it unless a test opts in, so no
+ * deployment silently audits into memory.
+ */
 export function createMemoryRecoveryAuditSink(): {
   audit: RecoveryAuditSink;
   records: RecoveryAuditRecord[];
@@ -117,6 +365,7 @@ export function createMemoryRecoveryAuditSink(): {
   const records: RecoveryAuditRecord[] = [];
   return {
     audit: {
+      durability: "test",
       record(record: RecoveryAuditRecord): void {
         records.push(record);
       },

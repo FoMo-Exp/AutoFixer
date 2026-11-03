@@ -154,6 +154,7 @@ export {
   createFileRecoveryAuditSink,
   createMemoryRecoveryAuditSink,
   scrubAuditRecord,
+  verifyRecoveryAuditLog,
 } from "./recovery-audit.js";
 export type {
   RecoveryAuditApproval,
@@ -161,6 +162,7 @@ export type {
   RecoveryAuditEventType,
   RecoveryAuditRecord,
   RecoveryAuditSink,
+  RecoveryAuditSinkOptions,
 } from "./recovery-audit.js";
 
 export {

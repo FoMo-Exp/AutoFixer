@@ -174,8 +174,14 @@ export interface RecoveryServiceDeps {
   policyResolver: GatewayPolicyResolver;
   credentials: GatewayCredentialStore;
   adapter: ProviderAdapter;
-  /** Required durable audit sink: pre-dispatch evidence must exist before sending. */
+  /**
+   * Required durable audit sink: pre-dispatch evidence must exist before
+   * sending. A sink marked `test` is refused unless `allowTestAuditSink` is
+   * set, so no deployment can silently audit into memory.
+   */
   audit: RecoveryAuditSink;
+  /** Explicit test-only opt-in for a non-durable audit sink. Never set in deployment. */
+  allowTestAuditSink?: boolean;
   /** Service key for keyed context revisions and request digests. */
   correlationKey: Buffer;
   rules?: { activeCorrections(): readonly ActiveRuleCorrection[] };
@@ -319,6 +325,15 @@ export class RecoveryService {
   private readonly newInvocationId: () => string;
 
   constructor(deps: RecoveryServiceDeps) {
+    if (deps.audit?.durability !== "durable" && deps.allowTestAuditSink !== true) {
+      // Fail closed at composition: without a durable, tamper-evident audit
+      // sink the recovery boundary cannot meet ADR-0005 §6.
+      throw new SecurityError(
+        "RECOVERY_AUDIT_SINK_UNPROTECTED",
+        "recovery requires a durable audit sink; a test sink needs the explicit allowTestAuditSink opt-in",
+        { durability: deps.audit?.durability ?? null },
+      );
+    }
     this.deps = deps;
     this.key = requireCorrelationKey(deps.correlationKey);
     this.now = deps.now ?? (() => new Date());
@@ -489,43 +504,14 @@ export class RecoveryService {
       });
     }
 
-    // The case must still be the one this approval was issued for, and it must
-    // not have fallen back into handling or been terminated since.
-    const caseRecord = this.deps.cases.get(approval.caseId);
-    if (!caseRecord) {
-      throw this.invalidateAndDeny(
-        authorization,
-        "case_changed",
-        "the disposal case no longer exists",
-      );
-    }
-    if (
-      caseRecord.scope.enterpriseId !== approval.scope.enterpriseId ||
-      caseRecord.scope.workspaceId !== approval.scope.workspaceId ||
-      caseRecord.scope.issueId !== approval.scope.issueId ||
-      caseRecord.scope.runId !== approval.scope.runId
-    ) {
-      throw this.invalidateAndDeny(authorization, "scope_mismatch", "the case scope changed");
-    }
-    if (
-      isTerminalCaseState(caseRecord.state) ||
-      caseRecord.state === "pending" ||
-      caseRecord.state === "handling"
-    ) {
-      throw this.invalidateAndDeny(
-        authorization,
-        "case_changed",
-        `case ${caseRecord.caseId} is ${caseRecord.state}; a review-round approval no longer applies`,
-      );
-    }
+    // Every fact the approval bound is re-checked here — case state and
+    // scope, the reviewer's current authority and independence, identity
+    // revocation, and (below) the policy, destination, rule and scan-policy
+    // revisions — and the same check runs again after the pre-dispatch audit.
+    await this.revalidateDispatchBounds(authorization);
 
-    // The approving principal must still be an independent, authorized
-    // reviewer — revoked roles and revoked identities invalidate the approval.
-    this.revalidateReviewer(authorization, caseRecord);
-    this.revalidateIdentity(authorization, caseRecord.scope.runId);
-
-    // Rebuild the complete request from approved sources and recheck every
-    // fact the approval bound. Any difference invalidates the approval.
+    // Rebuild the complete request from approved sources and recheck the
+    // reviewed content. Any difference invalidates the approval.
     let rebuilt;
     try {
       rebuilt = await rebuildCompleteRequest(this.deps.source, {
@@ -544,20 +530,6 @@ export class RecoveryService {
         authorization,
         "context_changed",
         "the rebuilt request is not the reviewed request",
-      );
-    }
-    if (this.rulesRevision(approval.scope) !== approval.rulesRevision) {
-      throw this.invalidateAndDeny(
-        authorization,
-        "rules_changed",
-        "the active rule revisions changed since the approval",
-      );
-    }
-    if (scanPolicyRevisionOf(this.deps.scanPolicy, this.key) !== approval.scanPolicyRevision) {
-      throw this.invalidateAndDeny(
-        authorization,
-        "scan_policy_changed",
-        "the scan policy changed since the approval",
       );
     }
 
@@ -682,9 +654,16 @@ export class RecoveryService {
       });
     }
 
-    // Revalidate immediately before consuming, then consume atomically. No
-    // await sits between the check and the state change, so of two concurrent
-    // workers at most one proceeds to dispatch.
+    // The pre-dispatch audit sink is external and may take arbitrary time, so
+    // every bound fact is revalidated *again* after it — policy, destination,
+    // rule revisions, scan policy, case state, reviewer authority, and
+    // identity revocation. The context cannot drift into this send: the
+    // dispatched bytes are the frozen copy already bound to the audit record.
+    await this.revalidateDispatchBounds(authorization);
+
+    // From here to the claim there is no `await`: these final checks and the
+    // one-time claim form one uninterrupted critical section, and the claim
+    // file arbitrates against every other worker.
     const revalidated = this.deps.authorizations.statusOf(authorization);
     if (revalidated !== "approved") {
       throw this.invalid(
@@ -1061,6 +1040,79 @@ export class RecoveryService {
       throw new SecurityError(
         "RECOVERY_REQUEST_MUTATED",
         "the final request changed after its scan; nothing may be dispatched",
+      );
+    }
+  }
+
+  /**
+   * Re-check every fact a dispatch depends on, from live sources. Each
+   * difference invalidates the approval at the claim ledger, so no worker can
+   * use it afterwards. Called before the recheck and again after the
+   * pre-dispatch audit write.
+   */
+  private async revalidateDispatchBounds(authorization: RecoveryAuthorization): Promise<void> {
+    const approval = authorization.approval;
+    const caseRecord = this.requireCurrentCase(authorization);
+    this.assertCaseAllowsReviewRound(authorization, caseRecord);
+    this.revalidateReviewer(authorization, caseRecord);
+    this.revalidateIdentity(authorization, caseRecord.scope.runId);
+    if (this.rulesRevision(approval.scope) !== approval.rulesRevision) {
+      throw this.invalidateAndDeny(
+        authorization,
+        "rules_changed",
+        "the active rule revisions changed since the approval",
+      );
+    }
+    if (scanPolicyRevisionOf(this.deps.scanPolicy, this.key) !== approval.scanPolicyRevision) {
+      throw this.invalidateAndDeny(
+        authorization,
+        "scan_policy_changed",
+        "the scan policy changed since the approval",
+      );
+    }
+    await this.revalidateDestination(authorization);
+  }
+
+  /** The case this approval names, still existing and still in its scope. */
+  private requireCurrentCase(authorization: RecoveryAuthorization): SecurityCase {
+    const approval = authorization.approval;
+    const caseRecord = this.deps.cases.get(approval.caseId);
+    if (!caseRecord) {
+      throw this.invalidateAndDeny(
+        authorization,
+        "case_changed",
+        "the disposal case no longer exists",
+      );
+    }
+    if (
+      caseRecord.scope.enterpriseId !== approval.scope.enterpriseId ||
+      caseRecord.scope.workspaceId !== approval.scope.workspaceId ||
+      caseRecord.scope.issueId !== approval.scope.issueId ||
+      caseRecord.scope.runId !== approval.scope.runId
+    ) {
+      throw this.invalidateAndDeny(authorization, "scope_mismatch", "the case scope changed");
+    }
+    return caseRecord;
+  }
+
+  /**
+   * A review-round approval applies while the case is awaiting review or has
+   * already been resolved; a case back in handling, still pending, or
+   * terminated no longer describes the round that was approved.
+   */
+  private assertCaseAllowsReviewRound(
+    authorization: RecoveryAuthorization,
+    caseRecord: SecurityCase,
+  ): void {
+    if (
+      isTerminalCaseState(caseRecord.state) ||
+      caseRecord.state === "pending" ||
+      caseRecord.state === "handling"
+    ) {
+      throw this.invalidateAndDeny(
+        authorization,
+        "case_changed",
+        `case ${caseRecord.caseId} is ${caseRecord.state}; a review-round approval no longer applies`,
       );
     }
   }

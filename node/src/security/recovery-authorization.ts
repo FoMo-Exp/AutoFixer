@@ -7,10 +7,20 @@
  * policy and rule revisions), enforces a bounded expiry, and lets a dispatch
  * path consume the authorization exactly once.
  *
- * Consumption is deliberately a synchronous, total operation: check and
- * mark happen in one tick with a durable write in between, so two concurrent
- * workers can never both win — and a worker that crashes after consuming
- * leaves an authorization that is spent, never reusable.
+ * Single use is arbitrated by a *claim ledger*, not by in-memory state: the
+ * first decision about one authorization — consume, invalidate, or revoke —
+ * wins an exclusive-create (`O_CREAT|O_EXCL`) claim file and every later
+ * decision is refused. Two independent Node workers sharing one state file
+ * therefore cannot both dispatch, and a worker that crashes between claiming
+ * and persisting leaves the claim behind, so the authorization stays spent.
+ * A store without a persistence path is single-process by construction and
+ * uses the same arbitration in memory.
+ *
+ * The claim file is per authorization and is written with owner-only
+ * permissions under `<state>.claims/`. Cross-process guarantees follow the
+ * underlying filesystem's `O_EXCL` semantics (atomic on local POSIX and
+ * Windows filesystems); a deployment on a network filesystem must provide a
+ * storage backend with the same guarantee.
  */
 
 import { randomUUID } from "node:crypto";
@@ -157,6 +167,19 @@ export interface RecoveryAuthorizationStoreOptions {
   maxTtlSeconds?: number;
 }
 
+/**
+ * The first decided outcome for one authorization. Exactly one claim file per
+ * authorization is ever created; its existence is the arbitration point.
+ */
+interface RecoveryClaim {
+  kind: RecoveryAuthorizationState;
+  by: string;
+  at: string;
+  reason: string | null;
+}
+
+type ClaimOutcome = { won: true; claim: RecoveryClaim } | { won: false; claim: RecoveryClaim };
+
 const SCHEMA_VERSION = 1;
 const DEFAULT_TTL_SECONDS = 15 * 60;
 const DEFAULT_MAX_TTL_SECONDS = 60 * 60;
@@ -180,9 +203,15 @@ export type ConsumeResult =
 export class RecoveryAuthorizationStore {
   private readonly authorizations = new Map<string, RecoveryAuthorization>();
   private readonly outcomesByAuthorization = new Map<string, RecoveryDispatchOutcome>();
+  private readonly inMemoryClaims = new Map<string, RecoveryClaim>();
+  /** Records this instance changed and must write back over another worker's file. */
+  private readonly dirtyAuthorizations = new Set<string>();
+  private readonly dirtyOutcomes = new Set<string>();
   private readonly options: RecoveryAuthorizationStoreOptions;
   private readonly now: () => Date;
   private readonly newAuthorizationId: () => string;
+  /** Last state-file content observed, to avoid re-reading an unchanged file. */
+  private lastLoadedRaw: string | null = null;
 
   constructor(options: RecoveryAuthorizationStoreOptions = {}) {
     this.options = options;
@@ -236,16 +265,26 @@ export class RecoveryAuthorizationStore {
       updatedAt: at,
     };
     this.authorizations.set(authorization.authorizationId, authorization);
+    this.dirtyAuthorizations.add(authorization.authorizationId);
     this.persist();
     return authorization;
   }
 
+  /**
+   * Read one authorization as the shared state currently describes it: the
+   * durable file is re-read (so another worker's decision is visible) and the
+   * claim ledger is overlaid on the stored record.
+   */
   get(authorizationId: string): RecoveryAuthorization | undefined {
-    return this.authorizations.get(authorizationId);
+    this.syncFromDisk();
+    const record = this.authorizations.get(authorizationId);
+    if (!record) return undefined;
+    return this.applyClaim(record);
   }
 
   list(): readonly RecoveryAuthorization[] {
-    return [...this.authorizations.values()];
+    this.syncFromDisk();
+    return [...this.authorizations.values()].map((record) => this.applyClaim(record));
   }
 
   /** Stored state plus the derived `expired` reading. */
@@ -253,54 +292,79 @@ export class RecoveryAuthorizationStore {
     authorizationId: string,
     at: Date = this.now(),
   ): RecoveryAuthorizationStatus | undefined {
-    const record = this.authorizations.get(authorizationId);
+    const record = this.get(authorizationId);
     if (!record) return undefined;
     return this.statusOf(record, at);
   }
 
   statusOf(record: RecoveryAuthorization, at: Date = this.now()): RecoveryAuthorizationStatus {
+    // A claim is authoritative even when this instance's in-memory record has
+    // not caught up with the file yet.
+    const claim = this.readClaim(record.authorizationId);
+    if (claim) return claim.kind;
     if (record.state === "approved" && this.isExpired(record, at)) return "expired";
     return record.state;
   }
 
   /**
-   * Atomically consume an authorization for exactly one dispatch attempt.
+   * Consume an authorization for exactly one dispatch attempt.
    *
-   * Synchronous by contract: the check and the durable state change happen
-   * with no `await` in between, so of two concurrent workers at most one gets
-   * `ok: true`. An expired, consumed, revoked, or invalidated authorization
-   * is refused with its machine reason.
+   * The check is synchronous, and the decision is arbitrated by an exclusive
+   * claim file, so of two *independent workers* sharing one state file at most
+   * one gets `ok: true`. An expired, consumed, revoked, or invalidated
+   * authorization is refused with its machine reason.
    */
   consume(authorizationId: string, consumerId: string): ConsumeResult {
-    const record = this.authorizations.get(authorizationId);
+    const record = this.get(authorizationId);
     if (!record) return { ok: false, reason: "unknown_authorization" };
-    if (record.state === "consumed") return { ok: false, reason: "already_consumed" };
-    if (record.state === "invalidated") return { ok: false, reason: "already_invalidated" };
-    if (record.state === "revoked") return { ok: false, reason: "revoked" };
+    const existing = this.readClaim(authorizationId);
+    if (existing) return { ok: false, reason: this.reasonForClaim(existing) };
+    if (record.state !== "approved") {
+      return { ok: false, reason: this.reasonForState(record.state) };
+    }
     if (this.isExpired(record, this.now())) return { ok: false, reason: "expired" };
     requireNonEmpty(consumerId, "consumerId");
-    const at = this.timestamp();
+    // The arbitration point: exactly one claimant ever wins this file.
+    const claimed = this.claim(authorizationId, {
+      kind: "consumed",
+      by: consumerId,
+      at: this.timestamp(),
+      reason: null,
+    });
+    if (!claimed.won) return { ok: false, reason: this.reasonForClaim(claimed.claim) };
     record.state = "consumed";
-    record.consumedAt = at;
+    record.stateReason = null;
+    record.consumedAt = claimed.claim.at;
     record.consumedBy = consumerId;
-    record.updatedAt = at;
+    record.updatedAt = claimed.claim.at;
+    this.dirtyAuthorizations.add(authorizationId);
     this.persist();
     return { ok: true, authorization: record };
   }
 
   /**
    * Invalidate an unconsumed authorization. Invalidating never rewrites a
-   * consumed, revoked, or terminal record: the first terminal reading stands.
+   * consumed, revoked, or already invalidated record: the first claim stands,
+   * whichever worker wrote it.
    */
   invalidate(
     authorizationId: string,
     reason: RecoveryInvalidReason,
   ): RecoveryAuthorization | undefined {
-    const record = this.authorizations.get(authorizationId);
-    if (!record || record.state !== "approved") return record;
+    const record = this.get(authorizationId);
+    if (!record) return undefined;
+    if (record.state !== "approved") return record;
+    const claimed = this.claim(authorizationId, {
+      kind: "invalidated",
+      by: "recovery-service",
+      at: this.timestamp(),
+      reason,
+    });
+    if (!claimed.won) return this.applyClaim(record, claimed.claim);
     record.state = "invalidated";
     record.stateReason = reason;
-    record.updatedAt = this.timestamp();
+    record.updatedAt = claimed.claim.at;
+    this.dirtyAuthorizations.add(authorizationId);
     this.persist();
     return record;
   }
@@ -310,14 +374,22 @@ export class RecoveryAuthorizationStore {
     authorizationId: string,
     input: { by: string; reason: string },
   ): RecoveryAuthorization | undefined {
-    const record = this.authorizations.get(authorizationId);
+    const record = this.get(authorizationId);
     if (!record) return undefined;
     requireNonEmpty(input.by, "revocation.by");
     requireNonEmpty(input.reason, "revocation.reason");
     if (record.state !== "approved") return record;
+    const claimed = this.claim(authorizationId, {
+      kind: "revoked",
+      by: input.by,
+      at: this.timestamp(),
+      reason: scrubSecrets(input.reason),
+    });
+    if (!claimed.won) return this.applyClaim(record, claimed.claim);
     record.state = "revoked";
     record.stateReason = scrubSecrets(input.reason);
-    record.updatedAt = this.timestamp();
+    record.updatedAt = claimed.claim.at;
+    this.dirtyAuthorizations.add(authorizationId);
     this.persist();
     return record;
   }
@@ -328,22 +400,26 @@ export class RecoveryAuthorizationStore {
    */
   recordOutcome(outcome: RecoveryDispatchOutcome): RecoveryDispatchOutcome {
     requireNonEmpty(outcome.authorizationId, "outcome.authorizationId");
+    this.syncFromDisk();
     this.outcomesByAuthorization.set(outcome.authorizationId, outcome);
+    this.dirtyOutcomes.add(outcome.authorizationId);
     this.persist();
     return outcome;
   }
 
   outcomeOf(authorizationId: string): RecoveryDispatchOutcome | undefined {
+    this.syncFromDisk();
     return this.outcomesByAuthorization.get(authorizationId);
   }
 
   outcomes(): readonly RecoveryDispatchOutcome[] {
+    this.syncFromDisk();
     return [...this.outcomesByAuthorization.values()];
   }
 
   /** Unreconciled `unknown` outcomes, for the operational reconciliation list. */
   pendingReconciliation(): readonly RecoveryDispatchOutcome[] {
-    return [...this.outcomesByAuthorization.values()].filter(
+    return this.outcomes().filter(
       (outcome) => outcome.kind === "unknown" && outcome.reconciliation?.state === "pending",
     );
   }
@@ -357,6 +433,7 @@ export class RecoveryAuthorizationStore {
     authorizationId: string,
     input: { by: string; finding: RecoveryReconciliationFinding; detail?: string },
   ): RecoveryDispatchOutcome {
+    this.syncFromDisk();
     const outcome = this.outcomesByAuthorization.get(authorizationId);
     if (!outcome) {
       throw new SecurityError(
@@ -379,8 +456,121 @@ export class RecoveryAuthorizationStore {
       by: input.by,
       detail: input.detail ?? null,
     };
+    this.dirtyOutcomes.add(authorizationId);
     this.persist();
     return outcome;
+  }
+
+  /** Overlay a claim onto an in-memory record so every reader agrees. */
+  private applyClaim(
+    record: RecoveryAuthorization,
+    claim: RecoveryClaim | undefined = this.readClaim(record.authorizationId),
+  ): RecoveryAuthorization {
+    // No claim: the stored record is what it says (expiry is derived, never
+    // written), so there is nothing to overlay.
+    if (!claim) return record;
+    if (claim.kind === "consumed") {
+      record.state = "consumed";
+      record.consumedAt = claim.at;
+      record.consumedBy = claim.by;
+      record.updatedAt = claim.at;
+    } else {
+      record.state = claim.kind;
+      record.stateReason = claim.reason ?? claim.kind;
+      record.updatedAt = claim.at;
+    }
+    return record;
+  }
+
+  private reasonForClaim(claim: RecoveryClaim): RecoveryInvalidReason {
+    return claim.kind === "consumed"
+      ? "already_consumed"
+      : claim.kind === "invalidated"
+        ? "already_invalidated"
+        : "revoked";
+  }
+
+  private reasonForState(state: RecoveryAuthorizationState): RecoveryInvalidReason {
+    return state === "consumed"
+      ? "already_consumed"
+      : state === "invalidated"
+        ? "already_invalidated"
+        : "revoked";
+  }
+
+  /**
+   * Win the one-time claim for this authorization. The exclusive create
+   * (`wx`/`O_EXCL`) is the cross-process arbitration: exactly one caller
+   * creates the file; everybody else reads the winner's decision.
+   */
+  private claim(authorizationId: string, claim: RecoveryClaim): ClaimOutcome {
+    const existing = this.readClaim(authorizationId);
+    if (existing) return { won: false, claim: existing };
+    const file = this.claimPath(authorizationId);
+    if (!file) {
+      // Single-process store: the map is the arbitration and JS is single
+      // threaded, so a check-then-set here is atomic.
+      this.inMemoryClaims.set(authorizationId, claim);
+      return { won: true, claim };
+    }
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    let fd: number;
+    try {
+      fd = fs.openSync(file, "wx", 0o600);
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      if (code !== "EEXIST") throw error;
+      const winner = this.readClaim(authorizationId);
+      if (winner) return { won: false, claim: winner };
+      // A claim file exists but cannot be read: refuse rather than guess.
+      throw new SecurityError(
+        "RECOVERY_CLAIM_UNREADABLE",
+        "a recovery claim exists but could not be read; refusing to dispatch",
+        { authorizationId },
+      );
+    }
+    try {
+      fs.writeSync(fd, JSON.stringify(claim));
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    return { won: true, claim };
+  }
+
+  private readClaim(authorizationId: string): RecoveryClaim | undefined {
+    const file = this.claimPath(authorizationId);
+    if (!file) return this.inMemoryClaims.get(authorizationId);
+    let raw: string;
+    try {
+      raw = fs.readFileSync(file, "utf8");
+    } catch {
+      return undefined;
+    }
+    try {
+      const parsed = JSON.parse(raw) as Partial<RecoveryClaim>;
+      if (
+        parsed.kind !== "consumed" &&
+        parsed.kind !== "invalidated" &&
+        parsed.kind !== "revoked"
+      ) {
+        return undefined;
+      }
+      return {
+        kind: parsed.kind,
+        by: typeof parsed.by === "string" ? parsed.by : "unknown",
+        at: typeof parsed.at === "string" ? parsed.at : "",
+        reason: typeof parsed.reason === "string" ? parsed.reason : null,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private claimPath(authorizationId: string): string | undefined {
+    const base = this.options.persistencePath;
+    if (!base) return undefined;
+    return path.join(`${base}.claims`, `${encodeURIComponent(authorizationId)}.json`);
   }
 
   private isExpired(record: RecoveryAuthorization, at: Date): boolean {
@@ -391,12 +581,41 @@ export class RecoveryAuthorizationStore {
     return this.now().toISOString();
   }
 
+  /**
+   * Re-read the shared state file. Another worker's consume/invalidate/revoke
+   * lands here, so this instance never dispatches on a stale reading.
+   */
+  private syncFromDisk(): void {
+    const file = this.options.persistencePath;
+    if (!file) return;
+    let raw: string;
+    try {
+      raw = fs.readFileSync(file, "utf8");
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      if (code === "ENOENT") return;
+      throw error;
+    }
+    if (raw === this.lastLoadedRaw) return;
+    this.applyPersisted(raw);
+  }
+
   private load(): void {
     const file = this.options.persistencePath;
     if (!file || !fs.existsSync(file)) return;
+    let raw: string;
+    try {
+      raw = fs.readFileSync(file, "utf8");
+    } catch {
+      throw new SecurityError("RECOVERY_STORE_INVALID", "recovery state file cannot be read");
+    }
+    this.applyPersisted(raw);
+  }
+
+  private applyPersisted(raw: string): void {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+      parsed = JSON.parse(raw);
     } catch {
       throw new SecurityError("RECOVERY_STORE_INVALID", "recovery state file is not valid JSON");
     }
@@ -411,25 +630,78 @@ export class RecoveryAuthorizationStore {
         "recovery state file has an unsupported shape",
       );
     }
+    const authorizations = new Map<string, RecoveryAuthorization>();
     for (const record of state.authorizations) {
-      this.authorizations.set(record.authorizationId, record);
+      authorizations.set(record.authorizationId, record);
     }
+    const outcomes = new Map<string, RecoveryDispatchOutcome>();
     for (const outcome of state.outcomes) {
-      this.outcomesByAuthorization.set(outcome.authorizationId, outcome);
+      outcomes.set(outcome.authorizationId, outcome);
     }
+    this.authorizations.clear();
+    for (const [id, record] of authorizations) this.authorizations.set(id, record);
+    this.outcomesByAuthorization.clear();
+    for (const [id, outcome] of outcomes) this.outcomesByAuthorization.set(id, outcome);
+    this.lastLoadedRaw = raw;
   }
 
+  /**
+   * Write the shared file without clobbering another worker's unrelated
+   * records: records this instance changed win, everything else is taken from
+   * the file as it stands now. The claim ledger remains the authority for
+   * whether an authorization is spent, so even a lost write can never make a
+   * consumed approval usable again.
+   */
   private persist(): void {
     const file = this.options.persistencePath;
     if (!file) return;
+    const disk = this.readStateQuietly(file);
+    const authorizations = new Map<string, RecoveryAuthorization>(
+      (disk?.authorizations ?? []).map((record) => [record.authorizationId, record]),
+    );
+    for (const [id, record] of this.authorizations) {
+      if (this.dirtyAuthorizations.has(id) || !authorizations.has(id)) {
+        authorizations.set(id, record);
+      }
+    }
+    const outcomes = new Map<string, RecoveryDispatchOutcome>(
+      (disk?.outcomes ?? []).map((outcome) => [outcome.authorizationId, outcome]),
+    );
+    for (const [id, outcome] of this.outcomesByAuthorization) {
+      if (this.dirtyOutcomes.has(id) || !outcomes.has(id)) outcomes.set(id, outcome);
+    }
+    this.authorizations.clear();
+    for (const [id, record] of authorizations) this.authorizations.set(id, record);
+    this.outcomesByAuthorization.clear();
+    for (const [id, outcome] of outcomes) this.outcomesByAuthorization.set(id, outcome);
     const state: PersistedState = {
       schema_version: SCHEMA_VERSION,
-      authorizations: [...this.authorizations.values()],
-      outcomes: [...this.outcomesByAuthorization.values()],
+      authorizations: [...authorizations.values()],
+      outcomes: [...outcomes.values()],
     };
+    const serialized = JSON.stringify(state);
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify(state), { encoding: "utf8", mode: 0o600 });
+    fs.writeFileSync(temporary, serialized, { encoding: "utf8", mode: 0o600 });
     fs.renameSync(temporary, file);
+    this.lastLoadedRaw = serialized;
+  }
+
+  /** Read the shared state file without mutating in-memory state. */
+  private readStateQuietly(file: string): PersistedState | null {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(file, "utf8");
+    } catch {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as PersistedState;
+      if (parsed.schema_version !== SCHEMA_VERSION) return null;
+      if (!Array.isArray(parsed.authorizations) || !Array.isArray(parsed.outcomes)) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
   }
 }
