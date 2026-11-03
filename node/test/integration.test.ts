@@ -4,8 +4,12 @@ import path from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 
+import type { StreamFn } from "@mariozechner/pi-agent-core";
+
 import { createOrchestrator } from "../src/index.js";
 import type { OrchestratorHandle } from "../src/index.js";
+import type { GatewayAttemptEvent } from "../src/index.js";
+import { ModelDispatchError } from "../src/index.js";
 import type { OrchestratorConfig } from "../src/config.js";
 import { configFromEnv } from "../src/config.js";
 import type { ApiErrorBody } from "../src/api/errors.js";
@@ -15,6 +19,7 @@ import { startDshServer } from "./helpers/dsh-server.js";
 import { getJson, postJson, postRaw, readSse, setAuthToken, waitUntil } from "./helpers/http.js";
 import type { ScriptedTurn } from "./helpers/scripted-stream.js";
 import { makeGate, scriptedStream, TEST_MODEL } from "./helpers/scripted-stream.js";
+import { scriptedGateway, testPolicyFor } from "./helpers/test-gateway.js";
 
 const APPROVER = "github:local-operator";
 const REPOSITORY_ID = "github:Luthiel/AutoFixer";
@@ -54,6 +59,8 @@ function testConfig(overrides: Partial<OrchestratorConfig> = {}): OrchestratorCo
     actorId: "usr_test_operator",
     actorDisplayName: "Test Operator",
     approverIdentity: APPROVER,
+    enterpriseId: "ent_test",
+    workspaceId: "ws_test",
     pathHints: ["node"],
     toolCapabilities: ["echo", "sleep"],
     maxWallClockSeconds: 60,
@@ -66,7 +73,7 @@ async function startApp(turns: ScriptedTurn[], overrides: Partial<OrchestratorCo
   const orchestrator = createOrchestrator({
     config: testConfig(overrides),
     model: TEST_MODEL,
-    streamFn: scripted.streamFn,
+    gateway: scriptedGateway(TEST_MODEL, scripted.streamFn),
   });
   apps.push(orchestrator);
   setAuthToken(orchestrator.apiToken);
@@ -659,7 +666,7 @@ describe("PI_UNAVAILABLE at approval (QA round-1 blocker)", () => {
     const orchestrator = createOrchestrator({
       config: testConfig(),
       // no model → PI_UNAVAILABLE
-      streamFn: scripted.streamFn,
+      gateway: scriptedGateway(TEST_MODEL, scripted.streamFn),
     });
     apps.push(orchestrator);
     setAuthToken(orchestrator.apiToken);
@@ -1291,4 +1298,60 @@ describe("structured Pi report channel over the API (DAT-193)", () => {
       expect((event.data["summary"] as { text: unknown }).text).toBeNull();
     }
   });
+});
+
+describe("model gateway integration (DAT-208)", () => {
+  test("every model call runs through the gateway with run identity, retry included", async () => {
+    const scripted = scriptedStream([{ kind: "text", text: "gateway work complete" }]);
+    const events: GatewayAttemptEvent[] = [];
+    let failures = 1;
+    // First dispatch attempt fails with a transport-class error; the gateway
+    // retries it as a second, separately checked invocation and the scripted
+    // model answers on the second attempt.
+    const flaky: StreamFn = (model, context, options) => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new ModelDispatchError("transient transport failure", true);
+      }
+      return scripted.streamFn(model, context, options);
+    };
+    const orchestrator = createOrchestrator({
+      config: testConfig(),
+      model: TEST_MODEL,
+      gateway: scriptedGateway(TEST_MODEL, flaky, {
+        policy: testPolicyFor(TEST_MODEL, { retry: { maxAttempts: 2 } }),
+        sink: {
+          record(event: GatewayAttemptEvent) {
+            events.push(event);
+          },
+        },
+      }),
+    });
+    apps.push(orchestrator);
+    setAuthToken(orchestrator.apiToken);
+    const { port } = await orchestrator.start();
+    const base = `http://127.0.0.1:${port}`;
+
+    const created = await createAndApprove(base);
+    await waitUntil(
+      async () =>
+        (await timeline(base, created.id)).some((event) => event.type === "pi.turn_settled"),
+      "pi turn settles through the gateway",
+    );
+
+    const attempts = events.filter((event) => event.phase === "pre_dispatch");
+    expect(attempts.map((event) => event.attempt)).toEqual([1, 2]);
+    const outcomes = events.filter(
+      (event): event is Extract<GatewayAttemptEvent, { phase: "outcome" }> =>
+        event.phase === "outcome",
+    );
+    expect(outcomes.map((event) => event.outcome)).toEqual(["failed", "dispatched"]);
+    expect(attempts[0]?.identity.invocationId).not.toBe(attempts[1]?.identity.invocationId);
+    expect(attempts[0]?.identity.traceId).toBe(attempts[1]?.identity.traceId);
+    expect(attempts[0]?.identity.issueId).toBe(created.id);
+    expect(attempts[0]?.identity.runId).toBeTruthy();
+    expect(attempts[0]?.identity.enterpriseId).toBe("ent_test");
+    expect(attempts[0]?.identity.workspaceId).toBe("ws_test");
+    expect(scripted.calls).toHaveLength(1);
+  }, 60_000);
 });

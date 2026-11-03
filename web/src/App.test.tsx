@@ -165,7 +165,10 @@ describe("workspace navigation", () => {
   });
 
   it("keeps cancelled tasks out of All and groups them under Cancelled", async () => {
-    const cancelled = { ...task("task-cancelled", "Repair cancelled"), status: "cancelled" as const };
+    const cancelled = {
+      ...task("task-cancelled", "Repair cancelled"),
+      status: "cancelled" as const,
+    };
     vi.mocked(ForgePilotClient.prototype.listTasks).mockResolvedValue({
       items: [...tasks, cancelled],
       next_cursor: null,
@@ -181,10 +184,21 @@ describe("workspace navigation", () => {
   });
 
   it("recovers the same cancelled task into All without creating a task", async () => {
-    const cancelled = { ...task("task-cancelled", "Repair cancelled"), status: "cancelled" as const, archived: true };
-    vi.mocked(ForgePilotClient.prototype.listTasks).mockResolvedValue({ items: [...tasks, cancelled], next_cursor: null });
-    const recover = vi.spyOn(ForgePilotClient.prototype, "recoverTask").mockResolvedValue({ ...cancelled, archived: false });
-    const archive = vi.spyOn(ForgePilotClient.prototype, "archiveTask").mockResolvedValue(cancelled);
+    const cancelled = {
+      ...task("task-cancelled", "Repair cancelled"),
+      status: "cancelled" as const,
+      archived: true,
+    };
+    vi.mocked(ForgePilotClient.prototype.listTasks).mockResolvedValue({
+      items: [...tasks, cancelled],
+      next_cursor: null,
+    });
+    const recover = vi
+      .spyOn(ForgePilotClient.prototype, "recoverTask")
+      .mockResolvedValue({ ...cancelled, archived: false });
+    const archive = vi
+      .spyOn(ForgePilotClient.prototype, "archiveTask")
+      .mockResolvedValue(cancelled);
     const create = vi.spyOn(ForgePilotClient.prototype, "createTask");
     render(<App />);
     await screen.findByRole("button", { name: "Cancelled" });
@@ -194,15 +208,25 @@ describe("workspace navigation", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Recover task" }));
     await waitFor(() => expect(recover).toHaveBeenCalledWith("task-cancelled"));
     expect(create).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Repair cancelled owner/repo" })).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Repair cancelled owner/repo" })).toBeNull(),
+    );
     await userEvent.click(screen.getByRole("button", { name: "All" }));
     expect(screen.getByRole("button", { name: "Repair cancelled owner/repo" })).toBeTruthy();
     expect(screen.getAllByText("Cancelled").length).toBeGreaterThan(1);
-    const card = screen.getByRole("button", { name: "Repair cancelled owner/repo" }).closest("article")!;
+    const card = screen
+      .getByRole("button", { name: "Repair cancelled owner/repo" })
+      .closest("article")!;
     await userEvent.click(within(card).getByRole("button", { name: "Archive task" }));
-    await userEvent.click(within(screen.getByRole("dialog", { name: "Archive task?" })).getByRole("button", { name: "Archive task" }));
+    await userEvent.click(
+      within(screen.getByRole("dialog", { name: "Archive task?" })).getByRole("button", {
+        name: "Archive task",
+      }),
+    );
     await waitFor(() => expect(archive).toHaveBeenCalledWith("task-cancelled"));
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Repair cancelled owner/repo" })).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Repair cancelled owner/repo" })).toBeNull(),
+    );
   });
 
   it("confirms quick archive and removes the cancelled card from All", async () => {

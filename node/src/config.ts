@@ -42,6 +42,21 @@ export interface OrchestratorConfig {
   piModelId?: string;
   /** Optional API origin override for a compatible provider endpoint. */
   piBaseUrl?: string;
+  /**
+   * Enterprise/workspace scope whose policy governs model egress. The
+   * deployment names both explicitly; gateway policy resolution (ADR-0006
+   * seam) never accepts a caller-supplied scope as authority.
+   */
+  enterpriseId: string;
+  workspaceId: string;
+  /**
+   * Model gateway configuration. Both files are required to enable live model
+   * egress; missing configuration fails closed (every dispatch is denied).
+   */
+  gatewayPolicyFile?: string;
+  gatewayCredentialsFile?: string;
+  /** Durable gateway audit/metering event sink (JSONL, 0600). */
+  gatewayAuditFile?: string;
 }
 
 function csv(value: string | undefined, fallback: string[]): string[] {
@@ -81,6 +96,11 @@ function defaultApiTokenPath(): string {
 function defaultTaskStatePath(): string {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "task-state.json");
+}
+
+function defaultGatewayAuditPath(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "gateway-audit.jsonl");
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): OrchestratorConfig {
@@ -123,9 +143,25 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
       "FORGEPILOT_MAX_WALL_CLOCK_SECONDS",
     ),
     taskStateFile: env["FORGEPILOT_TASK_STATE_FILE"] ?? defaultTaskStatePath(),
+    enterpriseId: env["FORGEPILOT_ENTERPRISE_ID"] ?? "ent_forgepilot_local",
+    workspaceId: env["FORGEPILOT_WORKSPACE_ID"] ?? "ws_autofixer",
+    gatewayAuditFile: env["FORGEPILOT_GATEWAY_AUDIT_FILE"] ?? defaultGatewayAuditPath(),
   };
   if (env["FORGEPILOT_DSH_TOKEN_FILE"]) {
     config.dshTokenFile = env["FORGEPILOT_DSH_TOKEN_FILE"];
+  }
+  // Model egress is enabled only with both halves of the gateway
+  // configuration; a partial setup fails closed at startup rather than
+  // degrading to any ambient credential or endpoint.
+  const gatewayPolicyFile = env["FORGEPILOT_GATEWAY_POLICY_FILE"]?.trim();
+  const gatewayCredentialsFile = env["FORGEPILOT_GATEWAY_CREDENTIALS_FILE"]?.trim();
+  if (gatewayPolicyFile && gatewayCredentialsFile) {
+    config.gatewayPolicyFile = gatewayPolicyFile;
+    config.gatewayCredentialsFile = gatewayCredentialsFile;
+  } else if (gatewayPolicyFile || gatewayCredentialsFile) {
+    throw new Error(
+      "FORGEPILOT_GATEWAY_POLICY_FILE and FORGEPILOT_GATEWAY_CREDENTIALS_FILE must be configured together",
+    );
   }
   if (env["FORGEPILOT_PI_PROVIDER"] && env["FORGEPILOT_PI_MODEL"]) {
     config.piModelProvider = env["FORGEPILOT_PI_PROVIDER"];
@@ -136,26 +172,32 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
   return config;
 }
 
-function validateModelBaseUrl(value: string): string {
+export function validateModelBaseUrl(
+  value: string,
+  name = "FORGEPILOT_PI_BASE_URL",
+  allowHttp = false,
+): string {
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    throw new Error("FORGEPILOT_PI_BASE_URL must be a valid HTTP or HTTPS URL");
+    throw new Error(`${name} must be a valid HTTP or HTTPS URL`);
   }
   if (!(["http:", "https:"].includes(url.protocol) && !url.username && !url.password)) {
-    throw new Error(
-      "FORGEPILOT_PI_BASE_URL must use HTTP or HTTPS and must not contain credentials",
-    );
+    throw new Error(`${name} must use HTTP or HTTPS and must not contain credentials`);
   }
+  // Non-local endpoints require HTTPS unless the caller explicitly registered
+  // an internal instance (allowHttp); a private-looking hostname alone is not
+  // evidence of trust.
   if (
+    !allowHttp &&
     url.protocol === "http:" &&
     !["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname)
   ) {
-    throw new Error("FORGEPILOT_PI_BASE_URL must use HTTPS for a non-local endpoint");
+    throw new Error(`${name} must use HTTPS for a non-local endpoint`);
   }
   if (url.search || url.hash) {
-    throw new Error("FORGEPILOT_PI_BASE_URL must not include a query string or fragment");
+    throw new Error(`${name} must not include a query string or fragment`);
   }
   return url.toString().replace(/\/$/, "");
 }

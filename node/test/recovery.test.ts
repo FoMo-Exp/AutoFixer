@@ -21,6 +21,7 @@ import {
 } from "./helpers/http.js";
 import type { ScriptedTurn } from "./helpers/scripted-stream.js";
 import { scriptedStream, TEST_MODEL } from "./helpers/scripted-stream.js";
+import { scriptedGateway } from "./helpers/test-gateway.js";
 
 const APPROVER = "github:local-operator";
 const REPOSITORY_ID = "github:Luthiel/AutoFixer";
@@ -61,6 +62,8 @@ function baseConfig(stateFile: string): OrchestratorConfig {
     actorId: "usr_test_operator",
     actorDisplayName: "Test Operator",
     approverIdentity: APPROVER,
+    enterpriseId: "ent_test",
+    workspaceId: "ws_test",
     pathHints: ["node"],
     toolCapabilities: ["echo", "sleep"],
     maxWallClockSeconds: 60,
@@ -76,7 +79,7 @@ async function startApp(stateFile: string, turns: ScriptedTurn[]) {
   const orchestrator = createOrchestrator({
     config: baseConfig(stateFile),
     model: TEST_MODEL,
-    streamFn: scripted.streamFn,
+    gateway: scriptedGateway(TEST_MODEL, scripted.streamFn),
   });
   apps.push(orchestrator);
   setAuthToken(orchestrator.apiToken);
@@ -388,7 +391,7 @@ describe("restart recovery (M3 acceptance 1)", () => {
           apiTokenFile: path.join(tokenDir, "api-token"),
         },
         model: TEST_MODEL,
-        streamFn: scripted.streamFn,
+        gateway: scriptedGateway(TEST_MODEL, scripted.streamFn),
       });
       apps.push(orchestrator);
       setAuthToken(orchestrator.apiToken);

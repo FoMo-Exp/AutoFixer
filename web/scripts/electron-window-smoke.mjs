@@ -165,12 +165,17 @@ try {
 
   // Real Pi summaries through the test-only scripted provider. The real
   // orchestrator, summary gate, REST API, SSE replay and Electron window run
-  // unchanged: only inference is replaced through the existing
-  // createOrchestrator({ model, streamFn }) test seam. No production debug
-  // endpoint, network transfer, or credential is involved.
-  const { createOrchestrator, configFromEnv } = await import(
-    pathToFileURL(path.join(repoRoot, "node", "dist", "src", "index.js")).href
-  );
+  // unchanged: only inference is replaced through the createOrchestrator
+  // gateway seam, so every scripted call still passes the DAT-208 model
+  // gateway's checks. No production debug endpoint, network transfer, or
+  // credential is involved.
+  const {
+    createOrchestrator,
+    configFromEnv,
+    createModelGateway,
+    createStaticPolicyResolver,
+    createStaticCredentialStore,
+  } = await import(pathToFileURL(path.join(repoRoot, "node", "dist", "src", "index.js")).href);
   const { createAssistantMessageEventStream } = await import(
     pathToFileURL(
       path.join(repoRoot, "node", "node_modules", "@mariozechner", "pi-ai", "dist", "index.js"),
@@ -287,10 +292,35 @@ try {
       ...serviceEnv,
       FORGEPILOT_TASK_STATE_FILE: path.join(tempDir, stateFile),
     });
+    // Scripted inference rides the real model gateway: policy resolution,
+    // endpoint pinning, credential resolution, and identity checks run for
+    // every call exactly as in production.
+    const gateway = createModelGateway({
+      policyResolver: createStaticPolicyResolver(
+        {
+          revision: "smoke-policy-1",
+          endpoints: [
+            {
+              endpointId: "ep_smoke",
+              provider: scriptedModel.provider,
+              api: scriptedModel.api,
+              baseUrl: "https://smoke.test/v1",
+              internal: false,
+              credentialRef: "smoke-credential",
+              models: [scriptedModel.id],
+            },
+          ],
+          retry: { maxAttempts: 1 },
+        },
+        { enterpriseId: config.enterpriseId, workspaceId: config.workspaceId },
+      ),
+      credentials: createStaticCredentialStore({ "smoke-credential": "smoke-secret" }),
+      adapter: { stream: scriptedTurns(turns) },
+    });
     const orchestrator = createOrchestrator({
       config,
       model: scriptedModel,
-      streamFn: scriptedTurns(turns),
+      gateway,
     });
     const { host, port } = await orchestrator.start();
     return { orchestrator, base: `http://${host}:${port}` };

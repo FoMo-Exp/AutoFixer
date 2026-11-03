@@ -27,15 +27,11 @@ export interface PiSessionOptions {
   tools: AgentTool[];
   listener: PiSessionEventListener;
   /**
-   * Injectable stream function. Defaults to pi-ai's live `streamSimple`;
-   * tests inject a deterministic script instead of a model.
+   * The run-bound model gateway stream function. Required: there is no live
+   * model path that bypasses the gateway, and no credential seam for the
+   * agent loop to resolve provider keys with.
    */
-  streamFn?: StreamFn;
-  /**
-   * Resolves the provider API key at call time (pi-ai's `getEnvApiKey` in
-   * production). Unset means no key: live streaming will fail closed.
-   */
-  getApiKey?: (provider: string) => string | undefined;
+  streamFn: StreamFn;
 }
 
 function userMessage(content: string): UserMessage {
@@ -58,6 +54,15 @@ export class PiSession {
   private disposed = false;
 
   constructor(options: PiSessionOptions) {
+    // Runtime guard behind the required type: pi-agent-core silently falls
+    // back to pi-ai's live streaming (and its environment credential lookup)
+    // when no streamFn is configured, which would reopen the direct-connection
+    // bypass the gateway exists to close. A missing streamFn is always a bug.
+    if (!options.streamFn) {
+      throw new Error(
+        "PiSession requires the gateway-bound streamFn; model egress may only go through the gateway",
+      );
+    }
     this.sessionId = options.sessionId;
     this.listener = options.listener;
     this.agent = new Agent({
@@ -66,8 +71,7 @@ export class PiSession {
         model: options.model,
         tools: options.tools,
       },
-      ...(options.streamFn ? { streamFn: options.streamFn } : {}),
-      ...(options.getApiKey ? { getApiKey: options.getApiKey } : {}),
+      streamFn: options.streamFn,
     });
     this.agent.subscribe((event) => {
       switch (event.type) {

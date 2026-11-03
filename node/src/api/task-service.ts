@@ -1,13 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import type { StreamFn } from "@mariozechner/pi-agent-core";
 import type { Api, Model } from "@mariozechner/pi-ai";
-import { getEnvApiKey } from "@mariozechner/pi-ai";
 
 import type { OrchestratorConfig } from "../config.js";
 import { DshError } from "../dsh/client.js";
 import type { DshClient } from "../dsh/client.js";
 import type { DshGrantSummary, DshProposedWork, DshRunResponse, DshState } from "../dsh/types.js";
+import type { ModelGateway } from "../gateway/index.js";
 import { createDshRequestActionTool } from "../pi/dsh-request-action-tool.js";
 import { createTurnSummaryReportTool } from "../pi/turn-report-tool.js";
 import { piSystemPrompt, taskPrompt } from "../pi/prompts.js";
@@ -82,8 +81,12 @@ export interface TaskServiceDeps {
    * to start work the service cannot run.
    */
   model?: Model<Api>;
-  /** Injectable stream function for deterministic tests. */
-  streamFn?: StreamFn;
+  /**
+   * The model gateway: the only egress path for Pi model calls. Pi sessions
+   * receive a run-bound gateway stream function and never hold provider
+   * credentials or free endpoint choices.
+   */
+  gateway: ModelGateway;
   /** Clock seam for approval-window timestamps in tests. */
   now?: () => Date;
 }
@@ -829,6 +832,16 @@ export class TaskService {
       systemPrompt: piSystemPrompt(),
       model: this.deps.model,
       tools: [tool, reportTool],
+      // Every model call this session makes goes through the gateway, bound to
+      // this run's identity. The session cannot reach a provider any other way:
+      // no env credential lookup, no SDK default endpoint, no caller-supplied key.
+      streamFn: this.deps.gateway.bind({
+        enterpriseId: this.deps.config.enterpriseId,
+        workspaceId: this.deps.config.workspaceId,
+        issueId: record.id,
+        runId: record.runId,
+        traceId: randomUUID(),
+      }),
       listener: (event) => {
         if (record.terminal) {
           return;
@@ -888,10 +901,6 @@ export class TaskService {
         }
       },
     };
-    if (this.deps.streamFn) {
-      sessionOptions.streamFn = this.deps.streamFn;
-    }
-    sessionOptions.getApiKey = (provider: string) => getEnvApiKey(provider);
     const session = new PiSession(sessionOptions);
     sessionRef = session;
 

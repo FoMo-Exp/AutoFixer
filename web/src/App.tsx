@@ -94,7 +94,10 @@ export default function App(): ReactElement {
   const [isCreating, setIsCreating] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const [cancellingTaskId, setCancellingTaskId] = useState<string>();
-  const [confirmTaskAction, setConfirmTaskAction] = useState<{ task: Task; action: "archive" | "recovery" }>();
+  const [confirmTaskAction, setConfirmTaskAction] = useState<{
+    task: Task;
+    action: "archive" | "recovery";
+  }>();
   const confirmationTriggerRef = useRef<HTMLElement | null>(null);
   const [isActionErrorHovered, setIsActionErrorHovered] = useState(false);
   const [actionBusy, setActionBusy] = useState<string>();
@@ -246,15 +249,19 @@ export default function App(): ReactElement {
       (TERMINAL_STATUSES.has(task.status) && task.status !== "cancelled") ||
       isTaskArchived(task) ||
       cancellingTaskId
-    ) return;
+    )
+      return;
     setCancellingTaskId(task.id);
     setActionError(undefined);
     try {
-      const cancelled = task.status === "cancelled"
-        ? await client.archiveTask(task.id)
-        : await client.cancelTask(task.id);
+      const cancelled =
+        task.status === "cancelled"
+          ? await client.archiveTask(task.id)
+          : await client.cancelTask(task.id);
       listRequestRef.current += 1;
-      setTasks((current) => current.map((entry) => (entry.id === cancelled.id ? cancelled : entry)));
+      setTasks((current) =>
+        current.map((entry) => (entry.id === cancelled.id ? cancelled : entry)),
+      );
       if (selectedIdRef.current === cancelled.id) {
         taskDetailRequestRef.current += 1;
         setSelectedTask(cancelled);
@@ -273,7 +280,9 @@ export default function App(): ReactElement {
     try {
       const recovered = await client.recoverTask(task.id);
       listRequestRef.current += 1;
-      setTasks((current) => current.map((entry) => (entry.id === recovered.id ? recovered : entry)));
+      setTasks((current) =>
+        current.map((entry) => (entry.id === recovered.id ? recovered : entry)),
+      );
       if (selectedIdRef.current === recovered.id) {
         taskDetailRequestRef.current += 1;
         setSelectedTask(recovered);
@@ -286,7 +295,8 @@ export default function App(): ReactElement {
   }
 
   function requestTaskAction(task: Task, action: "archive" | "recovery"): void {
-    confirmationTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    confirmationTriggerRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setConfirmTaskAction({ task, action });
   }
 
@@ -617,12 +627,18 @@ function TaskActionDialog({
 }): ReactElement {
   const cancelRef = useRef<HTMLButtonElement>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => { cancelRef.current?.focus(); }, []);
+  useEffect(() => {
+    cancelRef.current?.focus();
+  }, []);
   const archive = action === "archive";
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) onClose();
-    }}>
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <section
         className="modal task-confirm-dialog"
         role="dialog"
@@ -630,11 +646,24 @@ function TaskActionDialog({
         aria-labelledby="task-confirm-title"
         aria-describedby="task-confirm-description"
         onKeyDown={(event) => {
-          if (event.key === "Escape") { event.preventDefault(); onClose(); }
-          if (event.key === "Tab" && event.shiftKey && document.activeElement === cancelRef.current) {
-            event.preventDefault(); confirmRef.current?.focus();
-          } else if (event.key === "Tab" && !event.shiftKey && document.activeElement === confirmRef.current) {
-            event.preventDefault(); cancelRef.current?.focus();
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onClose();
+          }
+          if (
+            event.key === "Tab" &&
+            event.shiftKey &&
+            document.activeElement === cancelRef.current
+          ) {
+            event.preventDefault();
+            confirmRef.current?.focus();
+          } else if (
+            event.key === "Tab" &&
+            !event.shiftKey &&
+            document.activeElement === confirmRef.current
+          ) {
+            event.preventDefault();
+            cancelRef.current?.focus();
           }
         }}
       >
@@ -647,8 +676,20 @@ function TaskActionDialog({
             : "Restore this task to All. Its run remains cancelled."}
         </p>
         <div className="modal-actions task-confirm-actions">
-          <button ref={cancelRef} type="button" className="button button-secondary" onClick={onClose}>Go back</button>
-          <button ref={confirmRef} type="button" className="button button-primary" onClick={onConfirm}>
+          <button
+            ref={cancelRef}
+            type="button"
+            className="button button-secondary"
+            onClick={onClose}
+          >
+            Go back
+          </button>
+          <button
+            ref={confirmRef}
+            type="button"
+            className="button button-primary"
+            onClick={onConfirm}
+          >
             {archive ? "Archive task" : "Recover task"}
           </button>
         </div>
@@ -673,7 +714,8 @@ function TaskListItem({
   busy: boolean;
 }): ReactElement {
   const canRecover = task.status === "cancelled" && isTaskArchived(task);
-  const canArchive = !canRecover && (!TERMINAL_STATUSES.has(task.status) || task.status === "cancelled");
+  const canArchive =
+    !canRecover && (!TERMINAL_STATUSES.has(task.status) || task.status === "cancelled");
   return (
     <article
       className={`task-list-item ${selected ? "task-list-item-selected" : ""} ${canArchive || canRecover ? "task-list-item-actionable" : ""}`}
@@ -689,7 +731,13 @@ function TaskListItem({
             disabled={busy}
             aria-label={canRecover ? "Recover task" : "Archive task"}
           >
-            {busy ? (canRecover ? "Recovering…" : "Archiving…") : canRecover ? "Recovery" : "Archived"}
+            {busy
+              ? canRecover
+                ? "Recovering…"
+                : "Archiving…"
+              : canRecover
+                ? "Recovery"
+                : "Archived"}
           </button>
         )}
         <span className="task-list-time">{formatDate(task.updated_at)}</span>
