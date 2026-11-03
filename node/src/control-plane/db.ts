@@ -600,6 +600,38 @@ const MIGRATIONS: Migration[] = [
         ON provider_member_role(integration_id, subject)`,
     ],
   },
+  {
+    // Owner-created invitations (DAT-204): one opaque bearer per row. Only the
+    // HMAC-SHA-256 keyed digest of the bearer is stored, so a leaked database
+    // never yields a redeemable token. Single use: `redeemed_at`/`redeemed_by`
+    // record the one redemption (and the idempotent-replay subject);
+    // `revoked_at`/`revoked_by` record owner revocation. The bound subject, when
+    // set, restricts redemption to that verified provider subject. Rows die
+    // with their workspace; the audit of an invitation outlives it in auth_audit.
+    version: 6,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS invitation (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK (role IN ('member')),
+        token_digest TEXT NOT NULL UNIQUE,
+        bound_provider_subject TEXT,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        revoked_at TEXT,
+        revoked_by TEXT,
+        redeemed_at TEXT,
+        redeemed_by TEXT,
+        version INTEGER NOT NULL DEFAULT 1
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_invitation_workspace
+        ON invitation(workspace_id)`,
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------

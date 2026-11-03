@@ -1,10 +1,13 @@
 import type http from "node:http";
+import { randomBytes } from "node:crypto";
 
 import type { Api, Model } from "@mariozechner/pi-ai";
 
 import { buildOpenApiDocument } from "./api/openapi.js";
 import { readOrCreateApiToken } from "./api/auth.js";
 import { AuthService } from "./api/auth-service.js";
+import { InvitationService, readOrCreateInvitationDigestKey } from "./api/invitation-service.js";
+import type { InvitationRateLimits } from "./api/invitation-service.js";
 import { ProviderOAuth, readOAuthCredentialsFile } from "./api/oauth.js";
 import { createApiServer } from "./api/server.js";
 import { createRequestAuthority } from "./api/request-authority.js";
@@ -20,6 +23,7 @@ import { configFromEnv } from "./config.js";
 import type { ControlPlaneDb } from "./control-plane/index.js";
 import {
   createIdentityRepositories,
+  createInvitationRepository,
   createProviderAccessRepositories,
   createRepositories,
   openControlPlaneDb,
@@ -54,6 +58,8 @@ export interface OrchestratorOptions {
   authFetchImpl?: typeof fetch;
   /** Injectable DNS lookup for the provider-origin policy (tests). */
   authDnsLookup?: (hostname: string) => Promise<string[]>;
+  /** Rate-limit overrides for the invitation surface (tests). */
+  invitationRateLimits?: InvitationRateLimits;
 }
 
 export interface OrchestratorHandle {
@@ -65,6 +71,8 @@ export interface OrchestratorHandle {
   model: Model<Api> | undefined;
   /** Identity/session subsystem; set when OAuth clients are configured. */
   auth: AuthService | undefined;
+  /** Owner-created invitation surface (DAT-204); set with the identity subsystem. */
+  invitations: InvitationService | undefined;
   /** Control-plane database behind the identity subsystem. */
   controlPlane: ControlPlaneDb | undefined;
   /**
@@ -153,6 +161,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   // Enterprise identity (ADR-0006) is enabled by the OAuth client file; its
   // absence keeps the local-operator surface exactly as before.
   let auth: AuthService | undefined;
+  let invitations: InvitationService | undefined;
   let controlPlane: ControlPlaneDb | undefined;
   let providerAuthority: RequestAuthority | undefined;
   let workspaceBindings = createConfiguredWorkspaceRunBindingResolver(config);
@@ -197,6 +206,28 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       workspaces: repos.workspaces,
       providerInstances: repos.providerInstances,
     });
+    // The invitation digest key is deployment-owned and durable: a file next
+    // to the control-plane database unless configured explicitly. An ephemeral
+    // (in-memory) control plane gets a per-process key, which fails closed —
+    // its invitations die with the process anyway.
+    const digestKey =
+      config.invitationDigestKeyFile !== undefined
+        ? readOrCreateInvitationDigestKey(config.invitationDigestKeyFile)
+        : config.controlPlaneFile !== undefined
+          ? readOrCreateInvitationDigestKey(`${config.controlPlaneFile}.invitation-key`)
+          : randomBytes(32);
+    invitations = new InvitationService({
+      repos,
+      identity,
+      invitations: createInvitationRepository(controlPlane),
+      config: {
+        enterpriseId: config.enterpriseId,
+        digestKey,
+        ...(options.invitationRateLimits !== undefined
+          ? { rateLimits: options.invitationRateLimits }
+          : {}),
+      },
+    });
   }
   const service = new TaskService({
     config,
@@ -212,6 +243,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     legacyWorkspaceId: config.workspaceId,
     ...(auth !== undefined ? { auth } : {}),
     ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
+    ...(invitations !== undefined ? { invitations } : {}),
     ...(config.publicOrigin !== undefined ? { publicOrigin: config.publicOrigin } : {}),
   });
   return {
@@ -222,6 +254,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     gateway,
     model,
     auth,
+    invitations,
     controlPlane,
     providerAuthority,
     apiToken,

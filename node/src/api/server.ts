@@ -6,6 +6,8 @@ import type { AuthService, SessionContext } from "./auth-service.js";
 import { handleAuthRequest, requireSessionActor } from "./auth-http.js";
 import { ApiError, apiErrorFromControlPlane } from "./errors.js";
 import { ControlPlaneError } from "../control-plane/errors.js";
+import { handleInvitationRequest } from "./invitation-http.js";
+import type { InvitationService } from "./invitation-service.js";
 import {
   isApiError,
   optionalStringArray,
@@ -44,6 +46,12 @@ export interface ApiServerDeps {
    * the local-operator bearer surface is unchanged.
    */
   auth?: AuthService;
+  /**
+   * Owner-created invitation surface (DAT-204). Served together with the
+   * identity subsystem; unset keeps /api/v1/workspaces and /api/v1/invitations
+   * unrouted.
+   */
+  invitations?: InvitationService;
   /** External origin override for OAuth redirects; loopback derives per request. */
   publicOrigin?: string;
 }
@@ -435,6 +443,28 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
           res,
           200,
           deps.auth.listWorkspaces(actor.ctx.user.id, url.searchParams.get("cursor")),
+        );
+        return;
+      }
+
+      // Owner-created invitations (DAT-204): workspace owner/admin surface
+      // plus the authenticated join-confirmation surface. The path's
+      // workspace id is only a locator; authority is the authenticated
+      // session plus its live membership (resolved inside the handler).
+      const isInvitationRoute =
+        segments[2] === "invitations" ||
+        (segments[2] === "workspaces" && segments[4] === "invitations");
+      if (isInvitationRoute) {
+        if (deps.auth === undefined || deps.invitations === undefined) {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+        }
+        await handleInvitationRequest(
+          {
+            auth: deps.auth,
+            invitations: deps.invitations,
+            ...(deps.publicOrigin !== undefined ? { publicOrigin: deps.publicOrigin } : {}),
+          },
+          { req, res, url, segments, requestId },
         );
         return;
       }

@@ -5,6 +5,7 @@ import path from "node:path";
 import { createOrchestrator } from "../../src/index.js";
 import type { OrchestratorHandle } from "../../src/index.js";
 import type { OrchestratorConfig } from "../../src/config.js";
+import type { InvitationRateLimits } from "../../src/api/invitation-service.js";
 import {
   openControlPlaneDb,
   seedEnterprise,
@@ -98,6 +99,8 @@ export interface AuthAppOptions {
   provider?: FakeProvider;
   configOverrides?: Partial<OrchestratorConfig>;
   lookup?: (hostname: string) => Promise<string[]>;
+  /** Rate-limit overrides for the invitation surface (tests). */
+  invitationRateLimits?: InvitationRateLimits;
 }
 
 let appCounter = 0;
@@ -172,6 +175,9 @@ export async function startAuthApp(options: AuthAppOptions): Promise<AuthApp> {
     gateway: scriptedGateway(TEST_MODEL, scripted.streamFn),
     authFetchImpl: provider.fetchImpl,
     authDnsLookup: options.lookup ?? (async () => ["104.16.0.1"]),
+    ...(options.invitationRateLimits !== undefined
+      ? { invitationRateLimits: options.invitationRateLimits }
+      : {}),
   });
   const { port } = await orchestrator.start();
   return {

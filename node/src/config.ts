@@ -77,6 +77,13 @@ export interface OrchestratorConfig {
   oauthClientsFile?: string;
   /** Durable control-plane database for identity/session state. */
   controlPlaneFile?: string;
+  /**
+   * Deployment-owned HMAC key file for the invitation token digest. Durable
+   * across restarts (invitations outlive processes); unset derives one next to
+   * the control-plane database. Losing the key fails closed — outstanding
+   * invitations become unredeemable.
+   */
+  invitationDigestKeyFile?: string;
   /** Deployment-owned bootstrap secret; unset disables admin bootstrap. */
   bootstrapToken?: string;
   /** Session lifetime in seconds (default 12 hours). */
@@ -223,6 +230,15 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     throw new Error(
       "FORGEPILOT_CONTROL_PLANE_DB requires FORGEPILOT_OAUTH_CLIENTS_FILE to enable the identity surfaces",
     );
+  }
+  const invitationDigestKeyFile = env["FORGEPILOT_INVITATION_DIGEST_KEY_FILE"]?.trim();
+  if (invitationDigestKeyFile) {
+    if (config.oauthClientsFile === undefined) {
+      throw new Error(
+        "FORGEPILOT_INVITATION_DIGEST_KEY_FILE requires FORGEPILOT_OAUTH_CLIENTS_FILE to enable the identity surfaces",
+      );
+    }
+    config.invitationDigestKeyFile = invitationDigestKeyFile;
   }
   const bootstrapToken = env["FORGEPILOT_BOOTSTRAP_TOKEN"];
   if (bootstrapToken !== undefined && bootstrapToken !== "") {
