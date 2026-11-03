@@ -124,6 +124,9 @@ violation rejects the whole response.
 - `statement` ≤ 2000 characters. `preconditions`: 1–8 entries, each ≤ 300
   characters — a candidate must state when it applies.
 - `scope` (optional) ∈ `team_id`, `path_prefix`, `language`, `task_family`.
+  Scope values are model output like the statement: they take the same
+  secret-scan/minimize path, and secret material in any scope value drops the
+  candidate.
 - `evidence` ≤ 10 citations. An empty array is parsed but the candidate is
   **dropped**: a candidate without evidence is never persisted.
 - At most 20 candidates per response.
@@ -139,7 +142,7 @@ dropped with a recorded reason and never persisted:
 | Every citation resolves in the captured ledger | `unresolved_evidence` |
 | At least one citation comes from a known outcome | `no_known_outcome_evidence` |
 | Every positive claim (merged / tests passed / review approved) is backed by captured evidence of that kind | `unsupported_claim` |
-| No secret survives minimization | `secret_or_pii` |
+| No secret survives minimization (statement, preconditions, and scope values alike) | `secret_or_pii` |
 | No prohibited instructions (below) | `policy_violation` (rejects the whole batch) |
 
 Claims are detected in the candidate text (negated statements are
@@ -156,6 +159,8 @@ distillation batch: nothing from that response is persisted.
 
 Accepted candidates persist as `proposed` items (`trust: agent`, provenance
 with model and prompt-template version) with their resolved evidence rows.
+The persistence boundary re-checks statement, preconditions, and every scope
+value for secret and personal material before the item is written.
 Promotion to `candidate`/`active` is a separate, gated path (DAT-234/235).
 
 ## 6. Egress and workspace isolation

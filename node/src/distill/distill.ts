@@ -28,7 +28,7 @@ import type { GatewayBindingIdentity, ModelGateway } from "../gateway/index.js";
 import { scrubSecrets } from "../gateway/redact.js";
 import type { MemoryItemRecord, MemoryProvenance, MemoryRepositories } from "../memory/index.js";
 import { assertOutcomesInScope, captureOutcome } from "./capture.js";
-import { redactText } from "./redact.js";
+import { assertNoSecretOrPii, redactText } from "./redact.js";
 import { parseDistillationOutput } from "./schema.js";
 import {
   DISTILL_CANDIDATES_MAX,
@@ -218,6 +218,19 @@ function persistOne(
   validated: ValidatedCandidate,
   provenance: MemoryProvenance,
 ): MemoryItemRecord {
+  // Persistence-boundary gate: no secret or personal material may enter the
+  // item — statement, preconditions, or applicability scope — whatever
+  // upstream path produced this candidate.
+  assertNoSecretOrPii(validated.candidate.statement, "candidate statement");
+  for (const entry of validated.candidate.preconditions) {
+    assertNoSecretOrPii(entry, "candidate preconditions");
+  }
+  for (const [key, value] of Object.entries(validated.candidate.scope)) {
+    if (value !== undefined) {
+      assertNoSecretOrPii(value, `candidate scope.${key}`);
+    }
+  }
+
   const runIds = new Set(validated.evidence.map((entry) => entry.run_id));
   const record = repos.items.create(scope, {
     kind: validated.candidate.kind,

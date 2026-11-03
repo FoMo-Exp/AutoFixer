@@ -24,12 +24,14 @@ import type {
   CandidateDropReason,
   CandidateValidationResult,
   CapturedOutcome,
+  DistillScope,
   DistillationCandidate,
   DistillationOutput,
   DroppedCandidate,
   EvidenceLedger,
   EvidenceLedgerEntry,
   OutcomeClaimKind,
+  RedactionReport,
   ValidatedCandidate,
 } from "./types.js";
 import { detectOutcomeClaims } from "./claims.js";
@@ -42,6 +44,10 @@ import type { MemorySensitivity } from "../memory/index.js";
 export function ledgerKey(evidenceType: string, reference: string): string {
   return `${evidenceType}\u0000${reference}`;
 }
+
+/** Model-supplied applicability scope fields; every one takes the redaction path. */
+const SCOPE_FIELD_KEYS = ["team_id", "path_prefix", "language", "task_family"] as const;
+type ScopeFieldKey = (typeof SCOPE_FIELD_KEYS)[number];
 
 /**
  * Build the ledger of everything captured in one workspace. Duplicate
@@ -120,20 +126,30 @@ export function validateCandidates(
       continue;
     }
 
-    // 2. Secrets never enter an item; personal data is minimized.
+    // 2. Secrets never enter an item; personal data is minimized. Every
+    //    model-supplied content field takes the same path — statement,
+    //    preconditions, and the applicability scope values alike.
     const redactedStatement = redactText(candidate.statement);
     const redactedPreconditions = candidate.preconditions.map((entry) => redactText(entry));
+    const scopeReports: Array<{ key: ScopeFieldKey; report: RedactionReport }> = [];
+    for (const key of SCOPE_FIELD_KEYS) {
+      const value = candidate.scope[key];
+      if (value === undefined) continue;
+      scopeReports.push({ key, report: redactText(value) });
+    }
     const kinds = new Set([
       ...redactedStatement.kinds,
       ...redactedPreconditions.flatMap((entry) => entry.kinds),
+      ...scopeReports.flatMap((entry) => entry.report.kinds),
     ]);
     if (kinds.has("secret")) {
-      dropped.push(drop(candidate, "secret_or_pii", "secret material in candidate text"));
+      dropped.push(drop(candidate, "secret_or_pii", "secret material in candidate content"));
       continue;
     }
     const candidateText = [
       redactedStatement.text,
       ...redactedPreconditions.map((entry) => entry.text),
+      ...scopeReports.map((entry) => entry.report.text),
     ];
     try {
       for (const line of candidateText) {
@@ -146,6 +162,10 @@ export function validateCandidates(
       continue;
     }
     const sensitivity: MemorySensitivity = sensitivityFor([...kinds]);
+    const redactedScope: DistillScope = {};
+    for (const entry of scopeReports) {
+      redactedScope[entry.key] = entry.report.text;
+    }
 
     // 3. Evidence: present, resolvable, and attributable to a known outcome.
     if (candidate.evidence.length === 0) {
@@ -196,7 +216,7 @@ export function validateCandidates(
         kind: candidate.kind,
         statement: redactedStatement.text,
         preconditions: redactedPreconditions.map((entry) => entry.text),
-        scope: candidate.scope,
+        scope: redactedScope,
         evidence: candidate.evidence,
       },
       sensitivity,

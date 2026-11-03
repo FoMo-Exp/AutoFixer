@@ -19,6 +19,7 @@ import {
   validateCandidates,
 } from "../src/distill/index.js";
 import type {
+  CandidateValidationResult,
   CapturedOutcome,
   DistillationCandidate,
   DistillationOutput,
@@ -490,6 +491,68 @@ describe("candidate persistence", () => {
     );
     expect(() =>
       persistCandidates(memory, scope, result, {
+        author_type: "agent",
+        agent_model: "test-model",
+      }),
+    ).toThrow(ValidationError);
+    expect(memory.items.list(scope, { limit: 100 }).length).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scope values: the same redaction policy as any candidate content
+// ---------------------------------------------------------------------------
+
+describe("candidate scope values", () => {
+  test("scope values are minimized from validation through to the persisted item", () => {
+    const result = validateCandidates(
+      output([candidate({ scope: { path_prefix: "node/ owned by ada.lovelace@example.com" } })]),
+      ledger,
+    );
+    expect(result.dropped).toEqual([]);
+    expect(result.accepted[0]?.sensitivity).toBe("confidential");
+
+    const persisted = persistCandidates(memory, scope, result, {
+      author_type: "agent",
+      agent_model: "test-model",
+    });
+    const record = persisted[0];
+    expect(record?.current.scope.path_prefix).toContain("[email]");
+    expect(JSON.stringify(record?.current.scope)).not.toContain("ada.lovelace@example.com");
+
+    // The persisted row itself carries no personal data in any scope field.
+    const refetched = memory.items.getById(scope, record?.item.id ?? "");
+    expect(JSON.stringify(refetched?.current.scope)).not.toContain("ada.lovelace@example.com");
+    expect(JSON.stringify(refetched?.current)).not.toContain("ada.lovelace@example.com");
+  });
+
+  test("credential material in a scope value drops the candidate", () => {
+    const result = validateCandidates(
+      output([candidate({ scope: { team_id: "sk-live-abcdef123456" } })]),
+      ledger,
+    );
+    expect(result.accepted).toEqual([]);
+    expect(result.dropped[0]?.reason).toBe("secret_or_pii");
+
+    const persisted = persistCandidates(memory, scope, result, {
+      author_type: "agent",
+      agent_model: "test-model",
+    });
+    expect(persisted).toEqual([]);
+  });
+
+  test("persistCandidates refuses a dirty scope at the persistence boundary", () => {
+    const clean = validateCandidates(output([candidate()]), ledger);
+    const tampered: CandidateValidationResult = {
+      ...clean,
+      accepted: clean.accepted.map((entry) => ({
+        ...entry,
+        candidate: { ...entry.candidate, scope: { path_prefix: "owner bob@example.com" } },
+      })),
+    };
+    const before = memory.items.list(scope, { limit: 100 }).length;
+    expect(() =>
+      persistCandidates(memory, scope, tampered, {
         author_type: "agent",
         agent_model: "test-model",
       }),
