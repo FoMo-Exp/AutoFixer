@@ -88,11 +88,16 @@ export interface IdentityMatch {
 
 export type OwnerRef = { kind: "user"; user_id: string } | { kind: "team"; team_id: string };
 
-/** A configured ownership or CODEOWNERS path rule. */
+/**
+ * A configured ownership or CODEOWNERS path rule. Within one rule kind the
+ * last matching rule wins (CODEOWNERS semantics: a later line overrides
+ * earlier ones), and the winning rule's owners are that source's owners for
+ * the file.
+ */
 export interface PathRule {
   rule_id: string;
   pattern: string;
-  owner: OwnerRef;
+  owners: OwnerRef[];
 }
 
 /** A team rule: matching paths route to the team's active leader. */

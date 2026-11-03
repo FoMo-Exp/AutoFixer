@@ -274,4 +274,96 @@ describe("manual transfer (DAT-217)", () => {
     });
     expect(assignment).toMatchObject({ issue_id: "iss_unassigned", assignee_user_id: CAROL });
   });
+
+  test("take-over stays owner/admin even when confirm_roles allow members", () => {
+    const directory = standardDirectory();
+    const machine = makeMachine(directory);
+    machine.registerPolicy({
+      operation_id: op(),
+      actor: ACTOR,
+      scope: SCOPE,
+      policy: testPolicy({
+        transfer: {
+          propose_roles: ["owner", "admin", "member"],
+          confirm_roles: ["owner", "admin", "member"],
+        },
+      }),
+    });
+    machine.route({
+      operation_id: op(),
+      actor: ACTOR,
+      scope: SCOPE,
+      issue_id: "iss_unassigned",
+      service_mapping: mapped(),
+      evidence: evidence([substantive("node/src/core.ts", 10)]),
+    });
+
+    const proposal = propose(machine, BOB, CAROL, "iss_unassigned");
+    // A member holding the widened confirm role still cannot take over an
+    // unassigned issue, on either resolution path.
+    expectCode(
+      () =>
+        machine.confirmTransfer({
+          operation_id: op(),
+          actor: BOB,
+          scope: SCOPE,
+          proposal_id: proposal.transfer_id,
+        }),
+      "ROLE_FORBIDDEN",
+    );
+    expectCode(
+      () =>
+        machine.rejectTransfer({
+          operation_id: op(),
+          actor: BOB,
+          scope: SCOPE,
+          proposal_id: proposal.transfer_id,
+          reason: "not mine",
+        }),
+      "ROLE_FORBIDDEN",
+    );
+    const { assignment } = machine.confirmTransfer({
+      operation_id: op(),
+      actor: ERIN,
+      scope: SCOPE,
+      proposal_id: proposal.transfer_id,
+    });
+    expect(assignment).toMatchObject({ issue_id: "iss_unassigned", assignee_user_id: CAROL });
+  });
+
+  test("an assignee who lost membership can no longer confirm or reject transfers", () => {
+    const { directory, machine } = assignedAlice();
+
+    // Suspended: still the recorded assignee, but no longer eligible.
+    const first = propose(machine, BOB, CAROL);
+    directory.members = directory.members.map((entry) =>
+      entry.user_id === ALICE ? member(ALICE, "member", "suspended") : entry,
+    );
+    expectCode(
+      () =>
+        machine.confirmTransfer({
+          operation_id: op(),
+          actor: ALICE,
+          scope: SCOPE,
+          proposal_id: first.transfer_id,
+        }),
+      "ROLE_FORBIDDEN",
+    );
+
+    // Removed from the workspace entirely.
+    const second = propose(machine, BOB, FRANK);
+    directory.members = directory.members.filter((entry) => entry.user_id !== ALICE);
+    expectCode(
+      () =>
+        machine.rejectTransfer({
+          operation_id: op(),
+          actor: ALICE,
+          scope: SCOPE,
+          proposal_id: second.transfer_id,
+          reason: "mine to reject",
+        }),
+      "ROLE_FORBIDDEN",
+    );
+    expect(machine.getAssignment("iss_1")?.assignee_user_id).toBe(ALICE);
+  });
 });

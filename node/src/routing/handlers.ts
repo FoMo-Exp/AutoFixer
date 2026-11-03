@@ -62,6 +62,13 @@ const POLICY_VERSION_MAX = 100;
 const NAME_MAX = 200;
 const SEED_MAX = 100;
 
+/**
+ * Taking over an unassigned issue is an owner/admin action regardless of the
+ * configured confirm roles: `confirm_roles` may be widened by configuration,
+ * but a plain member must never confirm a take-over.
+ */
+const TAKEOVER_ROLES: readonly WorkspaceRole[] = ["owner", "admin"];
+
 function assertExactKeys(payload: Payload, allowed: readonly string[], label: string): void {
   for (const key of Object.keys(payload)) {
     if (!allowed.includes(key)) {
@@ -178,11 +185,15 @@ function parseOwnerRef(value: unknown, field: string): OwnerRef {
 
 function parsePathRule(value: unknown, field: string): PathRule {
   const source = object(value, field);
-  assertExactKeys(source, ["rule_id", "pattern", "owner"], field);
+  assertExactKeys(source, ["rule_id", "pattern", "owners"], field);
+  const owners = array(source["owners"], `${field}.owners`);
+  if (owners.length === 0) {
+    throw new RoutingError("INVALID_INPUT", `${field}.owners must not be empty`, { field });
+  }
   return {
     rule_id: bounded(source["rule_id"], `${field}.rule_id`, ID_MAX),
     pattern: bounded(source["pattern"], `${field}.pattern`, PATTERN_MAX),
-    owner: parseOwnerRef(source["owner"], `${field}.owner`),
+    owners: owners.map((entry, index) => parseOwnerRef(entry, `${field}.owners[${index}]`)),
   };
 }
 
@@ -486,6 +497,33 @@ function requireProposal(
   return proposal;
 }
 
+/**
+ * Authority gate for resolving (confirming or rejecting) a transfer, shared
+ * by both paths: the current assignee may resolve only while they remain a
+ * current eligible member, an eligible member with a confirm role may resolve
+ * someone else's proposal, and a take-over of an unassigned issue is fixed to
+ * owner/admin.
+ */
+function requireTransferActor(
+  facts: ResolvedFacts,
+  policy: RoutingPolicy,
+  actor: string,
+  currentAssignee: string | null,
+  action: string,
+): void {
+  const actorMember = memberOf(facts, actor);
+  const eligible = actorMember !== undefined && candidateEligibility(actorMember) === "eligible";
+  const isAssignee = currentAssignee !== null && actor === currentAssignee && eligible;
+  const allowedRoles = currentAssignee === null ? TAKEOVER_ROLES : policy.transfer.confirm_roles;
+  const hasRole = actorMember !== undefined && eligible && allowedRoles.includes(actorMember.role);
+  if (!isAssignee && !hasRole) {
+    throw new RoutingError("ROLE_FORBIDDEN", `actor may not ${action} transfers`, {
+      actor,
+      required_roles: allowedRoles,
+    });
+  }
+}
+
 function registerPolicyHandler(state: RoutingState, payload: Payload): unknown {
   assertExactKeys(payload, [...BASE_KEYS, "policy"], "register_policy");
   const scope = parseScope(payload["scope"], "scope");
@@ -731,18 +769,7 @@ function confirmTransferHandler(
     });
   }
   const actor = bounded(payload["actor"], "actor", ID_MAX);
-  const actorMember = memberOf(facts, actor);
-  const actorIsAssignee = currentAssignee !== null && actor === currentAssignee;
-  const actorHasRole =
-    actorMember !== undefined &&
-    candidateEligibility(actorMember) === "eligible" &&
-    policy.transfer.confirm_roles.includes(actorMember.role);
-  if (!actorIsAssignee && !actorHasRole) {
-    throw new RoutingError("ROLE_FORBIDDEN", "actor may not confirm transfers", {
-      actor,
-      required_roles: policy.transfer.confirm_roles,
-    });
-  }
+  requireTransferActor(facts, policy, actor, currentAssignee, "confirm");
   if (candidateEligibility(memberOf(facts, proposal.to_user_id)) !== "eligible") {
     throw new RoutingError(
       "DESTINATION_INELIGIBLE",
@@ -792,18 +819,7 @@ function rejectTransferHandler(state: RoutingState, payload: Payload): TransferP
   const assignment = state.assignments.get(proposal.issue_id);
   const currentAssignee = assignment?.assignee_user_id ?? null;
   const actor = bounded(payload["actor"], "actor", ID_MAX);
-  const actorMember = memberOf(facts, actor);
-  const actorIsAssignee = currentAssignee !== null && actor === currentAssignee;
-  const actorHasRole =
-    actorMember !== undefined &&
-    candidateEligibility(actorMember) === "eligible" &&
-    policy.transfer.confirm_roles.includes(actorMember.role);
-  if (!actorIsAssignee && !actorHasRole) {
-    throw new RoutingError("ROLE_FORBIDDEN", "actor may not reject transfers", {
-      actor,
-      required_roles: policy.transfer.confirm_roles,
-    });
-  }
+  requireTransferActor(facts, policy, actor, currentAssignee, "reject");
   const rejected: TransferProposal = {
     ...proposal,
     status: "rejected",

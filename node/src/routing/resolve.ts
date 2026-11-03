@@ -27,9 +27,12 @@ import type {
  * Scoring, in substantive-code weight units:
  *
  * - Every substantive affected file with weight w splits w evenly across the
- *   distinct users its matching ownership rules, CODEOWNERS rules, and team
- *   rules resolve to (a team resolves to its active leader). Cosmetic and
- *   bulk changes contribute nothing and are recorded as ignored.
+ *   distinct users contributed by the rules that govern it. Within each rule
+ *   kind (ownership rules, CODEOWNERS rules, team rules) the last matching
+ *   rule wins, so a later, more specific rule overrides an earlier general
+ *   one and stale owners never leak through; a team resolves to its active
+ *   leader. Cosmetic and bulk changes contribute nothing and are recorded as
+ *   ignored.
  * - Every blame attribution on a substantive file adds its own weight to the
  *   resolved user. An author without a verified provider identity is
  *   recorded as an unmatched identity and never a candidate.
@@ -106,6 +109,24 @@ function identityKey(ref: ProviderIdentityRef): string {
 
 function sourceKey(kind: CandidateSourceKind, ruleId: string | null): string {
   return `${kind} ${ruleId ?? ""}`;
+}
+
+/**
+ * The governing rule for one path within a rule kind: the last match in
+ * configuration order (CODEOWNERS semantics). Locks the precedence every rule
+ * kind shares.
+ */
+function lastMatchingRule<T extends { pattern: string }>(
+  rules: readonly T[],
+  path: string,
+): T | undefined {
+  let winner: T | undefined;
+  for (const rule of rules) {
+    if (pathMatchesPattern(rule.pattern, path)) {
+      winner = rule;
+    }
+  }
+  return winner;
 }
 
 function toCandidates(
@@ -195,69 +216,78 @@ export function resolveRouting(input: ResolutionInput): Resolution {
       continue;
     }
 
-    // Ownership signals for this file, resolved to users; a team resolves to
-    // its active leader or records a gap.
+    // Ownership signals for this file. Within each rule kind the last match
+    // wins (CODEOWNERS semantics), so a later, more specific rule overrides an
+    // earlier general one and stale owners never leak through. A team owner
+    // resolves to its active leader or records a gap.
     const fileOwners = new Map<string, { kind: CandidateSourceKind; rule_id: string }[]>();
-    const ruleHits: { kind: CandidateSourceKind; rule_id: string; owner: OwnerRef }[] = [];
-    for (const rule of policy.ownership_rules) {
-      if (pathMatchesPattern(rule.pattern, file.path)) {
-        ruleHits.push({ kind: "ownership_rule", rule_id: rule.rule_id, owner: rule.owner });
-      }
+    const ruleHits: { kind: CandidateSourceKind; rule_id: string; owners: OwnerRef[] }[] = [];
+    const ownershipWinner = lastMatchingRule(policy.ownership_rules, file.path);
+    if (ownershipWinner !== undefined) {
+      ruleHits.push({
+        kind: "ownership_rule",
+        rule_id: ownershipWinner.rule_id,
+        owners: ownershipWinner.owners,
+      });
     }
-    for (const rule of policy.codeowners_rules) {
-      if (pathMatchesPattern(rule.pattern, file.path)) {
-        ruleHits.push({ kind: "codeowners_rule", rule_id: rule.rule_id, owner: rule.owner });
-      }
+    const codeownersWinner = lastMatchingRule(policy.codeowners_rules, file.path);
+    if (codeownersWinner !== undefined) {
+      ruleHits.push({
+        kind: "codeowners_rule",
+        rule_id: codeownersWinner.rule_id,
+        owners: codeownersWinner.owners,
+      });
     }
-    for (const rule of policy.team_rules) {
-      if (pathMatchesPattern(rule.pattern, file.path)) {
-        ruleHits.push({
-          kind: "team_leader",
-          rule_id: rule.rule_id,
-          owner: { kind: "team", team_id: rule.team_id },
-        });
-      }
+    const teamWinner = lastMatchingRule(policy.team_rules, file.path);
+    if (teamWinner !== undefined) {
+      ruleHits.push({
+        kind: "team_leader",
+        rule_id: teamWinner.rule_id,
+        owners: [{ kind: "team", team_id: teamWinner.team_id }],
+      });
     }
     for (const hit of ruleHits) {
-      if (hit.owner.kind === "user") {
-        const hits = fileOwners.get(hit.owner.user_id) ?? [];
-        hits.push({ kind: hit.kind, rule_id: hit.rule_id });
-        fileOwners.set(hit.owner.user_id, hits);
-        continue;
-      }
-      const teamId = hit.owner.team_id;
-      const team = teams.get(teamId);
-      const existingGap = teamGaps.find(
-        (gap) => gap.kind === hit.kind && gap.rule_id === hit.rule_id && gap.team_id === teamId,
-      );
-      const leader = team?.leader_user_id ?? null;
-      if (
-        team === undefined ||
-        leader === null ||
-        candidateEligibility(members.get(leader)) !== "eligible"
-      ) {
-        const reason: TeamGap["reason"] =
-          team === undefined
-            ? "team_missing"
-            : leader === null
-              ? "leader_missing"
-              : "leader_not_eligible";
-        if (existingGap === undefined) {
-          teamGaps.push({
-            kind: hit.kind,
-            rule_id: hit.rule_id,
-            team_id: teamId,
-            paths: [file.path],
-            reason,
-          });
-        } else {
-          existingGap.paths.push(file.path);
+      for (const owner of hit.owners) {
+        if (owner.kind === "user") {
+          const hits = fileOwners.get(owner.user_id) ?? [];
+          hits.push({ kind: hit.kind, rule_id: hit.rule_id });
+          fileOwners.set(owner.user_id, hits);
+          continue;
         }
-        continue;
+        const teamId = owner.team_id;
+        const team = teams.get(teamId);
+        const existingGap = teamGaps.find(
+          (gap) => gap.kind === hit.kind && gap.rule_id === hit.rule_id && gap.team_id === teamId,
+        );
+        const leader = team?.leader_user_id ?? null;
+        if (
+          team === undefined ||
+          leader === null ||
+          candidateEligibility(members.get(leader)) !== "eligible"
+        ) {
+          const reason: TeamGap["reason"] =
+            team === undefined
+              ? "team_missing"
+              : leader === null
+                ? "leader_missing"
+                : "leader_not_eligible";
+          if (existingGap === undefined) {
+            teamGaps.push({
+              kind: hit.kind,
+              rule_id: hit.rule_id,
+              team_id: teamId,
+              paths: [file.path],
+              reason,
+            });
+          } else {
+            existingGap.paths.push(file.path);
+          }
+          continue;
+        }
+        const hits = fileOwners.get(leader) ?? [];
+        hits.push({ kind: hit.kind, rule_id: hit.rule_id });
+        fileOwners.set(leader, hits);
       }
-      const hits = fileOwners.get(leader) ?? [];
-      hits.push({ kind: hit.kind, rule_id: hit.rule_id });
-      fileOwners.set(leader, hits);
     }
 
     if (fileOwners.size > 0) {

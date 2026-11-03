@@ -19,6 +19,7 @@ import {
   HENRY,
   SCOPE,
   TEAM_BACKEND,
+  TEAM_FRONTEND,
   ZOE,
   blameFact,
   bulkChange,
@@ -147,8 +148,14 @@ describe("deterministic resolution (DAT-217)", () => {
     const split = setup(
       testPolicy({
         ownership_rules: [
-          { rule_id: "own-1", pattern: "node/src/**", owner: { kind: "user", user_id: ALICE } },
-          { rule_id: "own-2", pattern: "node/**", owner: { kind: "user", user_id: BOB } },
+          {
+            rule_id: "own-1",
+            pattern: "node/**",
+            owners: [
+              { kind: "user", user_id: ALICE },
+              { kind: "user", user_id: BOB },
+            ],
+          },
         ],
       }),
     );
@@ -169,7 +176,11 @@ describe("deterministic resolution (DAT-217)", () => {
     const solo = setup(
       testPolicy({
         ownership_rules: [
-          { rule_id: "own-1", pattern: "node/**", owner: { kind: "user", user_id: ALICE } },
+          {
+            rule_id: "own-1",
+            pattern: "node/**",
+            owners: [{ kind: "user", user_id: ALICE }],
+          },
         ],
       }),
     );
@@ -181,6 +192,124 @@ describe("deterministic resolution (DAT-217)", () => {
     });
     expect(single.outcome).toBe("assign");
     expect(single.assignee_user_id).toBe(ALICE);
+  });
+
+  test("the last matching CODEOWNERS rule overrides earlier rules", () => {
+    // General rule first, specific rule later: only the specific rule's owner
+    // is a candidate; the general rule's stale owner never participates.
+    const specificWins = setup(
+      testPolicy({
+        codeowners_rules: [
+          {
+            rule_id: "co-general",
+            pattern: "node/**",
+            owners: [{ kind: "user", user_id: ALICE }],
+          },
+          {
+            rule_id: "co-specific",
+            pattern: "node/src/**",
+            owners: [{ kind: "user", user_id: BOB }],
+          },
+        ],
+      }),
+    );
+    const decision = runRoute(
+      specificWins.machine,
+      evidence([substantive("node/src/core.ts", 10)]),
+    );
+    expect(decision.candidates).toHaveLength(1);
+    expect(decision.candidates[0]).toMatchObject({
+      user_id: BOB,
+      score: 10,
+      ownership_weight: 10,
+      sources: [{ kind: "codeowners_rule", rule_id: "co-specific", paths: ["node/src/core.ts"] }],
+    });
+    expect(decision.assignee_user_id).toBe(BOB);
+
+    // Precedence is configuration order, not specificity: a later general
+    // rule still wins over an earlier specific one.
+    const laterWins = setup(
+      testPolicy({
+        codeowners_rules: [
+          {
+            rule_id: "co-specific",
+            pattern: "node/src/**",
+            owners: [{ kind: "user", user_id: BOB }],
+          },
+          {
+            rule_id: "co-general",
+            pattern: "node/**",
+            owners: [{ kind: "user", user_id: ALICE }],
+          },
+        ],
+      }),
+    );
+    const reversed = runRoute(laterWins.machine, evidence([substantive("node/src/core.ts", 10)]));
+    expect(reversed.candidates).toHaveLength(1);
+    expect(reversed.candidates[0]?.user_id).toBe(ALICE);
+  });
+
+  test("a winning rule's owner set splits the file weight", () => {
+    const { machine } = setup(
+      testPolicy({
+        codeowners_rules: [
+          {
+            rule_id: "co-1",
+            pattern: "*.ts",
+            owners: [
+              { kind: "user", user_id: ALICE },
+              { kind: "user", user_id: BOB },
+            ],
+          },
+        ],
+      }),
+    );
+    const decision = runRoute(machine, evidence([substantive("node/src/core.ts", 10)]));
+    expect(decision.candidates).toEqual([
+      expect.objectContaining({ user_id: ALICE, ownership_weight: 5 }),
+      expect.objectContaining({ user_id: BOB, ownership_weight: 5 }),
+    ]);
+  });
+
+  test("ownership and team rules follow the same last-match precedence", () => {
+    const ownership = setup(
+      testPolicy({
+        ownership_rules: [
+          {
+            rule_id: "own-general",
+            pattern: "node/**",
+            owners: [{ kind: "user", user_id: ALICE }],
+          },
+          {
+            rule_id: "own-specific",
+            pattern: "node/src/**",
+            owners: [{ kind: "user", user_id: BOB }],
+          },
+        ],
+      }),
+    );
+    const viaOwnership = runRoute(
+      ownership.machine,
+      evidence([substantive("node/src/core.ts", 10)]),
+    );
+    expect(viaOwnership.candidates).toHaveLength(1);
+    expect(viaOwnership.candidates[0]).toMatchObject({ user_id: BOB, score: 10 });
+
+    const teams = setup(
+      testPolicy({
+        team_rules: [
+          { rule_id: "team-general", pattern: "node/**", team_id: TEAM_BACKEND },
+          { rule_id: "team-specific", pattern: "node/src/**", team_id: TEAM_FRONTEND },
+        ],
+      }),
+    );
+    teams.directory.teams = [team(TEAM_BACKEND, ALICE), team(TEAM_FRONTEND, BOB)];
+    const viaTeams = runRoute(teams.machine, evidence([substantive("node/src/core.ts", 10)]));
+    expect(viaTeams.candidates).toHaveLength(1);
+    expect(viaTeams.candidates[0]).toMatchObject({
+      user_id: BOB,
+      sources: [{ kind: "team_leader", rule_id: "team-specific", paths: ["node/src/core.ts"] }],
+    });
   });
 
   test("team rules route to the team's active leader", () => {
@@ -404,8 +533,16 @@ describe("deterministic resolution (DAT-217)", () => {
           scope: SCOPE,
           policy: testPolicy({
             ownership_rules: [
-              { rule_id: "own-1", pattern: "node/**", owner: { kind: "user", user_id: ALICE } },
-              { rule_id: "own-1", pattern: "web/**", owner: { kind: "user", user_id: BOB } },
+              {
+                rule_id: "own-1",
+                pattern: "node/**",
+                owners: [{ kind: "user", user_id: ALICE }],
+              },
+              {
+                rule_id: "own-1",
+                pattern: "web/**",
+                owners: [{ kind: "user", user_id: BOB }],
+              },
             ],
           }),
         }),

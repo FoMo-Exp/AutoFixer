@@ -48,6 +48,7 @@ export const HENRY = "usr_henry";
 export const ZOE = "usr_zoe";
 
 export const TEAM_BACKEND = "team_backend";
+export const TEAM_FRONTEND = "team_frontend";
 
 /**
  * In-memory directory seam. Tests mutate `members`/`teams`/`identities`
