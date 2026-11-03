@@ -112,6 +112,12 @@ cannot carry them structurally.
 `adopt` requires a workspace `owner` or `admin`, a `published` template, and an
 explicit `template_version` (adoption pins a version; it never floats).
 
+The adoption row is inserted with a single conditional statement that requires
+the template to still be `published` at insert time. A revocation therefore
+either commits first (the insert writes nothing and the call fails with a
+conflict) or commits after (its scan sees the new adoption). A read-then-insert
+cannot leave an active adoption created after revocation completed.
+
 Adoption creates a **new local memory item** in the adopting workspace:
 
 - `status = candidate` — never `active`;

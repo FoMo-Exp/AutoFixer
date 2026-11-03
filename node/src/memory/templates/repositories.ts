@@ -610,12 +610,21 @@ class SqliteEnterpriseTemplateStore implements EnterpriseTemplateStore {
   createAdoption(input: CreateAdoptionInput): EnterpriseTemplateAdoption {
     const id = newId("eta");
     try {
-      this.db
+      // The status guard and the insert are one statement. A concurrent
+      // revocation either commits before this statement (EXISTS is false, no
+      // row is written) or after it (revocation's scan sees the new adoption).
+      // A plain read-then-insert would let revocation miss an adoption that
+      // passed its check while the template was still published.
+      const inserted = this.db
         .prepare(
           `INSERT INTO enterprise_template_adoptions
              (id, enterprise_id, template_id, template_version, workspace_id, item_id, item_version,
               state, adopted_at, adopted_by, revoked_at, revoked_by, revoke_reason, revocation_outcome)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, NULL, NULL, NULL)`,
+           SELECT ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, NULL, NULL, NULL
+            WHERE EXISTS (
+              SELECT 1 FROM enterprise_templates
+               WHERE id = ? AND enterprise_id = ? AND status = 'published'
+            )`,
         )
         .run(
           id,
@@ -627,7 +636,14 @@ class SqliteEnterpriseTemplateStore implements EnterpriseTemplateStore {
           input.item_version,
           nowIso(),
           input.actor_id,
+          input.template_id,
+          input.enterprise_id,
+        ) as unknown as { changes: number };
+      if (inserted.changes === 0) {
+        throw new ConflictError(
+          `EnterpriseTemplate ${input.template_id} is revoked and cannot be newly adopted`,
         );
+      }
     } catch (error) {
       if (String(error).includes("UNIQUE")) {
         throw new ConflictError(

@@ -36,6 +36,7 @@ export type {
 } from "./repositories.js";
 
 export { createEnterpriseTemplateService } from "./service.js";
+export type { EnterpriseTemplateServiceOptions } from "./service.js";
 
 export {
   ENTERPRISE_TEMPLATE_KINDS,

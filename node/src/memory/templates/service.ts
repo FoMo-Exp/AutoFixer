@@ -456,6 +456,13 @@ class DefaultEnterpriseTemplateService implements EnterpriseTemplateService {
       input.template_version,
     );
     if (existing !== undefined) {
+      // A revocation may have completed between the status read above and this
+      // lookup; never return a revoked adoption as if adoption succeeded.
+      if (existing.state !== "active") {
+        throw new ConflictError(
+          `EnterpriseTemplate ${input.template_id} was revoked after this workspace adopted it`,
+        );
+      }
       const item = this.memory.items.getById(scope, existing.item_id);
       if (item === undefined) {
         throw new NotFoundError("MemoryItem", existing.item_id);
@@ -722,14 +729,26 @@ class DefaultEnterpriseTemplateService implements EnterpriseTemplateService {
 }
 
 /**
+ * Optional collaborators. Production uses the defaults, both built over `db`;
+ * tests inject wrappers to force an interleaving at a specific step.
+ */
+export interface EnterpriseTemplateServiceOptions {
+  store?: EnterpriseTemplateStore;
+  memory?: MemoryRepositories;
+}
+
+/**
  * Build the template service over one control-plane database. The memory
  * repositories are created here so callers cannot pass a differently scoped
  * memory store than the one the service audits.
  */
-export function createEnterpriseTemplateService(db: ControlPlaneDb): EnterpriseTemplateService {
+export function createEnterpriseTemplateService(
+  db: ControlPlaneDb,
+  options: EnterpriseTemplateServiceOptions = {},
+): EnterpriseTemplateService {
   return new DefaultEnterpriseTemplateService(
     db,
-    createEnterpriseTemplateStore(db),
-    createMemoryRepositories(db),
+    options.store ?? createEnterpriseTemplateStore(db),
+    options.memory ?? createMemoryRepositories(db),
   );
 }

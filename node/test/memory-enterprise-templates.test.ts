@@ -22,6 +22,7 @@ import { createMemoryRepositories } from "../src/memory/index.js";
 import type { CreateMemoryItemInput, MemoryRepositories } from "../src/memory/index.js";
 import {
   createEnterpriseTemplateService,
+  createEnterpriseTemplateStore,
   scrubTemplateContent,
   TemplatePolicyError,
 } from "../src/memory/templates/index.js";
@@ -677,6 +678,49 @@ describe("template adoption", () => {
     expect(second.adoption.id).toBe(first.adoption.id);
     expect(second.item.item.id).toBe(first.item.item.id);
     expect(memory.items.list(targetScope)).toHaveLength(1);
+  });
+
+  test("a revocation racing an in-flight adoption cannot create an orphan copy", () => {
+    const { result } = publishFact();
+    const store = createEnterpriseTemplateStore(db);
+    const memory = createMemoryRepositories(db);
+    const revoker = createEnterpriseTemplateService(db);
+    let revocationRan = false;
+
+    // Force the exact interleaving QA flagged: the adoption has already passed
+    // its `published` check, then revocation completes before the adoption row
+    // is inserted.
+    const racingMemory: MemoryRepositories = {
+      ...memory,
+      evidence: {
+        add: (scope, itemId, input) => {
+          const evidence = memory.evidence.add(scope, itemId, input);
+          if (!revocationRan) {
+            revocationRan = true;
+            revoker.revoke(sourceScope, {
+              template_id: result.template.id,
+              reason: "raced with adoption",
+            });
+          }
+          return evidence;
+        },
+        listByItem: (scope, itemId) => memory.evidence.listByItem(scope, itemId),
+      },
+    };
+    const adopting = createEnterpriseTemplateService(db, { store, memory: racingMemory });
+
+    expect(() =>
+      adopting.adopt(targetScope, {
+        template_id: result.template.id,
+        template_version: 1,
+      }),
+    ).toThrow(ConflictError);
+    expect(revocationRan).toBe(true);
+    expect(revoker.getTemplate(sourceScope, result.template.id).template.status).toBe("revoked");
+    // The adoption row was refused atomically, and the half-built local item
+    // was compensated away rather than left as an untracked candidate.
+    expect(adopting.listAdoptions(targetScope)).toHaveLength(0);
+    expect(memory.items.list(targetScope)).toHaveLength(0);
   });
 
   test("requires a workspace owner or administrator", () => {
