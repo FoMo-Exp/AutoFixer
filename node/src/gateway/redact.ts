@@ -16,6 +16,15 @@ const CREDENTIAL_PATTERNS: RegExp[] = [
   /\bsk-[A-Za-z0-9_-]{8,}/g,
   /\bAIza[A-Za-z0-9_-]{8,}/g,
   /\bgh[pousr]_[A-Za-z0-9]{8,}/g,
+  /\bgithub_pat_[A-Za-z0-9_]{8,}/g,
+  // AWS access key IDs.
+  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
+  // Slack tokens.
+  /\bxox[baprs]-[A-Za-z0-9-]{8,}/g,
+  // JSON web tokens.
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+  // Private key blocks.
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
   // key=value shapes where the key names a credential.
   /\b([A-Za-z0-9_]*(?:API_KEY|APIKEY|SECRET|TOKEN|PASSWORD|CREDENTIAL)[A-Za-z0-9_]*)\s*[=:]\s*("?)[^\s"']{4,}\2/g,
 ];

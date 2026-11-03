@@ -1,0 +1,14 @@
+{
+  "error": {
+    "envelope_version": 1,
+    "code": "NOT_FOUND",
+    "stage": "validation",
+    "category": "stop",
+    "message": "The requested resource was not found in your visible scope.",
+    "retryable": false,
+    "retry_after_seconds": null,
+    "request_id": "req_01J8Z0D4E5F6",
+    "details": {},
+    "next_action": null
+  }
+}

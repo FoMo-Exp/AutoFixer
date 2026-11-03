@@ -7,12 +7,19 @@ import { DshError } from "../dsh/client.js";
 import type { DshClient } from "../dsh/client.js";
 import type { DshGrantSummary, DshProposedWork, DshRunResponse, DshState } from "../dsh/types.js";
 import type { ModelGateway } from "../gateway/index.js";
+import {
+  DENY_ALL_DIAGNOSTICS,
+  DiagnosticsAuthorizer,
+  DiagnosticsVault,
+  mapDshError,
+} from "../errors/index.js";
+import type { DiagnosticAccessPolicy, SensitiveDiagnostics } from "../errors/index.js";
 import { createDshRequestActionTool } from "../pi/dsh-request-action-tool.js";
 import { createTurnSummaryReportTool } from "../pi/turn-report-tool.js";
 import { piSystemPrompt, taskPrompt } from "../pi/prompts.js";
 import type { PiSessionOptions } from "../pi/session.js";
 import { PiSession } from "../pi/session.js";
-import { ApiError, apiErrorFromDsh } from "./errors.js";
+import { ApiError, apiErrorFromDsh, DSH_SAFE_MESSAGES } from "./errors.js";
 import { PiSummaryTracker } from "./pi-summary.js";
 import type { PiSummary } from "./pi-summary.js";
 import type {
@@ -89,6 +96,26 @@ export interface TaskServiceDeps {
   gateway: ModelGateway;
   /** Clock seam for approval-window timestamps in tests. */
   now?: () => Date;
+  /**
+   * Server-side role check for reading sealed sensitive diagnostics
+   * (DAT-226). Defaults to deny-all: nobody reads diagnostics until the
+   * service bootstrap configures a policy. Callers never assert their own
+   * permissions — the policy decides.
+   */
+  diagnosticsPolicy?: DiagnosticAccessPolicy;
+}
+
+/**
+ * The shared prohibited-work refusal (422). The first refusal and the
+ * idempotent replay of a remembered refusal are generated from here, so one
+ * refusal always has one envelope: `DSH_RISK_PROHIBITED`, the fixed safe
+ * message, and `details` exactly `{dsh_code, task_id}` (DAT-205).
+ */
+function prohibitedRefusal(taskId: string, dshCode: string): ApiError {
+  return new ApiError(422, "DSH_RISK_PROHIBITED", DSH_SAFE_MESSAGES.DSH_RISK_PROHIBITED, {
+    dsh_code: dshCode,
+    task_id: taskId,
+  });
 }
 
 /**
@@ -231,6 +258,14 @@ export class TaskService {
   private readonly deps: TaskServiceDeps;
   private readonly runtimes = new Map<string, TaskRuntime>();
   /**
+   * Sealed sensitive diagnostics (DAT-226): raw failure detail stays behind
+   * its own access check and never enters task events or error envelopes.
+   * Reads go through the trusted {@link DiagnosticsAuthorizer}, which checks
+   * the server-side policy and mints the only accepted grants.
+   */
+  private readonly diagnostics: DiagnosticsVault;
+  private readonly diagnosticsAuthorizer: DiagnosticsAuthorizer;
+  /**
    * Per-task serialization of dsh state refreshes (QA round-1 blocker):
    * overlapping getRun responses can resolve out of order, so each refresh
    * waits for the previous one before projecting. Combined with the store's
@@ -248,6 +283,10 @@ export class TaskService {
 
   constructor(deps: TaskServiceDeps) {
     this.deps = deps;
+    this.diagnosticsAuthorizer = new DiagnosticsAuthorizer(
+      deps.diagnosticsPolicy ?? DENY_ALL_DIAGNOSTICS,
+    );
+    this.diagnostics = new DiagnosticsVault(this.diagnosticsAuthorizer);
   }
 
   get store(): TaskStore {
@@ -349,17 +388,9 @@ export class TaskService {
   /** Replay a remembered create; prohibited outcomes re-refuse identically. */
   private replayCreatedTask(record: TaskRecord): TaskResource {
     if (record.status === "rejected" && record.risk?.class === "prohibited") {
-      throw new ApiError(
-        422,
-        "DSH_RISK_PROHIBITED",
-        "dsh rejected the requested work as prohibited",
-        {
-          ...Object.fromEntries(
-            Object.entries(record.risk).map(([field, value]) => [`risk_${field}`, value]),
-          ),
-          task_id: record.id,
-        },
-      );
+      // The replay's origin code is the dsh-control/v1 stable code for this
+      // state (the original dsh error is not persisted).
+      throw prohibitedRefusal(record.id, "DSH_RISK_PROHIBITED");
     }
     return toTaskResource(record);
   }
@@ -426,10 +457,7 @@ export class TaskService {
           acceptanceCriteria,
           error,
         );
-        throw new ApiError(422, "DSH_RISK_PROHIBITED", error.message, {
-          ...error.details,
-          task_id: record.id,
-        });
+        throw prohibitedRefusal(record.id, error.code);
       }
       if (error instanceof DshError) {
         throw apiErrorFromDsh(error);
@@ -626,6 +654,17 @@ export class TaskService {
     return () => record.subscribers.delete(gated);
   }
 
+  /**
+   * Read one sealed sensitive diagnostic record (DAT-226). The trusted
+   * diagnostics authorizer checks its server-side access policy — the caller
+   * names a subject, never a permission — and only then does the lookup run.
+   * Holding a task or reading an error envelope never implies this access.
+   */
+  readDiagnostics(subject: string, caseRef: string): SensitiveDiagnostics {
+    const grant = this.diagnosticsAuthorizer.authorize(subject);
+    return this.diagnostics.read(caseRef, grant);
+  }
+
   async getArtifact(taskId: string, artifactId: string): Promise<Record<string, unknown>> {
     const record = this.requireRecord(taskId);
     if (!record.runId) {
@@ -794,6 +833,13 @@ export class TaskService {
       runId: record.runId,
       sessionId,
       getTurnId: () => sessionRef?.currentTurnId() ?? "turn_0",
+      diagnostics: this.diagnostics,
+      // Run deadline and retry backoff for the controlled retry entry
+      // (DAT-226): the governor authorizes at most this run's wall clock,
+      // and an authorized retry waits out the service-imposed delay.
+      deadlineMs:
+        (this.deps.now?.() ?? new Date()).getTime() + this.deps.config.maxWallClockSeconds * 1000,
+      retryDelayMs: 500,
       observe: (observation) => {
         if (record.terminal) {
           return;
@@ -822,6 +868,7 @@ export class TaskService {
             action_id: observation.actionId,
             error_code: observation.errorCode ?? "DSH_UNAVAILABLE",
             message: observation.errorMessage ?? "dsh did not answer",
+            error_envelope: observation.errorEnvelope ?? null,
           });
         }
         this.queueRefresh(record);
@@ -876,6 +923,10 @@ export class TaskService {
                   tool_id: null,
                   error_code: "DSH_UNAVAILABLE",
                   message: "the action intent did not reach dsh",
+                  error_envelope: mapDshError({
+                    code: "DSH_UNAVAILABLE",
+                    message: "the action intent did not reach dsh",
+                  }).envelope,
                 });
               }
               observedToolCalls.delete(event.toolCallId);

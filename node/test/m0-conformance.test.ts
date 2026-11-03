@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 import { buildOpenApiDocument } from "../src/api/openapi.js";
+import { ApiError } from "../src/api/errors.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const contractPath = path.join(repoRoot, "docs", "contracts", "forgepilot-api-v1.md");
@@ -32,17 +33,25 @@ function parseSseTypes(markdown: string): string[] {
   return [...sentence.matchAll(/`([a-z_]+(?:\.[a-z_]+)+)`/g)].flatMap((m) => (m[1] ? [m[1]] : []));
 }
 
-/** Pull the endpoint rows (`METHOD /path`) from the endpoints table. */
-function parseEndpoints(markdown: string): Array<[method: string, path: string]> {
-  const tableSection = /## Endpoints([\s\S]*?)\n## /.exec(markdown);
-  const table = tableSection?.[1];
-  if (!table) {
-    throw new Error("could not locate the endpoints table in the M0 contract");
-  }
-  const rows = [...table.matchAll(/^\|\s*`(GET|POST) ([^`?`]+)[^`]*`\s*\|/gm)];
+/** Pull the endpoint rows (`METHOD /path`) from one endpoints table. */
+function parseTableEndpoints(table: string): Array<[method: string, path: string]> {
+  const rows = [...table.matchAll(/^\|\s*`(GET|POST|PUT|PATCH|DELETE) ([^`?`]+)[^`]*`\s*\|/gm)];
   return rows.flatMap((m) =>
     m[1] && m[2] ? [[m[1].toLowerCase(), m[2].trim()] as [string, string]] : [],
   );
+}
+
+/** Pull every endpoint row from the contract's task and identity tables. */
+function parseEndpoints(markdown: string): Array<[method: string, path: string]> {
+  const taskTable = /## Endpoints([\s\S]*?)\n## /.exec(markdown)?.[1];
+  const identityTable =
+    /## Enterprise identity, sessions, and administration \(DAT-202\)([\s\S]*?)\n## /.exec(
+      markdown,
+    )?.[1];
+  if (!taskTable || !identityTable) {
+    throw new Error("could not locate the endpoints tables in the contract");
+  }
+  return [...parseTableEndpoints(taskTable), ...parseTableEndpoints(identityTable)];
 }
 
 /** Pull the UI status enum from its sentence. */
@@ -55,10 +64,43 @@ function parseUiStatuses(markdown: string): string[] {
   return [...sentence.matchAll(/`([a-z_]+)`/g)].flatMap((m) => (m[1] ? [m[1]] : []));
 }
 
-describe("independent conformance to the normative M0 contract", () => {
+/** Pull the shared error-envelope code table (`CODE | HTTP | stage | …`). */
+function parseErrorTable(markdown: string): Array<{
+  code: string;
+  status: number;
+  stage: string;
+  category: string;
+  retryable: boolean;
+  nextAction: string | null;
+}> {
+  const section = /## Error model: the shared error envelope([\s\S]*?)\n## /.exec(markdown)?.[1];
+  if (!section) {
+    throw new Error("could not locate the shared error envelope section");
+  }
+  const rows = [
+    ...section.matchAll(
+      /^\|\s*`([A-Z_]+)`\s*\|\s*(\d{3})\s*\|\s*([a-z_]+)\s*\|\s*([a-z_]+)\s*\|\s*(yes|no)\s*\|\s*(?:`([a-z_]+)`|—)\s*\|/gm,
+    ),
+  ];
+  return rows.flatMap((m) =>
+    m[1] && m[2] && m[3] && m[4] && m[5]
+      ? [
+          {
+            code: m[1],
+            status: Number(m[2]),
+            stage: m[3],
+            category: m[4],
+            retryable: m[5] === "yes",
+            nextAction: m[6] ?? null,
+          },
+        ]
+      : [],
+  );
+}
+
+describe("independent conformance to the normative contract", () => {
   const markdown = fs.readFileSync(contractPath, "utf8");
   const document = buildOpenApiDocument();
-
   test("SSE event types match the contract exactly (all 14)", () => {
     const contractTypes = parseSseTypes(markdown);
     expect(contractTypes).toHaveLength(14);
@@ -117,6 +159,21 @@ describe("independent conformance to the normative M0 contract", () => {
     expect(types).toContain("paths");
   });
 
+  test("every contract error code matches the served envelope semantics", () => {
+    // The shared envelope's code table is the contract's per-code semantics;
+    // every listed code must render exactly those defaults at runtime (a code
+    // falling through to the unknown fallback is a contract/runtime drift).
+    const rows = parseErrorTable(markdown);
+    expect(rows.length, "error code table must list the contract's codes").toBeGreaterThan(20);
+    for (const row of rows) {
+      const body = new ApiError(row.status, row.code, "contract check").toBody("req_check");
+      expect(body.error.stage, `${row.code} stage`).toBe(row.stage);
+      expect(body.error.category, `${row.code} category`).toBe(row.category);
+      expect(body.error.retryable, `${row.code} retryable`).toBe(row.retryable);
+      expect(body.error.next_action, `${row.code} next_action`).toBe(row.nextAction);
+    }
+  });
+
   test("the contract's safe-summary section pins the fail-closed semantics", () => {
     // Independent check: the normative markdown must document the DAT-191
     // display contract — not just the implementation — so a client reading
@@ -171,10 +228,13 @@ describe("independent conformance to the normative M0 contract", () => {
     expect(scheme.scheme).toBe("bearer");
   });
 
-  test("every operation requires the bearer scheme and documents a 401", () => {
+  test("every M0 operation requires the bearer scheme and documents a 401", () => {
     expect(document.security).toContainEqual({ bearerAuth: [] });
     const operations: string[] = [];
     for (const [docPath, methods] of Object.entries(document.paths)) {
+      if (!docPath.startsWith("/api/v1/tasks")) {
+        continue;
+      }
       for (const [method, operation] of Object.entries(methods)) {
         operations.push(`${method.toUpperCase()} ${docPath}`);
         const op = operation as {
@@ -187,8 +247,32 @@ describe("independent conformance to the normative M0 contract", () => {
         expect(op.responses?.["401"], `missing 401 on ${method} ${docPath}`).toBeDefined();
       }
     }
-    // Sanity: the full endpoint set is actually being checked.
+    // Sanity: the full M0 endpoint set is actually being checked.
     expect(operations).toHaveLength(12);
+  });
+
+  test("every identity-surface operation declares explicit auth", () => {
+    // The identity surface authenticates with sessions or the deployment
+    // bootstrap token, and the login flows are deliberately anonymous — but
+    // every operation must still state its requirement explicitly.
+    let checked = 0;
+    for (const [docPath, methods] of Object.entries(document.paths)) {
+      if (docPath.startsWith("/api/v1/tasks")) {
+        continue;
+      }
+      for (const [method, operation] of Object.entries(methods)) {
+        checked += 1;
+        const op = operation as {
+          security?: Array<Record<string, string[]>>;
+          responses?: Record<string, unknown>;
+        };
+        expect(Array.isArray(op.security), `missing security on ${method} ${docPath}`).toBe(true);
+        if ((op.security ?? []).length > 0) {
+          expect(op.responses?.["401"], `missing 401 on ${method} ${docPath}`).toBeDefined();
+        }
+      }
+    }
+    expect(checked).toBe(36);
   });
 
   test("the committed openapi.json also carries the auth scheme", () => {

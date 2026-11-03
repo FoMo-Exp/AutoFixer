@@ -1,0 +1,25 @@
+{
+  "user": {
+    "id": "usr_01J8Z5N4P7",
+    "display_name": "Ada Lovelace",
+    "status": "active",
+    "identities": [
+      {
+        "provider_instance_id": "pi_github_main",
+        "provider_type": "github",
+        "subject_id": "424242"
+      }
+    ]
+  },
+  "kind": "web",
+  "csrf_token": "csrf_9f2c1a7e4b",
+  "expires_at": "2026-11-04T08:00:00Z",
+  "enterprise_roles": [{ "enterprise_id": "ent_01J8Y0A1B2", "role": "admin" }],
+  "memberships": [
+    {
+      "enterprise_id": "ent_01J8Y0A1B2",
+      "workspace_id": "ws_01J8Z1C3D4",
+      "role": "admin"
+    }
+  ]
+}

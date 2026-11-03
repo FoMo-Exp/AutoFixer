@@ -1,0 +1,14 @@
+{
+  "error": {
+    "envelope_version": 1,
+    "code": "INVITATION_NOT_ACCEPTED",
+    "stage": "authorization",
+    "category": "denial",
+    "message": "This invitation cannot be used. Ask the workspace owner for a new invitation.",
+    "retryable": false,
+    "retry_after_seconds": null,
+    "request_id": "req_01J8Z0G7H8I9",
+    "details": {},
+    "next_action": "request_new_invitation"
+  }
+}

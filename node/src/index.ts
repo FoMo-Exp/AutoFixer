@@ -4,15 +4,24 @@ import type { Api, Model } from "@mariozechner/pi-ai";
 
 import { buildOpenApiDocument } from "./api/openapi.js";
 import { readOrCreateApiToken } from "./api/auth.js";
+import { AuthService } from "./api/auth-service.js";
+import { ProviderOAuth, readOAuthCredentialsFile } from "./api/oauth.js";
 import { createApiServer } from "./api/server.js";
 import { TaskService } from "./api/task-service.js";
 import { TaskStore } from "./api/task-store.js";
 import type { OrchestratorConfig } from "./config.js";
 import { configFromEnv } from "./config.js";
+import type { ControlPlaneDb } from "./control-plane/index.js";
+import {
+  createIdentityRepositories,
+  createRepositories,
+  openControlPlaneDb,
+} from "./control-plane/index.js";
 import { DshClient } from "./dsh/client.js";
 import {
   createFileEventSink,
   createModelGateway,
+  createPatternSecretScanner,
   createStaticCredentialStore,
   denyAllPolicyResolver,
   loadGatewayPolicyFile,
@@ -33,6 +42,10 @@ export interface OrchestratorOptions {
   gateway?: ModelGateway;
   /** Explicit Pi model; unset resolves from config, then PI_UNAVAILABLE. */
   model?: Model<Api>;
+  /** Injectable provider HTTP for the OAuth login surface (tests). */
+  authFetchImpl?: typeof fetch;
+  /** Injectable DNS lookup for the provider-origin policy (tests). */
+  authDnsLookup?: (hostname: string) => Promise<string[]>;
 }
 
 export interface OrchestratorHandle {
@@ -42,6 +55,10 @@ export interface OrchestratorHandle {
   dsh: DshClient;
   gateway: ModelGateway;
   model: Model<Api> | undefined;
+  /** Identity/session subsystem; set when OAuth clients are configured. */
+  auth: AuthService | undefined;
+  /** Control-plane database behind the identity subsystem. */
+  controlPlane: ControlPlaneDb | undefined;
   /** Per-process bearer token callers must present on every API request. */
   apiToken: string;
   /** Start listening; resolves with the bound loopback address. */
@@ -77,6 +94,10 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
       ? readCredentialFile(config.gatewayCredentialsFile)
       : createStaticCredentialStore({}),
     adapter: piAiProviderAdapter,
+    // Complete-request secret scanning is part of the egress boundary: the
+    // deployment always scans with the built-in deterministic detector set
+    // (DAT-209); a deployment may swap in another SecretScanner backend.
+    scanner: createPatternSecretScanner(),
     ...(config.gatewayAuditFile ? { sink: createFileEventSink(config.gatewayAuditFile) } : {}),
   });
 }
@@ -110,7 +131,37 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   // approvals included; the configured dsh identity alone is not proof of a
   // human decision.
   const apiToken = readOrCreateApiToken(config.apiTokenFile);
-  const server = createApiServer({ service, apiToken });
+  // Enterprise identity (ADR-0006) is enabled by the OAuth client file; its
+  // absence keeps the local-operator surface exactly as before.
+  let auth: AuthService | undefined;
+  let controlPlane: ControlPlaneDb | undefined;
+  if (config.oauthClientsFile !== undefined) {
+    controlPlane = openControlPlaneDb({ path: config.controlPlaneFile ?? ":memory:" });
+    auth = new AuthService({
+      repos: createRepositories(controlPlane),
+      identity: createIdentityRepositories(controlPlane),
+      config: {
+        enterpriseId: config.enterpriseId,
+        workspaceId: config.workspaceId,
+        sessionTtlSeconds: config.sessionTtlSeconds ?? 12 * 60 * 60,
+        oauthFlowTtlSeconds: config.oauthFlowTtlSeconds ?? 600,
+        desktopFlowTtlSeconds: config.desktopFlowTtlSeconds ?? 600,
+        ...(config.bootstrapToken !== undefined ? { bootstrapToken: config.bootstrapToken } : {}),
+        desktopMaxAttempts: 5,
+      },
+      credentials: readOAuthCredentialsFile(config.oauthClientsFile),
+      ...(options.authFetchImpl !== undefined
+        ? { providerOAuth: new ProviderOAuth({ fetchImpl: options.authFetchImpl }) }
+        : {}),
+      ...(options.authDnsLookup !== undefined ? { lookup: options.authDnsLookup } : {}),
+    });
+  }
+  const server = createApiServer({
+    service,
+    apiToken,
+    ...(auth !== undefined ? { auth } : {}),
+    ...(config.publicOrigin !== undefined ? { publicOrigin: config.publicOrigin } : {}),
+  });
   return {
     server,
     service,
@@ -118,6 +169,8 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     dsh,
     gateway,
     model,
+    auth,
+    controlPlane,
     apiToken,
     start: () => {
       const { promise, resolve, reject } = Promise.withResolvers<{ host: string; port: number }>();
@@ -145,6 +198,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       service.disposeAll();
       // Durability boundary: a clean shutdown must not lose projected events.
       store.flushSync();
+      controlPlane?.close();
       const { promise, resolve, reject } = Promise.withResolvers<void>();
       server.close((error) => (error ? reject(error) : resolve()));
       return promise;
