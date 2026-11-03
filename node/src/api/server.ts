@@ -2,7 +2,17 @@ import { randomUUID } from "node:crypto";
 import http from "node:http";
 
 import { isAuthorizedBearer } from "./auth.js";
-import { ApiError } from "./errors.js";
+import type { AuthService, SessionContext } from "./auth-service.js";
+import { handleAuthRequest, requireSessionActor } from "./auth-http.js";
+import { ApiError, apiErrorFromControlPlane } from "./errors.js";
+import { ControlPlaneError } from "../control-plane/errors.js";
+import {
+  isApiError,
+  optionalStringArray,
+  readJsonBody,
+  requireString,
+  writeJson,
+} from "./http-util.js";
 import type { TaskEvent } from "./task-store.js";
 import type { TaskService } from "./task-service.js";
 
@@ -10,95 +20,50 @@ export interface ApiServerDeps {
   service: TaskService;
   /** Per-process bearer token callers must present (401 otherwise). */
   apiToken: string;
-}
-
-const MAX_BODY_BYTES = 1024 * 1024;
-
-async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    const buffer = chunk as Buffer;
-    size += buffer.byteLength;
-    if (size > MAX_BODY_BYTES) {
-      throw new ApiError(400, "INVALID_REQUEST", "request body is too large");
-    }
-    chunks.push(buffer);
-  }
-  if (size === 0) {
-    return {};
-  }
-  try {
-    const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new ApiError(400, "INVALID_REQUEST", "request body must be a JSON object");
-    }
-    return parsed as Record<string, unknown>;
-  } catch (error) {
-    if (error instanceof ApiError) {
-      throw error;
-    }
-    throw new ApiError(400, "INVALID_REQUEST", "request body is not valid JSON");
-  }
-}
-
-function requireString(body: Record<string, unknown>, field: string): string {
-  const value = body[field];
-  if (typeof value !== "string" || value.length === 0) {
-    throw new ApiError(400, "INVALID_REQUEST", `${field} is required`);
-  }
-  return value;
-}
-
-function optionalStringArray(body: Record<string, unknown>, field: string): string[] {
-  const value = body[field];
-  if (value === undefined || value === null) {
-    return [];
-  }
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
-    throw new ApiError(400, "INVALID_REQUEST", `${field} must be an array of strings`);
-  }
-  return value as string[];
-}
-
-function writeJson(res: http.ServerResponse, status: number, payload: unknown): void {
-  const encoded = JSON.stringify(payload);
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Content-Length": Buffer.byteLength(encoded),
-  });
-  res.end(encoded);
+  /**
+   * Identity/session subsystem. When set, /api/v1/auth and /api/v1/admin are
+   * served and requests may authenticate with a web session cookie or a
+   * desktop session token instead of the operator bearer token. When unset,
+   * the local-operator bearer surface is unchanged.
+   */
+  auth?: AuthService;
+  /** External origin override for OAuth redirects; loopback derives per request. */
+  publicOrigin?: string;
 }
 
 function writeSseEvent(res: http.ServerResponse, event: TaskEvent): void {
   res.write(`id: ${event.event_id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
 }
 
-function isApiError(value: unknown): value is ApiError {
-  return value instanceof ApiError;
+/**
+ * Who an authenticated API request acts as.
+ *
+ * `local_operator` is the legacy per-process bearer token. A `session` actor
+ * is an enterprise user; their authority is bounded by their workspace
+ * membership and is invalidated live (logout, suspension, revocation).
+ */
+type RequestActor = { kind: "local_operator" } | { kind: "session"; ctx: SessionContext };
+
+function authenticateRequest(req: http.IncomingMessage, deps: ApiServerDeps): RequestActor {
+  if (isAuthorizedBearer(req.headers.authorization, deps.apiToken)) {
+    return { kind: "local_operator" };
+  }
+  if (deps.auth !== undefined) {
+    return { kind: "session", ctx: requireSessionActor(deps.auth, req) };
+  }
+  throw new ApiError(
+    401,
+    "UNAUTHENTICATED",
+    "A valid Authorization: Bearer <token> header is required (see the API token file).",
+  );
 }
 
 /**
- * Authenticate and origin-check one API request.
- *
- * Every /api/v1 call must present the per-process bearer token: possessing
- * it — not a statically configured identity string — is what authorizes a
- * caller to act as the local operator, approvals included. Browser-originated
- * calls are additionally pinned to this server's own loopback origin, and
- * bodies must be JSON, so a cross-site page cannot ride a simple request.
+ * Origin-pin and content-type checks for one API request. Browser-originated
+ * calls are pinned to this server's own loopback origin, and bodies must be
+ * JSON, so a cross-site page cannot ride a simple request.
  */
-function authorizeApiRequest(
-  req: http.IncomingMessage,
-  apiToken: string,
-  localPort: number | undefined,
-): void {
-  if (!isAuthorizedBearer(req.headers.authorization, apiToken)) {
-    throw new ApiError(
-      401,
-      "UNAUTHENTICATED",
-      "A valid Authorization: Bearer <token> header is required (see the API token file).",
-    );
-  }
+function checkRequestBasics(req: http.IncomingMessage, localPort: number | undefined): void {
   const origin = req.headers.origin;
   if (typeof origin === "string" && origin !== "null" && origin.length > 0) {
     const allowed = new Set(
@@ -137,10 +102,44 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     const segments = url.pathname.split("/").filter((segment) => segment.length > 0);
     try {
-      if (segments[0] !== "api" || segments[1] !== "v1" || segments[2] !== "tasks") {
-        throw new ApiError(404, "TASK_NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+      if (segments[0] !== "api" || segments[1] !== "v1") {
+        throw new ApiError(404, "NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
       }
-      authorizeApiRequest(req, deps.apiToken, res.socket?.localPort);
+      checkRequestBasics(req, res.socket?.localPort);
+
+      // Identity, session, and administrator surfaces authenticate themselves.
+      if (segments[2] === "auth" || segments[2] === "admin") {
+        if (deps.auth === undefined) {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+        }
+        await handleAuthRequest(
+          {
+            auth: deps.auth,
+            ...(deps.publicOrigin !== undefined ? { publicOrigin: deps.publicOrigin } : {}),
+          },
+          { req, res, url, segments, requestId },
+        );
+        return;
+      }
+
+      if (segments[2] !== "tasks") {
+        throw new ApiError(404, "NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+      }
+      const actor = authenticateRequest(req, deps);
+      // Session authority is bounded by the workspace membership: a revoked
+      // membership or a viewer role loses writes immediately; a lost
+      // membership loses reads as well.
+      const method = req.method ?? "GET";
+      const isWrite = method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+      if (actor.kind === "session" && deps.auth !== undefined) {
+        const role = deps.auth.workspaceRole(actor.ctx.user.id);
+        if (role === undefined) {
+          throw new ApiError(403, "FORBIDDEN", "an active workspace membership is required");
+        }
+        if (role === "viewer" && isWrite) {
+          throw new ApiError(403, "FORBIDDEN", "this session has read-only access");
+        }
+      }
       const taskId = segments[3];
 
       // POST /api/v1/tasks
@@ -286,6 +285,26 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
           res.end();
           return;
         }
+        // A session stream dies the moment its authority dies: logout,
+        // suspension, or revoked membership ends the subscription instead of
+        // leaving a zombie stream behind.
+        let unsubscribeAuth: (() => void) | undefined;
+        if (actor.kind === "session" && deps.auth !== undefined) {
+          const auth = deps.auth;
+          const sessionCtx = actor.ctx;
+          unsubscribeAuth = auth.hub.subscribe((event) => {
+            const losesAccess =
+              (event.type === "session.revoked" && event.session_id === sessionCtx.session.id) ||
+              (event.type === "user.suspended" && event.user_id === sessionCtx.user.id) ||
+              (event.type === "membership.revoked" &&
+                event.user_id === sessionCtx.user.id &&
+                auth.workspaceRole(sessionCtx.user.id) === undefined);
+            if (losesAccess) {
+              res.end();
+            }
+          });
+          req.on("close", unsubscribeAuth);
+        }
         const unsubscribe = service.subscribe(taskId, (event) => {
           writeSseEvent(res, event);
           if (event.type === "task.terminal") {
@@ -306,18 +325,23 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
         writeJson(res, error.status, error.toBody(requestId));
         return;
       }
-      // Unexpected failures serve one fixed safe message: the cause may carry
-      // internal diagnostics (paths, payloads, provider text) and stays in
-      // server-side logs only — never in the shared envelope (ADR-0008:
-      // messages and details never expose sensitive diagnostics).
-      console.error(`unhandled API error on request ${requestId}:`, error);
+      if (error instanceof ControlPlaneError) {
+        const mapped = apiErrorFromControlPlane(error);
+        writeJson(res, mapped.status, mapped.toBody(requestId));
+        return;
+      }
       writeJson(
         res,
         500,
+        // Unexpected failures serve one fixed safe message: the cause may
+        // carry internal diagnostics (paths, payloads, provider text) and
+        // stays in server-side logs only — never in the shared envelope
+        // (ADR-0008: messages and details never expose sensitive diagnostics).
         new ApiError(500, "INTERNAL_ERROR", "An unexpected internal error occurred.").toBody(
           requestId,
         ),
       );
+      console.error(`unhandled API error on request ${requestId}:`, error);
     }
   };
 

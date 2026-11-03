@@ -182,7 +182,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** SSE stream of task events; replays by Last-Event-ID in sequence order from the durable projection, so a reconnect after an orchestrator restart resumes exactly where the client stopped without duplicating business events. A terminal task's stream always closes after its replay, including when Last-Event-ID is already anchored at task.terminal and the replay has nothing left to write. Any credential invalidation (logout, suspension, membership revocation, expiry) terminates the subscription at invalidation time; see the contract's Session invalidation section. */
+        /** SSE stream of task events; replays by Last-Event-ID in sequence order from the durable projection, so a reconnect after an orchestrator restart resumes exactly where the client stopped without duplicating business events. A terminal task's stream always closes after its replay, including when Last-Event-ID is already anchored at task.terminal and the replay has nothing left to write. */
         get: operations["streamTaskEvents"];
         put?: never;
         post?: never;
@@ -199,10 +199,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * List administrator-approved login providers
-         * @description Public. Lists exactly the provider instances whose origins an enterprise administrator approved; the login screen derives its buttons from this list. Unauthenticated callers learn nothing beyond the offered sign-in options (ADR-0006).
-         */
+        /** List administrator-approved provider instances available for login */
         get: operations["listLoginProviders"];
         put?: never;
         post?: never;
@@ -212,27 +209,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/auth/authorize": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Begin a provider sign-in
-         * @description Public. Starts a registered provider OAuth authorization flow (state, exact redirect validation, PKCE where supported). The server binds the returned `state` to this request — client kind, redirect target, and for desktop the PKCE challenge — and consumes it single-use at the callback, which blocks login CSRF and callback replay. `client: web` receives a protected session cookie at the callback; `client: desktop` receives a bound, single-use loopback callback and exchanges a ticket afterwards. Signing in establishes identity only — it never grants workspace or repository access (ADR-0006). A provider instance that is unknown or not administrator-approved is the same 404 NOT_FOUND (see Non-enumeration).
-         */
-        post: operations["startSignIn"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/callback/{provider_instance_id}": {
+    "/api/v1/auth/login": {
         parameters: {
             query?: never;
             header?: never;
@@ -240,10 +217,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * OAuth redirect target after provider sign-in
-         * @description Public; the registered OAuth redirect. Validates the bound single-use state and the exact redirect target, then completes sign-in server-side. web: sets the protected `fp_session` cookie (HttpOnly, SameSite=Lax, Secure) and 302s to the validated `redirect_to`. desktop: 302s to the bound loopback `desktop_redirect_uri` with a single-use `ticket` (URL query) and `state`; the ticket is short-lived, bound to the authorize `code_challenge`, and redeemable exactly once. Every failure — unknown or replayed state, provider error, disallowed redirect — redirects to the client's error target with one opaque `error=signin_failed` value: the callback never enumerates why sign-in failed. GET consumes only the OAuth code and the state binding.
+         * Start a provider OAuth login (authorization code + state + PKCE)
+         * @description Browser navigation: responds 302 to the provider's authorize URL with an exact pre-registered redirect_uri, a single-use state, and an S256 PKCE challenge. Set-Cookie fp_oauth_binding (HttpOnly) binds the flow to this browser so a login-CSRF callback cannot complete. desktop_flow binds the login to a pending desktop flow.
          */
-        get: operations["providerOAuthCallback"];
+        get: operations["startLogin"];
         put?: never;
         post?: never;
         delete?: never;
@@ -252,20 +229,20 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/auth/sessions/exchange": {
+    "/api/v1/auth/callback": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put?: never;
         /**
-         * Exchange a desktop callback ticket for a session credential
-         * @description Public — the ticket is the credential. The ticket is single-use, short-lived, and PKCE-bound to the authorize request; any failure (unknown, expired, replayed, or verifier-mismatched) is the same 401 UNAUTHENTICATED and never names the cause (see Non-enumeration). The returned access token authenticates subsequent bearer requests; it is held by the desktop main process and never exposed to renderer JavaScript (ADR-0006).
+         * OAuth callback: single-use code/state exchange into a session
+         * @description Validates the single-use state and the browser binding, exchanges the code with PKCE, and matches the account only by (provider instance, stable subject) — never by email. Web flows get the session as an HttpOnly cookie and a 302 to return_to; desktop flows get a plain completion page and deliver the credential through the single-use exchange instead.
          */
-        post: operations["exchangeDesktopTicket"];
+        get: operations["completeLogin"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -279,18 +256,177 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Read the current session and principal
-         * @description Returns the authenticated principal, the enterprise resolved from the sign-in's provider instance, and the session's `csrf_token`. Workspace access is listed by `GET /api/v1/workspaces` and is never implied here: a session with no memberships has no workspace access — login alone grants nothing (ADR-0006).
-         */
-        get: operations["getCurrentSession"];
+        /** Describe the current session, roles, memberships, and CSRF token */
+        get: operations["getSession"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
         /**
-         * Log out: invalidate the session and its subscriptions
-         * @description Invalidates this session immediately: every SSE subscription bound to it is terminated at invalidation time and every later request with the same credential fails 401. Cookie clients must send `X-CSRF-Token`.
+         * Revoke the current session immediately
+         * @description Revokes the session server-side (reads, writes, and live SSE subscriptions die with it) and expires the cookie. Cookie sessions must echo the session CSRF token in X-CSRF-Token.
          */
-        delete: operations["endSession"];
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/desktop/flows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start a desktop system-browser sign-in binding
+         * @description Returns a flow id and a single-use secret held by the desktop only. The desktop opens login_url in the system browser; sign-in completes server-side and one exchange delivers the session.
+         */
+        post: operations["createDesktopFlow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/desktop/flows/{flow_id}/exchange": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Single-use exchange of the desktop secret for a session token */
+        post: operations["exchangeDesktopFlow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/enterprises/{enterprise_id}/bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Deployment-owned, audited grant of the first enterprise administrator
+         * @description Names the administrator by provider instance and stable subject explicitly — whoever signed in first cannot capture the role — and succeeds at most once per enterprise. Requires the deployment bootstrap token (X-Bootstrap-Token); ordinary sessions are refused.
+         */
+        post: operations["bootstrapAdmin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/enterprises/{enterprise_id}/provider-instances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Administrator approval of a provider instance origin
+         * @description The approval gate for OAuth logins. Refuses internal-network or arbitrary self-hosted origins: HTTPS, no credentials/path/query/fragment, default port, public hostname or IP literal, public DNS answers, and a configured OAuth application are all required.
+         */
+        post: operations["registerProviderInstance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/enterprises/{enterprise_id}/auth-audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the secret-free authentication/authorization audit trail */
+        get: operations["listAuthAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Grant or fail on a workspace membership (administrator) */
+        put: operations["grantMembership"];
+        post?: never;
+        /** Revoke a workspace membership; live streams close immediately */
+        delete: operations["revokeMembership"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{user_id}/suspend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Suspend a user: all sessions, SSE streams, and logins die */
+        post: operations["suspendUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{user_id}/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reactivate a suspended user */
+        post: operations["activateUser"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -750,48 +886,13 @@ export interface components {
             digest: string | null;
             head_sha: string | null;
         };
-        Error: {
-            /** @description The shared versioned error envelope (ADR-0008, DAT-226 alignment): a stable machine code, the processing stage, the outcome category, a safe localizable user message, service-decided retryability, retry-after where applicable, the request_id trace/case reference, safe-only structured details, and the authorized next action. No field ever carries secrets, credentials, invitation tokens, or sensitive diagnostics; those stay behind separate access checks. */
-            error: {
-                /**
-                 * @description Envelope format version. Evolution within a version is additive only; a new version signals a breaking envelope change.
-                 * @enum {integer}
-                 */
-                envelope_version: 1;
-                /** @description Stable machine code. Never localized and never re-mapped to a different meaning; display text lives in `message`. Unknown codes render from `message` plus `next_action`. */
-                code: string;
-                /**
-                 * @description The processing stage that rejected the request.
-                 * @enum {string}
-                 */
-                stage: "auth" | "validation" | "authorization" | "policy" | "execution" | "delivery" | "reconciliation" | "unknown";
-                /**
-                 * @description Outcome semantics: denial (refused by authority/policy; do not retry), stop (fix the request or state; do not retry), retry (a retry may succeed within limits), unknown (reconcile before further writes). The service, never a model or a client, decides retry eligibility; a policy denial is never rewritten as a generic server error.
-                 * @enum {string}
-                 */
-                category: "denial" | "stop" | "retry" | "unknown";
-                /** @description Safe user-facing guidance. Localizable without changing `code`; a trace ID alone is never the only guidance. An unexpected INTERNAL_ERROR serves one fixed safe message; its cause stays in server-side logs, correlated by `request_id`. */
-                message: string;
-                retryable: boolean;
-                /** @description Seconds to wait before a retry; non-null when applicable (typically 429 and retryable 503), matching the Retry-After header where the server sends one. */
-                retry_after_seconds: number | null;
-                /** @description Trace/case reference to quote in support and security cases. */
-                request_id: string;
-                /** @description Safe structured context only (e.g. a conflicting version, a denied capability category). Never secrets, raw provider errors, invitation tokens, or sensitive diagnostics. */
-                details: {
-                    [key: string]: unknown;
-                };
-                /**
-                 * @description The authorized next action, as a machine code. Additive vocabulary: a client renders an unknown action as generic guidance from `message`. Null when no action applies.
-                 * @enum {string|null}
-                 */
-                next_action: "reauthenticate" | "refresh" | "retry" | "resubmit" | "reconcile" | "request_review" | "request_new_invitation" | "contact_admin" | null;
-            };
-        };
+        /** @description An account, matched across providers only by (provider instance, stable subject). `identities` is the linked-provider provenance (DAT-203's views serve it); the core projection is served everywhere. */
         User: {
             id: string;
             display_name: string;
-            identities: components["schemas"]["UserIdentity"][];
+            /** @enum {string} */
+            status: "active" | "suspended";
+            identities?: components["schemas"]["UserIdentity"][];
         };
         UserRef: {
             id: string;
@@ -843,20 +944,22 @@ export interface components {
             /** @enum {string} */
             provider_type: "github" | "gitlab";
         };
-        /** @description A workspace membership. Effective access intersects enterprise membership, workspace role, current repository access, and action policy (ADR-0006); a role here is never sufficient authority on its own. */
+        /** @description A workspace membership. Effective access intersects enterprise membership, workspace role, current repository access, and action policy (ADR-0006); a role here is never sufficient authority on its own. The administrator grant response serves the core projection; the workspace-admin views (`GET /api/v1/workspaces/{workspace_id}/members`, invitation redemption) additionally serve `user`, `authority`, `version`, `created_at`, and `updated_at`. */
         Membership: {
             id: string;
+            enterprise_id: string;
             workspace_id: string;
             user_id: string;
-            user: components["schemas"]["UserRef"];
             /** @enum {string} */
             role: "owner" | "admin" | "member" | "viewer";
-            authority: components["schemas"]["MemberAuthority"];
-            version: number;
+            user?: components["schemas"]["UserRef"];
+            authority?: components["schemas"]["MemberAuthority"];
+            /** @description Optimistic-concurrency token for state-changing operations. */
+            version?: number;
             /** Format: date-time */
-            created_at: string;
+            created_at?: string;
             /** Format: date-time */
-            updated_at: string;
+            updated_at?: string;
         };
         /** @description Provenance of the member's effective provider role (ADR-0006): how the provider conferred authority, when it was last verified, and whether it is stale. Missing or unverifiable provenance is `unknown`, never invented; stale or unknown authority blocks sensitive actions pending reconciliation (DAT-203). */
         MemberAuthority: {
@@ -949,32 +1052,121 @@ export interface components {
             workspace: components["schemas"]["Workspace"];
             membership: components["schemas"]["Membership"];
         };
-        /** @description The authenticated principal's server-side session. Sessions are established by provider sign-in and invalidated by logout, suspension, membership revocation, and expiry; see the contract's Session invalidation section for stream semantics. */
-        Session: {
-            session_id: string;
-            /** Format: date-time */
-            created_at: string;
+        SessionInfo: {
+            user: components["schemas"]["User"];
+            /** @enum {string} */
+            kind: "web" | "desktop";
+            /** @description Paired with the HttpOnly session cookie: cookie-authenticated mutating requests must echo it in the X-CSRF-Token header. It is readable by the page on purpose — possession without the cookie grants nothing. */
+            csrf_token: string;
             /** Format: date-time */
             expires_at: string;
-            /** @description Cookie-authenticated clients MUST echo this value in the `X-CSRF-Token` header on every state-changing request. Bearer-authenticated requests are not ambient and do not send it. */
-            csrf_token: string;
-            user: components["schemas"]["User"];
-            enterprise: components["schemas"]["EnterpriseRef"];
+            enterprise_roles: {
+                enterprise_id: string;
+                /** @enum {string} */
+                role: "admin";
+            }[];
+            memberships: {
+                enterprise_id: string;
+                workspace_id: string;
+                /** @enum {string} */
+                role: "owner" | "admin" | "member" | "viewer";
+            }[];
         };
-        /** @description Desktop session credential from the single-use ticket exchange. The access token is held by the desktop main process and never exposed to renderer JavaScript (ADR-0006). */
-        SessionCredential: {
-            access_token: string;
-            /** @enum {string} */
-            token_type: "Bearer";
-            session: components["schemas"]["Session"];
-        };
-        /** @description An administrator-approved provider instance offered on the login screen. Only approved origins are ever listed: arbitrary self-hosted URLs can never become credential-exfiltration or internal-network endpoints (ADR-0006). */
         LoginProvider: {
             provider_instance_id: string;
             /** @enum {string} */
             provider_type: "github" | "gitlab";
-            /** @example github.com */
-            origin_host: string;
+            /** @example https://github.com */
+            display_origin: string;
+        };
+        ProviderInstance: {
+            id: string;
+            enterprise_id: string;
+            /** @enum {string} */
+            provider_type: "github" | "gitlab";
+            /** @description Administrator-approved provider origin. Registration enforces HTTPS, no credentials/path/query/fragment, the default port, and a public hostname or IP literal that resolves to public addresses only — internal-network origins are refused. */
+            origin_url: string;
+            version: number;
+        };
+        DesktopFlow: {
+            flow_id: string;
+            /** @description Single-use desktop-held secret, returned exactly once at creation and exchanged once for the desktop session. It never appears in a URL, log, or audit record. */
+            secret: string;
+            /** @description Open in the system browser to complete sign-in. */
+            login_url: string;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        AuthAuditRecord: {
+            id: string;
+            /** Format: date-time */
+            at: string;
+            /**
+             * @example login.started
+             * @example login.completed
+             * @example login.rejected
+             * @example session.created
+             * @example session.revoked
+             * @example desktop_flow.created
+             * @example desktop_flow.consumed
+             * @example user.provisioned
+             * @example user.suspended
+             * @example user.activated
+             * @example membership.granted
+             * @example membership.revoked
+             * @example provider_instance.registered
+             * @example admin.bootstrap
+             * @example admin.denied
+             */
+            event: string;
+            enterprise_id?: string | null;
+            /** @enum {string} */
+            actor_kind: "user" | "deployment" | "anonymous";
+            actor_user_id?: string | null;
+            subject_user_id?: string | null;
+            provider_instance_id?: string | null;
+            /** @description Secret-free detail; never carries tokens, codes, or states. */
+            details: {
+                [key: string]: unknown;
+            };
+        };
+        Error: {
+            /** @description The shared versioned error envelope (ADR-0008, DAT-226 alignment): a stable machine code, the processing stage, the outcome category, a safe localizable user message, service-decided retryability, retry-after where applicable, the request_id trace/case reference, safe-only structured details, and the authorized next action. No field ever carries secrets, credentials, invitation tokens, or sensitive diagnostics; those stay behind separate access checks. */
+            error: {
+                /**
+                 * @description Envelope format version. Evolution within a version is additive only; a new version signals a breaking envelope change.
+                 * @enum {integer}
+                 */
+                envelope_version: 1;
+                /** @description Stable machine code. Never localized and never re-mapped to a different meaning; display text lives in `message`. Unknown codes render from `message` plus `next_action`. */
+                code: string;
+                /**
+                 * @description The processing stage that rejected the request.
+                 * @enum {string}
+                 */
+                stage: "auth" | "validation" | "authorization" | "policy" | "execution" | "delivery" | "reconciliation" | "unknown";
+                /**
+                 * @description Outcome semantics: denial (refused by authority/policy; do not retry), stop (fix the request or state; do not retry), retry (a retry may succeed within limits), unknown (reconcile before further writes). The service, never a model or a client, decides retry eligibility; a policy denial is never rewritten as a generic server error.
+                 * @enum {string}
+                 */
+                category: "denial" | "stop" | "retry" | "unknown";
+                /** @description Safe user-facing guidance. Localizable without changing `code`; a trace ID alone is never the only guidance. An unexpected INTERNAL_ERROR serves one fixed safe message; its cause stays in server-side logs, correlated by `request_id`. */
+                message: string;
+                retryable: boolean;
+                /** @description Seconds to wait before a retry; non-null when applicable (typically 429 and retryable 503), matching the Retry-After header where the server sends one. */
+                retry_after_seconds: number | null;
+                /** @description Trace/case reference to quote in support and security cases. */
+                request_id: string;
+                /** @description Safe structured context only (e.g. a conflicting version, a denied capability category). Never secrets, raw provider errors, invitation tokens, or sensitive diagnostics. */
+                details: {
+                    [key: string]: unknown;
+                };
+                /**
+                 * @description The authorized next action, as a machine code. Additive vocabulary: a client renders an unknown action as generic guidance from `message`. Null when no action applies.
+                 * @enum {string|null}
+                 */
+                next_action: "reauthenticate" | "refresh" | "retry" | "resubmit" | "reconcile" | "request_review" | "request_new_invitation" | "contact_admin" | null;
+            };
         };
     };
     responses: never;
@@ -1692,45 +1884,33 @@ export interface operations {
             };
         };
     };
-    startSignIn: {
+    startLogin: {
         parameters: {
-            query?: never;
+            query: {
+                /** @description Must name an administrator-approved provider instance. */
+                provider_instance_id: string;
+                /** @description Relative same-deployment path only; absolute URLs fall back to /. */
+                return_to?: string;
+                /** @description Pending desktop auth flow id to bind this login to. */
+                desktop_flow?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": {
-                    provider_instance_id: string;
-                    /** @enum {string} */
-                    client: "web" | "desktop";
-                    /** @description web only. Exact same-origin path to redirect to after the callback: a single-slash `/…` path. Schemes, hosts, protocol-relative (`//…`) and backslash forms are rejected. */
-                    redirect_to?: string;
-                    /** @description desktop only. The bound callback target: exactly `http://127.0.0.1:<port>/callback` or `http://[::1]:<port>/callback`. Anything else is rejected. */
-                    desktop_redirect_uri?: string;
-                    /** @description desktop only (required for desktop). PKCE challenge binding the later ticket exchange. */
-                    code_challenge?: string;
-                };
-            };
-        };
+        requestBody?: never;
         responses: {
-            /** @description Authorization URL to open in the system browser */
-            202: {
+            /** @description Redirect to the provider authorize endpoint */
+            302: {
                 headers: {
+                    Location?: string;
+                    /** @description fp_oauth_binding=<secret>; HttpOnly; SameSite=Lax */
+                    "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": {
-                        authorization_url: string;
-                        /** @description Opaque single-use state bound server-side to this request. */
-                        state: string;
-                        /** Format: date-time */
-                        expires_at: string;
-                    };
-                };
+                content?: never;
             };
-            /** @description INVALID_REQUEST */
+            /** @description Unknown/unusable provider instance */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -1739,8 +1919,8 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description NOT_FOUND — unknown or unapproved provider instance */
-            404: {
+            /** @description AUTH_FLOW_EXPIRED: desktop flow is not startable */
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1750,29 +1930,66 @@ export interface operations {
             };
         };
     };
-    providerOAuthCallback: {
+    completeLogin: {
         parameters: {
             query: {
                 code: string;
                 state: string;
             };
             header?: never;
-            path: {
-                provider_instance_id: string;
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Redirect to the validated client target; on any failure, redirect to the client error target with `error=signin_failed`. */
+            /** @description Desktop login complete; return to the application */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Web login complete; redirect to return_to */
             302: {
                 headers: {
+                    Location?: string;
+                    /** @description fp_session=<token>; HttpOnly; SameSite=Lax; Max-Age */
+                    "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description INVALID_REQUEST — malformed callback parameters */
+            /** @description AUTH_FLOW_INVALID: unknown state or malformed callback */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: binding mismatch (login CSRF) or suspended account */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description AUTH_FLOW_CONSUMED (replay) or AUTH_FLOW_EXPIRED */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description PROVIDER_ERROR: provider token/userinfo call failed (retryable) */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1782,61 +1999,7 @@ export interface operations {
             };
         };
     };
-    exchangeDesktopTicket: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    ticket: string;
-                    code_verifier: string;
-                };
-            };
-        };
-        responses: {
-            /** @description Session credential */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SessionCredential"];
-                };
-            };
-            /** @description INVALID_REQUEST */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description UNAUTHENTICATED — invalid, expired, or replayed ticket */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description RATE_LIMITED */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    getCurrentSession: {
+    getSession: {
         parameters: {
             query?: never;
             header?: never;
@@ -1851,7 +2014,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Session"];
+                    "application/json": components["schemas"]["SessionInfo"];
                 };
             };
             /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
@@ -1865,19 +2028,19 @@ export interface operations {
             };
         };
     };
-    endSession: {
+    logout: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
-                "X-CSRF-Token"?: string;
+            header: {
+                /** @description Required for cookie sessions; desktop bearer sessions are exempt. */
+                "X-CSRF-Token": string;
             };
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Session invalidated */
+            /** @description Session revoked */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -1893,8 +2056,545 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description FORBIDDEN or CSRF_TOKEN_INVALID */
+            /** @description FORBIDDEN: missing or invalid CSRF token */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createDesktopFlow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description Optional preselection included in login_url. */
+                    provider_instance_id?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Desktop flow created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DesktopFlow"];
+                };
+            };
+        };
+    };
+    exchangeDesktopFlow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                flow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    secret: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Session issued (exactly once per flow) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        status: "ok";
+                        /** @description Desktop session token for Authorization: Bearer. */
+                        token: string;
+                        csrf_token: string;
+                        /** Format: date-time */
+                        expires_at: string;
+                        user: components["schemas"]["User"];
+                    };
+                };
+            };
+            /** @description AUTH_FLOW_INVALID: unknown flow */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED: wrong secret (attempts are counted) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description AUTH_FLOW_CONSUMED (replay) or AUTH_FLOW_EXPIRED */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description AUTH_FLOW_NOT_READY: browser sign-in has not completed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RATE_LIMITED: too many exchange attempts (retryable) */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    bootstrapAdmin: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Bootstrap-Token": string;
+            };
+            path: {
+                enterprise_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    provider_instance_id: string;
+                    /** @description Stable provider subject; the identity must have signed in. */
+                    subject: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Enterprise administrator granted (idempotent for the same identity) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        enterprise_id: string;
+                        user_id: string;
+                        /** @enum {string} */
+                        role: "admin";
+                    };
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: session callers are never deployment authority */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND: enterprise, provider instance, or signed-in identity */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description BOOTSTRAP_CONFLICT: an administrator already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description BOOTSTRAP_UNAVAILABLE: no deployment token configured (retryable) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    registerProviderInstance: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                enterprise_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    provider_type: "github" | "gitlab";
+                    /** @example https://github.com */
+                    origin_url: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Provider instance approved */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        provider_instance: components["schemas"]["ProviderInstance"];
+                    };
+                };
+            };
+            /** @description INVALID_REQUEST: unusable origin or no OAuth application */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description PROVIDER_ORIGIN_REJECTED or missing administrator authority */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listAuthAudit: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                enterprise_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Audit records, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["AuthAuditRecord"][];
+                    };
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: administrator authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    grantMembership: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                enterprise_id: string;
+                workspace_id: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    role: "owner" | "admin" | "member" | "viewer";
+                };
+            };
+        };
+        responses: {
+            /** @description Membership granted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Membership"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: administrator authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Workspace or user not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CONFLICT: already a member */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    revokeMembership: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                enterprise_id: string;
+                workspace_id: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Membership revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: administrator authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Membership not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    suspendUser: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description Optional locator for deployment actors. */
+                    enterprise_id?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description User suspended */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["User"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: administrator authority over this user required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description User not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    activateUser: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    enterprise_id?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description User activated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["User"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: administrator authority over this user required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description User not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

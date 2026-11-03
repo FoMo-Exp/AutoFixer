@@ -21,7 +21,7 @@ import {
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const committedPath = path.join(repoRoot, "web", "src", "api", "contracts", "openapi.json");
 
-const CONTRACT_OPERATIONS: Array<[method: string, path: string]> = [
+const M0_ENDPOINTS: Array<[method: string, path: string]> = [
   ["post", "/api/v1/tasks"],
   ["get", "/api/v1/tasks"],
   ["get", "/api/v1/tasks/{task_id}"],
@@ -34,12 +34,30 @@ const CONTRACT_OPERATIONS: Array<[method: string, path: string]> = [
   ["get", "/api/v1/tasks/{task_id}/timeline"],
   ["get", "/api/v1/tasks/{task_id}/artifacts/{artifact_id}"],
   ["get", "/api/v1/tasks/{task_id}/stream"],
+];
+
+/** Identity, session, and administration surface (DAT-202). */
+const AUTH_ENDPOINTS: Array<[method: string, path: string]> = [
   ["get", "/api/v1/auth/providers"],
-  ["post", "/api/v1/auth/authorize"],
-  ["get", "/api/v1/auth/callback/{provider_instance_id}"],
-  ["post", "/api/v1/auth/sessions/exchange"],
+  ["get", "/api/v1/auth/login"],
+  ["get", "/api/v1/auth/callback"],
   ["get", "/api/v1/auth/session"],
-  ["delete", "/api/v1/auth/session"],
+  ["post", "/api/v1/auth/logout"],
+  ["post", "/api/v1/auth/desktop/flows"],
+  ["post", "/api/v1/auth/desktop/flows/{flow_id}/exchange"],
+  ["post", "/api/v1/admin/enterprises/{enterprise_id}/bootstrap"],
+  ["post", "/api/v1/admin/enterprises/{enterprise_id}/provider-instances"],
+  ["get", "/api/v1/admin/enterprises/{enterprise_id}/auth-audit"],
+  ["put", "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}"],
+  [
+    "delete",
+    "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}",
+  ],
+  ["post", "/api/v1/admin/users/{user_id}/suspend"],
+  ["post", "/api/v1/admin/users/{user_id}/activate"],
+];
+
+const WORKSPACE_ENDPOINTS: Array<[method: string, path: string]> = [
   ["get", "/api/v1/workspaces"],
   ["post", "/api/v1/workspaces"],
   ["get", "/api/v1/workspaces/{workspace_id}"],
@@ -64,29 +82,20 @@ const CONTRACT_OPERATIONS: Array<[method: string, path: string]> = [
   ["post", "/api/v1/invitations/redeem"],
 ];
 
-/** Login bootstrap operations reachable without a credential. */
-const PUBLIC_OPERATIONS: Array<[method: string, path: string]> = [
-  ["get", "/api/v1/auth/providers"],
-  ["post", "/api/v1/auth/authorize"],
-  ["get", "/api/v1/auth/callback/{provider_instance_id}"],
-  ["post", "/api/v1/auth/sessions/exchange"],
-];
-
-/** List operations and their documented `{items, next_cursor}` pagination. */
-const LIST_OPERATIONS: Array<[method: string, path: string]> = [
-  ["get", "/api/v1/tasks"],
-  ["get", "/api/v1/workspaces"],
-  ["get", "/api/v1/workspaces/{workspace_id}/members"],
-  ["get", "/api/v1/workspaces/{workspace_id}/member-candidates"],
-  ["get", "/api/v1/workspaces/{workspace_id}/teams"],
-  ["get", "/api/v1/workspaces/{workspace_id}/invitations"],
-];
+const ALL_ENDPOINTS = [...M0_ENDPOINTS, ...AUTH_ENDPOINTS, ...WORKSPACE_ENDPOINTS];
 
 describe("forgepilot-api/v1 OpenAPI document", () => {
   const document = buildOpenApiDocument();
 
-  test("documents every contracted endpoint", () => {
-    for (const [method, path] of CONTRACT_OPERATIONS) {
+  test("documents every M0 endpoint", () => {
+    for (const [method, path] of M0_ENDPOINTS) {
+      expect(document.paths[path], `missing path ${path}`).toBeDefined();
+      expect(document.paths[path]?.[method], `missing ${method} ${path}`).toBeDefined();
+    }
+  });
+
+  test("documents every identity/session endpoint", () => {
+    for (const [method, path] of AUTH_ENDPOINTS) {
       expect(document.paths[path], `missing path ${path}`).toBeDefined();
       expect(document.paths[path]?.[method], `missing ${method} ${path}`).toBeDefined();
     }
@@ -100,8 +109,31 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
       }
     }
     expect(documented.sort()).toEqual(
-      [...CONTRACT_OPERATIONS].map(([method, path]) => [method, path]).sort(),
+      [...ALL_ENDPOINTS].map(([method, path]) => [method, path]).sort(),
     );
+  });
+
+  test("the login surface is anonymous while sessions and admin declare their schemes", () => {
+    for (const path of [
+      "/api/v1/auth/providers",
+      "/api/v1/auth/login",
+      "/api/v1/auth/callback",
+      "/api/v1/auth/desktop/flows",
+      "/api/v1/auth/desktop/flows/{flow_id}/exchange",
+    ]) {
+      const methods = document.paths[path] as Record<string, { security: unknown[] }>;
+      for (const [method, operation] of Object.entries(methods)) {
+        expect(operation.security, `${method} ${path}`).toEqual([]);
+      }
+    }
+    const session = document.paths["/api/v1/auth/session"]?.["get"] as { security: unknown[] };
+    expect(session.security).toContainEqual({ sessionCookie: [] });
+    const bootstrap = document.paths["/api/v1/admin/enterprises/{enterprise_id}/bootstrap"]?.[
+      "post"
+    ] as { security: unknown[] };
+    expect(bootstrap.security).toEqual([{ bootstrapToken: [] }]);
+    expect(document.components.securitySchemes["sessionCookie"]).toBeDefined();
+    expect(document.components.securitySchemes["bootstrapToken"]).toBeDefined();
   });
 
   test("Task.status enum matches the contract's UI status vocabulary", () => {
@@ -246,38 +278,19 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
     ]);
   });
 
-  test("only the login bootstrap is public; every other operation requires a credential", () => {
-    const publicKeys = PUBLIC_OPERATIONS.map(([method, path]) => `${method} ${path}`).sort();
+  test("every authenticated state-changing operation documents the CSRF header", () => {
     for (const [path, methods] of Object.entries(document.paths)) {
       for (const [method, rawOperation] of Object.entries(methods)) {
         const operation = rawOperation as {
           security?: Array<Record<string, string[]>>;
-          responses?: Record<string, unknown>;
+          parameters?: Array<{ name?: string }>;
         };
         const key = `${method} ${path}`;
-        if (publicKeys.includes(key)) {
-          expect(operation.security, `public ${key} must accept no credential`).toEqual([]);
-          continue;
-        }
-        expect(operation.security, `missing security on ${key}`).toEqual([
-          { bearerAuth: [] },
-          { sessionCookie: [] },
-        ]);
-        expect(operation.responses?.["401"], `missing 401 on ${key}`).toBeDefined();
-      }
-    }
-  });
-
-  test("every authenticated state-changing operation documents the CSRF header", () => {
-    for (const [path, methods] of Object.entries(document.paths)) {
-      for (const [method, rawOperation] of Object.entries(methods)) {
-        const operation = rawOperation as { parameters?: Array<{ name?: string }> };
-        const key = `${method} ${path}`;
         const mutating = ["post", "patch", "put", "delete"].includes(method);
-        const publicOp = PUBLIC_OPERATIONS.some(
-          ([publicMethod, publicPath]) => `${publicMethod} ${publicPath}` === key,
+        const cookieCredential = (operation.security ?? []).some(
+          (entry) => entry["sessionCookie"] !== undefined,
         );
-        const expectsCsrf = mutating && !publicOp;
+        const expectsCsrf = mutating && cookieCredential;
         const hasCsrf = (operation.parameters ?? []).some(
           (parameter) => parameter.name === "X-CSRF-Token",
         );
@@ -287,7 +300,14 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
   });
 
   test("list operations paginate with opaque cursors", () => {
-    for (const [method, path] of LIST_OPERATIONS) {
+    for (const [method, path] of [
+      ["get", "/api/v1/tasks"],
+      ["get", "/api/v1/workspaces"],
+      ["get", "/api/v1/workspaces/{workspace_id}/members"],
+      ["get", "/api/v1/workspaces/{workspace_id}/member-candidates"],
+      ["get", "/api/v1/workspaces/{workspace_id}/teams"],
+      ["get", "/api/v1/workspaces/{workspace_id}/invitations"],
+    ] as Array<[string, string]>) {
       const operation = document.paths[path]?.[method] as {
         parameters?: Array<{ name?: string; in?: string }>;
         responses?: Record<
@@ -341,10 +361,18 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
         };
         const names = new Set<string>();
         propertyNames(operation.requestBody, names);
-        expect(
-          [...names].filter((name) => name === "workspace_id" || name === "enterprise_id"),
-          `${method} ${path} request body must not accept scope identifiers`,
-        ).toEqual([]);
+        // The workspace/invitation surface never takes a scope identifier in
+        // a body. (The admin suspend/activate bodies carry an optional
+        // `enterprise_id` narrowing locator that the server authorizes
+        // against the admin's own authority — a locator, not authority.)
+        const scopeSurface =
+          path.startsWith("/api/v1/workspaces") || path.startsWith("/api/v1/invitations");
+        if (scopeSurface) {
+          expect(
+            [...names].filter((name) => name === "workspace_id" || name === "enterprise_id"),
+            `${method} ${path} request body must not accept scope identifiers`,
+          ).toEqual([]);
+        }
         if (path.includes("{workspace_id}")) {
           expect(
             (operation.parameters ?? []).some(

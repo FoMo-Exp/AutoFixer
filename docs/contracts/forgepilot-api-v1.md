@@ -43,19 +43,78 @@ credential for the same server-side session:
   Secure), set by the OAuth callback. Every state-changing request
   authenticated by cookie MUST echo the session's `csrf_token` in the
   `X-CSRF-Token` header; a missing or wrong value is `403 CSRF_TOKEN_INVALID`.
-- **desktop** — the session access token returned by
-  `POST /api/v1/auth/sessions/exchange`, sent as `Authorization: Bearer <token>`
-  and held by the desktop main process; it is never exposed to renderer
-  JavaScript. Bearer requests are not ambient and carry no CSRF header.
+- **desktop** — the session access token returned by the desktop flow
+  exchange (`POST /api/v1/auth/desktop/flows/{flow_id}/exchange`), sent as
+  `Authorization: Bearer <token>` and held by the desktop main process; it is
+  never exposed to renderer JavaScript. Bearer requests are not ambient and
+  carry no CSRF header.
 
 `401 UNAUTHENTICATED` is uniform: a missing, malformed, expired, or
 invalidated credential, a suspended account, and an invalid desktop exchange
 ticket all return the same body and never name the cause (see
 Non-enumeration). A credential authenticates the principal only — it never
 grants scope. Every non-public operation documents the `401` response; the
-four login-bootstrap operations (`GET /api/v1/auth/providers`,
-`POST /api/v1/auth/authorize`, `GET /api/v1/auth/callback/{provider_instance_id}`,
-`POST /api/v1/auth/sessions/exchange`) require no credential.
+anonymous login-bootstrap operations (`GET /api/v1/auth/providers`,
+`GET /api/v1/auth/login`, `GET /api/v1/auth/callback`,
+`POST /api/v1/auth/desktop/flows`,
+`POST /api/v1/auth/desktop/flows/{flow_id}/exchange`) require no credential.
+
+## Enterprise identity, sessions, and administration (DAT-202)
+
+When the deployment configures `FORGEPILOT_OAUTH_CLIENTS_FILE`, the API also
+serves the ADR-0006 identity surface and `/api/v1/tasks` requests MAY instead
+authenticate with a server-side session:
+
+- **Web** sessions arrive as the `fp_session` HttpOnly, `SameSite=Lax` cookie
+  (`sessionCookie` scheme). Cookie-authenticated mutating requests MUST echo
+  the session's CSRF token from `GET /api/v1/auth/session` in the
+  `X-CSRF-Token` header. Session tokens are 256-bit random values stored only
+  as SHA-256 digests; the CSRF token is the pairing secret and grants nothing
+  without the cookie.
+- **Desktop** sessions arrive as `Authorization: Bearer <session-token>`
+  (desktop flows skip CSRF: no ambient credential is sent). Desktop sign-in
+  starts in the system browser; the credential is delivered exactly once by
+  `POST /api/v1/auth/desktop/flows/{flow_id}/exchange`, and neither an
+  embedded login page nor Git passwords are involved.
+- Login is OAuth authorization code with a single-use `state`, an S256 PKCE
+  challenge, and one exact pre-registered `redirect_uri`. The flow is bound to
+  the starting browser via the `fp_oauth_binding` HttpOnly cookie, so a
+  login-CSRF callback is refused. Accounts are matched only by (provider
+  instance, stable provider subject); emails never merge identities.
+- Only administrator-approved provider instances accept logins. Registration
+  (`POST …/provider-instances`) refuses arbitrary self-hosted and
+  internal-network origins: HTTPS, no credentials/path/query/fragment, default
+  port, public hostname or IP literal, and public DNS answers are required.
+- The first enterprise administrator is granted only through the
+  deployment-owned bootstrap (`POST …/bootstrap`, `X-Bootstrap-Token`,
+  audited, at most once per enterprise, naming the provider identity
+  explicitly). The first ordinary login never becomes an administrator.
+- Logout, suspension, and membership revocation invalidate sessions
+  immediately: reads, writes, and live SSE subscriptions all fail or close.
+  Session-authenticated task access additionally requires an active workspace
+  membership (`viewer` is read-only).
+- Authentication secrets (OAuth client secrets, session tokens, desktop
+  secrets, states, verifiers) never appear in renderer responses, logs, audit
+  records, callback URLs, or analytics.
+
+Endpoints (details in the OpenAPI document):
+
+| Request | Request body | Response |
+|---|---|---|
+| `GET /api/v1/auth/providers` | none | `200 {items: LoginProvider[]}` |
+| `GET /api/v1/auth/login?provider_instance_id=&return_to=&desktop_flow=` | none | `302` to the provider; `Set-Cookie: fp_oauth_binding` |
+| `GET /api/v1/auth/callback?code=&state=` | none | web `302` + `Set-Cookie: fp_session`; desktop `200` text |
+| `GET /api/v1/auth/session` | none | `200 SessionInfo` (incl. `csrf_token`) |
+| `POST /api/v1/auth/logout` | none | `204` |
+| `POST /api/v1/auth/desktop/flows` | optional `provider_instance_id` | `201 DesktopFlow` |
+| `POST /api/v1/auth/desktop/flows/{flow_id}/exchange` | `{secret}` | `200 {token,…}` once; `428` pending, `410` consumed/expired |
+| `POST /api/v1/admin/enterprises/{enterprise_id}/bootstrap` | `provider_instance_id`, `subject` | `200 {enterprise_id, user_id, role:"admin"}` |
+| `POST /api/v1/admin/enterprises/{enterprise_id}/provider-instances` | `provider_type`, `origin_url` | `201 {provider_instance}` |
+| `GET /api/v1/admin/enterprises/{enterprise_id}/auth-audit?limit=` | none | `200 {items: AuthAuditRecord[]}` |
+| `PUT /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}` | `{role}` | `200 Membership` |
+| `DELETE /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}` | none | `204` |
+| `POST /api/v1/admin/users/{user_id}/suspend` | optional `enterprise_id` | `200 User` |
+| `POST /api/v1/admin/users/{user_id}/activate` | optional `enterprise_id` | `200 User` |
 
 ## Task resource
 
@@ -147,12 +206,6 @@ run summaries for that task; terminal grants are never reused.
 | `GET /api/v1/tasks/{task_id}/timeline` | none | `200 {items: TimelineEvent[]}` |
 | `GET /api/v1/tasks/{task_id}/artifacts/{artifact_id}` | none | `200 redacted artifact` |
 | `GET /api/v1/tasks/{task_id}/stream` | `Last-Event-ID` optional | `200 text/event-stream` |
-| `GET /api/v1/auth/providers` | none | `200 {items: LoginProvider[]}` |
-| `POST /api/v1/auth/authorize` | `{provider_instance_id, client:"web"\|"desktop", redirect_to?, desktop_redirect_uri?, code_challenge?}` | `202 {authorization_url, state, expires_at}` |
-| `GET /api/v1/auth/callback/{provider_instance_id}?code=&state=` | none | `302` redirect |
-| `POST /api/v1/auth/sessions/exchange` | `{ticket, code_verifier}` | `201 SessionCredential` |
-| `GET /api/v1/auth/session` | none | `200 Session` |
-| `DELETE /api/v1/auth/session` | none | `204` |
 | `GET /api/v1/workspaces?cursor=` | none | `200 {items: Workspace[], next_cursor}` |
 | `POST /api/v1/workspaces` | `{name, repository_id, provider_instance_id}` | `201 Workspace` |
 | `GET /api/v1/workspaces/{workspace_id}` | none | `200 Workspace` |
@@ -187,6 +240,12 @@ SSE events contain `event_id`, `sequence`, `occurred_at`, `task_id`,
 `approval.resolved`, `tool.requested`, `tool.completed`, `tool.denied`,
 `validation.completed`, `artifact.available`, `evidence.appended`, and
 `task.terminal`. Node replays by `Last-Event-ID` in sequence order.
+
+`tool.denied` data carries the shared error envelope
+(`docs/contracts/error-envelope-v1.md`) in `data.error_envelope`, the origin
+dsh code in `data.error_code`, and the envelope's safe message in
+`data.message` — actionable guidance without secrets or policy internals;
+raw failure detail stays behind the separate diagnostics access check.
 
 ## Safe Pi text summary
 
@@ -431,7 +490,10 @@ Contract semantics:
 ## Error model: the shared error envelope
 
 Every endpoint's errors use one shared, versioned envelope (aligned with the
-ADR-0008 / DAT-226 shared error contract). Display text may be localized
+ADR-0008 / DAT-226 shared error contract; the actionable agent/human error
+contract is `docs/contracts/error-envelope-v1.md`, whose §3 maps this
+surface's stable codes into the shared catalog for tool results and task
+events). Display text may be localized
 without changing machine codes; no field ever carries secrets, credentials,
 invitation tokens, or sensitive diagnostics.
 
@@ -540,34 +602,6 @@ Consequences a client can rely on:
 - Pi sessions are not resumed across a restart. A task that was mid-run
   keeps its dsh-projected status with a `status_reason` recording that the
   session was not resumed; approvals and cancels remain available.
-
-## Sessions and sign-in
-
-Sign-in uses registered provider OAuth authorization flows with state, exact
-redirect validation, PKCE where supported, and server-side session
-establishment (ADR-0006). `GET /api/v1/auth/providers` lists only
-administrator-approved provider instances; an unknown or unapproved instance
-is `404 NOT_FOUND` — the same response as a nonexistent one.
-
-`POST /api/v1/auth/authorize` binds the returned single-use `state` to the
-request (client kind, redirect target, and for desktop the PKCE
-`code_challenge`); the callback consumes it, so login CSRF and callback replay
-fail. `redirect_to` is an exact same-origin `/…` path; `desktop_redirect_uri`
-is exactly `http://127.0.0.1:<port>/callback` or `http://[::1]:<port>/callback`.
-The desktop callback delivers a single-use, short-lived `ticket`, exchanged
-once at `POST /api/v1/auth/sessions/exchange` for a session access token; any
-ticket failure is the uniform `401 UNAUTHENTICATED`. Desktop collects no Git
-passwords and embeds no login page.
-
-Sessions are server-side. `GET /api/v1/auth/session` returns the principal,
-the enterprise resolved from the sign-in's provider instance, and the
-`csrf_token`; `DELETE /api/v1/auth/session` logs out (see Session
-invalidation). Signing in establishes identity only: it never grants workspace
-or repository access, and the first enterprise administrator is established
-only through the deployment-owned audited bootstrap — never by whichever
-account signs in first. Identity is bound by provider instance and stable
-subject ID; email-based identity matching and blame-name matching are
-rejected, and account linking requires proof of both identities.
 
 ## Workspace, team, and member administration
 

@@ -11,13 +11,13 @@ import {
   TURN_REPORT_MAX_ITEMS,
   TURN_REPORT_OUTCOMES,
 } from "../pi/turn-report.js";
+import { DSH_STATES } from "../dsh/types.js";
 import {
   ERROR_CATEGORIES,
   ERROR_ENVELOPE_VERSION,
   ERROR_NEXT_ACTIONS,
   ERROR_STAGES,
 } from "./errors.js";
-import { DSH_STATES } from "../dsh/types.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -130,6 +130,183 @@ const errorSchema: JsonObject = {
             "guidance from `message`. Null when no action applies.",
         },
       },
+    },
+  },
+};
+
+// --- Identity, session, and administration schemas (DAT-202) ---------------
+
+const userSchema: JsonObject = {
+  type: "object",
+  description:
+    "An account, matched across providers only by (provider instance, stable " +
+    "subject). `identities` is the linked-provider provenance (DAT-203's " +
+    "views serve it); the core projection is served everywhere.",
+  required: ["id", "display_name", "status"],
+  properties: {
+    id: { type: "string" },
+    display_name: { type: "string" },
+    status: { type: "string", enum: ["active", "suspended"] },
+    identities: {
+      type: "array",
+      items: { $ref: "#/components/schemas/UserIdentity" },
+    },
+  },
+};
+
+const membershipSchema: JsonObject = {
+  type: "object",
+  description:
+    "A workspace membership. Effective access intersects enterprise " +
+    "membership, workspace role, current repository access, and action " +
+    "policy (ADR-0006); a role here is never sufficient authority on its own. " +
+    "The administrator grant response serves the core projection; the " +
+    "workspace-admin views (`GET /api/v1/workspaces/{workspace_id}/members`, " +
+    "invitation redemption) additionally serve `user`, `authority`, " +
+    "`version`, `created_at`, and `updated_at`.",
+  required: ["id", "enterprise_id", "workspace_id", "user_id", "role"],
+  properties: {
+    id: { type: "string" },
+    enterprise_id: { type: "string" },
+    workspace_id: { type: "string" },
+    user_id: { type: "string" },
+    role: { type: "string", enum: ["owner", "admin", "member", "viewer"] },
+    user: { $ref: "#/components/schemas/UserRef" },
+    authority: { $ref: "#/components/schemas/MemberAuthority" },
+    version: {
+      type: "integer",
+      description: "Optimistic-concurrency token for state-changing operations.",
+    },
+    created_at: { type: "string", format: "date-time" },
+    updated_at: { type: "string", format: "date-time" },
+  },
+};
+
+const sessionInfoSchema: JsonObject = {
+  type: "object",
+  required: ["user", "kind", "csrf_token", "expires_at", "enterprise_roles", "memberships"],
+  properties: {
+    user: { $ref: "#/components/schemas/User" },
+    kind: { type: "string", enum: ["web", "desktop"] },
+    csrf_token: {
+      type: "string",
+      description:
+        "Paired with the HttpOnly session cookie: cookie-authenticated " +
+        "mutating requests must echo it in the X-CSRF-Token header. It is " +
+        "readable by the page on purpose — possession without the cookie " +
+        "grants nothing.",
+    },
+    expires_at: { type: "string", format: "date-time" },
+    enterprise_roles: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["enterprise_id", "role"],
+        properties: {
+          enterprise_id: { type: "string" },
+          role: { type: "string", enum: ["admin"] },
+        },
+      },
+    },
+    memberships: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["enterprise_id", "workspace_id", "role"],
+        properties: {
+          enterprise_id: { type: "string" },
+          workspace_id: { type: "string" },
+          role: { type: "string", enum: ["owner", "admin", "member", "viewer"] },
+        },
+      },
+    },
+  },
+};
+
+const loginProviderSchema: JsonObject = {
+  type: "object",
+  required: ["provider_instance_id", "provider_type", "display_origin"],
+  properties: {
+    provider_instance_id: { type: "string" },
+    provider_type: { type: "string", enum: ["github", "gitlab"] },
+    display_origin: { type: "string", examples: ["https://github.com"] },
+  },
+};
+
+const providerInstanceSchema: JsonObject = {
+  type: "object",
+  required: ["id", "enterprise_id", "provider_type", "origin_url", "version"],
+  properties: {
+    id: { type: "string" },
+    enterprise_id: { type: "string" },
+    provider_type: { type: "string", enum: ["github", "gitlab"] },
+    origin_url: {
+      type: "string",
+      description:
+        "Administrator-approved provider origin. Registration enforces " +
+        "HTTPS, no credentials/path/query/fragment, the default port, and a " +
+        "public hostname or IP literal that resolves to public addresses " +
+        "only — internal-network origins are refused.",
+    },
+    version: { type: "number" },
+  },
+};
+
+const desktopFlowSchema: JsonObject = {
+  type: "object",
+  required: ["flow_id", "secret", "login_url", "expires_at"],
+  properties: {
+    flow_id: { type: "string" },
+    secret: {
+      type: "string",
+      description:
+        "Single-use desktop-held secret, returned exactly once at creation " +
+        "and exchanged once for the desktop session. It never appears in a " +
+        "URL, log, or audit record.",
+    },
+    login_url: {
+      type: "string",
+      description: "Open in the system browser to complete sign-in.",
+    },
+    expires_at: { type: "string", format: "date-time" },
+  },
+};
+
+const authAuditRecordSchema: JsonObject = {
+  type: "object",
+  required: ["id", "at", "event", "actor_kind", "details"],
+  properties: {
+    id: { type: "string" },
+    at: { type: "string", format: "date-time" },
+    event: {
+      type: "string",
+      examples: [
+        "login.started",
+        "login.completed",
+        "login.rejected",
+        "session.created",
+        "session.revoked",
+        "desktop_flow.created",
+        "desktop_flow.consumed",
+        "user.provisioned",
+        "user.suspended",
+        "user.activated",
+        "membership.granted",
+        "membership.revoked",
+        "provider_instance.registered",
+        "admin.bootstrap",
+        "admin.denied",
+      ],
+    },
+    enterprise_id: { type: ["string", "null"] },
+    actor_kind: { type: "string", enum: ["user", "deployment", "anonymous"] },
+    actor_user_id: { type: ["string", "null"] },
+    subject_user_id: { type: ["string", "null"] },
+    provider_instance_id: { type: ["string", "null"] },
+    details: {
+      type: "object",
+      additionalProperties: true,
+      description: "Secret-free detail; never carries tokens, codes, or states.",
     },
   },
 };
@@ -534,16 +711,6 @@ const userIdentitySchema: JsonObject = {
   },
 };
 
-const userSchema: JsonObject = {
-  type: "object",
-  required: ["id", "display_name", "identities"],
-  properties: {
-    id: { type: "string" },
-    display_name: { type: "string" },
-    identities: { type: "array", items: { $ref: "#/components/schemas/UserIdentity" } },
-  },
-};
-
 const userRefSchema: JsonObject = {
   type: "object",
   required: ["id", "display_name"],
@@ -648,36 +815,6 @@ const memberAuthoritySchema: JsonObject = {
         "True when provider authority changed or went unverified and " +
         "reconciliation has not confirmed it.",
     },
-  },
-};
-
-const membershipSchema: JsonObject = {
-  type: "object",
-  description:
-    "A workspace membership. Effective access intersects enterprise " +
-    "membership, workspace role, current repository access, and action " +
-    "policy (ADR-0006); a role here is never sufficient authority on its own.",
-  required: [
-    "id",
-    "workspace_id",
-    "user_id",
-    "user",
-    "role",
-    "authority",
-    "version",
-    "created_at",
-    "updated_at",
-  ],
-  properties: {
-    id: { type: "string" },
-    workspace_id: { type: "string" },
-    user_id: { type: "string" },
-    user: { $ref: "#/components/schemas/UserRef" },
-    role: { type: "string", enum: [...WORKSPACE_ROLES] },
-    authority: { $ref: "#/components/schemas/MemberAuthority" },
-    version: { type: "integer" },
-    created_at: { type: "string", format: "date-time" },
-    updated_at: { type: "string", format: "date-time" },
   },
 };
 
@@ -864,59 +1001,6 @@ const invitationRedemptionSchema: JsonObject = {
   },
 };
 
-const sessionSchema: JsonObject = {
-  type: "object",
-  description:
-    "The authenticated principal's server-side session. Sessions are " +
-    "established by provider sign-in and invalidated by logout, suspension, " +
-    "membership revocation, and expiry; see the contract's Session " +
-    "invalidation section for stream semantics.",
-  required: ["session_id", "created_at", "expires_at", "csrf_token", "user", "enterprise"],
-  properties: {
-    session_id: { type: "string" },
-    created_at: { type: "string", format: "date-time" },
-    expires_at: { type: "string", format: "date-time" },
-    csrf_token: {
-      type: "string",
-      description:
-        "Cookie-authenticated clients MUST echo this value in the " +
-        "`X-CSRF-Token` header on every state-changing request. " +
-        "Bearer-authenticated requests are not ambient and do not send it.",
-    },
-    user: { $ref: "#/components/schemas/User" },
-    enterprise: { $ref: "#/components/schemas/EnterpriseRef" },
-  },
-};
-
-const sessionCredentialSchema: JsonObject = {
-  type: "object",
-  description:
-    "Desktop session credential from the single-use ticket exchange. The " +
-    "access token is held by the desktop main process and never exposed to " +
-    "renderer JavaScript (ADR-0006).",
-  required: ["access_token", "token_type", "session"],
-  properties: {
-    access_token: { type: "string" },
-    token_type: { type: "string", enum: ["Bearer"] },
-    session: { $ref: "#/components/schemas/Session" },
-  },
-};
-
-const loginProviderSchema: JsonObject = {
-  type: "object",
-  description:
-    "An administrator-approved provider instance offered on the login " +
-    "screen. Only approved origins are ever listed: arbitrary self-hosted " +
-    "URLs can never become credential-exfiltration or internal-network " +
-    "endpoints (ADR-0006).",
-  required: ["provider_instance_id", "provider_type", "origin_host"],
-  properties: {
-    provider_instance_id: { type: "string" },
-    provider_type: { type: "string", enum: ["github", "gitlab"] },
-    origin_host: { type: "string", examples: ["github.com"] },
-  },
-};
-
 function errorResponse(description: string): JsonObject {
   return {
     description,
@@ -929,26 +1013,35 @@ function jsonRef(ref: string): JsonObject {
 }
 
 /**
- * The credential requirement for every non-public operation. Authenticated
- * operations accept either credential: the per-process bearer token (local
- * pilot) or a session access token / the `fp_session` session cookie from the
- * enterprise sign-in flow. A credential authenticates the principal only —
- * it never grants scope: every request's enterprise/workspace authority is
- * resolved server-side from authenticated membership (ADR-0006), never from
- * client-supplied identifiers.
+ * The single Bearer security requirement applied to every operation. The
+ * per-process token (see the M0 Authentication section) is what authorizes a
+ * caller — approvals included — so a client generated from this contract
+ * knows to send `Authorization: Bearer <token>` on every call.
  */
-const AUTHENTICATED_SECURITY: Array<Record<string, string[]>> = [
-  { bearerAuth: [] },
+const BEARER_SECURITY: Array<Record<string, string[]>> = [{ bearerAuth: [] }];
+
+/** Web sessions: HttpOnly cookie plus the X-CSRF-Token echo on writes. */
+const SESSION_SECURITY: Array<Record<string, string[]>> = [
   { sessionCookie: [] },
+  { bearerAuth: [] },
 ];
 
-/** Operations reachable without a credential: the login bootstrap only. */
-const PUBLIC_OPERATIONS: Record<string, true> = {
-  "get /api/v1/auth/providers": true,
-  "post /api/v1/auth/authorize": true,
-  "get /api/v1/auth/callback/{provider_instance_id}": true,
-  "post /api/v1/auth/sessions/exchange": true,
-};
+/**
+ * Administration: the deployment bootstrap token (the first provider
+ * approval and the one-time first-administrator grant) or an enterprise
+ * administrator session.
+ */
+const ADMIN_SECURITY: Array<Record<string, string[]>> = [
+  { bootstrapToken: [] },
+  { sessionCookie: [] },
+  { bearerAuth: [] },
+];
+
+/** Bootstrap grants are deployment-owned: never an ordinary session. */
+const BOOTSTRAP_SECURITY: Array<Record<string, string[]>> = [{ bootstrapToken: [] }];
+
+/** Anonymous login surface: no credential is required to start a login. */
+const ANONYMOUS_SECURITY: Array<Record<string, string[]>> = [];
 
 const MUTATING_METHODS: Record<string, true> = { post: true, patch: true, put: true, delete: true };
 
@@ -994,7 +1087,7 @@ function pageSchema(itemRef: string): JsonObject {
   };
 }
 
-/** The 401 response every non-public operation can return. */
+/** The 401 response every operation can return when the credential is unusable. */
 function unauthorizedResponse(): JsonObject {
   return errorResponse(
     "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential " +
@@ -1005,30 +1098,38 @@ function unauthorizedResponse(): JsonObject {
 }
 
 /**
- * Stamp the credential requirement and the 401 response onto every non-public
- * operation (and the CSRF parameter onto every state-changing one), so auth
- * coverage cannot silently miss an endpoint. Public login-bootstrap
- * operations explicitly accept no credential.
+ * Stamp the security requirement and the 401 response onto every operation
+ * that does not declare its own `security` (the identity surface declares
+ * its own; task operations accept either credential — the enterprise web
+ * client is session-authenticated and desktop keeps the bearer). Every
+ * state-changing operation whose security includes the ambient session
+ * cookie also documents the CSRF echo header.
  */
 function stampAuth(paths: Record<string, Record<string, unknown>>): void {
-  for (const [docPath, methods] of Object.entries(paths)) {
+  for (const methods of Object.values(paths)) {
     for (const [method, operation] of Object.entries(methods)) {
       if (operation === null || typeof operation !== "object") {
         continue;
       }
       const op = operation as {
-        security?: unknown;
+        security?: Array<Record<string, string[]>>;
         parameters?: Array<JsonObject>;
         responses?: Record<string, unknown>;
       };
-      if (PUBLIC_OPERATIONS[`${method} ${docPath}`]) {
-        op.security = [];
-        continue;
+      if (op.security === undefined) {
+        op.security = SESSION_SECURITY;
+        op.responses = { ...op.responses, 401: unauthorizedResponse() };
       }
-      op.security = AUTHENTICATED_SECURITY;
-      op.responses = { ...op.responses, 401: unauthorizedResponse() };
-      if (MUTATING_METHODS[method]) {
-        op.parameters = [...(op.parameters ?? []), CSRF_PARAMETER];
+      const cookieCredential = (op.security ?? []).some(
+        (entry) => entry["sessionCookie"] !== undefined,
+      );
+      if (cookieCredential && MUTATING_METHODS[method]) {
+        const hasCsrf = (op.parameters ?? []).some(
+          (parameter) => parameter["name"] === "X-CSRF-Token",
+        );
+        if (!hasCsrf) {
+          op.parameters = [...(op.parameters ?? []), CSRF_PARAMETER];
+        }
       }
     }
   }
@@ -1328,10 +1429,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
           "restart resumes exactly where the client stopped without duplicating " +
           "business events. A terminal task's stream always closes after its " +
           "replay, including when Last-Event-ID is already anchored at " +
-          "task.terminal and the replay has nothing left to write. Any " +
-          "credential invalidation (logout, suspension, membership revocation, " +
-          "expiry) terminates the subscription at invalidation time; see the " +
-          "contract's Session invalidation section.",
+          "task.terminal and the replay has nothing left to write.",
         parameters: [
           { name: "task_id", in: "path", required: true, schema: { type: "string" } },
           {
@@ -1357,15 +1455,14 @@ export function buildOpenApiDocument(): OpenApiDocument {
         },
       },
     },
+
+    // --- Identity and sessions (DAT-202) -----------------------------------
+
     "/api/v1/auth/providers": {
       get: {
         operationId: "listLoginProviders",
-        summary: "List administrator-approved login providers",
-        description:
-          "Public. Lists exactly the provider instances whose origins an " +
-          "enterprise administrator approved; the login screen derives its " +
-          "buttons from this list. Unauthenticated callers learn nothing " +
-          "beyond the offered sign-in options (ADR-0006).",
+        summary: "List administrator-approved provider instances available for login",
+        security: ANONYMOUS_SECURITY,
         responses: {
           200: {
             description: "Approved login providers",
@@ -1375,149 +1472,165 @@ export function buildOpenApiDocument(): OpenApiDocument {
                   type: "object",
                   required: ["items"],
                   properties: {
-                    items: { type: "array", items: { $ref: "#/components/schemas/LoginProvider" } },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    "/api/v1/auth/authorize": {
-      post: {
-        operationId: "startSignIn",
-        summary: "Begin a provider sign-in",
-        description:
-          "Public. Starts a registered provider OAuth authorization flow " +
-          "(state, exact redirect validation, PKCE where supported). The " +
-          "server binds the returned `state` to this request — client kind, " +
-          "redirect target, and for desktop the PKCE challenge — and consumes " +
-          "it single-use at the callback, which blocks login CSRF and callback " +
-          "replay. `client: web` receives a protected session cookie at the " +
-          "callback; `client: desktop` receives a bound, single-use loopback " +
-          "callback and exchanges a ticket afterwards. Signing in " +
-          "establishes identity only — it never grants workspace or " +
-          "repository access (ADR-0006). A provider instance that is unknown " +
-          "or not administrator-approved is the same 404 NOT_FOUND (see " +
-          "Non-enumeration).",
-        requestBody: {
-          required: true,
-          content: {
-            "application/json": {
-              schema: {
-                type: "object",
-                required: ["provider_instance_id", "client"],
-                properties: {
-                  provider_instance_id: { type: "string" },
-                  client: { type: "string", enum: ["web", "desktop"] },
-                  redirect_to: {
-                    type: "string",
-                    description:
-                      "web only. Exact same-origin path to redirect to after " +
-                      "the callback: a single-slash `/…` path. Schemes, hosts, " +
-                      "protocol-relative (`//…`) and backslash forms are " +
-                      "rejected.",
-                  },
-                  desktop_redirect_uri: {
-                    type: "string",
-                    description:
-                      "desktop only. The bound callback target: exactly " +
-                      "`http://127.0.0.1:<port>/callback` or " +
-                      "`http://[::1]:<port>/callback`. Anything else is " +
-                      "rejected.",
-                  },
-                  code_challenge: {
-                    type: "string",
-                    description:
-                      "desktop only (required for desktop). PKCE challenge " +
-                      "binding the later ticket exchange.",
-                  },
-                },
-              },
-            },
-          },
-        },
-        responses: {
-          202: {
-            description: "Authorization URL to open in the system browser",
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  required: ["authorization_url", "state", "expires_at"],
-                  properties: {
-                    authorization_url: { type: "string" },
-                    state: {
-                      type: "string",
-                      description: "Opaque single-use state bound server-side to this request.",
+                    items: {
+                      type: "array",
+                      items: { $ref: "#/components/schemas/LoginProvider" },
                     },
-                    expires_at: { type: "string", format: "date-time" },
                   },
                 },
               },
             },
           },
-          400: errorResponse("INVALID_REQUEST"),
-          404: errorResponse("NOT_FOUND — unknown or unapproved provider instance"),
         },
       },
     },
-    "/api/v1/auth/callback/{provider_instance_id}": {
+    "/api/v1/auth/login": {
       get: {
-        operationId: "providerOAuthCallback",
-        summary: "OAuth redirect target after provider sign-in",
+        operationId: "startLogin",
+        summary: "Start a provider OAuth login (authorization code + state + PKCE)",
         description:
-          "Public; the registered OAuth redirect. Validates the bound " +
-          "single-use state and the exact redirect target, then completes " +
-          "sign-in server-side. web: sets the protected `fp_session` cookie " +
-          "(HttpOnly, SameSite=Lax, Secure) and 302s to the validated " +
-          "`redirect_to`. desktop: 302s to the bound loopback " +
-          "`desktop_redirect_uri` with a single-use `ticket` (URL query) and " +
-          "`state`; the ticket is short-lived, bound to the authorize " +
-          "`code_challenge`, and redeemable exactly once. Every failure — " +
-          "unknown or replayed state, provider error, disallowed redirect — " +
-          "redirects to the client's error target with one opaque " +
-          "`error=signin_failed` value: the callback never enumerates why " +
-          "sign-in failed. GET consumes only the OAuth code and the state " +
-          "binding.",
+          "Browser navigation: responds 302 to the provider's authorize URL " +
+          "with an exact pre-registered redirect_uri, a single-use state, and " +
+          "an S256 PKCE challenge. Set-Cookie fp_oauth_binding (HttpOnly) " +
+          "binds the flow to this browser so a login-CSRF callback cannot " +
+          "complete. desktop_flow binds the login to a pending desktop flow.",
+        security: ANONYMOUS_SECURITY,
         parameters: [
-          { name: "provider_instance_id", in: "path", required: true, schema: { type: "string" } },
+          {
+            name: "provider_instance_id",
+            in: "query",
+            required: true,
+            schema: { type: "string" },
+            description: "Must name an administrator-approved provider instance.",
+          },
+          {
+            name: "return_to",
+            in: "query",
+            required: false,
+            schema: { type: "string" },
+            description: "Relative same-deployment path only; absolute URLs fall back to /.",
+          },
+          {
+            name: "desktop_flow",
+            in: "query",
+            required: false,
+            schema: { type: "string" },
+            description: "Pending desktop auth flow id to bind this login to.",
+          },
+        ],
+        responses: {
+          302: {
+            description: "Redirect to the provider authorize endpoint",
+            headers: {
+              Location: { schema: { type: "string" } },
+              "Set-Cookie": {
+                schema: { type: "string" },
+                description: "fp_oauth_binding=<secret>; HttpOnly; SameSite=Lax",
+              },
+            },
+          },
+          400: errorResponse("Unknown/unusable provider instance"),
+          410: errorResponse("AUTH_FLOW_EXPIRED: desktop flow is not startable"),
+        },
+      },
+    },
+    "/api/v1/auth/callback": {
+      get: {
+        operationId: "completeLogin",
+        summary: "OAuth callback: single-use code/state exchange into a session",
+        description:
+          "Validates the single-use state and the browser binding, exchanges " +
+          "the code with PKCE, and matches the account only by (provider " +
+          "instance, stable subject) — never by email. Web flows get the " +
+          "session as an HttpOnly cookie and a 302 to return_to; desktop " +
+          "flows get a plain completion page and deliver the credential " +
+          "through the single-use exchange instead.",
+        security: ANONYMOUS_SECURITY,
+        parameters: [
           { name: "code", in: "query", required: true, schema: { type: "string" } },
           { name: "state", in: "query", required: true, schema: { type: "string" } },
         ],
         responses: {
           302: {
-            description:
-              "Redirect to the validated client target; on any failure, " +
-              "redirect to the client error target with `error=signin_failed`.",
+            description: "Web login complete; redirect to return_to",
+            headers: {
+              Location: { schema: { type: "string" } },
+              "Set-Cookie": {
+                schema: { type: "string" },
+                description: "fp_session=<token>; HttpOnly; SameSite=Lax; Max-Age",
+              },
+            },
           },
-          400: errorResponse("INVALID_REQUEST — malformed callback parameters"),
+          200: {
+            description: "Desktop login complete; return to the application",
+            content: { "text/plain": { schema: { type: "string" } } },
+          },
+          400: errorResponse("AUTH_FLOW_INVALID: unknown state or malformed callback"),
+          403: errorResponse("FORBIDDEN: binding mismatch (login CSRF) or suspended account"),
+          410: errorResponse("AUTH_FLOW_CONSUMED (replay) or AUTH_FLOW_EXPIRED"),
+          502: errorResponse("PROVIDER_ERROR: provider token/userinfo call failed (retryable)"),
         },
       },
     },
-    "/api/v1/auth/sessions/exchange": {
+    "/api/v1/auth/session": {
+      get: {
+        operationId: "getSession",
+        summary: "Describe the current session, roles, memberships, and CSRF token",
+        security: SESSION_SECURITY,
+        responses: {
+          200: {
+            description: "Current session",
+            ...jsonRef("#/components/schemas/SessionInfo"),
+          },
+          401: unauthorizedResponse(),
+        },
+      },
+    },
+    "/api/v1/auth/logout": {
       post: {
-        operationId: "exchangeDesktopTicket",
-        summary: "Exchange a desktop callback ticket for a session credential",
+        operationId: "logout",
+        summary: "Revoke the current session immediately",
         description:
-          "Public — the ticket is the credential. The ticket is single-use, " +
-          "short-lived, and PKCE-bound to the authorize request; any failure " +
-          "(unknown, expired, replayed, or verifier-mismatched) is the same " +
-          "401 UNAUTHENTICATED and never names the cause (see " +
-          "Non-enumeration). The returned access token authenticates " +
-          "subsequent bearer requests; it is held by the desktop main process " +
-          "and never exposed to renderer JavaScript (ADR-0006).",
+          "Revokes the session server-side (reads, writes, and live SSE " +
+          "subscriptions die with it) and expires the cookie. Cookie " +
+          "sessions must echo the session CSRF token in X-CSRF-Token.",
+        security: SESSION_SECURITY,
+        parameters: [
+          {
+            name: "X-CSRF-Token",
+            in: "header",
+            required: true,
+            schema: { type: "string" },
+            description: "Required for cookie sessions; desktop bearer sessions are exempt.",
+          },
+        ],
+        responses: {
+          204: { description: "Session revoked" },
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN: missing or invalid CSRF token"),
+        },
+      },
+    },
+    "/api/v1/auth/desktop/flows": {
+      post: {
+        operationId: "createDesktopFlow",
+        summary: "Start a desktop system-browser sign-in binding",
+        description:
+          "Returns a flow id and a single-use secret held by the desktop only. " +
+          "The desktop opens login_url in the system browser; sign-in " +
+          "completes server-side and one exchange delivers the session.",
+        security: ANONYMOUS_SECURITY,
         requestBody: {
-          required: true,
+          required: false,
           content: {
             "application/json": {
               schema: {
                 type: "object",
-                required: ["ticket", "code_verifier"],
                 properties: {
-                  ticket: { type: "string" },
-                  code_verifier: { type: "string" },
+                  provider_instance_id: {
+                    type: "string",
+                    description: "Optional preselection included in login_url.",
+                  },
                 },
               },
             },
@@ -1525,40 +1638,351 @@ export function buildOpenApiDocument(): OpenApiDocument {
         },
         responses: {
           201: {
-            description: "Session credential",
-            ...jsonRef("#/components/schemas/SessionCredential"),
+            description: "Desktop flow created",
+            ...jsonRef("#/components/schemas/DesktopFlow"),
           },
-          400: errorResponse("INVALID_REQUEST"),
-          401: errorResponse("UNAUTHENTICATED — invalid, expired, or replayed ticket"),
-          429: errorResponse("RATE_LIMITED"),
         },
       },
     },
-    "/api/v1/auth/session": {
-      get: {
-        operationId: "getCurrentSession",
-        summary: "Read the current session and principal",
-        description:
-          "Returns the authenticated principal, the enterprise resolved from " +
-          "the sign-in's provider instance, and the session's `csrf_token`. " +
-          "Workspace access is listed by `GET /api/v1/workspaces` and is " +
-          "never implied here: a session with no memberships has no workspace " +
-          "access — login alone grants nothing (ADR-0006).",
+    "/api/v1/auth/desktop/flows/{flow_id}/exchange": {
+      post: {
+        operationId: "exchangeDesktopFlow",
+        summary: "Single-use exchange of the desktop secret for a session token",
+        security: ANONYMOUS_SECURITY,
+        parameters: [{ name: "flow_id", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["secret"],
+                properties: { secret: { type: "string" } },
+              },
+            },
+          },
+        },
         responses: {
-          200: { description: "Current session", ...jsonRef("#/components/schemas/Session") },
+          200: {
+            description: "Session issued (exactly once per flow)",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["status", "token", "csrf_token", "expires_at", "user"],
+                  properties: {
+                    status: { type: "string", enum: ["ok"] },
+                    token: {
+                      type: "string",
+                      description: "Desktop session token for Authorization: Bearer.",
+                    },
+                    csrf_token: { type: "string" },
+                    expires_at: { type: "string", format: "date-time" },
+                    user: { $ref: "#/components/schemas/User" },
+                  },
+                },
+              },
+            },
+          },
+          400: errorResponse("AUTH_FLOW_INVALID: unknown flow"),
+          401: errorResponse("UNAUTHENTICATED: wrong secret (attempts are counted)"),
+          410: errorResponse("AUTH_FLOW_CONSUMED (replay) or AUTH_FLOW_EXPIRED"),
+          428: errorResponse("AUTH_FLOW_NOT_READY: browser sign-in has not completed"),
+          429: errorResponse("RATE_LIMITED: too many exchange attempts (retryable)"),
+        },
+      },
+    },
+
+    // --- Administration (DAT-202) ------------------------------------------
+
+    "/api/v1/admin/enterprises/{enterprise_id}/bootstrap": {
+      post: {
+        operationId: "bootstrapAdmin",
+        summary: "Deployment-owned, audited grant of the first enterprise administrator",
+        description:
+          "Names the administrator by provider instance and stable subject " +
+          "explicitly — whoever signed in first cannot capture the role — and " +
+          "succeeds at most once per enterprise. Requires the deployment " +
+          "bootstrap token (X-Bootstrap-Token); ordinary sessions are refused.",
+        security: BOOTSTRAP_SECURITY,
+        parameters: [
+          {
+            name: "enterprise_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+          {
+            name: "X-Bootstrap-Token",
+            in: "header",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["provider_instance_id", "subject"],
+                properties: {
+                  provider_instance_id: { type: "string" },
+                  subject: {
+                    type: "string",
+                    description: "Stable provider subject; the identity must have signed in.",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Enterprise administrator granted (idempotent for the same identity)",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["enterprise_id", "user_id", "role"],
+                  properties: {
+                    enterprise_id: { type: "string" },
+                    user_id: { type: "string" },
+                    role: { type: "string", enum: ["admin"] },
+                  },
+                },
+              },
+            },
+          },
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN: session callers are never deployment authority"),
+          404: errorResponse("NOT_FOUND: enterprise, provider instance, or signed-in identity"),
+          409: errorResponse("BOOTSTRAP_CONFLICT: an administrator already exists"),
+          503: errorResponse("BOOTSTRAP_UNAVAILABLE: no deployment token configured (retryable)"),
+        },
+      },
+    },
+    "/api/v1/admin/enterprises/{enterprise_id}/provider-instances": {
+      post: {
+        operationId: "registerProviderInstance",
+        summary: "Administrator approval of a provider instance origin",
+        description:
+          "The approval gate for OAuth logins. Refuses internal-network or " +
+          "arbitrary self-hosted origins: HTTPS, no credentials/path/query/" +
+          "fragment, default port, public hostname or IP literal, public DNS " +
+          "answers, and a configured OAuth application are all required.",
+        security: ADMIN_SECURITY,
+        parameters: [
+          {
+            name: "enterprise_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["provider_type", "origin_url"],
+                properties: {
+                  provider_type: { type: "string", enum: ["github", "gitlab"] },
+                  origin_url: { type: "string", examples: ["https://github.com"] },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: "Provider instance approved",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["provider_instance"],
+                  properties: {
+                    provider_instance: { $ref: "#/components/schemas/ProviderInstance" },
+                  },
+                },
+              },
+            },
+          },
+          400: errorResponse("INVALID_REQUEST: unusable origin or no OAuth application"),
+          401: unauthorizedResponse(),
+          403: errorResponse("PROVIDER_ORIGIN_REJECTED or missing administrator authority"),
+        },
+      },
+    },
+    "/api/v1/admin/enterprises/{enterprise_id}/auth-audit": {
+      get: {
+        operationId: "listAuthAudit",
+        summary: "Read the secret-free authentication/authorization audit trail",
+        security: ADMIN_SECURITY,
+        parameters: [
+          {
+            name: "enterprise_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+          { name: "limit", in: "query", required: false, schema: { type: "integer" } },
+        ],
+        responses: {
+          200: {
+            description: "Audit records, newest first",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["items"],
+                  properties: {
+                    items: {
+                      type: "array",
+                      items: { $ref: "#/components/schemas/AuthAuditRecord" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN: administrator authority required"),
+        },
+      },
+    },
+    "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}": {
+      put: {
+        operationId: "grantMembership",
+        summary: "Grant or fail on a workspace membership (administrator)",
+        security: ADMIN_SECURITY,
+        parameters: [
+          {
+            name: "enterprise_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+          {
+            name: "workspace_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+          { name: "user_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["role"],
+                properties: {
+                  role: { type: "string", enum: ["owner", "admin", "member", "viewer"] },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Membership granted",
+            ...jsonRef("#/components/schemas/Membership"),
+          },
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN: administrator authority required"),
+          404: errorResponse("Workspace or user not found"),
+          409: errorResponse("CONFLICT: already a member"),
         },
       },
       delete: {
-        operationId: "endSession",
-        summary: "Log out: invalidate the session and its subscriptions",
-        description:
-          "Invalidates this session immediately: every SSE subscription bound " +
-          "to it is terminated at invalidation time and every later request " +
-          "with the same credential fails 401. Cookie clients must send " +
-          "`X-CSRF-Token`.",
+        operationId: "revokeMembership",
+        summary: "Revoke a workspace membership; live streams close immediately",
+        security: ADMIN_SECURITY,
+        parameters: [
+          {
+            name: "enterprise_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+          {
+            name: "workspace_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+          { name: "user_id", in: "path", required: true, schema: { type: "string" } },
+        ],
         responses: {
-          204: { description: "Session invalidated" },
-          403: errorResponse("FORBIDDEN or CSRF_TOKEN_INVALID"),
+          204: { description: "Membership revoked" },
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN: administrator authority required"),
+          404: errorResponse("Membership not found"),
+        },
+      },
+    },
+    "/api/v1/admin/users/{user_id}/suspend": {
+      post: {
+        operationId: "suspendUser",
+        summary: "Suspend a user: all sessions, SSE streams, and logins die",
+        security: ADMIN_SECURITY,
+        parameters: [{ name: "user_id", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  enterprise_id: {
+                    type: "string",
+                    description: "Optional locator for deployment actors.",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "User suspended",
+            ...jsonRef("#/components/schemas/User"),
+          },
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN: administrator authority over this user required"),
+          404: errorResponse("User not found"),
+        },
+      },
+    },
+    "/api/v1/admin/users/{user_id}/activate": {
+      post: {
+        operationId: "activateUser",
+        summary: "Reactivate a suspended user",
+        security: ADMIN_SECURITY,
+        parameters: [{ name: "user_id", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: { enterprise_id: { type: "string" } },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "User activated",
+            ...jsonRef("#/components/schemas/User"),
+          },
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN: administrator authority over this user required"),
+          404: errorResponse("User not found"),
         },
       },
     },
@@ -2297,8 +2721,8 @@ export function buildOpenApiDocument(): OpenApiDocument {
     },
   };
 
-  // Stamp the credential requirement, the 401 response, and the CSRF header
-  // onto every operation so auth coverage cannot silently miss an endpoint.
+  // Stamp the security requirement and 401 response onto every operation so
+  // auth coverage cannot silently miss an endpoint.
   stampAuth(paths);
 
   return {
@@ -2307,32 +2731,25 @@ export function buildOpenApiDocument(): OpenApiDocument {
       title: "ForgePilot orchestrator API",
       version: "0.7.0",
       description:
-        "forgepilot-api/v1: the Node-to-UI contract of the ForgePilot pilot and " +
-        "the enterprise identity surface (ADR-0006). The UI calls Node only; it " +
-        "never sees dsh sockets, boot tokens, Pi credentials, raw tool output, or " +
-        "provider credentials. Pi text is displayed only through the fail-closed " +
-        "pi_summary contract (DAT-191), whose classification boundary is " +
-        "DAT-192, whose trusted-source display boundary is DAT-193, and whose " +
-        "verifiable provenance record and read-side gate are DAT-194. " +
-        "Auth/session, workspace, team, member, and invitation operations follow " +
-        "docs/contracts/forgepilot-api-v1.md: every response uses the shared " +
-        "versioned error envelope (ADR-0008, DAT-226 alignment); authentication " +
-        "failures and cross-scope reads are non-enumerating; session invalidation " +
-        "terminates SSE subscriptions; and enterprise/workspace scope is always " +
-        "resolved server-side from authenticated membership — client-supplied " +
-        "identifiers never grant access. Generated from the orchestrator " +
-        "implementation; shapes are defined by " +
+        "forgepilot-api/v1: the Node-to-UI contract of the ForgePilot pilot, the " +
+        "enterprise identity surface (DAT-202, ADR-0006), and the workspace, " +
+        "team, member, and invitation surface (DAT-205). The UI calls Node only; " +
+        "it never sees dsh sockets, boot tokens, Pi credentials, raw tool output, " +
+        "or provider credentials. Pi text is displayed only through the " +
+        "fail-closed pi_summary contract (DAT-191), whose classification " +
+        "boundary is DAT-192, whose trusted-source display boundary is DAT-193, " +
+        "and whose verifiable provenance record and read-side gate are DAT-194. " +
+        "Every error uses the shared versioned envelope (DAT-226 alignment, " +
+        "docs/contracts/error-envelope-v1.md vocabulary); authentication " +
+        "failures and cross-scope reads are non-enumerating; session " +
+        "invalidation terminates SSE subscriptions; and enterprise/workspace " +
+        "scope is always resolved server-side from authenticated membership — " +
+        "client-supplied identifiers never grant access. Generated from the " +
+        "orchestrator implementation; shapes are defined by " +
         "docs/contracts/forgepilot-api-v1.md.",
     },
-    servers: [
-      {
-        url: "http://127.0.0.1",
-        description:
-          "Deployment origin: the ephemeral loopback bind for the local pilot, " +
-          "or the enterprise service's configured origin.",
-      },
-    ],
-    security: AUTHENTICATED_SECURITY,
+    servers: [{ url: "http://127.0.0.1", description: "Ephemeral loopback bind" }],
+    security: BEARER_SECURITY,
     paths,
     components: {
       schemas: {
@@ -2343,7 +2760,6 @@ export function buildOpenApiDocument(): OpenApiDocument {
         TurnReport: turnReportSchema,
         RunSummary: runSummarySchema,
         ArtifactMetadata: artifactMetadataSchema,
-        Error: errorSchema,
         User: userSchema,
         UserRef: userRefSchema,
         UserIdentity: userIdentitySchema,
@@ -2359,35 +2775,44 @@ export function buildOpenApiDocument(): OpenApiDocument {
         CreatedInvitation: createdInvitationSchema,
         InvitationPreview: invitationPreviewSchema,
         InvitationRedemption: invitationRedemptionSchema,
-        Session: sessionSchema,
-        SessionCredential: sessionCredentialSchema,
+        SessionInfo: sessionInfoSchema,
         LoginProvider: loginProviderSchema,
+        ProviderInstance: providerInstanceSchema,
+        DesktopFlow: desktopFlowSchema,
+        AuthAuditRecord: authAuditRecordSchema,
+        Error: errorSchema,
       },
       securitySchemes: {
         bearerAuth: {
           type: "http",
           scheme: "bearer",
           description:
-            "Authorization: Bearer <token> with one of two credentials. Local " +
-            "pilot: the per-process API bearer token, minted at orchestrator " +
-            "start and written 0600 to the API token file; the UI reads that " +
-            "file and possession of the token authorizes acting as the local " +
-            "operator, approvals included. Enterprise: the session access " +
-            "token returned by the desktop ticket exchange, held by the " +
-            "desktop main process and never exposed to renderer JavaScript. " +
-            "A credential authenticates the principal; it never grants scope.",
+            "Authorization: Bearer <token>. Either the per-process API token, " +
+            "minted at orchestrator start and written 0600 to the API token " +
+            "file (possession authorizes acting as the local operator, " +
+            "approvals included), or a desktop session token issued by the " +
+            "single-use desktop exchange. Web clients use the session cookie " +
+            "instead.",
         },
         sessionCookie: {
           type: "apiKey",
           in: "cookie",
           name: "fp_session",
           description:
-            "Protected web session cookie (HttpOnly, SameSite=Lax, Secure), set " +
-            "by the OAuth callback. Cookie-authenticated state-changing " +
-            "requests must also echo the session's `csrf_token` in the " +
-            "`X-CSRF-Token` header. Logout, suspension, membership revocation, " +
-            "and expiry invalidate the session and its SSE subscriptions (see " +
-            "the contract's Session invalidation section).",
+            "Server-side web session in an HttpOnly, SameSite=Lax cookie. " +
+            "Cookie-authenticated mutating requests must echo the session's " +
+            "CSRF token in the X-CSRF-Token header. Logout, suspension, and " +
+            "membership revocation invalidate it immediately.",
+        },
+        bootstrapToken: {
+          type: "apiKey",
+          in: "header",
+          name: "X-Bootstrap-Token",
+          description:
+            "Deployment-owned bootstrap secret (FORGEPILOT_BOOTSTRAP_TOKEN). " +
+            "The only authority for the first provider-instance approval and " +
+            "the one-time first-enterprise-administrator grant; every use is " +
+            "audited and the token never appears in logs or audit details.",
         },
       },
     },
