@@ -31,7 +31,16 @@ const REDACTED = "[redacted]";
 const SAFE_IDENTIFIER = /^[A-Za-z0-9._-]{1,64}$/;
 
 function isSafeIdentifier(value: unknown): value is string {
-  return typeof value === "string" && SAFE_IDENTIFIER.test(value);
+  return (
+    typeof value === "string" &&
+    SAFE_IDENTIFIER.test(value) &&
+    // Reject credential-shaped identifiers outright: a value the scrubber
+    // would redact is a credential whatever it calls itself.
+    scrubSecrets(value) === value &&
+    // The scanner's own high-entropy shape (long base64-ish run with high
+    // Shannon entropy) is credential-shaped whatever it calls itself.
+    !(/^[A-Za-z0-9+/=]{28,}$/.test(value) && shannonEntropy(value) >= 4.0)
+  );
 }
 
 const SEVERITY: Record<SecretClassification, number> = {
@@ -41,11 +50,39 @@ const SEVERITY: Record<SecretClassification, number> = {
   unknown: 3,
 };
 
-/** Join classifications by worst case; `unknown` is the fail-closed maximum. */
+/**
+ * Own-property membership in the closed classification vocabulary. The `in`
+ * operator is unsafe here: prototype properties like `toString` or
+ * `constructor` would pass it and poison severity comparisons.
+ */
+function isSecretClassification(value: unknown): value is SecretClassification {
+  return typeof value === "string" && Object.hasOwn(SEVERITY, value);
+}
+
+/** Shannon entropy in bits per character. */
+export function shannonEntropy(value: string): number {
+  const counts = new Map<string, number>();
+  for (const char of value) {
+    counts.set(char, (counts.get(char) ?? 0) + 1);
+  }
+  let entropy = 0;
+  for (const count of counts.values()) {
+    const probability = count / value.length;
+    entropy -= probability * Math.log2(probability);
+  }
+  return entropy;
+}
+
+/**
+ * Join classifications by worst case; `unknown` is the fail-closed maximum.
+ * Anything outside the closed vocabulary — a malformed report, a prototype
+ * property — joins to `unknown`, never to `clean`.
+ */
 export function joinClassification(
   left: SecretClassification,
   right: SecretClassification,
 ): SecretClassification {
+  if (!isSecretClassification(left) || !isSecretClassification(right)) return "unknown";
   return SEVERITY[left] >= SEVERITY[right] ? left : right;
 }
 
@@ -247,7 +284,7 @@ function normalizeDerivedProvenance(raw: unknown): DerivedProvenance {
   const { classificationPolicy, sourceRefs, ...rest } = provenance;
   const sourceClassifications = provenance.sourceClassifications.map(
     (classification): SecretClassification =>
-      classification in SEVERITY ? classification : "unknown",
+      isSecretClassification(classification) ? classification : "unknown",
   );
   const policyRef =
     classificationPolicy !== undefined &&
@@ -392,7 +429,9 @@ export function collectRequestSegments(context: Context): CollectedRequest {
   (copy.messages ?? []).forEach((message, index) => {
     const record = message as unknown as Record<string, unknown>;
     const role = typeof record["role"] === "string" ? record["role"] : "history";
-    const base = ROLE_CLASSES[role] ?? "history";
+    // Own-property lookup: a message claiming a prototype property as its
+    // role must not inherit one from Object.prototype.
+    const base = Object.hasOwn(ROLE_CLASSES, role) ? (ROLE_CLASSES[role] as DataClass) : "history";
     // A message carrying a `derived` marker is a derived summary; a malformed
     // marker still derives — with unestablishable source classification.
     let derived: DerivedProvenance | undefined;
@@ -421,7 +460,9 @@ function isValidReport(
   if (typeof report !== "object" || report === null) return false;
   const entry = report as Record<string, unknown>;
   const classification = entry["classification"];
-  if (typeof classification !== "string" || !(classification in SEVERITY)) return false;
+  // Own-property enum check: prototype properties like `toString` are not
+  // classifications and must never pass as one.
+  if (!isSecretClassification(classification)) return false;
   // Scanner-named identifiers that may surface in errors or audit evidence
   // must be token-shaped; a report smuggling text (e.g. matched material)
   // through them is invalid and blocks.
@@ -502,7 +543,15 @@ async function scanSegments(
   } catch {
     return { unavailable: "the secret scanner failed or timed out" };
   }
-  if (!isValidReport(report, segments)) {
+  // Validation reads every finding field; a hostile report can throw from
+  // property reads — that is an invalid report, never a crash or a pass.
+  let valid = false;
+  try {
+    valid = isValidReport(report, segments);
+  } catch {
+    valid = false;
+  }
+  if (!valid) {
     return { unavailable: "the secret scanner returned an invalid report" };
   }
   return {
@@ -510,7 +559,15 @@ async function scanSegments(
       scanner: isSafeIdentifier(report.scanner) ? report.scanner : scanner.id,
       ruleVersion: isSafeIdentifier(report.ruleVersion) ? report.ruleVersion : scanner.ruleVersion,
       classification: report.classification,
-      findings: report.findings,
+      // Fresh plain copies: nothing the scanner handed over is shared with
+      // the gate's own evaluation or evidence paths.
+      findings: report.findings.map((finding) => ({
+        classification: finding.classification,
+        detector: String(finding.detector),
+        ruleVersion: String(finding.ruleVersion),
+        segmentId: String(finding.segmentId),
+        ...(finding.match !== undefined ? { match: String(finding.match) } : {}),
+      })),
     },
   };
 }

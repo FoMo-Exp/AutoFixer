@@ -822,6 +822,84 @@ describe("errors, logs, and analytics contain no secrets (acceptance 3)", () => 
     expect(denial.message).not.toContain(leak);
     expect(JSON.stringify(events)).not.toContain(leak);
   });
+
+  test("an AWS access key ID cannot pass as a scanner id or detector id", async () => {
+    // QA round-2 B2: credential-shaped identifiers (AKIA + 16 characters pass
+    // token-shape alone) are rejected; nothing reaches errors or audit events.
+    const awsId = "AKIA" + "IOSFODNN7EXAMPLE";
+    const { adapter, calls } = spyAdapter();
+    const { sink, events } = recordingSink();
+    const asScannerId = gatewayWith(adapter, {
+      sink,
+      scanner: {
+        id: awsId,
+        ruleVersion: "1",
+        scan: () => ({
+          scanner: "ignored",
+          ruleVersion: "1",
+          classification: "clean",
+          findings: [],
+        }),
+      },
+    });
+    await expectScanDenial(
+      asScannerId.bind(TEST_BINDING)(TEST_MODEL, CLEAN_CONTEXT, undefined),
+      "SCANNER_UNAVAILABLE",
+      "SENSITIVE_DATA_UNCERTAIN",
+    );
+    const asDetectorId = gatewayWith(adapter, {
+      sink,
+      scanner: {
+        id: "smuggler",
+        ruleVersion: "1",
+        scan: (request) => ({
+          scanner: "smuggler",
+          ruleVersion: "1",
+          classification: "secret_suspected",
+          findings: [
+            {
+              classification: "secret_suspected",
+              detector: awsId,
+              ruleVersion: "1",
+              segmentId: request.segments[0]?.id ?? "",
+            },
+          ],
+        }),
+      },
+    });
+    await expectScanDenial(
+      asDetectorId.bind(TEST_BINDING)(TEST_MODEL, CLEAN_CONTEXT, undefined),
+      "SCANNER_UNAVAILABLE",
+      "SENSITIVE_DATA_UNCERTAIN",
+    );
+    expect(calls).toHaveLength(0);
+    expect(JSON.stringify(events)).not.toContain(awsId);
+  });
+
+  test("a prototype-property classification never lets a request through", async () => {
+    // QA round-2 B1: `classification: "toString"` with no findings used to
+    // join to clean and dispatch; it must block like any malformed report.
+    const { adapter, calls } = spyAdapter();
+    const gateway = gatewayWith(adapter, {
+      scanner: {
+        id: "proto",
+        ruleVersion: "1",
+        scan: () =>
+          ({
+            scanner: "proto",
+            ruleVersion: "1",
+            classification: "toString",
+            findings: [],
+          }) as unknown as SecretScanReport,
+      },
+    });
+    await expectScanDenial(
+      gateway.bind(TEST_BINDING)(TEST_MODEL, CLEAN_CONTEXT, undefined),
+      "SCANNER_UNAVAILABLE",
+      "SENSITIVE_DATA_UNCERTAIN",
+    );
+    expect(calls).toHaveLength(0);
+  });
 });
 
 describe("the complete request is scanned, not just the latest message (acceptance 4)", () => {

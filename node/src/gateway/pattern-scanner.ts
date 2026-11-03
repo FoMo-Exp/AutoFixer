@@ -9,7 +9,7 @@
  */
 
 import type { SecretFinding, SecretScanner, SecretScanReport, SecretScanRequest } from "./scan.js";
-import { joinClassification } from "./scan.js";
+import { joinClassification, shannonEntropy } from "./scan.js";
 import type { SecretClassification } from "./types.js";
 
 export interface SecretDetector {
@@ -101,19 +101,6 @@ export function defaultSecretDetectors(): SecretDetector[] {
       skipBinary: true,
     },
   ];
-}
-
-function shannonEntropy(value: string): number {
-  const counts = new Map<string, number>();
-  for (const char of value) {
-    counts.set(char, (counts.get(char) ?? 0) + 1);
-  }
-  let entropy = 0;
-  for (const count of counts.values()) {
-    const probability = count / value.length;
-    entropy -= probability * Math.log2(probability);
-  }
-  return entropy;
 }
 
 function globalCopy(pattern: RegExp): RegExp {

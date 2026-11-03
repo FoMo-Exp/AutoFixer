@@ -11,6 +11,7 @@ import {
   validateGatewayPolicy,
 } from "../src/index.js";
 import type {
+  SecretClassification,
   SecretFinding,
   SecretScanReport,
   SecretScanRequest,
@@ -303,9 +304,9 @@ describe("scan gate fail-closed behavior", () => {
     expect(JSON.stringify(gate.evidence)).not.toContain(leak);
   });
 
-  test("credential-shaped identifiers are scrubbed from audit evidence", async () => {
-    // A token-shaped identifier can still be a credential value: the evidence
-    // belt scrubs credential-shaped material before the audit/analytics sink.
+  test("credential-shaped identifiers are rejected and never reach audit evidence", async () => {
+    // QA B2: a token-shaped identifier can still be a credential value (e.g.
+    // an AWS access key ID) — credential shapes are rejected at the seam.
     const token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
     const gate = await runRequestScanGate(cleanContext, {
       scanner: stubScanner((request) =>
@@ -319,10 +320,90 @@ describe("scan gate fail-closed behavior", () => {
         ]),
       ),
     });
-    expect(gate).toMatchObject({ ok: false, reason: "SENSITIVE_DATA_UNCERTAIN" });
+    expect(gate).toMatchObject({ ok: false, reason: "SCANNER_UNAVAILABLE" });
     const evidence = JSON.stringify(gate.evidence);
     expect(evidence).not.toContain("a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8");
-    expect(evidence).toContain("[redacted]");
+  });
+
+  test("an AWS access key ID cannot pass as a scanner or detector identifier", async () => {
+    // QA round-2 B2: SAFE_IDENTIFIER alone accepts AKIA + 16 uppercase
+    // characters; credential-shaped identifiers must be rejected outright.
+    const awsId = "AKIA" + "IOSFODNN7EXAMPLE";
+    const asScanner = await runRequestScanGate(cleanContext, {
+      scanner: { id: awsId, ruleVersion: "1", scan: () => report("clean") },
+    });
+    expect(asScanner).toMatchObject({ ok: false, reason: "SCANNER_UNAVAILABLE" });
+
+    const asDetector = await runRequestScanGate(cleanContext, {
+      scanner: stubScanner((request) =>
+        report("secret_suspected", [
+          {
+            classification: "secret_suspected",
+            detector: awsId,
+            ruleVersion: "1",
+            segmentId: request.segments[0]?.id ?? "",
+          },
+        ]),
+      ),
+    });
+    expect(asDetector).toMatchObject({ ok: false, reason: "SCANNER_UNAVAILABLE" });
+    for (const gate of [asScanner, asDetector]) {
+      expect(gate.ok).toBe(false);
+      if (gate.ok) continue;
+      expect(gate.detail).not.toContain(awsId);
+      expect(JSON.stringify(gate.evidence)).not.toContain(awsId);
+    }
+  });
+
+  test("high-entropy material cannot pass as a scanner identifier", async () => {
+    const token = "aB3dE5fG7hI9jK1lM3nO5pQ7rS9tU1vW";
+    const gate = await runRequestScanGate(cleanContext, {
+      scanner: { id: token, ruleVersion: "1", scan: () => report("clean") },
+    });
+    expect(gate).toMatchObject({ ok: false, reason: "SCANNER_UNAVAILABLE" });
+    if (gate.ok) return;
+    expect(JSON.stringify(gate.evidence)).not.toContain(token);
+  });
+
+  test("prototype-property classifications are rejected, never clean", async () => {
+    // QA round-2 B1: `in` would accept inherited keys like `toString`, and
+    // joining them with `clean` used to collapse to `clean`.
+    for (const bogus of ["toString", "constructor", "valueOf", "hasOwnProperty"]) {
+      const gate = await runRequestScanGate(cleanContext, {
+        scanner: stubScanner(
+          () =>
+            ({
+              scanner: "stub",
+              ruleVersion: "1",
+              classification: bogus,
+              findings: [],
+            }) as unknown as SecretScanReport,
+        ),
+      });
+      expect(gate).toMatchObject({ ok: false, reason: "SCANNER_UNAVAILABLE" });
+    }
+  });
+
+  test("prototype-property values join to unknown, never to clean", () => {
+    expect(joinClassification("toString" as SecretClassification, "clean")).toBe("unknown");
+    expect(joinClassification("clean", "constructor" as SecretClassification)).toBe("unknown");
+  });
+
+  test("prototype-property source classifications are unknown and block", async () => {
+    for (const bogus of ["toString", "constructor"]) {
+      const gate = await runRequestScanGate(
+        {
+          messages: [
+            tagDerivedSummary(
+              { role: "user" as const, content: "summarized earlier work", timestamp: 2 },
+              { sourceClassifications: [bogus as SecretClassification] },
+            ),
+          ],
+        },
+        { scanner: stubScanner(() => report("clean")) },
+      );
+      expect(gate).toMatchObject({ ok: false, reason: "CLASSIFICATION_UNKNOWN" });
+    }
   });
 });
 
