@@ -109,6 +109,18 @@ export interface MemoryItemRepository {
     status: MemoryStatus,
     expectedVersion: number,
   ): MemoryItem;
+  /**
+   * Recompute the derived confidence counters from the item's evidence and
+   * contradiction links. Consolidation-only maintenance of derived metadata:
+   * it records no per-item audit event (the append-only event vocabulary
+   * predates this slice), so its audit is the consolidation run and operation
+   * report that carried it.
+   */
+  setConfidenceCounts(
+    scope: WorkspaceScope,
+    itemId: MemoryItemId,
+    counts: { supportCount: number; contradictionCount: number },
+  ): MemoryItem;
   /** Set-once approval stamp on one exact version. */
   reviewVersion(
     scope: WorkspaceScope,
@@ -165,9 +177,21 @@ export interface MemoryAuditRepository {
 
 export interface MemoryTombstoneRepository {
   list(scope: WorkspaceScope, limit?: number): MemoryTombstone[];
+  /**
+   * The tombstone of a purged item, if any. Deletion is recorded, never
+   * silent, so lifecycle callers can refuse to act on — let alone rebuild —
+   * an identity whose memory was deleted.
+   */
+  getByItem(scope: WorkspaceScope, itemId: MemoryItemId): MemoryTombstone | undefined;
 }
 
 export interface MemoryRepositories {
+  /**
+   * Run `fn` inside one storage transaction. Reentrant: composite lifecycle
+   * operations (merge, supersession) join the outer transaction instead of
+   * nesting BEGINs.
+   */
+  runAtomically<T>(fn: () => T): T;
   items: MemoryItemRepository;
   evidence: MemoryEvidenceRepository;
   links: MemoryLinkRepository;
@@ -473,6 +497,17 @@ const MEMORY_EVIDENCE_TYPES: readonly MemoryEvidenceType[] = [
   "reviewer_decision",
   "incident",
 ];
+/**
+ * Kinds that require named human approval of the exact version before they
+ * may reach `active`: everything procedural plus institutional policy. Only
+ * `fact` is ever eligible for automatic promotion (DAT-235).
+ */
+const REQUIRES_APPROVAL_KINDS: readonly MemoryKind[] = [
+  "lesson",
+  "playbook",
+  "anti_pattern",
+  "policy",
+];
 
 /**
  * ADR-0009 lifecycle state machine. `retired` is terminal; `quarantined` is
@@ -559,6 +594,12 @@ function validateVersionContent(content: {
   const authorType = content.provenance?.author_type;
   if (authorType !== "human" && authorType !== "agent" && authorType !== "system") {
     throw new ValidationError(`unsupported provenance author_type: ${String(authorType)}`);
+  }
+  // Institutional policy is human-authored and never auto-learned (ADR-0009):
+  // an agent or system actor cannot create or revise a policy version at all,
+  // so approval is not the only thing standing between an agent and L4 policy.
+  if (content.kind === "policy" && authorType !== "human") {
+    throw new ValidationError("policy memory must be human-authored");
   }
   const valid_from = normalizeTimestamp(content.valid_from, "valid_from");
   const valid_to =
@@ -1035,8 +1076,24 @@ class SqliteMemoryItemRepository implements MemoryItemRepository {
       if (!STATUS_TRANSITIONS[from].includes(status)) {
         throw new ValidationError(`memory status transition ${from} -> ${status} is not allowed`);
       }
-      if (status === "active" && this.countEvidence(scope, itemId) === 0) {
-        throw new ValidationError("an active memory item requires at least one evidence reference");
+      if (status === "active") {
+        if (this.countEvidence(scope, itemId) === 0) {
+          throw new ValidationError(
+            "an active memory item requires at least one evidence reference",
+          );
+        }
+        // Procedural content and institutional policy reach `active` only
+        // through named human approval of the exact current version (ADR-0009
+        // promotion rules, DAT-235). Automatic promotion is a fact-only rule;
+        // this gate holds even for callers that bypass the promotion service.
+        if (
+          REQUIRES_APPROVAL_KINDS.includes(record.current.kind) &&
+          record.current.review === null
+        ) {
+          throw new ValidationError(
+            `a memory item of kind ${record.current.kind} requires named human approval before activation`,
+          );
+        }
       }
       const now = nowIso();
       const moved = this.db
@@ -1065,6 +1122,37 @@ class SqliteMemoryItemRepository implements MemoryItemRepository {
         run_id: null,
         detail: { from, to: status },
       });
+      return requireRow("MemoryItem", itemId, this.getRecord(scope, itemId)).item;
+    });
+  }
+
+  setConfidenceCounts(
+    scope: WorkspaceScope,
+    itemId: MemoryItemId,
+    counts: { supportCount: number; contradictionCount: number },
+  ): MemoryItem {
+    requireWorkspaceScope(scope);
+    for (const value of [counts.supportCount, counts.contradictionCount]) {
+      if (!Number.isInteger(value) || value < 0) {
+        throw new ValidationError("memory confidence counters must be non-negative integers");
+      }
+    }
+    return this.store.runAtomically(() => {
+      requireRow("MemoryItem", itemId, this.getRecord(scope, itemId));
+      this.db
+        .prepare(
+          `UPDATE memory_items SET support_count = ?, contradiction_count = ?, updated_at = ?, updated_by = ?
+           WHERE id = ? AND enterprise_id = ? AND workspace_id = ?`,
+        )
+        .run(
+          counts.supportCount,
+          counts.contradictionCount,
+          nowIso(),
+          scope.actor_id,
+          itemId,
+          scope.enterprise_id,
+          scope.workspace_id,
+        );
       return requireRow("MemoryItem", itemId, this.getRecord(scope, itemId)).item;
     });
   }
@@ -1629,6 +1717,17 @@ class SqliteMemoryTombstoneRepository implements MemoryTombstoneRepository {
         boundedLimit(limit),
       ) as unknown as MemoryTombstoneRow[];
     return rows.map(toMemoryTombstone);
+  }
+
+  getByItem(scope: WorkspaceScope, itemId: MemoryItemId): MemoryTombstone | undefined {
+    requireWorkspaceScope(scope);
+    const row = this.db
+      .prepare(
+        `SELECT * FROM memory_tombstones
+         WHERE enterprise_id = ? AND workspace_id = ? AND item_id = ?`,
+      )
+      .get(scope.enterprise_id, scope.workspace_id, itemId) as MemoryTombstoneRow | undefined;
+    return row ? toMemoryTombstone(row) : undefined;
   }
 }
 
