@@ -248,6 +248,10 @@ export interface RsiStore {
 
   pinRun(scope: WorkspaceScope, input: RsiPinRowInput): RsiRunPin;
   getPin(scope: WorkspaceScope, runId: string): RsiRunPin | undefined;
+  /** Pins assigned to one rollout (the canary arm). */
+  listRolloutPins(scope: WorkspaceScope, rolloutId: string): RsiRunPin[];
+  /** Baseline pins created in the canary window (the control arm). */
+  listBaselinePinsSince(scope: WorkspaceScope, startedAt: string): RsiRunPin[];
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +304,8 @@ interface EvaluationRow {
   proposal_version: number;
   dataset: string;
   sample_size: number;
+  baseline_sample_size: number;
+  candidate_sample_size: number;
   baseline_successes: number;
   candidate_successes: number;
   baseline_rework: number;
@@ -352,6 +358,8 @@ interface ObservationRow {
   rollout_id: string;
   stage: number;
   sample_size: number;
+  baseline_sample_size: number;
+  candidate_sample_size: number;
   baseline_successes: number;
   candidate_successes: number;
   baseline_rework: number;
@@ -492,6 +500,8 @@ function toEvaluation(row: EvaluationRow): RsiEvaluationRecord {
     dataset: row.dataset as "golden" | "holdout",
     holdout_used: row.dataset === "holdout",
     sample_size: row.sample_size,
+    baseline_sample_size: row.baseline_sample_size,
+    candidate_sample_size: row.candidate_sample_size,
     baseline_successes: row.baseline_successes,
     candidate_successes: row.candidate_successes,
     baseline_rework: row.baseline_rework,
@@ -551,6 +561,8 @@ function toObservation(row: ObservationRow): RsiCanaryObservation {
     rollout_id: row.rollout_id,
     stage: row.stage as RsiCanaryStage,
     sample_size: row.sample_size,
+    baseline_sample_size: row.baseline_sample_size,
+    candidate_sample_size: row.candidate_sample_size,
     baseline_successes: row.baseline_successes,
     candidate_successes: row.candidate_successes,
     baseline_rework: row.baseline_rework,
@@ -881,12 +893,13 @@ class SqliteRsiStore implements RsiStore {
       .prepare(
         `INSERT INTO rsi_evaluations (
            id, enterprise_id, workspace_id, proposal_id, proposal_version, kind, dataset,
-           holdout_used, sample_size, baseline_successes, candidate_successes,
+           holdout_used, sample_size, baseline_sample_size, candidate_sample_size,
+           baseline_successes, candidate_successes,
            baseline_rework, candidate_rework, baseline_cost, candidate_cost,
            safety_events, success_delta, delta_ci_low, delta_ci_high, verdict,
            verifier_kind, verifier_id, verifier_reference, policy_version,
            policy_hash, memory_version, reflection_tokens, created_at, created_by
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -898,6 +911,8 @@ class SqliteRsiStore implements RsiStore {
         input.dataset,
         input.dataset === "holdout" ? 1 : 0,
         input.metrics.sample_size,
+        input.metrics.baseline_sample_size,
+        input.metrics.candidate_sample_size,
         input.metrics.baseline_successes,
         input.metrics.candidate_successes,
         input.metrics.baseline_rework,
@@ -1123,10 +1138,11 @@ class SqliteRsiStore implements RsiStore {
       .prepare(
         `INSERT INTO rsi_canary_observations (
            id, enterprise_id, workspace_id, rollout_id, stage, sample_size,
+           baseline_sample_size, candidate_sample_size,
            baseline_successes, candidate_successes, baseline_rework, candidate_rework,
            baseline_cost, candidate_cost, safety_events, success_delta,
            delta_ci_low, delta_ci_high, verdict, evidence_reference, created_at, created_by
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -1135,6 +1151,8 @@ class SqliteRsiStore implements RsiStore {
         input.rollout_id,
         input.stage,
         input.metrics.sample_size,
+        input.metrics.baseline_sample_size,
+        input.metrics.candidate_sample_size,
         input.metrics.baseline_successes,
         input.metrics.candidate_successes,
         input.metrics.baseline_rework,
@@ -1314,6 +1332,30 @@ class SqliteRsiStore implements RsiStore {
       )
       .get(scope.workspace_id, scope.enterprise_id, runId) as PinRow | undefined;
     return row === undefined ? undefined : toPin(row);
+  }
+
+  listRolloutPins(scope: WorkspaceScope, rolloutId: string): RsiRunPin[] {
+    requireScope(scope);
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM rsi_run_pins
+         WHERE workspace_id = ? AND enterprise_id = ? AND rollout_id = ? AND canary = 1
+         ORDER BY created_at, run_id LIMIT 5000`,
+      )
+      .all(scope.workspace_id, scope.enterprise_id, rolloutId) as unknown as PinRow[];
+    return rows.map(toPin);
+  }
+
+  listBaselinePinsSince(scope: WorkspaceScope, startedAt: string): RsiRunPin[] {
+    requireScope(scope);
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM rsi_run_pins
+         WHERE workspace_id = ? AND enterprise_id = ? AND canary = 0 AND created_at >= ?
+         ORDER BY created_at, run_id LIMIT 5000`,
+      )
+      .all(scope.workspace_id, scope.enterprise_id, startedAt) as unknown as PinRow[];
+    return rows.map(toPin);
   }
 
   private requireProposal(scope: WorkspaceScope, proposalId: string): RsiProposalRecord {

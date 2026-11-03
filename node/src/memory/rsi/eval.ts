@@ -62,7 +62,9 @@ function summarise(outcomes: readonly CaseOutcome[]): RsiEvalMetrics {
   const candidateSuccesses = outcomes.filter((entry) => entry.candidate_ok).length;
   const estimate = newcombeDifference(candidateSuccesses, sample, baselineSuccesses, sample);
   return {
-    sample_size: sample,
+    sample_size: sample * 2,
+    baseline_sample_size: sample,
+    candidate_sample_size: sample,
     baseline_successes: baselineSuccesses,
     candidate_successes: candidateSuccesses,
     baseline_rework: outcomes.reduce((sum, entry) => sum + entry.baseline_missing, 0),

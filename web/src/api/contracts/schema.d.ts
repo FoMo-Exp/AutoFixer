@@ -1438,7 +1438,7 @@ export interface paths {
         put?: never;
         /**
          * Run the offline replay over the golden set and hidden holdout
-         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. Workspace owner only. The server executes the replay over the stored corpus and both datasets, computes the paired delta and its Newcombe confidence interval, and records one evaluation per dataset. Metrics are never accepted from the caller. A verifier identity that matches the proposer, or an agent self-report, is refused. Reaching the weekly reflection-token budget blocks the run before anything is recorded.
+         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. Workspace owner only. The server executes the replay over the stored corpus and both datasets, computes the per-arm samples, delta and Newcombe confidence interval, and records one evaluation per dataset. The verifier is the authenticated evaluator with a server-derived replay reference; metrics, verifier claims, and evidence text in the request are refused, and the proposer cannot evaluate itself. Reaching the weekly reflection-token budget blocks the run before anything is recorded.
          */
         post: operations["evaluateRsiProposal"];
         delete?: never;
@@ -1498,7 +1498,7 @@ export interface paths {
         put?: never;
         /**
          * Record a canary stage observation and advance or roll back
-         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. The stage advances 10% → 50% → 100% only after its minimum sample passes. Any security event, negative delta, a confidence interval establishing a regression beyond the margin, or a rework/cost breach triggers an automatic rollback. A pass at 100% promotes and publishes exactly one policy version (or activates the candidate memory item).
+         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. The sample is derived server-side from the runs this rollout pinned and their terminal task outcomes; pending runs are excluded and any request body is refused. The stage advances 10% → 50% → 100% only after its minimum sample passes. Any security event, negative delta, a confidence interval establishing a regression beyond the margin, or a rework/cost breach triggers an automatic rollback. A pass at 100% promotes and publishes exactly one policy version (or activates the candidate memory item).
          */
         post: operations["recordRsiCanaryObservation"];
         delete?: never;
@@ -1643,6 +1643,18 @@ export interface components {
             };
             /** @description Display-safe summary of the latest settled Pi turn for the current run (DAT-191). Null until a Pi session exists for the task. The raw pi.text_delta stream is never the display source: text is exposed only through this fail-closed, Node-judged summary, and only with a verifiable source record (DAT-194) — a summary whose source cannot be re-proven, including every legacy DAT-191/192 record, is served unavailable with text null. */
             pi_summary: components["schemas"]["PiSummary"] | null;
+            /** @description Memory and retrieval-policy versions this run was pinned to at start (DAT-238), so a run is reproducible after a rollback. `canary` marks an unpublished candidate policy overlay; `item_ids` are the exact memory versions injected. Null when the memory service is not configured; `degraded` records an outage that did not block the run. */
+            memory: {
+                run_id: string;
+                memory_version: string | null;
+                policy_version: number | null;
+                policy_hash: string | null;
+                canary: boolean;
+                rollout_id: string | null;
+                bundle_id: string | null;
+                degraded: boolean;
+                item_ids: string[];
+            } | null;
             /** @description GitHub merge-boundary projection for the current head. Approvals and checks observed against an older head are invalidated: observations_valid turns false and merge_queue_eligible turns false until dsh observes them against the current head. */
             governance: {
                 current_head_sha: string | null;
@@ -2640,6 +2652,8 @@ export interface components {
             dataset: "golden" | "holdout";
             holdout_used: boolean;
             sample_size: number;
+            baseline_sample_size: number;
+            candidate_sample_size: number;
             baseline_successes: number;
             candidate_successes: number;
             baseline_rework: number;
@@ -2654,7 +2668,7 @@ export interface components {
             verdict: "pass" | "fail" | "inconclusive";
             verifier: {
                 /**
-                 * @description Agent self-report is not a verifier kind.
+                 * @description The server-run replay is the only verifier; agent self-report is not a kind.
                  * @enum {string}
                  */
                 kind: "test" | "qa_disposition" | "reviewer_acceptance";
@@ -2699,6 +2713,32 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /** @description One canary stage sample derived from pinned runs and their terminal task outcomes. Evidence is the server-generated pin set, never request text. */
+        RsiCanaryObservation: {
+            observation_id: string;
+            rollout_id: string;
+            /** @enum {integer} */
+            stage: 10 | 50 | 100;
+            sample_size: number;
+            baseline_sample_size: number;
+            candidate_sample_size: number;
+            baseline_successes: number;
+            candidate_successes: number;
+            baseline_rework: number;
+            candidate_rework: number;
+            baseline_cost: number;
+            candidate_cost: number;
+            safety_events: number;
+            success_delta: number;
+            delta_ci_low: number;
+            delta_ci_high: number;
+            /** @enum {string} */
+            verdict: "pass" | "fail" | "inconclusive";
+            evidence_reference: string;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+        };
         RsiGate: {
             /** @enum {string} */
             offline_evaluation: "missing" | "pass" | "fail";
@@ -2735,6 +2775,7 @@ export interface components {
             evaluations: components["schemas"]["RsiEvaluation"][];
             approvals: components["schemas"]["RsiApproval"][];
             rollout: components["schemas"]["RsiRollout"] | null;
+            observations: components["schemas"]["RsiCanaryObservation"][];
             gate: components["schemas"]["RsiGate"];
         };
         RsiProposalList: {
@@ -2799,27 +2840,10 @@ export interface components {
                 item_version: number;
             };
         };
-        /** @description Runs the offline replay over the golden set and, unless narrowed, the hidden holdout. No metrics are accepted: the server computes the delta and its confidence interval. */
+        /** @description Selects datasets only. The replay, its per-arm samples, delta, confidence interval, and verifier identity are computed or bound server-side; a request that carries metrics, a verifier claim, or evidence text is refused. */
         RsiEvaluationRequest: {
-            verifier: {
-                /** @enum {string} */
-                kind: "test" | "qa_disposition" | "reviewer_acceptance";
-                id: string;
-                reference: string;
-            };
             /** @description Defaults to both datasets; the canary gate requires both. */
             datasets?: ("golden" | "holdout")[];
-        };
-        RsiCanaryObservationRequest: {
-            sample_size: number;
-            baseline_successes: number;
-            candidate_successes: number;
-            baseline_rework?: number;
-            candidate_rework?: number;
-            baseline_cost?: number;
-            candidate_cost?: number;
-            safety_events?: number;
-            evidence_reference: string;
         };
         RsiControlsRequest: {
             auto_promote_low_risk?: boolean;
@@ -8553,11 +8577,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RsiCanaryObservationRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Observation recorded; the rollout state reflects the decision */
             201: {
@@ -8568,7 +8588,7 @@ export interface operations {
                     "application/json": components["schemas"]["RsiProposal"];
                 };
             };
-            /** @description INVALID_REQUEST */
+            /** @description INVALID_REQUEST — a request body carrying samples */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -8604,7 +8624,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description CONFLICT — no active canary */
+            /** @description CONFLICT — no active canary or no terminal pinned runs */
             409: {
                 headers: {
                     [name: string]: unknown;

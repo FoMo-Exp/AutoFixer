@@ -38,7 +38,6 @@ import type {
   CreateRsiProposalInput,
   RsiApprovalKey,
   RsiBudgetView,
-  RsiCanaryObservationInput,
   RsiCanaryStage,
   RsiControls,
   RsiDataset,
@@ -49,6 +48,8 @@ import type {
   RsiProposalStatus,
   RsiProposalView,
   RsiResolvedRun,
+  RsiRunOutcome,
+  RsiRunOutcomeSource,
   RsiRisk,
   RsiRollout,
   RsiRunPin,
@@ -61,7 +62,6 @@ import {
   RSI_DATASETS,
   RSI_TARGET_RISK,
   RSI_TARGETS,
-  RSI_VERIFIER_KINDS,
   artifactKindFor,
 } from "./types.js";
 
@@ -75,6 +75,11 @@ export interface RsiServiceDeps {
   memory: MemoryRepositories;
   retrieval: MemoryRetrievalService;
   retrievalStore: RetrievalStore;
+  /**
+   * Trusted outcome source for canary observations (the task projection).
+   * A canary never accepts sample counts from a request.
+   */
+  outcomes: RsiRunOutcomeSource;
   clock?: () => Date;
 }
 
@@ -88,7 +93,12 @@ export interface RsiService {
   createProposal(scope: WorkspaceScope, input: CreateRsiProposalInput): RsiProposalView;
   listProposals(scope: WorkspaceScope, filter?: RsiProposalFilter): RsiProposalView[];
   getProposal(scope: WorkspaceScope, proposalId: string): RsiProposalView;
-  evaluate(scope: WorkspaceScope, proposalId: string, input: RsiEvaluationRequest): RsiProposalView;
+  evaluate(
+    scope: WorkspaceScope,
+    proposalId: string,
+    input: RsiEvaluationRequest,
+    actor: RsiActor,
+  ): RsiProposalView;
   approve(
     scope: WorkspaceScope,
     proposalId: string,
@@ -99,7 +109,6 @@ export interface RsiService {
   recordCanaryObservation(
     scope: WorkspaceScope,
     proposalId: string,
-    input: RsiCanaryObservationInput,
     actor: RsiActor,
   ): RsiProposalView;
   rollback(
@@ -160,45 +169,12 @@ function target(value: unknown): RsiTarget {
   return value as RsiTarget;
 }
 
-function verifier(value: unknown): RsiVerifier {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new ValidationError("verifier is required");
-  }
-  const input = value as Record<string, unknown>;
-  const kind = input["kind"];
-  if (typeof kind !== "string" || !(RSI_VERIFIER_KINDS as readonly string[]).includes(kind)) {
-    // Agent self-report is deliberately not in this vocabulary.
-    throw new ValidationError(
-      `verifier.kind must be one of ${RSI_VERIFIER_KINDS.join(", ")}; agent self-report cannot verify an evaluation`,
-    );
-  }
-  return {
-    kind: kind as RsiVerifier["kind"],
-    id: text(input["id"], "verifier.id", RSI_HARD_LIMITS.item_id_chars),
-    reference: text(
-      input["reference"],
-      "verifier.reference",
-      RSI_HARD_LIMITS.evidence_reference_chars,
-    ),
-  };
-}
-
 function nonNegativeInteger(value: unknown, label: string, fallback = 0): number {
   if (value === undefined) {
     return fallback;
   }
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
     throw new ValidationError(`${label} must be a non-negative integer`);
-  }
-  return value;
-}
-
-function nonNegativeNumber(value: unknown, label: string, fallback = 0): number {
-  if (value === undefined) {
-    return fallback;
-  }
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    throw new ValidationError(`${label} must be a non-negative number`);
   }
   return value;
 }
@@ -366,11 +342,12 @@ class RsiGovernanceService implements RsiService {
     scope: WorkspaceScope,
     proposalId: string,
     input: RsiEvaluationRequest,
+    actor: RsiActor,
   ): RsiProposalView {
+    requireOwner(actor);
     const proposal = this.requireProposal(scope, proposalId);
     const controls = this.requireLive(scope);
-    const checkedVerifier = verifier(input.verifier);
-    if (checkedVerifier.id === proposal.proposer.id) {
+    if (actor.id === proposal.proposer.id) {
       throw new ValidationError(
         "the proposer cannot verify its own proposal; evaluation requires an independent verifier",
       );
@@ -423,6 +400,11 @@ class RsiGovernanceService implements RsiService {
     // rather than let an evaluation escape the weekly ceiling.
     this.store.addBudgetUsage(scope, week, { reflection_tokens: spent });
     for (const result of results) {
+      const checkedVerifier: RsiVerifier = {
+        kind: "test",
+        id: actor.id,
+        reference: `replay:${proposal.id}:v${proposal.version}:${result.dataset}`,
+      };
       this.store.addEvaluation(scope, {
         proposal_id: proposal.id,
         proposal_version: proposal.version,
@@ -504,7 +486,6 @@ class RsiGovernanceService implements RsiService {
   recordCanaryObservation(
     scope: WorkspaceScope,
     proposalId: string,
-    input: RsiCanaryObservationInput,
     actor: RsiActor,
   ): RsiProposalView {
     requireOwner(actor);
@@ -517,43 +498,12 @@ class RsiGovernanceService implements RsiService {
       return this.finishRollback(scope, proposalId, "RSI kill switch engaged", actor);
     }
 
-    const sample = nonNegativeInteger(input.sample_size, "sample_size");
-    if (sample === 0) {
-      throw new ValidationError("sample_size must be positive");
-    }
-    const metrics: RsiEvalMetrics = {
-      sample_size: sample,
-      baseline_successes: nonNegativeInteger(input.baseline_successes, "baseline_successes"),
-      candidate_successes: nonNegativeInteger(input.candidate_successes, "candidate_successes"),
-      baseline_rework: nonNegativeInteger(input.baseline_rework, "baseline_rework"),
-      candidate_rework: nonNegativeInteger(input.candidate_rework, "candidate_rework"),
-      baseline_cost: nonNegativeNumber(input.baseline_cost, "baseline_cost"),
-      candidate_cost: nonNegativeNumber(input.candidate_cost, "candidate_cost"),
-      safety_events: nonNegativeInteger(input.safety_events, "safety_events"),
-      success_delta: 0,
-      delta_ci_low: 0,
-      delta_ci_high: 0,
-    };
-    if (metrics.baseline_successes > sample || metrics.candidate_successes > sample) {
-      throw new ValidationError("success counts cannot exceed the sample size");
-    }
-    const estimate = newcombeDifference(
-      metrics.candidate_successes,
-      sample,
-      metrics.baseline_successes,
-      sample,
-    );
-    metrics.success_delta = estimate.delta;
-    metrics.delta_ci_low = estimate.low;
-    metrics.delta_ci_high = estimate.high;
-
+    // The sample is read from the run pins this rollout selected and the
+    // server-recorded task outcomes behind them. Nothing here comes from the
+    // request: an owner cannot submit a passing sample.
+    const { metrics, evidence } = this.canaryMetrics(scope, rollout);
     const stageMinimum = RSI_STAGE_MIN_SAMPLE[rollout.stage];
     const outcome = verdictFor(metrics, stageMinimum);
-    const evidence = text(
-      input.evidence_reference,
-      "evidence_reference",
-      RSI_HARD_LIMITS.evidence_reference_chars,
-    );
     this.store.addObservation(scope, {
       rollout_id: rollout.rollout_id,
       stage: rollout.stage,
@@ -851,11 +801,70 @@ class RsiGovernanceService implements RsiService {
     };
   }
 
+  /**
+   * Aggregate the canary arms from trusted pins and task outcomes. Both arms
+   * are read at observation time, so the sample always reflects runs that
+   * actually happened; pending or non-terminal tasks are excluded.
+   */
+  private canaryMetrics(
+    scope: WorkspaceScope,
+    rollout: RsiRollout,
+  ): { metrics: RsiEvalMetrics; evidence: string } {
+    const collect = (pins: readonly RsiRunPin[]): RsiRunOutcome[] =>
+      pins.flatMap((pin) => {
+        const outcome = this.deps.outcomes.outcomeFor(pin.run_id);
+        return outcome !== null && outcome.terminal ? [outcome] : [];
+      });
+    const candidate = collect(this.store.listRolloutPins(scope, rollout.rollout_id));
+    const baseline = collect(this.store.listBaselinePinsSince(scope, rollout.started_at));
+    if (candidate.length === 0 && baseline.length === 0) {
+      throw new ConflictError(
+        "no terminal runs are pinned to this canary or its baseline window yet",
+      );
+    }
+    const candidateSuccesses = candidate.filter((outcome) => outcome.success).length;
+    const baselineSuccesses = baseline.filter((outcome) => outcome.success).length;
+    const estimate = newcombeDifference(
+      candidateSuccesses,
+      candidate.length,
+      baselineSuccesses,
+      baseline.length,
+    );
+    return {
+      metrics: {
+        sample_size: candidate.length + baseline.length,
+        baseline_sample_size: baseline.length,
+        candidate_sample_size: candidate.length,
+        baseline_successes: baselineSuccesses,
+        candidate_successes: candidateSuccesses,
+        baseline_rework: baseline.filter((outcome) => outcome.rework).length,
+        candidate_rework: candidate.filter((outcome) => outcome.rework).length,
+        baseline_cost: baseline.reduce((sum, outcome) => sum + outcome.actions, 0),
+        candidate_cost: candidate.reduce((sum, outcome) => sum + outcome.actions, 0),
+        safety_events:
+          baseline.reduce((sum, outcome) => sum + outcome.safety_events, 0) +
+          candidate.reduce((sum, outcome) => sum + outcome.safety_events, 0),
+        success_delta: estimate.delta,
+        delta_ci_low: estimate.low,
+        delta_ci_high: estimate.high,
+      },
+      evidence: `pins:${rollout.rollout_id}:candidate=${candidate.length}:baseline=${baseline.length}`,
+    };
+  }
+
   private view(scope: WorkspaceScope, proposalId: string): RsiProposalView {
     const proposal = this.requireProposal(scope, proposalId);
     const evaluations = this.store.listEvaluations(scope, proposal.id, 50);
     const approvals = this.store.listApprovals(scope, proposal.id);
     const rollout = this.store.getRollout(scope, proposal.id) ?? null;
+    const observations =
+      rollout === null
+        ? []
+        : this.store.listObservations(
+            scope,
+            rollout.rollout_id,
+            RSI_HARD_LIMITS.observations_returned,
+          );
     return {
       proposal_id: proposal.id,
       title: proposal.title,
@@ -882,6 +891,7 @@ class RsiGovernanceService implements RsiService {
       evaluations,
       approvals,
       rollout,
+      observations,
       gate: this.gate(scope, proposal),
     };
   }

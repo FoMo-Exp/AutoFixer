@@ -102,6 +102,13 @@ export interface MemoryRetrievalService {
    * run's real retrieval must still name a stored policy version.
    */
   preview(scope: WorkspaceScope, request: MemorySearchRequest, policy: unknown): MemoryPreview;
+  /**
+   * The same unpublished-policy assembly as {@link preview}, but returning the
+   * full cited bundle. A run pinned into a canary uses this to inject memory
+   * selected under the candidate policy; it still records no retrieval run,
+   * because the pin itself is the audit record for that run.
+   */
+  previewBundle(scope: WorkspaceScope, request: MemorySearchRequest, policy: unknown): MemoryBundle;
   renderPrompt(bundle: MemoryBundle): string;
 }
 
@@ -362,27 +369,30 @@ class SqliteMemoryRetrievalService implements MemoryRetrievalService {
     }
   }
 
-  preview(
+  previewBundle(
     scope: WorkspaceScope,
     rawRequest: MemorySearchRequest,
     rawPolicy: unknown,
-  ): MemoryPreview {
+  ): MemoryBundle {
     const request = parseSearchRequest(rawRequest);
     const policy: RetrievalPolicy = validateRetrievalPolicy(rawPolicy);
-    const policyHash = retrievalPolicyHash(policy);
     const synthetic: RetrievalPolicyRecord = {
       id: "preview",
       enterprise_id: scope.enterprise_id,
       workspace_id: scope.workspace_id,
       version: 0,
       policy,
-      policy_hash: policyHash,
+      policy_hash: retrievalPolicyHash(policy),
       created_at: this.clock().toISOString(),
       created_by: scope.actor_id,
     };
-    const bundle = this.assemble(scope, request, synthetic, this.clock(), false);
+    return this.assemble(scope, request, synthetic, this.clock(), false);
+  }
+
+  preview(scope: WorkspaceScope, request: MemorySearchRequest, policy: unknown): MemoryPreview {
+    const bundle = this.previewBundle(scope, request, policy);
     return {
-      policy_hash: policyHash,
+      policy_hash: retrievalPolicyHash(validateRetrievalPolicy(policy)),
       items: [
         ...bundle.policy_items,
         ...bundle.lessons,

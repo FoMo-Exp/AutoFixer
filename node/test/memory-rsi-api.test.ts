@@ -74,12 +74,11 @@ async function createProposal(overrides: Record<string, unknown> = {}) {
   );
 }
 
-async function evaluateProposal(proposalId: string) {
-  return postJson<RsiProposalView>(
-    memoryUrl(`proposals/${proposalId}/evaluations`),
-    { verifier: { kind: "test", id: "usr_qa", reference: "test:memory-rsi-api" } },
-    sessionHeaders(),
-  );
+async function evaluateProposal(
+  proposalId: string,
+  headers: Record<string, string> = approverHeaders(),
+) {
+  return postJson<RsiProposalView>(memoryUrl(`proposals/${proposalId}/evaluations`), {}, headers);
 }
 
 beforeAll(async () => {
@@ -202,7 +201,7 @@ describe("workspace RSI HTTP surface", () => {
     expect(response.body.error.code).toBe("INVALID_REQUEST");
   });
 
-  test("the full proposal → replay → approval → canary → promotion path", async () => {
+  test("the full proposal → replay → approval → canary path, with no client metrics", async () => {
     const created = await createProposal();
     expect(created.status).toBe(201);
     expect(created.body.risk).toBe("A");
@@ -215,8 +214,10 @@ describe("workspace RSI HTTP surface", () => {
       "golden",
       "holdout",
     ]);
-    const evaluatedJson = JSON.stringify(evaluated.body);
-    expect(evaluatedJson).not.toContain("HOLDOUT-SECRET");
+    // The verifier is the authenticated evaluator, not a request-supplied claim.
+    expect(evaluated.body.evaluations[0]?.verifier.id).toBe(approver.userId);
+    expect(evaluated.body.evaluations[0]?.verifier.reference).toMatch(/^replay:/);
+    expect(JSON.stringify(evaluated.body)).not.toContain("HOLDOUT-SECRET");
 
     const approved = await postJson<RsiProposalView>(
       memoryUrl(`proposals/${created.body.proposal_id}/approvals`),
@@ -234,37 +235,58 @@ describe("workspace RSI HTTP surface", () => {
     expect(canary.status).toBe(201);
     expect(canary.body.rollout?.stage).toBe(10);
 
-    for (const stage of [10, 25, 50]) {
-      const observation = await postJson<RsiProposalView>(
-        memoryUrl(`proposals/${created.body.proposal_id}/canary/observations`),
-        {
-          sample_size: stage,
-          baseline_successes: Math.floor(stage * 0.9),
-          candidate_successes: Math.floor(stage * 0.9),
-          evidence_reference: `qa:canary-${stage}`,
-        },
-        sessionHeaders(),
-      );
-      expect(observation.status).toBe(201);
-    }
+    // Client-supplied canary numbers are refused outright.
+    const forged = await postJson<{ error: { code: string } }>(
+      memoryUrl(`proposals/${created.body.proposal_id}/canary/observations`),
+      {
+        sample_size: 500,
+        baseline_successes: 500,
+        candidate_successes: 500,
+        evidence_reference: "qa:forged",
+      },
+      sessionHeaders(),
+    );
+    expect(forged.status).toBe(400);
+    expect(forged.body.error.code).toBe("INVALID_REQUEST");
 
-    const promoted = await getJson<RsiProposalView>(
+    // With no terminal pinned runs, the server refuses to invent a sample.
+    const empty = await postJson<{ error: { code: string } }>(
+      memoryUrl(`proposals/${created.body.proposal_id}/canary/observations`),
+      {},
+      sessionHeaders(),
+    );
+    expect(empty.status).toBe(409);
+    const unchanged = await getJson<RsiProposalView>(
       memoryUrl(`proposals/${created.body.proposal_id}`),
       sessionHeaders(),
     );
-    expect(promoted.body.status).toBe("promoted");
-    expect(promoted.body.rollout?.status).toBe("promoted");
-    expect(promoted.body.applied_policy_version).not.toBeNull();
+    expect(unchanged.body.status).toBe("canary");
+    expect(unchanged.body.rollout?.stage).toBe(10);
   });
 
-  test("an evaluation cannot be a self-grade and only the owner may run it", async () => {
+  test("an evaluation body cannot carry a score or verifier claim", async () => {
+    const created = await createProposal();
+    const forged = await postJson<{ error: { code: string } }>(
+      memoryUrl(`proposals/${created.body.proposal_id}/evaluations`),
+      {
+        verifier: { kind: "test", id: "usr_qa", reference: "self" },
+        metrics: { sample_size: 100, candidate_successes: 100 },
+      },
+      approverHeaders(),
+    );
+    expect(forged.status).toBe(400);
+    expect(forged.body.error.code).toBe("INVALID_REQUEST");
+  });
+
+  test("the authenticated proposer cannot evaluate its own proposal", async () => {
     const created = await createProposal();
     const proposerSelf = await postJson<{ error: { code: string } }>(
       memoryUrl(`proposals/${created.body.proposal_id}/evaluations`),
-      { verifier: { kind: "test", id: session.userId, reference: "self" } },
+      {},
       sessionHeaders(),
     );
     expect(proposerSelf.status).toBe(400);
+    expect(proposerSelf.body.error.code).toBe("INVALID_REQUEST");
   });
 
   test("member and admin roles cannot start a canary or engage the kill switch", async () => {
@@ -272,7 +294,7 @@ describe("workspace RSI HTTP surface", () => {
     const created = await createProposal();
     // A member may propose, but not evaluate or canary.
     expect(created.status).toBe(201);
-    const evaluation = await evaluateProposal(created.body.proposal_id);
+    const evaluation = await evaluateProposal(created.body.proposal_id, sessionHeaders());
     expect(evaluation.status).toBe(403);
     const killSwitch = await postJson<unknown>(
       memoryUrl("rsi/kill-switch"),

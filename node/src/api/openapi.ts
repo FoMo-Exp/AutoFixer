@@ -351,6 +351,7 @@ const taskSchema: JsonObject = {
     "risk",
     "progress",
     "pi_summary",
+    "memory",
     "governance",
     "artifacts",
   ],
@@ -453,6 +454,37 @@ const taskSchema: JsonObject = {
         "cannot be re-proven, including every legacy DAT-191/192 record, is " +
         "served unavailable with text null.",
       oneOf: [{ $ref: "#/components/schemas/PiSummary" }, { type: "null" }],
+    },
+    memory: {
+      type: ["object", "null"],
+      description:
+        "Memory and retrieval-policy versions this run was pinned to at start " +
+        "(DAT-238), so a run is reproducible after a rollback. `canary` marks " +
+        "an unpublished candidate policy overlay; `item_ids` are the exact " +
+        "memory versions injected. Null when the memory service is not " +
+        "configured; `degraded` records an outage that did not block the run.",
+      required: [
+        "run_id",
+        "memory_version",
+        "policy_version",
+        "policy_hash",
+        "canary",
+        "rollout_id",
+        "bundle_id",
+        "degraded",
+        "item_ids",
+      ],
+      properties: {
+        run_id: { type: "string" },
+        memory_version: { type: ["string", "null"] },
+        policy_version: { type: ["integer", "null"] },
+        policy_hash: { type: ["string", "null"] },
+        canary: { type: "boolean" },
+        rollout_id: { type: ["string", "null"] },
+        bundle_id: { type: ["string", "null"] },
+        degraded: { type: "boolean" },
+        item_ids: { type: "array", items: { type: "string" } },
+      },
     },
     governance: {
       type: "object",

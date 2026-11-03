@@ -74,6 +74,8 @@ const evaluationSchema: JsonObject = {
     "dataset",
     "holdout_used",
     "sample_size",
+    "baseline_sample_size",
+    "candidate_sample_size",
     "baseline_successes",
     "candidate_successes",
     "baseline_rework",
@@ -101,6 +103,8 @@ const evaluationSchema: JsonObject = {
     dataset: { type: "string", enum: [...RSI_DATASETS] },
     holdout_used: { type: "boolean" },
     sample_size: { type: "integer", minimum: 0 },
+    baseline_sample_size: { type: "integer", minimum: 0 },
+    candidate_sample_size: { type: "integer", minimum: 0 },
     baseline_successes: { type: "integer", minimum: 0 },
     candidate_successes: { type: "integer", minimum: 0 },
     baseline_rework: { type: "integer", minimum: 0 },
@@ -120,7 +124,8 @@ const evaluationSchema: JsonObject = {
         kind: {
           type: "string",
           enum: [...RSI_VERIFIER_KINDS],
-          description: "Agent self-report is not a verifier kind.",
+          description:
+            "The server-run replay is the only verifier; agent self-report is not a kind.",
         },
         id: { type: "string" },
         reference: { type: "string" },
@@ -216,6 +221,58 @@ const gateSchema: JsonObject = {
   },
 };
 
+const observationSchema: JsonObject = {
+  type: "object",
+  required: [
+    "observation_id",
+    "rollout_id",
+    "stage",
+    "sample_size",
+    "baseline_sample_size",
+    "candidate_sample_size",
+    "baseline_successes",
+    "candidate_successes",
+    "baseline_rework",
+    "candidate_rework",
+    "baseline_cost",
+    "candidate_cost",
+    "safety_events",
+    "success_delta",
+    "delta_ci_low",
+    "delta_ci_high",
+    "verdict",
+    "evidence_reference",
+    "created_at",
+    "created_by",
+  ],
+  additionalProperties: false,
+  description:
+    "One canary stage sample derived from pinned runs and their terminal task " +
+    "outcomes. Evidence is the server-generated pin set, never request text.",
+  properties: {
+    observation_id: { type: "string" },
+    rollout_id: { type: "string" },
+    stage: { type: "integer", enum: [...RSI_CANARY_STAGES] },
+    sample_size: { type: "integer", minimum: 0 },
+    baseline_sample_size: { type: "integer", minimum: 0 },
+    candidate_sample_size: { type: "integer", minimum: 0 },
+    baseline_successes: { type: "integer", minimum: 0 },
+    candidate_successes: { type: "integer", minimum: 0 },
+    baseline_rework: { type: "integer", minimum: 0 },
+    candidate_rework: { type: "integer", minimum: 0 },
+    baseline_cost: { type: "number", minimum: 0 },
+    candidate_cost: { type: "number", minimum: 0 },
+    safety_events: { type: "integer", minimum: 0 },
+    success_delta: { type: "number" },
+    delta_ci_low: { type: "number" },
+    delta_ci_high: { type: "number" },
+    verdict: { type: "string", enum: ["pass", "fail", "inconclusive"] },
+    evidence_reference: { type: "string" },
+    created_at: { type: "string", format: "date-time" },
+    created_by: { type: "string" },
+  },
+};
+
 const proposalSchema: JsonObject = {
   type: "object",
   required: [
@@ -238,6 +295,7 @@ const proposalSchema: JsonObject = {
     "evaluations",
     "approvals",
     "rollout",
+    "observations",
     "gate",
   ],
   additionalProperties: false,
@@ -262,6 +320,10 @@ const proposalSchema: JsonObject = {
     approvals: { type: "array", items: { $ref: "#/components/schemas/RsiApproval" } },
     rollout: {
       oneOf: [{ $ref: "#/components/schemas/RsiRollout" }, { type: "null" }],
+    },
+    observations: {
+      type: "array",
+      items: { $ref: "#/components/schemas/RsiCanaryObservation" },
     },
     gate: { $ref: "#/components/schemas/RsiGate" },
   },
@@ -396,45 +458,17 @@ const createProposalRequestSchema: JsonObject = {
 
 const evaluationRequestSchema: JsonObject = {
   type: "object",
-  required: ["verifier"],
   additionalProperties: false,
   description:
-    "Runs the offline replay over the golden set and, unless narrowed, the " +
-    "hidden holdout. No metrics are accepted: the server computes the delta " +
-    "and its confidence interval.",
+    "Selects datasets only. The replay, its per-arm samples, delta, confidence " +
+    "interval, and verifier identity are computed or bound server-side; a " +
+    "request that carries metrics, a verifier claim, or evidence text is refused.",
   properties: {
-    verifier: {
-      type: "object",
-      required: ["kind", "id", "reference"],
-      additionalProperties: false,
-      properties: {
-        kind: { type: "string", enum: [...RSI_VERIFIER_KINDS] },
-        id: { type: "string" },
-        reference: { type: "string", maxLength: 300 },
-      },
-    },
     datasets: {
       type: "array",
       items: { type: "string", enum: [...RSI_DATASETS] },
       description: "Defaults to both datasets; the canary gate requires both.",
     },
-  },
-};
-
-const observationRequestSchema: JsonObject = {
-  type: "object",
-  required: ["sample_size", "baseline_successes", "candidate_successes", "evidence_reference"],
-  additionalProperties: false,
-  properties: {
-    sample_size: { type: "integer", minimum: 1 },
-    baseline_successes: { type: "integer", minimum: 0 },
-    candidate_successes: { type: "integer", minimum: 0 },
-    baseline_rework: { type: "integer", minimum: 0 },
-    candidate_rework: { type: "integer", minimum: 0 },
-    baseline_cost: { type: "number", minimum: 0 },
-    candidate_cost: { type: "number", minimum: 0 },
-    safety_events: { type: "integer", minimum: 0 },
-    evidence_reference: { type: "string", maxLength: 300 },
   },
 };
 
@@ -461,6 +495,7 @@ export const RSI_OPENAPI_SCHEMAS: Record<string, unknown> = {
   RsiEvaluation: evaluationSchema,
   RsiApproval: approvalSchema,
   RsiRollout: rolloutSchema,
+  RsiCanaryObservation: observationSchema,
   RsiGate: gateSchema,
   RsiProposal: proposalSchema,
   RsiProposalList: proposalListSchema,
@@ -470,7 +505,6 @@ export const RSI_OPENAPI_SCHEMAS: Record<string, unknown> = {
   RsiStatus: statusSchema,
   RsiCreateProposalRequest: createProposalRequestSchema,
   RsiEvaluationRequest: evaluationRequestSchema,
-  RsiCanaryObservationRequest: observationRequestSchema,
   RsiControlsRequest: controlsRequestSchema,
   RsiControlsResponse: controlsResponseSchema,
 };
@@ -583,11 +617,12 @@ export function rsiOpenApiPaths(): Record<string, Record<string, unknown>> {
         summary: "Run the offline replay over the golden set and hidden holdout",
         description:
           `${SESSION_NOTE}Workspace owner only. The server executes the replay over ` +
-          "the stored corpus and both datasets, computes the paired delta and its " +
-          "Newcombe confidence interval, and records one evaluation per dataset. " +
-          "Metrics are never accepted from the caller. A verifier identity that " +
-          "matches the proposer, or an agent self-report, is refused. Reaching the " +
-          "weekly reflection-token budget blocks the run before anything is recorded.",
+          "the stored corpus and both datasets, computes the per-arm samples, delta " +
+          "and Newcombe confidence interval, and records one evaluation per dataset. " +
+          "The verifier is the authenticated evaluator with a server-derived replay " +
+          "reference; metrics, verifier claims, and evidence text in the request are " +
+          "refused, and the proposer cannot evaluate itself. Reaching the weekly " +
+          "reflection-token budget blocks the run before anything is recorded.",
         parameters: [workspaceIdParameter, proposalIdParameter],
         requestBody: {
           required: true,
@@ -663,28 +698,22 @@ export function rsiOpenApiPaths(): Record<string, Record<string, unknown>> {
         operationId: "recordRsiCanaryObservation",
         summary: "Record a canary stage observation and advance or roll back",
         description:
-          `${SESSION_NOTE}Owner only. The stage advances 10% → 50% → 100% only after ` +
-          "its minimum sample passes. Any security event, negative delta, a " +
-          "confidence interval establishing a regression beyond the margin, or a " +
-          "rework/cost breach triggers an automatic rollback. A pass at 100% " +
-          "promotes and publishes exactly one policy version (or activates the " +
-          "candidate memory item).",
+          `${SESSION_NOTE}Owner only. The sample is derived server-side from the ` +
+          "runs this rollout pinned and their terminal task outcomes; pending runs " +
+          "are excluded and any request body is refused. The stage advances " +
+          "10% → 50% → 100% only after its minimum sample passes. Any security " +
+          "event, negative delta, a confidence interval establishing a regression " +
+          "beyond the margin, or a rework/cost breach triggers an automatic " +
+          "rollback. A pass at 100% promotes and publishes exactly one policy " +
+          "version (or activates the candidate memory item).",
         parameters: [workspaceIdParameter, proposalIdParameter],
-        requestBody: {
-          required: true,
-          content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/RsiCanaryObservationRequest" },
-            },
-          },
-        },
         responses: {
           201: proposalResponse("Observation recorded; the rollout state reflects the decision"),
-          400: errorResponse("INVALID_REQUEST"),
+          400: errorResponse("INVALID_REQUEST — a request body carrying samples"),
           401: errorResponse("UNAUTHENTICATED"),
           403: errorResponse("FORBIDDEN"),
           404: errorResponse("NOT_FOUND"),
-          409: errorResponse("CONFLICT — no active canary"),
+          409: errorResponse("CONFLICT — no active canary or no terminal pinned runs"),
         },
       },
     },

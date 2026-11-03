@@ -12,6 +12,7 @@ import { InvitationService, readOrCreateInvitationDigestKey } from "./api/invita
 import type { InvitationRateLimits } from "./api/invitation-service.js";
 import { ProviderOAuth, readOAuthCredentialsFile } from "./api/oauth.js";
 import { createApiServer } from "./api/server.js";
+import { createTaskRunOutcomes } from "./api/run-outcomes.js";
 import { createRequestAuthority } from "./api/request-authority.js";
 import type { RequestAuthority } from "./api/request-authority.js";
 import { TaskService } from "./api/task-service.js";
@@ -423,6 +424,8 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       memory: memoryRepositories,
       retrieval: memory,
       retrievalStore,
+      // Canary samples come only from the task projection for pinned runs.
+      outcomes: createTaskRunOutcomes(store),
     });
     providerAuthority = createRequestAuthority({
       access: providerAccess,
@@ -505,6 +508,9 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       },
     });
   }
+  // The task service starts runs, so it receives the same memory/RSI pair:
+  // every run pins its versions here and the canary overlay is consumed by the
+  // retrieval call above the prompt.
   const service = new TaskService({
     config,
     dsh,
@@ -513,6 +519,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     workspaceBindings,
     ...(model ? { model } : {}),
     runScope: options.runScope ?? deploymentRunScope(requestScopeDeps),
+    ...(memory !== undefined && rsi !== undefined ? { memory: { memory, rsi } } : {}),
   });
   const server = createApiServer({
     service,

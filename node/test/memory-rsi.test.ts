@@ -30,6 +30,8 @@ import type {
   RetrievalPolicy,
   RetrievalStore,
   RsiProposalView,
+  RsiRunOutcome,
+  RsiRunOutcomeSource,
   RsiService,
   RsiStore,
 } from "../src/memory/index.js";
@@ -37,7 +39,8 @@ import type {
 /**
  * DAT-238: bounded RSI. These tests drive the real memory store, the real
  * retrieval path (offline replay calls `preview`), and the RSI governance
- * service. Nothing is mocked except identities, which are just strings.
+ * service. The canary arm is fed from a recorded outcome source — the same
+ * shape the task projection implements — never from request fields.
  */
 
 let db: ControlPlaneDb;
@@ -47,14 +50,16 @@ let memory: MemoryRepositories;
 let retrievalStore: RetrievalStore;
 let store: RsiStore;
 let rsi: RsiService;
+let outcomes: Map<string, RsiRunOutcome>;
+let runSeq: number;
 
 const OWNER = "usr_owner";
 const ADMIN = "usr_admin";
 const PROPOSER = "agent_proposer";
-const VERIFIER = "qa_verifier";
 const GOLDEN_CASES = 20;
 const HOLDOUT_CASES = 20;
 const HOLDOUT_SECRET_QUERY = "HOLDOUT-SECRET-QUERY build flag rollout";
+const ACTOR: { id: string; role: "owner" | "admin" | "member" } = { id: OWNER, role: "owner" };
 
 function bootstrap(): WorkspaceScope {
   const { enterprise, admin_scope } = seedEnterprise(db, {
@@ -185,32 +190,73 @@ function proposalInput(fixture: Fixture, overrides: Record<string, unknown> = {}
   } as CreateRsiProposalInput;
 }
 
+function evaluate(proposal: RsiProposalView, actor = ACTOR): RsiProposalView {
+  return rsi.evaluate(scope, proposal.proposal_id, {}, actor);
+}
+
 function approveAsOwner(proposal: RsiProposalView): RsiProposalView {
   return rsi.approve(scope, proposal.proposal_id, { id: OWNER, role: "owner" });
 }
 
-function evaluate(proposal: RsiProposalView): RsiProposalView {
-  return rsi.evaluate(scope, proposal.proposal_id, {
-    verifier: { kind: "test", id: VERIFIER, reference: "test:memory-rsi" },
+function recordOutcome(runId: string, overrides: Partial<RsiRunOutcome> = {}): void {
+  outcomes.set(runId, {
+    run_id: runId,
+    terminal: true,
+    success: true,
+    rework: false,
+    safety_events: 0,
+    actions: 4,
+    observed_at: "2026-11-01T00:00:00.000Z",
+    ...overrides,
   });
 }
 
-function completeCanary(proposal: RsiProposalView): RsiProposalView {
-  const stages = [{ sample: 10 }, { sample: 25 }, { sample: 50 }];
-  let view = rsi.startCanary(scope, proposal.proposal_id, { id: OWNER, role: "owner" });
-  for (const stage of stages) {
-    view = rsi.recordCanaryObservation(
-      scope,
-      proposal.proposal_id,
-      {
-        sample_size: stage.sample,
-        baseline_successes: Math.floor(stage.sample * 0.9),
-        candidate_successes: Math.floor(stage.sample * 0.9),
-        evidence_reference: `qa:canary-${stage.sample}`,
-      },
-      { id: OWNER, role: "owner" },
-    );
+/**
+ * Pin one run into the requested arm at the given canary share. The bucket is
+ * deterministic, so the helper searches run ids until the resolver agrees.
+ */
+function pinRun(
+  arm: "candidate" | "baseline",
+  share: number,
+  outcome: Partial<RsiRunOutcome> = {},
+): string {
+  for (;;) {
+    runSeq += 1;
+    const runId = `run_${arm}_${runSeq}`;
+    const wouldSelect = canaryBucket(scope.workspace_id, runId) < share * 100;
+    if (wouldSelect !== (arm === "candidate")) {
+      continue;
+    }
+    const pin = rsi.resolveRunVersions(scope, runId);
+    if (pin.canary !== (arm === "candidate")) {
+      continue;
+    }
+    recordOutcome(runId, outcome);
+    return runId;
   }
+}
+
+function seedArms(
+  count: number,
+  share: number,
+  overrides: { candidate?: Partial<RsiRunOutcome>; baseline?: Partial<RsiRunOutcome> } = {},
+): void {
+  for (let index = 0; index < count; index += 1) {
+    pinRun("candidate", share, overrides.candidate ?? {});
+    pinRun("baseline", share, overrides.baseline ?? {});
+  }
+}
+
+function observe(proposal: RsiProposalView): RsiProposalView {
+  return rsi.recordCanaryObservation(scope, proposal.proposal_id, ACTOR);
+}
+
+function completeCanary(proposal: RsiProposalView): RsiProposalView {
+  const started = rsi.startCanary(scope, proposal.proposal_id, ACTOR);
+  seedArms(50, 10);
+  let view = observe(started);
+  view = observe(view);
+  view = observe(view);
   return view;
 }
 
@@ -222,7 +268,12 @@ beforeEach(() => {
   retrievalStore = createRetrievalStore(db);
   const retrieval = createMemoryRetrievalService({ memory, store: retrievalStore });
   store = createRsiStore(db);
-  rsi = createRsiService({ store, memory, retrieval, retrievalStore });
+  outcomes = new Map<string, RsiRunOutcome>();
+  runSeq = 0;
+  const outcomeSource: RsiRunOutcomeSource = {
+    outcomeFor: (runId) => outcomes.get(runId) ?? null,
+  };
+  rsi = createRsiService({ store, memory, retrieval, retrievalStore, outcomes: outcomeSource });
 });
 
 describe("risk ladder", () => {
@@ -256,20 +307,26 @@ describe("risk ladder", () => {
 });
 
 describe("offline replay and independent verification", () => {
-  test("agent self-report and proposer verification are refused", () => {
+  test("the proposer cannot verify its own proposal and only an owner may evaluate", () => {
     const fixture = seedFixture();
     const proposal = rsi.createProposal(scope, proposalInput(fixture));
-    expect(() =>
-      rsi.evaluate(scope, proposal.proposal_id, {
-        verifier: { kind: "agent_self_report" as never, id: PROPOSER, reference: "self" },
-      }),
-    ).toThrow(ValidationError);
-    expect(() =>
-      rsi.evaluate(scope, proposal.proposal_id, {
-        verifier: { kind: "test", id: PROPOSER, reference: "self-run" },
-      }),
-    ).toThrow(/independent verifier/);
+    expect(() => evaluate(proposal, { id: PROPOSER, role: "owner" })).toThrow(/independent/);
+    expect(() => evaluate(proposal, { id: "usr_member", role: "member" })).toThrow(/owner role/);
     expect(store.listEvaluations(scope, proposal.proposal_id)).toHaveLength(0);
+  });
+
+  test("the stored verifier is the authenticated actor with a server-derived reference", () => {
+    const fixture = seedFixture();
+    const proposal = rsi.createProposal(scope, proposalInput(fixture));
+    const evaluated = evaluate(proposal, { id: "usr_evaluator", role: "owner" });
+    expect(evaluated.evaluations).toHaveLength(2);
+    for (const evaluation of evaluated.evaluations) {
+      expect(evaluation.verifier).toEqual({
+        kind: "test",
+        id: "usr_evaluator",
+        reference: `replay:${proposal.proposal_id}:v${proposal.version}:${evaluation.dataset}`,
+      });
+    }
   });
 
   test("a candidate that loses cases fails the gate and cannot canary", () => {
@@ -282,9 +339,7 @@ describe("offline replay and independent verification", () => {
     expect(evaluated.gate.offline_evaluation).toBe("fail");
     expect(evaluated.status).toBe("blocked");
     expect(evaluated.gate.canary_eligible).toBe(false);
-    expect(() =>
-      rsi.startCanary(scope, proposal.proposal_id, { id: OWNER, role: "owner" }),
-    ).toThrow(ConflictError);
+    expect(() => rsi.startCanary(scope, proposal.proposal_id, ACTOR)).toThrow(ConflictError);
   });
 
   test("a replay that improves nothing but regresses nothing passes both datasets", () => {
@@ -317,27 +372,28 @@ describe("offline replay and independent verification", () => {
 
   test("an empty dataset is a refusal, not a pass", () => {
     const fixture = seedFixture();
-    const proposal = rsi.createProposal(scope, proposalInput(fixture));
-    const emptyScope = { ...scope, workspace_id: otherScope.workspace_id };
+    const orphan = rsi.createProposal(
+      otherScope,
+      proposalInput(fixture, { proposer: { id: PROPOSER, kind: "agent" } }),
+    );
     expect(() =>
-      rsi.evaluate(emptyScope, proposal.proposal_id, {
-        verifier: { kind: "test", id: VERIFIER, reference: "test:empty" },
-      }),
-    ).toThrow(NotFoundError);
+      rsi.evaluate(otherScope, orphan.proposal_id, {}, { id: "usr_other_owner", role: "owner" }),
+    ).toThrow(/has no cases/);
   });
 
   test("another workspace cannot read or evaluate the proposal", () => {
     const fixture = seedFixture();
     const proposal = rsi.createProposal(scope, proposalInput(fixture));
     expect(() => rsi.getProposal(otherScope, proposal.proposal_id)).toThrow(NotFoundError);
+    expect(() =>
+      rsi.evaluate(otherScope, proposal.proposal_id, {}, { id: OWNER, role: "owner" }),
+    ).toThrow(NotFoundError);
   });
 });
 
 describe("human gates", () => {
   test("B needs a named human, and the proposer cannot be that human", () => {
     const fixture = seedFixture();
-    // A bare two-item corpus would make one extra candidate double the bundle
-    // cost; a realistic full bundle keeps the cost signal about real growth.
     for (let index = 0; index < 7; index += 1) {
       createLesson(`node memory tests filler ${index}`, "active");
     }
@@ -376,7 +432,6 @@ describe("human gates", () => {
     const second = rsi.approve(scope, proposal.proposal_id, { id: ADMIN, role: "admin" });
     expect(second.gate.approvals_satisfied).toBe(2);
     expect(second.gate.canary_eligible).toBe(true);
-    // The same human approving twice cannot satisfy a two-key gate.
     expect(new Set(second.approvals.map((entry) => entry.approver_id)).size).toBe(2);
   });
 
@@ -384,11 +439,9 @@ describe("human gates", () => {
     const fixture = seedFixture();
     const proposal = rsi.createProposal(scope, proposalInput(fixture));
     evaluate(proposal);
-    expect(() =>
-      rsi.startCanary(scope, proposal.proposal_id, { id: OWNER, role: "owner" }),
-    ).toThrow(/human approval/);
+    expect(() => rsi.startCanary(scope, proposal.proposal_id, ACTOR)).toThrow(/human approval/);
 
-    rsi.updateControls(scope, { auto_promote_low_risk: true }, { id: OWNER, role: "owner" });
+    rsi.updateControls(scope, { auto_promote_low_risk: true }, ACTOR);
     const enabled = rsi.getProposal(scope, proposal.proposal_id);
     expect(enabled.gate.approvals_required).toBe(0);
     expect(enabled.gate.canary_eligible).toBe(true);
@@ -408,50 +461,64 @@ describe("canary, promotion, rollback", () => {
     expect(promoted.applied_policy_version).toBe(before + 1);
     expect(retrievalStore.getPolicy(scope)?.version).toBe(before + 1);
     expect(rsi.status(scope).budget.changes_promoted).toBe(1);
+    expect(promoted.observations.length).toBeGreaterThanOrEqual(3);
+    expect(promoted.observations[0]?.evidence_reference).toMatch(/^pins:/);
   });
 
-  test("a canary-only evidence gap stays inconclusive and does not advance", () => {
+  test("a canary with too few terminal runs stays inconclusive and does not advance", () => {
     const fixture = seedFixture();
     const proposal = rsi.createProposal(scope, proposalInput(fixture));
     evaluate(proposal);
     approveAsOwner(proposal);
-    rsi.startCanary(scope, proposal.proposal_id, { id: OWNER, role: "owner" });
-    const short = rsi.recordCanaryObservation(
-      scope,
-      proposal.proposal_id,
-      {
-        sample_size: 3,
-        baseline_successes: 3,
-        candidate_successes: 3,
-        evidence_reference: "qa:too-small",
-      },
-      { id: OWNER, role: "owner" },
-    );
+    rsi.startCanary(scope, proposal.proposal_id, ACTOR);
+    seedArms(3, 10);
+    const short = observe(proposal);
     expect(short.rollout?.stage).toBe(10);
     expect(short.status).toBe("canary");
+    expect(short.observations[0]?.verdict).toBe("inconclusive");
   });
 
-  test("a security event in canary rolls back immediately", () => {
+  test("an observation is refused when no pinned run is terminal yet", () => {
     const fixture = seedFixture();
-    const policyProposal = rsi.createProposal(scope, proposalInput(fixture));
-    evaluate(policyProposal);
-    approveAsOwner(policyProposal);
-    rsi.startCanary(scope, policyProposal.proposal_id, { id: OWNER, role: "owner" });
-    const rolled = rsi.recordCanaryObservation(
-      scope,
-      policyProposal.proposal_id,
-      {
-        sample_size: 10,
-        baseline_successes: 9,
-        candidate_successes: 2,
-        safety_events: 1,
-        evidence_reference: "incident:canary-1",
-      },
-      { id: OWNER, role: "owner" },
-    );
+    const proposal = rsi.createProposal(scope, proposalInput(fixture));
+    evaluate(proposal);
+    approveAsOwner(proposal);
+    rsi.startCanary(scope, proposal.proposal_id, ACTOR);
+    expect(() => observe(proposal)).toThrow(/no terminal runs/);
+    expect(
+      store.listObservations(
+        scope,
+        rsi.getProposal(scope, proposal.proposal_id).rollout?.rollout_id ?? "",
+      ),
+    ).toHaveLength(0);
+  });
+
+  test("a security event in a recorded run rolls the canary back immediately", () => {
+    const fixture = seedFixture();
+    const proposal = rsi.createProposal(scope, proposalInput(fixture));
+    evaluate(proposal);
+    approveAsOwner(proposal);
+    rsi.startCanary(scope, proposal.proposal_id, ACTOR);
+    seedArms(10, 10, { candidate: { safety_events: 1 } });
+    const rolled = observe(proposal);
     expect(rolled.status).toBe("rolled_back");
     expect(rolled.rollout?.status).toBe("rolled_back");
     expect(rolled.rollout?.reason).toMatch(/security events/);
+  });
+
+  test("a recorded regression rolls the canary back before promotion", () => {
+    const fixture = seedFixture();
+    const proposal = rsi.createProposal(scope, proposalInput(fixture));
+    evaluate(proposal);
+    approveAsOwner(proposal);
+    rsi.startCanary(scope, proposal.proposal_id, ACTOR);
+    seedArms(10, 10, { candidate: { success: false } });
+    const rolled = observe(proposal);
+    expect(rolled.status).toBe("rolled_back");
+    expect(rolled.rollout?.reason).toMatch(/automatic rollback/);
+    expect(retrievalStore.getPolicy(scope)?.version).toBe(
+      rsi.getProposal(scope, proposal.proposal_id).baseline_policy_version,
+    );
   });
 
   test("promoted changes can be rolled back to the baseline policy content", () => {
@@ -464,19 +531,16 @@ describe("canary, promotion, rollback", () => {
     const promoted = rsi.getProposal(scope, proposal.proposal_id);
     expect(promoted.status).toBe("promoted");
 
-    const rolled = rsi.rollback(scope, proposal.proposal_id, "reviewer regression", {
-      id: OWNER,
-      role: "owner",
-    });
+    const rolled = rsi.rollback(scope, proposal.proposal_id, "reviewer regression", ACTOR);
     expect(rolled.status).toBe("rolled_back");
     const reverted = retrievalStore.getPolicy(scope);
-    expect(reverted?.policy_hash).toBe(baseline?.policy_hash);
-    expect(reverted?.version).toBeGreaterThan(baseline?.version ?? 0);
+    expect(reverted?.policy_hash).toBe(baseline.policy_hash);
+    expect(reverted?.version).toBeGreaterThan(baseline.version);
   });
 
   test("the weekly change budget blocks a second promotion", () => {
     const fixture = seedFixture();
-    rsi.updateControls(scope, { weekly_change_budget: 1 }, { id: OWNER, role: "owner" });
+    rsi.updateControls(scope, { weekly_change_budget: 1 }, ACTOR);
     const first = rsi.createProposal(scope, proposalInput(fixture));
     evaluate(first);
     approveAsOwner(first);
@@ -487,14 +551,12 @@ describe("canary, promotion, rollback", () => {
     evaluate(second);
     const approved = approveAsOwner(second);
     expect(approved.gate.canary_eligible).toBe(false);
-    expect(() => rsi.startCanary(scope, second.proposal_id, { id: OWNER, role: "owner" })).toThrow(
-      /change budget/,
-    );
+    expect(() => rsi.startCanary(scope, second.proposal_id, ACTOR)).toThrow(/change budget/);
   });
 
   test("the reflection-token budget blocks evaluation before it records anything", () => {
     const fixture = seedFixture();
-    rsi.updateControls(scope, { weekly_reflection_token_budget: 0 }, { id: OWNER, role: "owner" });
+    rsi.updateControls(scope, { weekly_reflection_token_budget: 0 }, ACTOR);
     const proposal = rsi.createProposal(scope, proposalInput(fixture));
     expect(() => evaluate(proposal)).toThrow(/reflection token budget/);
     expect(store.listEvaluations(scope, proposal.proposal_id)).toHaveLength(0);
@@ -507,22 +569,15 @@ describe("kill switch and run pins", () => {
     const proposal = rsi.createProposal(scope, proposalInput(fixture));
     evaluate(proposal);
     approveAsOwner(proposal);
-    rsi.startCanary(scope, proposal.proposal_id, { id: OWNER, role: "owner" });
+    rsi.startCanary(scope, proposal.proposal_id, ACTOR);
     expect(store.listActiveRollouts(scope)).toHaveLength(1);
 
-    const controls = rsi.setKillSwitch(scope, true, "security incident", {
-      id: OWNER,
-      role: "owner",
-    });
+    const controls = rsi.setKillSwitch(scope, true, "security incident", ACTOR);
     expect(controls.kill_switch).toBe(true);
     expect(store.listActiveRollouts(scope)).toHaveLength(0);
     expect(rsi.getProposal(scope, proposal.proposal_id).status).toBe("rolled_back");
-    expect(() =>
-      rsi.startCanary(scope, proposal.proposal_id, { id: OWNER, role: "owner" }),
-    ).toThrow(/kill switch/);
-    expect(() => rsi.setKillSwitch(scope, true, null, { id: OWNER, role: "owner" })).toThrow(
-      /requires a reason/,
-    );
+    expect(() => rsi.startCanary(scope, proposal.proposal_id, ACTOR)).toThrow(/kill switch/);
+    expect(() => rsi.setKillSwitch(scope, true, null, ACTOR)).toThrow(/requires a reason/);
   });
 
   test("a run pin is stable, is reproducible, and never flips when the canary rolls back", () => {
@@ -530,33 +585,24 @@ describe("kill switch and run pins", () => {
     const proposal = rsi.createProposal(scope, proposalInput(fixture));
     evaluate(proposal);
     approveAsOwner(proposal);
-    rsi.startCanary(scope, proposal.proposal_id, { id: OWNER, role: "owner" });
+    rsi.startCanary(scope, proposal.proposal_id, ACTOR);
 
-    const canaryRun = Array.from({ length: 500 }, (_, index) => `run-canary-${index}`).find(
-      (runId) => canaryBucket(scope.workspace_id, runId) < 10 * 100,
-    );
-    const baselineRun = Array.from({ length: 500 }, (_, index) => `run-base-${index}`).find(
-      (runId) => canaryBucket(scope.workspace_id, runId) >= 10 * 100,
-    );
-    expect(canaryRun).toBeDefined();
-    expect(baselineRun).toBeDefined();
+    const canaryRun = pinRun("candidate", 10);
+    const baselineRun = pinRun("baseline", 10);
 
-    const canaryPin = rsi.resolveRunVersions(scope, canaryRun as string);
+    const canaryPin = rsi.resolveRunVersions(scope, canaryRun);
     expect(canaryPin.canary).toBe(true);
     expect(canaryPin.policy).not.toBeNull();
-    const repeated = rsi.resolveRunVersions(scope, canaryRun as string);
+    const repeated = rsi.resolveRunVersions(scope, canaryRun);
     expect(repeated.created_at).toBe(canaryPin.created_at);
     expect(repeated.policy_hash).toBe(canaryPin.policy_hash);
 
-    const baselinePin = rsi.resolveRunVersions(scope, baselineRun as string);
+    const baselinePin = rsi.resolveRunVersions(scope, baselineRun);
     expect(baselinePin.canary).toBe(false);
     expect(baselinePin.policy).toBeNull();
 
-    rsi.rollback(scope, proposal.proposal_id, "replay regression", {
-      id: OWNER,
-      role: "owner",
-    });
-    const afterRollback = rsi.getRunPin(scope, canaryRun as string);
+    rsi.rollback(scope, proposal.proposal_id, "replay regression", ACTOR);
+    const afterRollback = rsi.getRunPin(scope, canaryRun);
     expect(afterRollback?.policy_hash).toBe(canaryPin.policy_hash);
     expect(afterRollback?.policy_version).toBe(canaryPin.policy_version);
   });
@@ -566,13 +612,30 @@ describe("kill switch and run pins", () => {
     const proposal = rsi.createProposal(scope, proposalInput(fixture));
     evaluate(proposal);
     approveAsOwner(proposal);
-    rsi.startCanary(scope, proposal.proposal_id, { id: OWNER, role: "owner" });
-    rsi.setKillSwitch(scope, true, "incident", { id: OWNER, role: "owner" });
+    rsi.startCanary(scope, proposal.proposal_id, ACTOR);
+    rsi.setKillSwitch(scope, true, "incident", ACTOR);
 
     const resolved = rsi.resolveRunVersions(scope, "run-after-kill");
     expect(resolved.canary).toBe(false);
     expect(resolved.policy).toBeNull();
     expect(resolved.proposal_id).toBeNull();
+  });
+
+  test("canary samples come from pinned runs, not from the caller", () => {
+    const fixture = seedFixture();
+    const proposal = rsi.createProposal(scope, proposalInput(fixture));
+    evaluate(proposal);
+    approveAsOwner(proposal);
+    rsi.startCanary(scope, proposal.proposal_id, ACTOR);
+    // Only baseline runs exist: the candidate arm has no sample, so the gate
+    // cannot pass even though the baseline looks perfect.
+    for (let index = 0; index < 20; index += 1) {
+      pinRun("baseline", 10);
+    }
+    const view = observe(proposal);
+    expect(view.observations[0]?.candidate_sample_size).toBe(0);
+    expect(view.observations[0]?.verdict).toBe("inconclusive");
+    expect(view.rollout?.stage).toBe(10);
   });
 });
 
@@ -598,6 +661,11 @@ describe("statistics and bounds", () => {
     ).toBe("pass");
   });
 
+  test("per-arm samples are both required", () => {
+    const verdict = verdictFor({ ...baseMetrics(), baseline_sample_size: 19 });
+    expect(verdict.verdict).toBe("inconclusive");
+  });
+
   test("the ISO budget week starts on Monday", () => {
     expect(isoWeekStart(new Date("2026-11-04T12:00:00.000Z"))).toBe("2026-11-02");
     expect(isoWeekStart(new Date("2026-11-02T00:00:00.000Z"))).toBe("2026-11-02");
@@ -606,7 +674,9 @@ describe("statistics and bounds", () => {
 
 function baseMetrics() {
   return {
-    sample_size: 20,
+    sample_size: 40,
+    baseline_sample_size: 20,
+    candidate_sample_size: 20,
     baseline_successes: 20,
     candidate_successes: 20,
     baseline_rework: 0,

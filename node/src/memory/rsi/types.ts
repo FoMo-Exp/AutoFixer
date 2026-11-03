@@ -153,7 +153,11 @@ export interface RsiEvalCase {
 }
 
 export interface RsiEvalMetrics {
+  /** Total terminal runs/cases across both arms. */
   sample_size: number;
+  /** Per-arm denominators: canary arms have different run counts. */
+  baseline_sample_size: number;
+  candidate_sample_size: number;
   baseline_successes: number;
   candidate_successes: number;
   baseline_rework: number;
@@ -183,7 +187,6 @@ export interface RsiEvaluationRecord extends RsiEvalMetrics {
 }
 
 export interface RsiEvaluationRequest {
-  verifier: RsiVerifier;
   /** Datasets to replay. Defaults to both, which the canary gate requires. */
   datasets?: RsiDataset[];
 }
@@ -231,27 +234,40 @@ export interface RsiRollout {
   updated_at: string;
 }
 
-export interface RsiCanaryObservationInput {
-  sample_size: number;
-  baseline_successes: number;
-  candidate_successes: number;
-  baseline_rework?: number;
-  candidate_rework?: number;
-  baseline_cost?: number;
-  candidate_cost?: number;
-  safety_events?: number;
-  /** Run/QA evidence this observation is drawn from. */
-  evidence_reference: string;
-}
-
 export interface RsiCanaryObservation extends RsiEvalMetrics {
   observation_id: string;
   rollout_id: string;
   stage: RsiCanaryStage;
   verdict: RsiEvalVerdict;
+  /** Server-derived: the pin set the observation was computed from. */
   evidence_reference: string;
   created_at: string;
   created_by: UserId;
+}
+
+/**
+ * One trusted, server-recorded run outcome. The canary never accepts these
+ * numbers from a client: it reads them from the task projection for the runs
+ * its own pins selected.
+ */
+export interface RsiRunOutcome {
+  run_id: string;
+  /** False until the task reached a terminal status; pending runs are excluded. */
+  terminal: boolean;
+  /** The change was accepted for delivery or merged. */
+  success: boolean;
+  /** The run produced rework: rejected or stopped. */
+  rework: boolean;
+  /** Prohibited/policy-denied tool intents observed on the task. */
+  safety_events: number;
+  /** Executed tool actions, used as the per-run cost proxy. */
+  actions: number;
+  observed_at: string;
+}
+
+/** Trusted run/evidence source, implemented over the task projection. */
+export interface RsiRunOutcomeSource {
+  outcomeFor(runId: string): RsiRunOutcome | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +372,7 @@ export interface RsiProposalView {
   evaluations: RsiEvaluationRecord[];
   approvals: RsiApproval[];
   rollout: RsiRollout | null;
+  observations: RsiCanaryObservation[];
   gate: RsiProposalGate;
 }
 

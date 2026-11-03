@@ -31,17 +31,19 @@ export interface GateOutcome {
  */
 export function verdictFor(metrics: RsiEvalMetrics, minSample = RSI_MIN_SAMPLE): GateOutcome {
   const reasons: string[] = [];
-  if (metrics.sample_size < minSample) {
+  if (metrics.baseline_sample_size < minSample || metrics.candidate_sample_size < minSample) {
     return {
       verdict: "inconclusive",
-      reasons: [`sample ${metrics.sample_size} is below the minimum ${minSample}`],
+      reasons: [
+        `sample is below the minimum ${minSample} (baseline ${metrics.baseline_sample_size}, candidate ${metrics.candidate_sample_size})`,
+      ],
     };
   }
   if (
-    metrics.baseline_successes > metrics.sample_size ||
-    metrics.candidate_successes > metrics.sample_size
+    metrics.baseline_successes > metrics.baseline_sample_size ||
+    metrics.candidate_successes > metrics.candidate_sample_size
   ) {
-    return { verdict: "fail", reasons: ["success counts exceed the sample size"] };
+    return { verdict: "fail", reasons: ["success counts exceed their arm's sample size"] };
   }
   if (metrics.safety_events > 0) {
     reasons.push(`security events: ${metrics.safety_events} forbidden item injection(s)`);
@@ -57,15 +59,18 @@ export function verdictFor(metrics: RsiEvalMetrics, minSample = RSI_MIN_SAMPLE):
       `confidence upper bound ${metrics.delta_ci_high.toFixed(4)} is below -${RSI_MAX_SUCCESS_REGRESSION}`,
     );
   }
-  const reworkGrowth =
-    (metrics.candidate_rework - metrics.baseline_rework) / Math.max(1, metrics.sample_size);
+  const baselineReworkRate = metrics.baseline_rework / metrics.baseline_sample_size;
+  const candidateReworkRate = metrics.candidate_rework / metrics.candidate_sample_size;
+  const reworkGrowth = candidateReworkRate - baselineReworkRate;
   if (reworkGrowth > RSI_MAX_REWORK_GROWTH) {
-    reasons.push(`rework grew by ${reworkGrowth.toFixed(4)} per sample`);
+    reasons.push(`rework rate grew by ${reworkGrowth.toFixed(4)}`);
   }
+  const baselineCostRate = metrics.baseline_cost / metrics.baseline_sample_size;
+  const candidateCostRate = metrics.candidate_cost / metrics.candidate_sample_size;
   const costGrowth =
-    metrics.baseline_cost > 0
-      ? (metrics.candidate_cost - metrics.baseline_cost) / metrics.baseline_cost
-      : metrics.candidate_cost > 0
+    baselineCostRate > 0
+      ? (candidateCostRate - baselineCostRate) / baselineCostRate
+      : candidateCostRate > 0
         ? Number.POSITIVE_INFINITY
         : 0;
   if (costGrowth > RSI_MAX_COST_GROWTH) {

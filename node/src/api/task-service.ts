@@ -20,6 +20,8 @@ import { createTurnSummaryReportTool } from "../pi/turn-report-tool.js";
 import { piSystemPrompt, taskPrompt } from "../pi/prompts.js";
 import type { PiSessionOptions } from "../pi/session.js";
 import { PiSession } from "../pi/session.js";
+import { assembleRunMemory } from "./run-memory.js";
+import type { RunMemoryDeps } from "./run-memory.js";
 import { ApiError, apiErrorFromDsh, DSH_SAFE_MESSAGES } from "./errors.js";
 import { PiSummaryTracker } from "./pi-summary.js";
 import type { PiSummary } from "./pi-summary.js";
@@ -188,6 +190,12 @@ export interface TaskServiceDeps {
    * denied at the next dispatch.
    */
   runScope: (principal: AuthenticatedPrincipal | null) => GatewayScopeBinding;
+  /**
+   * Run-start memory and version pinning (DAT-238). Set when the control plane
+   * and memory service are on. A failed assembly degrades the run to
+   * policy-only and is recorded on the task — it never blocks delivery.
+   */
+  memory?: RunMemoryDeps;
 }
 
 /**
@@ -995,6 +1003,23 @@ export class TaskService {
       this.finalizeIfTerminal(record);
       return;
     }
+    const memoryContext = this.deps.memory
+      ? assembleRunMemory(
+          this.deps.memory,
+          {
+            enterprise_id: this.deps.config.enterpriseId,
+            workspace_id: this.deps.config.workspaceId,
+            actor_id: this.deps.config.actorId,
+          },
+          record,
+        )
+      : { system_prompt: "", ref: null };
+    record.memory = memoryContext.ref;
+    this.store.save(record);
+    const systemPrompt =
+      memoryContext.system_prompt.length > 0
+        ? `${piSystemPrompt()}\n\n${memoryContext.system_prompt}`
+        : piSystemPrompt();
     const sessionId = `pis_${randomUUID().replaceAll("-", "")}`;
     const observedToolCalls = new Set<string>();
     // The summary lifecycle starts with the run: pending until the first
@@ -1056,7 +1081,7 @@ export class TaskService {
     });
     const sessionOptions: PiSessionOptions = {
       sessionId,
-      systemPrompt: piSystemPrompt(),
+      systemPrompt,
       model: this.deps.model,
       tools: [tool, reportTool],
       // Every model call this session makes goes through the gateway, bound to

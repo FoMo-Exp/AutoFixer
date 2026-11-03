@@ -28,7 +28,6 @@ import type {
 import type {
   CreateRsiProposalInput,
   RsiActor,
-  RsiCanaryObservationInput,
   RsiDataset,
   RsiEvaluationRequest,
   RsiProposalFilter,
@@ -355,13 +354,42 @@ function proposalInput(memory: MemoryScope, body: Record<string, unknown>): Crea
   };
 }
 
+const FORBIDDEN_EVALUATION_FIELDS = [
+  "verifier",
+  "metrics",
+  "sample_size",
+  "baseline_sample_size",
+  "candidate_sample_size",
+  "baseline_successes",
+  "candidate_successes",
+  "baseline_rework",
+  "candidate_rework",
+  "baseline_cost",
+  "candidate_cost",
+  "safety_events",
+  "success_delta",
+  "delta_ci_low",
+  "delta_ci_high",
+  "verdict",
+  "evidence_reference",
+];
+
+/**
+ * Evaluation accepts datasets only. The actor is the session principal; the
+ * replay and its interval are computed server-side, so any score, verifier
+ * claim, or evidence text in the body is a refusal rather than an input.
+ */
 function evaluationInput(body: Record<string, unknown>): RsiEvaluationRequest {
   rejectScopeClaims(body);
-  const verifierBody = body["verifier"];
-  if (verifierBody === null || typeof verifierBody !== "object" || Array.isArray(verifierBody)) {
-    throw new ApiError(400, "INVALID_REQUEST", "verifier is required");
+  for (const field of FORBIDDEN_EVALUATION_FIELDS) {
+    if (field in body) {
+      throw new ApiError(
+        400,
+        "INVALID_REQUEST",
+        `${field} is computed or bound by the server and must not be sent`,
+      );
+    }
   }
-  const verifierRecord = verifierBody as Record<string, unknown>;
   const datasets = memberList(body, "datasets");
   if (
     datasets !== undefined &&
@@ -374,41 +402,7 @@ function evaluationInput(body: Record<string, unknown>): RsiEvaluationRequest {
     );
   }
   return {
-    verifier: {
-      kind: String(verifierRecord["kind"] ?? "") as RsiEvaluationRequest["verifier"]["kind"],
-      id: String(verifierRecord["id"] ?? ""),
-      reference: String(verifierRecord["reference"] ?? ""),
-    },
     ...(datasets !== undefined ? { datasets: datasets as RsiDataset[] } : {}),
-  };
-}
-
-function observationInput(body: Record<string, unknown>): RsiCanaryObservationInput {
-  rejectScopeClaims(body);
-  const evidence = optionalString(body, "evidence_reference");
-  if (evidence === undefined || evidence.length === 0) {
-    throw new ApiError(400, "INVALID_REQUEST", "evidence_reference is required");
-  }
-  return {
-    sample_size: optionalNumber(body, "sample_size") ?? 0,
-    baseline_successes: optionalNumber(body, "baseline_successes") ?? 0,
-    candidate_successes: optionalNumber(body, "candidate_successes") ?? 0,
-    ...(optionalNumber(body, "baseline_rework") !== undefined
-      ? { baseline_rework: optionalNumber(body, "baseline_rework") }
-      : {}),
-    ...(optionalNumber(body, "candidate_rework") !== undefined
-      ? { candidate_rework: optionalNumber(body, "candidate_rework") }
-      : {}),
-    ...(optionalNumber(body, "baseline_cost") !== undefined
-      ? { baseline_cost: optionalNumber(body, "baseline_cost") }
-      : {}),
-    ...(optionalNumber(body, "candidate_cost") !== undefined
-      ? { candidate_cost: optionalNumber(body, "candidate_cost") }
-      : {}),
-    ...(optionalNumber(body, "safety_events") !== undefined
-      ? { safety_events: optionalNumber(body, "safety_events") }
-      : {}),
-    evidence_reference: evidence,
   };
 }
 
@@ -538,7 +532,12 @@ export async function handleMemoryRequest(
     writeJson(
       res,
       201,
-      rsiService(deps).evaluate(memory.scope, segments[6] as string, evaluationInput(body)),
+      rsiService(deps).evaluate(
+        memory.scope,
+        segments[6] as string,
+        evaluationInput(body),
+        actor(memory),
+      ),
     );
     return;
   }
@@ -594,15 +593,17 @@ export async function handleMemoryRequest(
     requireRole(memory, "owner");
     requireAuthority(deps, memory, "write");
     const body = await readJsonBody(req);
+    if (Object.keys(body).length > 0) {
+      throw new ApiError(
+        400,
+        "INVALID_REQUEST",
+        "canary samples are derived from pinned runs and their recorded task outcomes; no request fields are accepted",
+      );
+    }
     writeJson(
       res,
       201,
-      rsiService(deps).recordCanaryObservation(
-        memory.scope,
-        segments[6] as string,
-        observationInput(body),
-        actor(memory),
-      ),
+      rsiService(deps).recordCanaryObservation(memory.scope, segments[6] as string, actor(memory)),
     );
     return;
   }

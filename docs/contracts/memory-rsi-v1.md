@@ -35,11 +35,11 @@ Artifact shapes:
 ## Evaluation integrity
 
 - The **server** executes the replay. No operation accepts metrics, a score, a
-  case, or holdout content; the request names an independent verifier and,
-  optionally, which datasets to run.
-- Verifier kinds are `test`, `qa_disposition`, and `reviewer_acceptance`. Agent
-  self-report is not representable, and a verifier whose id equals the
-  proposer's is refused.
+  case, holdout content, or a verifier claim; the request selects datasets only.
+- The recorded verifier is the authenticated evaluator with a server-derived
+  `replay:<proposal>:v<version>:<dataset>` reference. The only verifier kind is
+  `test`; agent self-report is not representable, and the proposer cannot
+  evaluate its own proposal.
 - Replay compares two arms over the stored workspace corpus:
   - policy targets: the promoted policy versus the candidate policy;
   - memory-item targets: candidate injection disabled versus enabled.
@@ -91,9 +91,13 @@ never raise these.
 
 - A canary starts only when the offline gate passes, approvals are complete,
   budget remains, and the kill switch is inactive.
-- Each observation records the sample, successes, rework, cost, and security
-  events with an evidence reference. A fail verdict rolls back automatically
-  with the reason; an inconclusive verdict does not advance.
+- An observation is computed server-side from the runs pinned into the rollout
+  (candidate arm) and baseline pins created since it started (control arm),
+  joined with their terminal task outcomes. Pending runs are excluded, and any
+  request body is refused — an owner cannot submit a passing sample. The
+  evidence reference is the server-generated pin set.
+- A fail verdict rolls back automatically with the reason; an inconclusive
+  verdict (including either arm below its minimum sample) does not advance.
 - A pass advances 10% → 50% → 100%. The pass at 100% promotes:
   - a policy target publishes exactly one new immutable policy version;
   - a memory-item target records the approving human's review stamp and
@@ -108,16 +112,19 @@ never raise these.
   effect in the same call: every active canary is rolled back, new pins resolve
   to the baseline policy, and proposals, evaluations, approvals, and canaries
   are refused until it is released.
-- `resolveRunVersions(workspace, run_id)` (service API, called by the
-  orchestrator at run start) pins exactly one memory version and one policy
-  identity per run. The pin is idempotent and stable across retries. A run
+- `resolveRunVersions(workspace, run_id)` is called by the orchestrator at run
+  start (before the Pi prompt is built) and pins exactly one memory version and
+  one policy identity per run. The task projection records the result in a
+  `memory` block; a canary run's candidate overlay is consumed by the
+  unpublished-policy retrieval preview before the prompt. The pin is idempotent and stable across retries. A run
   selected for an active canary also receives the unpublished candidate policy
   as an overlay for preview; baseline runs receive none. Selecting the canary
   uses a deterministic hash bucket of `workspace_id` + `run_id`, so the same
   run always lands in the same arm.
 
-Run execution must call the resolver before planning; the orchestrator wiring
-for that call is part of the run lifecycle, not of this surface.
+Run execution calls the resolver before planning. A baseline run retrieves with
+the pinned stored version (audited); a canary run assembles the same bounded
+bundle through the overlay preview and records the pin as its audit anchor.
 
 ## HTTP surface
 
@@ -129,10 +136,10 @@ scope from membership. Path `workspace_id` is a locator, never authority.
 | `GET /memory/proposals` | member | Bounded list, filter by status/risk |
 | `POST /memory/proposals` | member | Open a proposal (proposer = session user) |
 | `GET /memory/proposals/{id}` | member | Detail, evaluations, approvals, rollout, gate |
-| `POST /memory/proposals/{id}/evaluations` | owner | Run replay over golden and holdout |
+| `POST /memory/proposals/{id}/evaluations` | owner | Run replay over golden and holdout (datasets only) |
 | `POST /memory/proposals/{id}/approvals` | owner/admin | Record an approval for this version |
 | `POST /memory/proposals/{id}/canary` | owner | Start the 10% canary |
-| `POST /memory/proposals/{id}/canary/observations` | owner | Record a stage observation |
+| `POST /memory/proposals/{id}/canary/observations` | owner | Compute and record a stage sample from pinned runs |
 | `POST /memory/proposals/{id}/rollback` | owner | Stop or revert |
 | `GET /memory/rsi/status` | member | Controls, budgets, holdout counter, active rollout |
 | `POST /memory/rsi/kill-switch` | owner | Engage or release immediately |
