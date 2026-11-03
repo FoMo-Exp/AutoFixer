@@ -202,7 +202,15 @@ export type GatewayDenyReason =
    * (DAT-210): the hold is checked at the admission boundary and the run
    * cannot proceed until an authorized human releases it.
    */
-  | "DEPENDENT_WORK_HELD";
+  | "DEPENDENT_WORK_HELD"
+  /** No budget policy, or no finite safe reservation, admits this invocation. */
+  | "BUDGET_UNAVAILABLE"
+  /** An enterprise, workspace or run budget has no room for the bound. */
+  | "BUDGET_EXHAUSTED"
+  /** A monetary budget exists but no finite conservative bound could be computed. */
+  | "BUDGET_BOUND_UNKNOWN"
+  /** The conservative token bound exceeds the configured per-invocation ceiling. */
+  | "TOKEN_CEILING_EXCEEDED";
 
 /** Stable redacted error contract (ADR-0005): all gateway denials share it. */
 export const MODEL_EGRESS_DENIED = "MODEL_EGRESS_DENIED";
@@ -219,6 +227,25 @@ export const SENSITIVE_DATA_UNCERTAIN = "SENSITIVE_DATA_UNCERTAIN";
  * case disposition releases the hold.
  */
 export const SECURITY_REVIEW_REQUIRED = "SECURITY_REVIEW_REQUIRED";
+
+/**
+ * Stable error contract for a budget refusal (DAT-229): the invocation was
+ * not admitted, so nothing was dispatched and no provider spend occurred.
+ */
+export const MODEL_BUDGET_EXHAUSTED = "MODEL_BUDGET_EXHAUSTED";
+
+/** Stable error contract for a missing/unbounded budget configuration. */
+export const MODEL_BUDGET_UNAVAILABLE = "MODEL_BUDGET_UNAVAILABLE";
+
+/** Stable error contract for a token request above the enforced ceiling. */
+export const MODEL_TOKEN_CEILING_EXCEEDED = "MODEL_TOKEN_CEILING_EXCEEDED";
+
+/**
+ * Stable error contract for an attempt whose provider outcome is unknown: the
+ * conservative reservation is retained and the invocation must not be
+ * repeated before reconciliation (ADR-0008).
+ */
+export const MODEL_USAGE_UNKNOWN = "MODEL_USAGE_UNKNOWN";
 
 /** A policy, scan, or configuration denial. Never retried, never bypassable. */
 export class ModelEgressDeniedError extends Error {
@@ -265,6 +292,24 @@ export class ModelDispatchError extends Error {
   ) {
     super(message, options);
     this.name = "ModelDispatchError";
+  }
+}
+
+/**
+ * The provider outcome of an attempt could not be established, so its budget
+ * reservation was retained for reconciliation. The invocation must not be
+ * re-sent: a duplicate could consume provider budget twice.
+ */
+export class ModelBudgetReconciliationError extends Error {
+  readonly code = MODEL_USAGE_UNKNOWN;
+  readonly retryable = false;
+
+  constructor(
+    message: string,
+    readonly reservationId: string | null,
+  ) {
+    super(message);
+    this.name = "ModelBudgetReconciliationError";
   }
 }
 

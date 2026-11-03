@@ -209,6 +209,78 @@ recovery contract as the usage ledger. Pricing consumes the invocation usage
 ledger's record shape structurally: token figures carry their inclusion
 relation and completeness, so included categories are never double-charged.
 
+## Budgets, reservations and cost bounds (ADR-0008, DAT-229)
+
+`node/src/budget/` is the single authority for enterprise/workspace/run model
+budgets. Setting `FORGEPILOT_BUDGET_POLICY_FILE` enables it; the gateway then
+reserves a conservative bound for **every attempt** (retries and fallbacks
+included) before any bytes leave the gateway and settles it against observed
+usage. `FORGEPILOT_BUDGET_STATE_FILE` is the durable append-only journal
+(defaults under the user-private temp directory); unset policy file leaves the
+deployment explicitly unbudgeted.
+
+Lifecycle:
+
+- **Reserve** — the bound is the whole input context plus the requested output
+  ceiling (tokens) and, for a monetary policy, the tokens priced at the
+  policy's conservative internal cost ceiling. The reservation is checked
+  against enterprise, workspace and optional run caps and written to the
+  journal before dispatch. Scope transitions are synchronous, so concurrent
+  dispatches cannot both spend the same remaining budget.
+- **Settle** — observed usage settles the token dimension; the monetary
+  dimension is settled at the snapshotted conservative ceiling and labelled
+  `estimated` (`source: bound_ceiling`). Missing usage settles as `unknown`
+  and keeps the whole bound committed — it is never recorded as zero or a free
+  call.
+- **Unknown provider outcome** — a transport reset/timeout or an aborted
+  stream may have reached the provider. The reservation is retained
+  (`reconciling`), the gateway refuses to retry that invocation, and the
+  `MODEL_USAGE_UNKNOWN` error asks for reconciliation. Only failures that
+  prove nothing was sent (`ENOTFOUND`, `EAI_AGAIN`, `ECONNREFUSED`,
+  connect timeout) refund the reservation.
+- **Reconcile** — exact provider cost can later correct the estimated monetary
+  settlement (`reconcileCost`) without rewriting the journal; every entry keeps
+  its identity, reason and sequence.
+
+Policy file shape (all amounts are canonical decimal strings; no floats):
+
+```json
+{
+  "revision": "2026-11-03.1",
+  "enterprise": { "monetary": [{ "currency": "USD", "amount": "500" }], "tokens": null },
+  "workspace": { "monetary": [{ "currency": "USD", "amount": "100" }], "tokens": null },
+  "run": { "monetary": [{ "currency": "USD", "amount": "5" }], "tokens": null },
+  "max_tokens_per_invocation": 300000,
+  "token_only": null,
+  "cost_ceilings": [
+    {
+      "endpoint_id": null,
+      "model_id": "mimo-v2.5",
+      "currency": "USD",
+      "amount_per_1000_tokens": "0.02"
+    }
+  ]
+}
+```
+
+- A monetary limit requires a finite conservative ceiling for every capped
+  currency; otherwise the dispatch is denied (`MODEL_BUDGET_UNAVAILABLE`)
+  rather than assumed to cost zero. An explicit
+  `token_only: { "enabled": true, "reason": "..." }` policy is the only way to
+  run a bounded token budget with no monetary limit, and it may not also
+  declare monetary caps or ceilings.
+- `max_tokens_per_invocation` is a hard ceiling on the conservative bound;
+  exceeding it is denied (`MODEL_TOKEN_CEILING_EXCEEDED`) rather than silently
+  truncating the request.
+- Internal ceilings bound what this service authorizes. They are **not** a
+  provider invoice cap: delayed or incorrect provider metering can still make
+  a provider bill exceed them. Monetary values in the budget journal are
+  provisional estimates, never invoiced amounts.
+- The exact-cost correction path is the seam to the rate-card/cost domain
+  (DAT-228) and the usage ledger (DAT-227): once those records price an
+  invocation, `BudgetAuthority.reconcileCost` replaces the estimate with the
+  exact amount in the same journal.
+
 ## Durability and restart recovery (M3)
 
 The orchestrator persists its task projection — statuses, the ordered event

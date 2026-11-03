@@ -5,6 +5,7 @@ import fs from "node:fs";
 import type { Api, Model } from "@mariozechner/pi-ai";
 
 import { buildOpenApiDocument } from "./api/openapi.js";
+import { BudgetAuthority, createBudgetStore, loadBudgetPolicyFile } from "./budget/index.js";
 import { readOrCreateApiToken } from "./api/auth.js";
 import { AuthService } from "./api/auth-service.js";
 import { createInvitationAuthority } from "./api/invitation-authority.js";
@@ -254,6 +255,16 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
   // Secret-gate blocks always open a disposal case and hold the affected
   // run's dependent work (DAT-210): the production gateway carries both.
   const { security, rules } = deploymentSecurity(config);
+  const scope = { enterpriseId: config.enterpriseId, workspaceId: config.workspaceId };
+  // Budget authority (DAT-229): configured with a policy file, it enforces
+  // enterprise/workspace/run limits with a durable journal; without one the
+  // deployment is explicitly unbudgeted rather than silently zero-cost.
+  const budget = config.budgetPolicyFile
+    ? new BudgetAuthority({
+        store: createBudgetStore({ persistencePath: config.budgetStateFile }),
+        policyResolver: loadBudgetPolicyFile(config.budgetPolicyFile, scope),
+      })
+    : undefined;
   return createModelGateway({
     policyResolver: config.gatewayPolicyFile
       ? loadGatewayPolicyFile(config.gatewayPolicyFile)
@@ -277,6 +288,7 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
     ...(config.usageLedgerFile
       ? { usageLedger: createUsageLedgerStore({ persistencePath: config.usageLedgerFile }) }
       : {}),
+    ...(budget ? { budget } : {}),
   });
 }
 
@@ -566,6 +578,7 @@ export { buildOpenApiDocument, configFromEnv };
 export * from "./gateway/index.js";
 export * from "./security/index.js";
 export * from "./ledger/index.js";
+export * from "./budget/index.js";
 
 async function main(): Promise<void> {
   const config = configFromEnv();
