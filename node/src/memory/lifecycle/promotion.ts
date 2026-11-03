@@ -97,6 +97,10 @@ export function evaluatePromotion(assessment: PromotionAssessment): PromotionDec
     }
     if (assessment.evaluation === null) {
       reasons.push("evaluation_missing");
+    } else if (!Number.isFinite(assessment.evaluation.delta)) {
+      // A NaN or infinite delta is not a non-negative delta: the comparison
+      // `delta < 0` would silently pass it, so reject it explicitly.
+      reasons.push("evaluation_invalid");
     } else if (assessment.evaluation.delta < 0) {
       reasons.push("evaluation_negative");
     }
@@ -112,7 +116,10 @@ export function evaluatePromotion(assessment: PromotionAssessment): PromotionDec
     outcome: reasons.length === 0 ? "promoted" : "blocked",
     reasons: reasons.length === 0 ? ["auto_promoted"] : reasons,
     independent_support_runs: support.independent_runs,
-    evaluation_delta: assessment.evaluation === null ? null : assessment.evaluation.delta,
+    evaluation_delta:
+      assessment.evaluation === null || !Number.isFinite(assessment.evaluation.delta)
+        ? null
+        : assessment.evaluation.delta,
   };
 }
 

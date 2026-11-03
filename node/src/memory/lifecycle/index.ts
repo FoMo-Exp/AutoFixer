@@ -18,6 +18,12 @@ export type {
   ConsolidationScheduleOptions,
 } from "./consolidation.js";
 
+export {
+  createMemoryConsolidationRunner,
+  DEFAULT_MEMORY_CONSOLIDATION_INTERVAL_MS,
+} from "./runner.js";
+export type { MemoryConsolidationRunner, MemoryConsolidationRunnerOptions } from "./runner.js";
+
 export { createMemoryLifecycleStore, promotionPolicyDigest } from "./repositories.js";
 export type {
   MemoryLifecycleStore,

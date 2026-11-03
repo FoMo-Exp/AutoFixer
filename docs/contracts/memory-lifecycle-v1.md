@@ -35,7 +35,9 @@ term:
    endpoint is still `proposed`, `candidate`, or `active`;
 4. **passing validation** — the admission gate's disposition is `admitted`;
 5. a **non-negative offline evaluation delta** — an evaluation that never ran
-   is not a non-negative delta.
+   is not a non-negative delta, and neither is a non-finite one: a `NaN` or
+   `Infinity` delta is rejected with `evaluation_invalid` rather than slipping
+   through a comparison, and it is recorded as a null delta in the audit row.
 
 Every assessment is persisted in `memory_promotion_decisions` — promoted or
 blocked, with the fixed reason codes in `PROMOTION_BLOCK_REASONS`, the
@@ -149,6 +151,20 @@ applied flag, counts-only detail). Together with the standard `memory_events`
 trail written by the underlying mutations, every consolidation action is
 auditable without persisting any memory content. Columns hold opaque ids,
 fixed enums, counts, and timestamps only.
+
+### 2.4 Production trigger
+
+`createMemoryConsolidationRunner` is the deployment's trigger and is
+registered by the orchestrator whenever the identity control plane is
+enabled: `createOrchestrator` builds the runner, `start()` begins the
+schedule after the service is listening, and `stop()` ends it before the
+control-plane database closes. Each tick consolidates every **active**
+workspace of the enterprise under its own `WorkspaceScope`, and archived
+workspaces are skipped. A failed workspace pass is reported through
+`onError` and never blocks the remaining workspaces; a failed tick never ends
+the schedule. The cadence is `FORGEPILOT_MEMORY_CONSOLIDATION_INTERVAL_MS`
+(default six hours, positive integer). The timer never holds the process
+open.
 
 ## 3. Deletion and the no-rebuild rule
 

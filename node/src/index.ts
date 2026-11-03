@@ -46,6 +46,8 @@ import {
 } from "./gateway/index.js";
 import type { GatewayScope, GatewayScopeBinding, ModelGateway } from "./gateway/index.js";
 import { createUsageLedgerStore } from "./ledger/index.js";
+import { createMemoryConsolidationRunner } from "./memory/index.js";
+import type { MemoryConsolidationRunner } from "./memory/index.js";
 import { resolveConfiguredModel } from "./pi/model.js";
 import {
   DependentWorkPauseLedger,
@@ -112,6 +114,11 @@ export interface OrchestratorHandle {
    * its authority-change signal.
    */
   providerAuthority: RequestAuthority | undefined;
+  /**
+   * Scheduled memory consolidation (DAT-235); set with the identity control
+   * plane. Registered on `start()` and stopped with the orchestrator.
+   */
+  memoryConsolidation: MemoryConsolidationRunner | undefined;
   /** Per-process bearer token callers must present on every API request. */
   apiToken: string;
   /** Start listening; resolves with the bound loopback address. */
@@ -339,6 +346,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let providerAuthority: RequestAuthority | undefined;
   let workspaceBindings = createConfiguredWorkspaceRunBindingResolver(config);
   let requestScopeDeps: RequestScopeDeps | undefined;
+  let memoryConsolidation: MemoryConsolidationRunner | undefined;
   if (config.oauthClientsFile !== undefined) {
     controlPlane = openControlPlaneDb({ path: config.controlPlaneFile ?? ":memory:" });
     const repos = createRepositories(controlPlane);
@@ -426,6 +434,31 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
           : {}),
       },
     });
+    // Sleep-time memory consolidation (DAT-235): the control plane owns the
+    // memory store, so the deployment runs the bounded consolidation pass
+    // over every active workspace on the configured cadence. Started with the
+    // service and stopped with it; a failed workspace pass is logged and the
+    // schedule survives.
+    memoryConsolidation = createMemoryConsolidationRunner({
+      db: controlPlane,
+      enterpriseId: config.enterpriseId,
+      actorId: config.actorId,
+      ...(config.memoryConsolidationIntervalMs !== undefined
+        ? { intervalMs: config.memoryConsolidationIntervalMs }
+        : {}),
+      onReport: (workspaceId, report) => {
+        if (report.ops_applied > 0 || report.counts_recomputed > 0 || report.budget_exhausted) {
+          console.log(
+            `memory consolidation ${workspaceId}: run ${report.run_id} scanned=${report.items_scanned} ` +
+              `applied=${report.ops_applied} skipped=${report.ops_skipped} ` +
+              `budget_exhausted=${report.budget_exhausted}`,
+          );
+        }
+      },
+      onError: (error) => {
+        console.error("memory consolidation pass failed:", error);
+      },
+    });
   }
   const service = new TaskService({
     config,
@@ -456,6 +489,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     invitations,
     controlPlane,
     providerAuthority,
+    memoryConsolidation,
     apiToken,
     start: () => {
       const { promise, resolve, reject } = Promise.withResolvers<{ host: string; port: number }>();
@@ -476,10 +510,13 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
         await service.recoverFromDsh().catch((error: unknown) => {
           console.error("task recovery skipped:", error);
         });
+        // Sleep-time consolidation begins with the service, never before it.
+        memoryConsolidation?.start();
         return bound;
       });
     },
     stop: () => {
+      memoryConsolidation?.stop();
       service.disposeAll();
       // Durability boundary: a clean shutdown must not lose projected events.
       store.flushSync();

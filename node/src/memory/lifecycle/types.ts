@@ -134,6 +134,8 @@ export const PROMOTION_BLOCK_REASONS = [
   "validation_not_passed",
   /** No offline evaluation ran for this item. */
   "evaluation_missing",
+  /** The evaluation delta is not a finite number (NaN/Infinity): fail closed. */
+  "evaluation_invalid",
   /** The offline evaluation delta was negative. */
   "evaluation_negative",
   /** The item has no stored evidence reference at all. */

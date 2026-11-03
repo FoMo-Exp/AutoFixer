@@ -496,7 +496,10 @@ function applyProposedOp(
         record.item.current_version,
       );
     }
-    if (record.item.status === "retired") {
+    // A quarantined item is security-response territory and a retired item is
+    // terminal: consolidation never touches either, so a supersede proposal
+    // closes no validity window and writes no succession link for them.
+    if (record.item.status === "retired" || record.item.status === "quarantined") {
       return skip("status_not_applicable", record.item.current_version);
     }
     deps.memory.items.supersede(scope, record.item.id, successorId, proposal.reason_code);

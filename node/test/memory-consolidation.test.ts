@@ -438,6 +438,45 @@ describe("Consolidation decides proposals with fixed operations only", () => {
     expect(mustGet(suspect.item.id).item.status).toBe("quarantined");
   });
 
+  test("a supersede proposal never touches a quarantined item", () => {
+    const quarantined = memory.items.create(scope, itemContent());
+    memory.evidence.add(scope, quarantined.item.id, { evidence_type: "test", reference: "t1" });
+    memory.items.setStatus(scope, quarantined.item.id, "candidate", 1);
+    memory.items.setStatus(scope, quarantined.item.id, "quarantined", 1);
+    const successor = memory.items.create(scope, itemContent({ statement: "newer fact" }));
+    memory.evidence.add(scope, successor.item.id, { evidence_type: "test", reference: "t2" });
+    const before = mustGet(quarantined.item.id);
+
+    const report = consolidate({
+      proposals: [
+        {
+          op: "supersede",
+          item_id: quarantined.item.id,
+          successor_item_id: successor.item.id,
+          reason_code: "retirement_proposal",
+        },
+      ],
+    });
+    expect(report.ops).toEqual([
+      expect.objectContaining({
+        op: "supersede",
+        item_id: quarantined.item.id,
+        reason_code: "status_not_applicable",
+        applied: false,
+      }),
+    ]);
+    const after = mustGet(quarantined.item.id);
+    expect(after.item.status).toBe("quarantined");
+    // No validity window was closed and no succession link was written:
+    // security response is not consolidation's to modify.
+    expect(after.current.valid_to).toBe(before.current.valid_to);
+    expect(
+      memory.links
+        .listByItem(scope, quarantined.item.id)
+        .filter((link) => link.link_type === "supersedes"),
+    ).toHaveLength(0);
+  });
+
   test("a skipped proposal is recorded with its reason, never silently dropped", () => {
     const retired = memory.items.create(scope, itemContent({ statement: "already retired" }));
     memory.evidence.add(scope, retired.item.id, { evidence_type: "test", reference: "t1" });

@@ -338,6 +338,32 @@ describe("Automatic fact promotion", () => {
     expect(mustGet(negative.item.id).item.status).toBe("candidate");
   });
 
+  test("a non-finite evaluation delta never passes the gate", () => {
+    // NaN compares false against `< 0`; without an explicit finiteness check
+    // it would slip through as a promotion. Infinity is no better.
+    for (const delta of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const record = factCandidate(`fact with delta ${String(delta)}`);
+      const verdict = assessAndAutoPromote(
+        scope,
+        { memory, lifecycle },
+        {
+          itemId: record.item.id,
+          support: twoRuns,
+          validation: ADMITTED,
+          evaluation: { delta },
+        },
+      );
+      expect(verdict.outcome).toBe("blocked");
+      expect(verdict.reasons).toContain("evaluation_invalid");
+      expect(verdict.evaluation_delta).toBeNull();
+      expect(mustGet(record.item.id).item.status).toBe("candidate");
+      const decisions = lifecycle.listPromotionDecisions(scope, { item_id: record.item.id });
+      expect(decisions[0]?.outcome).toBe("blocked");
+      expect(decisions[0]?.evaluation_delta).toBeNull();
+      expect(decisions[0]?.reasons).toContain("evaluation_invalid");
+    }
+  });
+
   test("a workspace can disable automatic promotion and raise the threshold", () => {
     lifecycle.setPolicy(scope, {
       auto_promote_facts: false,
