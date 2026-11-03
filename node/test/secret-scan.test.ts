@@ -669,3 +669,262 @@ describe("destination data-class authorization", () => {
     ).not.toThrow();
   });
 });
+
+describe("untrusted scanner reports are snapshotted exactly once (QA round-3)", () => {
+  const context: Context = { messages: [{ role: "user", content: "hello", timestamp: 1 }] };
+
+  /** Define a counting getter property. */
+  function countingGetter(
+    target: Record<string, unknown>,
+    key: string,
+    values: readonly unknown[],
+  ): { reads: () => number } {
+    let reads = 0;
+    Object.defineProperty(target, key, {
+      get() {
+        const value = values[Math.min(reads, values.length - 1)];
+        reads += 1;
+        return value;
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    return { reads: () => reads };
+  }
+
+  test("a detector getter is read exactly once and its second-read text never surfaces", async () => {
+    // Regression bullet 1: first read a valid detector token, second read
+    // arbitrary (non-credential-shaped) request text. The gate must block,
+    // send zero bytes, and never surface the second-read text anywhere.
+    const second = "kernel panic in production";
+    const finding: Record<string, unknown> = {
+      classification: "secret_suspected",
+      ruleVersion: "1",
+      segmentId: "messages[0].content",
+    };
+    const detector = countingGetter(finding, "detector", ["stub-detector", second]);
+    const gate = await runRequestScanGate(context, {
+      scanner: stubScanner(
+        () =>
+          ({
+            scanner: "stub",
+            ruleVersion: "1",
+            classification: "secret_suspected",
+            findings: [finding],
+          }) as unknown as SecretScanReport,
+      ),
+    });
+    expect(detector.reads()).toBe(1);
+    expect(gate).toMatchObject({ ok: false, reason: "SCANNER_UNAVAILABLE" });
+    if (gate.ok) return;
+    expect(gate.detail).not.toContain(second);
+    expect(JSON.stringify(gate.evidence)).not.toContain(second);
+    expect(JSON.stringify(gate.evidence)).not.toContain("stub-detector");
+  });
+
+  test("every report and finding field is read exactly once", async () => {
+    // Regression bullet 2: counting getters over the whole report shape —
+    // each field fires exactly once, and nothing is re-read after the
+    // snapshot.
+    const reads: Record<string, () => number> = {};
+    const finding: Record<string, unknown> = {};
+    reads["finding.classification"] = countingGetter(finding, "classification", [
+      "secret_suspected",
+    ]).reads;
+    reads["finding.detector"] = countingGetter(finding, "detector", ["stub-detector"]).reads;
+    reads["finding.ruleVersion"] = countingGetter(finding, "ruleVersion", ["1"]).reads;
+    reads["finding.segmentId"] = countingGetter(finding, "segmentId", [
+      "messages[0].content",
+    ]).reads;
+    reads["finding.match"] = countingGetter(finding, "match", ["hello"]).reads;
+    const reportObject: Record<string, unknown> = {};
+    reads["classification"] = countingGetter(reportObject, "classification", [
+      "secret_suspected",
+    ]).reads;
+    reads["scanner"] = countingGetter(reportObject, "scanner", ["stub"]).reads;
+    reads["ruleVersion"] = countingGetter(reportObject, "ruleVersion", ["1"]).reads;
+    reads["findings"] = countingGetter(reportObject, "findings", [[finding]]).reads;
+    const gate = await runRequestScanGate(context, {
+      scanner: stubScanner(() => reportObject as unknown as SecretScanReport),
+    });
+    for (const [field, count] of Object.entries(reads)) {
+      expect(`${field}=${count()}`).toBe(`${field}=1`);
+    }
+    expect(gate.ok).toBe(false);
+    if (gate.ok) return;
+    expect(gate.reason).toBe("SCANNER_UNAVAILABLE");
+  });
+
+  test("a findings getter is read once; its later arrays are never consulted", async () => {
+    // Regression bullet 3: two different arrays across reads — only the
+    // first read ever happens, and the second array's marker never surfaces.
+    const secondMarker = "second-array-marker-9f2";
+    const first: unknown[] = [];
+    const second: unknown[] = [
+      {
+        classification: "secret_confirmed",
+        detector: secondMarker,
+        ruleVersion: "1",
+        segmentId: "messages[0].content",
+      },
+    ];
+    const reportObject: Record<string, unknown> = {
+      scanner: "stub",
+      ruleVersion: "1",
+      classification: "clean",
+    };
+    const findings = countingGetter(reportObject, "findings", [first, second]);
+    const gate = await runRequestScanGate(context, {
+      scanner: stubScanner(() => reportObject as unknown as SecretScanReport),
+    });
+    expect(findings.reads()).toBe(1);
+    expect(gate.ok).toBe(false);
+    if (gate.ok) return;
+    expect(gate.detail).not.toContain(secondMarker);
+    expect(JSON.stringify(gate.evidence)).not.toContain(secondMarker);
+  });
+
+  test("a classification getter flipping from secret_suspected to clean still blocks", async () => {
+    // Regression bullet 4: the old double-read fail-open surface — the first
+    // observed value decides, and a later clean value is never consulted.
+    const reportObject: Record<string, unknown> = { scanner: "stub", ruleVersion: "1" };
+    const classification = countingGetter(reportObject, "classification", [
+      "secret_suspected",
+      "clean",
+    ]);
+    reportObject["findings"] = [];
+    const gate = await runRequestScanGate(context, {
+      scanner: stubScanner(() => reportObject as unknown as SecretScanReport),
+    });
+    expect(classification.reads()).toBe(1);
+    expect(gate.ok).toBe(false);
+    if (gate.ok) return;
+    expect(gate.reason).toBe("SCANNER_UNAVAILABLE");
+  });
+
+  test("the observed value drives the block for plain-data reports", async () => {
+    // The snapshot-time value is what decisions and evidence use: a plain
+    // report scanning secret_suspected with no findings blocks on that value.
+    const gate = await runRequestScanGate(context, {
+      scanner: stubScanner(() => report("secret_suspected")),
+    });
+    expect(gate).toMatchObject({ ok: false, reason: "SENSITIVE_DATA_UNCERTAIN" });
+  });
+
+  test("post-scan mutations of the report cannot change decisions or evidence", async () => {
+    // Acceptance invariant: whatever the report does after the snapshot, the
+    // values entering the decision and evidence equal those observed at
+    // snapshot time.
+    const raw = report("secret_suspected", [
+      {
+        classification: "secret_suspected",
+        detector: "stub-detector",
+        ruleVersion: "1",
+        segmentId: "messages[0].content",
+      },
+    ]);
+    const gate = await runRequestScanGate(context, {
+      scanner: stubScanner(() => raw),
+    });
+    expect(gate).toMatchObject({ ok: false, reason: "SENSITIVE_DATA_UNCERTAIN" });
+    // Mutate the raw report after the gate ran.
+    raw.classification = "clean";
+    raw.findings[0]!.detector = "mutated-detector";
+    raw.findings.length = 0;
+    if (gate.ok) return;
+    expect(gate.evidence.classification).toBe("secret_suspected");
+    expect(gate.evidence.detectors).toEqual(["stub-detector"]);
+    expect(gate.evidence.findingCounts).toEqual({
+      suspected: 1,
+      confirmed: 0,
+      unknown: 0,
+    });
+  });
+
+  test("a throwing getter fails closed into a static denial", async () => {
+    const leak = "scanner echoed plaintext-secret-777";
+    const reportObject: Record<string, unknown> = { scanner: "stub", ruleVersion: "1" };
+    Object.defineProperty(reportObject, "classification", {
+      get() {
+        throw new Error(leak);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    reportObject["findings"] = [];
+    const gate = await runRequestScanGate(context, {
+      scanner: stubScanner(() => reportObject as unknown as SecretScanReport),
+    });
+    expect(gate).toMatchObject({ ok: false, reason: "SCANNER_UNAVAILABLE" });
+    if (gate.ok) return;
+    expect(gate.detail).not.toContain(leak);
+    expect(JSON.stringify(gate.evidence)).not.toContain(leak);
+  });
+
+  test("match and ruleVersion getters are read once and rejected the same way", async () => {
+    const second = "second-read-request-text";
+    for (const key of ["match", "ruleVersion"] as const) {
+      const finding: Record<string, unknown> = {
+        classification: "secret_suspected",
+        detector: "stub-detector",
+        ruleVersion: "1",
+        segmentId: "messages[0].content",
+      };
+      const counter = countingGetter(finding, key, ["hello", second]);
+      const gate = await runRequestScanGate(context, {
+        scanner: stubScanner(
+          () =>
+            ({
+              scanner: "stub",
+              ruleVersion: "1",
+              classification: "secret_suspected",
+              findings: [finding],
+            }) as unknown as SecretScanReport,
+        ),
+      });
+      expect(counter.reads()).toBe(1);
+      expect(gate).toMatchObject({ ok: false, reason: "SCANNER_UNAVAILABLE" });
+      if (gate.ok) continue;
+      expect(gate.detail).not.toContain(second);
+      expect(JSON.stringify(gate.evidence)).not.toContain(second);
+    }
+  });
+
+  test("non-plain containers, non-array findings, and non-string fields fail closed", async () => {
+    class ReportShape {}
+    const circular: Record<string, unknown> = {};
+    circular["self"] = circular;
+    const cases: unknown[] = [
+      new ReportShape(),
+      { scanner: "stub", ruleVersion: "1", classification: "clean", findings: {} },
+      { scanner: "stub", ruleVersion: "1", classification: "clean", findings: { length: 0 } },
+      {
+        scanner: "stub",
+        ruleVersion: "1",
+        classification: "clean",
+        findings: [
+          {
+            classification: "secret_suspected",
+            detector: "stub-detector",
+            ruleVersion: "1",
+            segmentId: "messages[0].content",
+            match: circular,
+          },
+        ],
+      },
+      {
+        scanner: "stub",
+        ruleVersion: "1",
+        classification: "clean",
+        findings: [new ReportShape()],
+      },
+      { scanner: "stub", ruleVersion: "1", classification: 42, findings: [] },
+    ];
+    for (const raw of cases) {
+      const gate = await runRequestScanGate(context, {
+        scanner: stubScanner(() => raw as SecretScanReport),
+      });
+      expect(gate).toMatchObject({ ok: false, reason: "SCANNER_UNAVAILABLE" });
+    }
+  });
+});

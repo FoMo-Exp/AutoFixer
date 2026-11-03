@@ -453,47 +453,189 @@ function writeLeaf(root: unknown, path: readonly (string | number)[], text: stri
   node[last] = text;
 }
 
+/** Sentinel for a report field that could not be read as plain data. */
+const UNREADABLE = Symbol("unreadable");
+
+/** The plain-data snapshot of a scanner report; every field is string data. */
+interface ReportSnapshot {
+  scanner?: string;
+  ruleVersion?: string;
+  classification: string;
+  findings: {
+    classification: string;
+    detector: string;
+    ruleVersion: string;
+    segmentId: string;
+    match?: string;
+  }[];
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null) return false;
+  const proto: unknown = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Read one report field exactly once and accept only plain string data. The
+ * single `Reflect.get` is the one and only read of the field — a getter, if
+ * any, fires exactly once and what it returns is the value the snapshot
+ * observes. A field provided through an accessor is not data and fails
+ * closed; so do a non-string value and a missing required field.
+ */
+function readSnapshotField(
+  source: Record<string, unknown>,
+  key: string,
+  required: boolean,
+): string | undefined | typeof UNREADABLE {
+  const value: unknown = Reflect.get(source, key);
+  const descriptor = Object.getOwnPropertyDescriptor(source, key);
+  if (!descriptor) return required ? UNREADABLE : undefined;
+  if ("get" in descriptor || "set" in descriptor) return UNREADABLE;
+  if (value === undefined) return required ? UNREADABLE : undefined;
+  return typeof value === "string" ? value : UNREADABLE;
+}
+
+const MAX_REPORT_FINDINGS = 10_000;
+
+/**
+ * Copy the findings array — real array, plain elements, every field read
+ * exactly once — and fail closed on any shape that is not plain data. The
+ * copy runs even when the array itself is later found unusable: each field
+ * of the report is observed exactly once no matter what the report is.
+ */
+function readSnapshotFindings(
+  source: Record<string, unknown>,
+): ReportSnapshot["findings"] | typeof UNREADABLE {
+  const value: unknown = Reflect.get(source, "findings");
+  const descriptor = Object.getOwnPropertyDescriptor(source, "findings");
+  let invalid = !descriptor || "get" in descriptor || "set" in descriptor || !Array.isArray(value);
+  const findings: ReportSnapshot["findings"] = [];
+  if (Array.isArray(value)) {
+    const length: unknown = Reflect.get(value, "length");
+    if (
+      typeof length !== "number" ||
+      !Number.isInteger(length) ||
+      length < 0 ||
+      length > MAX_REPORT_FINDINGS
+    ) {
+      invalid = true;
+    } else {
+      for (let index = 0; index < length; index += 1) {
+        const element: unknown = Reflect.get(value, index);
+        if (!isPlainRecord(element)) {
+          invalid = true;
+          continue;
+        }
+        const classification = readSnapshotField(element, "classification", true);
+        const detector = readSnapshotField(element, "detector", true);
+        const ruleVersion = readSnapshotField(element, "ruleVersion", true);
+        const segmentId = readSnapshotField(element, "segmentId", true);
+        const match = readSnapshotField(element, "match", false);
+        if (
+          classification === UNREADABLE ||
+          typeof classification !== "string" ||
+          detector === UNREADABLE ||
+          typeof detector !== "string" ||
+          ruleVersion === UNREADABLE ||
+          typeof ruleVersion !== "string" ||
+          segmentId === UNREADABLE ||
+          typeof segmentId !== "string" ||
+          match === UNREADABLE
+        ) {
+          invalid = true;
+          continue;
+        }
+        findings.push({
+          classification,
+          detector,
+          ruleVersion,
+          segmentId,
+          ...(match !== undefined ? { match } : {}),
+        });
+      }
+    }
+  }
+  return invalid ? UNREADABLE : findings;
+}
+
+/**
+ * Single-read snapshot of an untrusted scanner report (QA round-3). The
+ * report, its findings array, and every element may be getters, proxies, or
+ * other hostile shapes whose reads disagree with each other. Every field is
+ * read exactly once here and copied into plain fixed-shape data; validation
+ * and execution never touch the scanner's objects again, so whatever the
+ * report does after this point cannot change any decision, minimization,
+ * evidence, error, or log — those always carry the values observed here.
+ * Anything that cannot be copied as plain data fails closed: a throwing
+ * getter or proxy trap, an accessor or non-plain object, a circular or
+ * non-array findings value, a field that is not a string.
+ */
+function snapshotReport(raw: unknown): ReportSnapshot | undefined {
+  try {
+    if (!isPlainRecord(raw)) return undefined;
+    const classification = readSnapshotField(raw, "classification", true);
+    const scanner = readSnapshotField(raw, "scanner", false);
+    const ruleVersion = readSnapshotField(raw, "ruleVersion", false);
+    const findings = readSnapshotFindings(raw);
+    if (
+      classification === UNREADABLE ||
+      typeof classification !== "string" ||
+      scanner === UNREADABLE ||
+      ruleVersion === UNREADABLE ||
+      findings === UNREADABLE
+    ) {
+      return undefined;
+    }
+    return {
+      classification,
+      ...(scanner !== undefined ? { scanner } : {}),
+      ...(ruleVersion !== undefined ? { ruleVersion } : {}),
+      findings,
+    };
+  } catch {
+    // A throwing getter or proxy trap anywhere in the copy: fail closed.
+    return undefined;
+  }
+}
+
+/**
+ * Semantic validation of the plain-data report snapshot: closed
+ * classification vocabulary (own properties only), token-shaped
+ * non-credential identifiers, and findings bound to real segments whose
+ * claimed material actually occurs in them. Operates exclusively on the
+ * snapshot — never on the scanner's own objects.
+ */
 function isValidReport(
-  report: unknown,
+  report: ReportSnapshot,
   segments: readonly ScannableSegment[],
 ): report is SecretScanReport {
-  if (typeof report !== "object" || report === null) return false;
-  const entry = report as Record<string, unknown>;
-  const classification = entry["classification"];
   // Own-property enum check: prototype properties like `toString` are not
   // classifications and must never pass as one.
-  if (!isSecretClassification(classification)) return false;
+  if (!isSecretClassification(report.classification)) return false;
   // Scanner-named identifiers that may surface in errors or audit evidence
   // must be token-shaped; a report smuggling text (e.g. matched material)
   // through them is invalid and blocks.
-  if (entry["scanner"] !== undefined && !isSafeIdentifier(entry["scanner"])) return false;
-  if (entry["ruleVersion"] !== undefined && !isSafeIdentifier(entry["ruleVersion"])) return false;
-  const findings = entry["findings"];
-  if (!Array.isArray(findings)) return false;
+  if (report.scanner !== undefined && !isSafeIdentifier(report.scanner)) return false;
+  if (report.ruleVersion !== undefined && !isSafeIdentifier(report.ruleVersion)) return false;
   const byId = new Map(segments.map((segment) => [segment.id, segment]));
-  for (const finding of findings) {
-    if (typeof finding !== "object" || finding === null) return false;
-    const item = finding as Record<string, unknown>;
-    const found = item["classification"];
-    if (found !== "secret_suspected" && found !== "secret_confirmed" && found !== "unknown") {
+  for (const finding of report.findings) {
+    if (
+      finding.classification !== "secret_suspected" &&
+      finding.classification !== "secret_confirmed" &&
+      finding.classification !== "unknown"
+    ) {
       return false;
     }
-    if (!isSafeIdentifier(item["detector"])) return false;
-    if (!isSafeIdentifier(item["ruleVersion"])) return false;
-    if (typeof item["segmentId"] !== "string" || !byId.has(item["segmentId"])) return false;
-    if (item["match"] !== undefined) {
+    if (!isSafeIdentifier(finding.detector)) return false;
+    if (!isSafeIdentifier(finding.ruleVersion)) return false;
+    const segment = byId.get(finding.segmentId);
+    if (!segment) return false;
+    if (finding.match !== undefined) {
       // A finding's exact material must actually occur in its own segment:
       // a match that is not there can never be removed, so a report claiming
       // one is invalid — never a basis for dispatching the request.
-      const segment = byId.get(item["segmentId"]);
-      if (
-        typeof item["match"] !== "string" ||
-        item["match"] === "" ||
-        !segment ||
-        !segment.text.includes(item["match"])
-      ) {
-        return false;
-      }
+      if (finding.match === "" || !segment.text.includes(finding.match)) return false;
     }
   }
   return true;
@@ -521,53 +663,77 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  * as clean. Scanner error text is never propagated — it may echo request
  * content, and errors and logs must not contain secrets.
  */
+/** Scanner entry point and identity, read exactly once per gate run. */
+interface ResolvedScanner {
+  owner: object;
+  scan: (request: SecretScanRequest) => unknown;
+  id: string;
+  ruleVersion: string;
+}
+
+/**
+ * Resolve the scanner seam with exactly one read per field. A missing
+ * scanner, a non-function entry point, or non token-shaped identifiers are
+ * unusable — and scanner-provided text never enters denials.
+ */
+function resolveScanner(scanner: SecretScanner | undefined): ResolvedScanner | undefined {
+  try {
+    if (typeof scanner !== "object" || scanner === null) return undefined;
+    const scanFn: unknown = Reflect.get(scanner, "scan");
+    const id: unknown = Reflect.get(scanner, "id");
+    const ruleVersion: unknown = Reflect.get(scanner, "ruleVersion");
+    if (typeof scanFn !== "function" || !isSafeIdentifier(id) || !isSafeIdentifier(ruleVersion)) {
+      return undefined;
+    }
+    return {
+      owner: scanner,
+      scan: scanFn as ResolvedScanner["scan"],
+      id,
+      ruleVersion,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Fail-closed scanner invocation. A missing scanner, a throw, a hang, or an
+ * invalid report is "scanner unavailable": the gate never treats any of them
+ * as clean. Scanner error text is never propagated — it may echo request
+ * content, and errors and logs must not contain secrets.
+ */
 async function scanSegments(
-  scanner: SecretScanner | undefined,
+  scanner: ResolvedScanner | undefined,
   segments: ScannableSegment[],
   timeoutMs: number,
 ): Promise<{ report: SecretScanReport } | { unavailable: string }> {
-  // The scanner's own identity is untrusted text like any other: reject
-  // scanners that do not carry token-shaped identifiers, and never echo
-  // scanner-provided text into denials.
-  if (
-    !scanner ||
-    typeof scanner.scan !== "function" ||
-    !isSafeIdentifier(scanner.id) ||
-    !isSafeIdentifier(scanner.ruleVersion)
-  ) {
+  if (!scanner) {
     return { unavailable: "no usable secret scanner is configured" };
   }
-  let report: SecretScanReport;
+  let raw: unknown;
   try {
-    report = await withTimeout(Promise.resolve(scanner.scan({ segments })), timeoutMs);
+    raw = await withTimeout(
+      Promise.resolve(scanner.scan.call(scanner.owner, { segments })),
+      timeoutMs,
+    );
   } catch {
     return { unavailable: "the secret scanner failed or timed out" };
   }
-  // Validation reads every finding field; a hostile report can throw from
-  // property reads — that is an invalid report, never a crash or a pass.
-  let valid = false;
-  try {
-    valid = isValidReport(report, segments);
-  } catch {
-    valid = false;
-  }
-  if (!valid) {
+  // Single-read snapshot of the untrusted report (QA round-3): everything
+  // downstream — validation, evaluation, minimization, evidence, errors,
+  // logs — uses only this plain-data copy and never the scanner's objects.
+  const snapshot = snapshotReport(raw);
+  if (!snapshot || !isValidReport(snapshot, segments)) {
     return { unavailable: "the secret scanner returned an invalid report" };
   }
   return {
     report: {
-      scanner: isSafeIdentifier(report.scanner) ? report.scanner : scanner.id,
-      ruleVersion: isSafeIdentifier(report.ruleVersion) ? report.ruleVersion : scanner.ruleVersion,
-      classification: report.classification,
-      // Fresh plain copies: nothing the scanner handed over is shared with
-      // the gate's own evaluation or evidence paths.
-      findings: report.findings.map((finding) => ({
-        classification: finding.classification,
-        detector: String(finding.detector),
-        ruleVersion: String(finding.ruleVersion),
-        segmentId: String(finding.segmentId),
-        ...(finding.match !== undefined ? { match: String(finding.match) } : {}),
-      })),
+      scanner: isSafeIdentifier(snapshot.scanner) ? snapshot.scanner : scanner.id,
+      ruleVersion: isSafeIdentifier(snapshot.ruleVersion)
+        ? snapshot.ruleVersion
+        : scanner.ruleVersion,
+      classification: snapshot.classification,
+      findings: snapshot.findings,
     },
   };
 }
@@ -785,10 +951,11 @@ export async function runRequestScanGate(
   deps: ScanGateDeps,
 ): Promise<ScanGateResult> {
   const timeoutMs = deps.scanTimeoutMs ?? DEFAULT_SCAN_TIMEOUT_MS;
-  const scannerId = isSafeIdentifier(deps.scanner?.id) ? deps.scanner.id : "none";
-  const scannerRuleVersion = isSafeIdentifier(deps.scanner?.ruleVersion)
-    ? deps.scanner.ruleVersion
-    : "n/a";
+  // The configured scanner is untrusted input too: resolved once here and
+  // reused by every scan pass of this gate run.
+  const resolvedScanner = resolveScanner(deps.scanner);
+  const scannerId = resolvedScanner?.id ?? "none";
+  const scannerRuleVersion = resolvedScanner?.ruleVersion ?? "n/a";
 
   // Collecting the complete request must never fail open: a request the gate
   // cannot flatten is a request it cannot clear.
@@ -804,7 +971,7 @@ export async function runRequestScanGate(
     };
   }
 
-  const scan = await scanSegments(deps.scanner, collected.segments, timeoutMs);
+  const scan = await scanSegments(resolvedScanner, collected.segments, timeoutMs);
   if ("unavailable" in scan) {
     return {
       ok: false,
@@ -904,7 +1071,7 @@ export async function runRequestScanGate(
   if (!applied) {
     return unconfirmed(minimized.segments);
   }
-  const rescan = await scanSegments(deps.scanner, minimized.segments, timeoutMs);
+  const rescan = await scanSegments(resolvedScanner, minimized.segments, timeoutMs);
   if ("unavailable" in rescan) {
     return {
       ok: false,

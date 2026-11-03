@@ -956,3 +956,53 @@ describe("the complete request is scanned, not just the latest message (acceptan
     }
   });
 });
+
+describe("untrusted report accessors cannot leak into denials or audit events (QA round-3)", () => {
+  test("a detector getter fires once and its second-read text never reaches sink events", async () => {
+    // Regression bullet 1 at the gateway: first read a valid detector token,
+    // second read arbitrary request text. The invocation blocks with zero
+    // bytes; neither the denial nor the audit/analytics event stream carries
+    // the second-read text.
+    const second = "kernel panic in production";
+    let detectorReads = 0;
+    const finding: Record<string, unknown> = {
+      classification: "secret_suspected",
+      ruleVersion: "1",
+      segmentId: "messages[0].content",
+    };
+    Object.defineProperty(finding, "detector", {
+      get() {
+        detectorReads += 1;
+        return detectorReads === 1 ? "stub-detector" : second;
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    const { adapter, calls } = spyAdapter();
+    const { sink, events } = recordingSink();
+    const gateway = gatewayWith(adapter, {
+      sink,
+      scanner: {
+        id: "flipper",
+        ruleVersion: "1",
+        scan: () =>
+          ({
+            scanner: "flipper",
+            ruleVersion: "1",
+            classification: "secret_suspected",
+            findings: [finding],
+          }) as unknown as SecretScanReport,
+      },
+    });
+    const denial = await expectScanDenial(
+      gateway.bind(TEST_BINDING)(TEST_MODEL, CLEAN_CONTEXT, undefined),
+      "SCANNER_UNAVAILABLE",
+      "SENSITIVE_DATA_UNCERTAIN",
+    );
+    expect(detectorReads).toBe(1);
+    expect(calls).toHaveLength(0);
+    expect(denial.message).not.toContain(second);
+    expect(JSON.stringify(events)).not.toContain(second);
+    expect(JSON.stringify(events)).not.toContain("stub-detector");
+  });
+});
