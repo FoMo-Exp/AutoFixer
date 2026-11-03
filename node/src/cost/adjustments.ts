@@ -185,6 +185,24 @@ export function netPosting(
 ): NetPostingView {
   const components = structuredClone(entry.posting.components);
   for (const adjustment of entry.adjustments) {
+    // A replay is bound to the posting it corrects: the adjustment must
+    // target exactly this posting, in exactly its enterprise/workspace.
+    if (adjustment.target_posting_id !== entry.posting.posting_id) {
+      throw new CostValidationError(
+        `adjustment ${adjustment.adjustment_id} targets posting ` +
+          `${adjustment.target_posting_id}, not the posting being replayed ` +
+          `(${entry.posting.posting_id})`,
+      );
+    }
+    if (
+      adjustment.enterprise_id !== entry.posting.enterprise_id ||
+      adjustment.workspace_id !== entry.posting.workspace_id
+    ) {
+      throw new CostValidationError(
+        `adjustment ${adjustment.adjustment_id} is outside the enterprise/workspace ` +
+          "scope of the posting it would correct",
+      );
+    }
     for (const correction of adjustment.components) {
       const index = components.findIndex((component) => component.category === correction.category);
       if (index === -1) {
@@ -237,11 +255,16 @@ export function resolveRebindRevision(
     );
   }
   const mismatches: string[] = [];
+  // The revision must belong to the same enterprise/workspace as BOTH the
+  // adjustment and the posting it corrects; netPosting additionally requires
+  // adjustment and posting to agree, so the three-way scope is identical.
   if (
     revision.enterprise_id !== adjustment.enterprise_id ||
-    revision.workspace_id !== adjustment.workspace_id
+    revision.workspace_id !== adjustment.workspace_id ||
+    revision.enterprise_id !== posting.enterprise_id ||
+    revision.workspace_id !== posting.workspace_id
   ) {
-    mismatches.push("the adjustment's enterprise/workspace scope");
+    mismatches.push("the enterprise/workspace scope of the posting and adjustment");
   }
   if (revision.target !== posting.target) {
     mismatches.push(`deployment target ${posting.target}`);

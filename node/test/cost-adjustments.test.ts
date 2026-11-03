@@ -314,6 +314,45 @@ describe("the net view replays corrections over an untouched original", () => {
     ).toThrow(CostValidationError);
   });
 
+  test("replay binds the adjustment to its target posting and workspace", () => {
+    const posting = priced();
+    // A same-shaped correction recorded in another workspace must never
+    // replay onto this posting — even though its target id, target,
+    // category and unit all line up.
+    const foreign = recorded({ enterprise_id: "ent-1", workspace_id: "ws-2" });
+    expect(() => netPosting({ posting, adjustments: [foreign] }, RATES)).toThrow(
+      CostValidationError,
+    );
+    // A correction recorded against a different posting never replays here.
+    const otherTarget = recorded({ target_posting_id: "cost-inv:inv-other:1" });
+    expect(() => netPosting({ posting, adjustments: [otherTarget] }, RATES)).toThrow(
+      CostValidationError,
+    );
+    // The adjustment/posting/rate-revision scope is one three-way contract.
+    const foreignRebind = recorded({
+      workspace_id: "ws-2",
+      components: [
+        {
+          category: "input",
+          completeness: "known",
+          corrected_units: 1000,
+          corrected_rate_revision_id: "rev-elsewhere",
+          corrected_cost: null,
+          corrected_currency: null,
+          note: null,
+        },
+      ],
+    });
+    const foreignRevision = built({
+      revision_id: "rev-elsewhere",
+      category: "input",
+      workspace_id: "ws-2",
+    });
+    expect(() =>
+      netPosting({ posting, adjustments: [foreignRebind] }, [...RATES, foreignRevision]),
+    ).toThrow(CostValidationError);
+  });
+
   test("an unpriced category can be corrected; a category the posting lacks is refused", () => {
     const posting = computeInvocationCost(
       invocationInput({ usage: { cache_read: figure(null), completeness: "unknown" } }),
