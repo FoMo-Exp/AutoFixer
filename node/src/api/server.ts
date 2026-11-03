@@ -15,11 +15,21 @@ import {
 } from "./http-util.js";
 import type { TaskEvent } from "./task-store.js";
 import type { TaskService } from "./task-service.js";
+import { actionForRequest } from "./request-authority.js";
+import type { RequestAuthority } from "./request-authority.js";
 
 export interface ApiServerDeps {
   service: TaskService;
   /** Per-process bearer token callers must present (401 otherwise). */
   apiToken: string;
+  /**
+   * Provider-authority request boundary (DAT-203). When present, session
+   * requests are checked against the effective-access gate for their action
+   * class (read, stream, artifact, approval, write) whenever provider
+   * authority is in play — a revoked provider subject loses every one of
+   * them at the request boundary.
+   */
+  authority?: RequestAuthority;
   /**
    * Identity/session subsystem. When set, /api/v1/auth and /api/v1/admin are
    * served and requests may authenticate with a web session cookie or a
@@ -139,6 +149,14 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
         if (role === "viewer" && isWrite) {
           throw new ApiError(403, "FORBIDDEN", "this session has read-only access");
         }
+      }
+      // Provider authority (DAT-203): the effective-access gate runs at the
+      // request boundary for every action class. Provider member removal,
+      // revoked authority, and lost capability grants deny here — before any
+      // route body runs — with no decision cache to outlive the revocation.
+      const requestAction = actionForRequest(method, segments);
+      if (actor.kind === "session" && requestAction !== null && deps.authority !== undefined) {
+        deps.authority.require(actor.ctx.user.id, requestAction);
       }
       const taskId = segments[3];
 
@@ -304,6 +322,19 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
             }
           });
           req.on("close", unsubscribeAuth);
+        }
+        // A provider revocation cuts live streams the same way: the stream
+        // re-checks its stream action on every authority change and closes
+        // the moment the gate denies it (DAT-203).
+        if (actor.kind === "session" && deps.authority !== undefined) {
+          const authority = deps.authority;
+          const streamUser = actor.ctx.user.id;
+          const unsubscribeAuthority = authority.subscribe(() => {
+            if (!authority.check(streamUser, "stream").allowed) {
+              res.end();
+            }
+          });
+          req.on("close", unsubscribeAuthority);
         }
         const unsubscribe = service.subscribe(taskId, (event) => {
           writeSseEvent(res, event);
