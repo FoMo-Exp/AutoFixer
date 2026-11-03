@@ -257,10 +257,15 @@ export class ProviderOAuth {
           "Content-Type": "application/x-www-form-urlencoded",
         },
         body: body.toString(),
+        // Never follow redirects: a 302/307/308 would forward the client
+        // secret, authorization code, and PKCE verifier to whatever target
+        // the (possibly compromised or re-bound) provider names — and that
+        // target could be an internal address outside the approved origin.
+        redirect: "error",
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch {
-      throw new ProviderError("provider token endpoint is unreachable");
+      throw new ProviderError("provider token endpoint request failed");
     }
     let payload: unknown;
     try {
@@ -286,10 +291,13 @@ export class ProviderOAuth {
           Accept: "application/json",
           Authorization: `Bearer ${input.accessToken}`,
         },
+        // Same rule as the token call: never follow redirects — the bearer
+        // access token must not reach another origin or an internal address.
+        redirect: "error",
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch {
-      throw new ProviderError("provider user endpoint is unreachable");
+      throw new ProviderError("provider user endpoint request failed");
     }
     if (!response.ok) {
       throw new ProviderError(`provider user endpoint failed (${response.status})`);
