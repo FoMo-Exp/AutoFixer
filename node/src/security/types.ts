@@ -125,7 +125,18 @@ export type CaseEventType =
   | "quarantine.access_granted"
   | "quarantine.accessed"
   | "quarantine.access_denied"
-  | "quarantine.expired";
+  | "quarantine.expired"
+  /**
+   * Recovery events (DAT-212, ADR-0005 §5): one independent approval, the
+   * single dispatch attempt it authorizes, and the recorded outcome. The
+   * approval, the attempt, and the send are distinct events and never merge.
+   */
+  | "recovery.approved"
+  | "recovery.invalidated"
+  | "recovery.dispatch_attempted"
+  | "recovery.dispatched"
+  | "recovery.dispatch_failed"
+  | "recovery.dispatch_unknown";
 
 export interface CaseEvent {
   /** Per-case, 1-based, strictly increasing; the history never rewrites. */
