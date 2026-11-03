@@ -15,6 +15,7 @@ import type {
 import type { ProviderAdapter } from "./adapter.js";
 import { buildAdapterOptions } from "./adapter.js";
 import type { GatewayCredentialStore } from "./credentials.js";
+import type { LedgerFinishStatus, UsageLedgerSink } from "../ledger/index.js";
 import { matchEndpoint, matchFallback } from "./policy.js";
 import type { GatewayPolicyResolver } from "./policy.js";
 import { scrubSecrets } from "./redact.js";
@@ -72,6 +73,13 @@ export interface ModelGatewayDeps {
    * sent.
    */
   sink?: GatewayEventSink;
+  /**
+   * Invocation usage ledger (DAT-227). One usage record per actual dispatch
+   * attempt — successes, failures, retries and fallbacks — is written through
+   * this seam; attempts denied before dispatch record no usage. Unset leaves
+   * attempts unmetered, so a deployment that keeps cost accounting wires it.
+   */
+  usageLedger?: UsageLedgerSink;
   now?: () => Date;
   newInvocationId?: () => string;
   /** Operational-incident channel for post-outcome audit failures. */
@@ -87,9 +95,29 @@ interface DestinationSlot {
 
 type TerminalOutcome = { outcome: "dispatched" | "failed"; detail?: string };
 
+/**
+ * How one attempt closed, for both its audit outcome and its usage ledger
+ * record. `terminal` is the transport's terminal message — the only place a
+ * provider-reported usage, request id, or returned model can come from.
+ * Paths that never saw a provider message (a dispatch failure, a synthetic
+ * mid-stream error) pass none: the ledger records their usage as unknown
+ * rather than trusting a zero-filled stand-in.
+ */
+type AttemptClose = {
+  outcome: TerminalOutcome;
+  finish: LedgerFinishStatus;
+  terminal?: AssistantMessage;
+};
+
 type AttemptResult =
   | { status: "handed_off"; stream: AssistantMessageEventStream }
-  | { status: "failed"; detail: string; retryable: boolean };
+  | {
+      status: "failed";
+      detail: string;
+      retryable: boolean;
+      finish: LedgerFinishStatus;
+      terminal?: AssistantMessage;
+    };
 
 const CONTENT_EVENTS = new Set<AssistantMessageEvent["type"]>([
   "text_start",
@@ -122,7 +150,34 @@ function outcomeFromTerminal(event: AssistantMessageEvent): TerminalOutcome {
   return { outcome: "dispatched" };
 }
 
-/** Terminal error message for a mid-stream transport failure after handoff. */
+/** The terminal message a provider-reported usage can only ride on. */
+function messageOf(event: AssistantMessageEvent): AssistantMessage | undefined {
+  if (event.type === "done") {
+    return event.message;
+  }
+  if (event.type === "error") {
+    return event.error;
+  }
+  return undefined;
+}
+
+/** Ledger finish status derived from the provider terminal event. */
+function finishFromEvent(event: AssistantMessageEvent): LedgerFinishStatus {
+  if (event.type === "done") {
+    return event.reason === "toolUse" ? "tool_use" : event.reason;
+  }
+  if (event.type === "error") {
+    return event.reason;
+  }
+  return "unknown";
+}
+
+/**
+ * Terminal error message for a mid-stream transport failure after handoff.
+ * The zero-filled usage below is the pi-ai message-shape placeholder only —
+ * the provider never reported usage for this attempt, and the usage ledger
+ * records it as unknown rather than reading these zeros (DAT-227).
+ */
 function syntheticErrorMessage(model: Model<Api>, detail: string): AssistantMessage {
   return {
     role: "assistant",
@@ -423,8 +478,11 @@ export class ModelGateway {
     context: Context;
   }): Promise<AttemptResult> {
     const { identity, attempt, endpoint, modelId, policyRevision, credential } = prepared;
-    const record = (outcome: TerminalOutcome): Promise<void> =>
-      this.recordOutcome(identity, attempt, policyRevision, endpoint, modelId, outcome);
+    const startedAt = this.timestamp();
+    const record = async (close: AttemptClose): Promise<void> => {
+      await this.recordOutcome(identity, attempt, policyRevision, endpoint, modelId, close.outcome);
+      this.recordUsage(prepared, startedAt, close);
+    };
     try {
       const inner = await this.deps.adapter.stream(
         prepared.pinnedModel,
@@ -434,8 +492,9 @@ export class ModelGateway {
       const head = await this.consumeHead(inner, prepared.pinnedModel, record);
       if (head.status === "failed") {
         await record({
-          outcome: "failed",
-          detail: scrubSecrets(head.detail, [credential]),
+          outcome: { outcome: "failed", detail: scrubSecrets(head.detail, [credential]) },
+          finish: head.finish,
+          ...(head.terminal ? { terminal: head.terminal } : {}),
         });
         return head;
       }
@@ -447,8 +506,18 @@ export class ModelGateway {
         const flagged = error.retryable;
         if (typeof flagged === "boolean") retryable = flagged;
       }
-      await record({ outcome: "failed", detail: scrubSecrets(detail, [credential]) });
-      return { status: "failed", detail: scrubSecrets(detail, [credential]), retryable };
+      // The transport failed before any provider message existed: no usage
+      // was reported, so the ledger records this attempt as unknown usage.
+      await record({
+        outcome: { outcome: "failed", detail: scrubSecrets(detail, [credential]) },
+        finish: "transport_failed",
+      });
+      return {
+        status: "failed",
+        detail: scrubSecrets(detail, [credential]),
+        retryable,
+        finish: "transport_failed",
+      };
     }
   }
 
@@ -463,7 +532,7 @@ export class ModelGateway {
   private async consumeHead(
     inner: AssistantMessageEventStream,
     model: Model<Api>,
-    record: (outcome: TerminalOutcome) => Promise<void>,
+    record: (close: AttemptClose) => Promise<void>,
   ): Promise<AttemptResult> {
     const out = createAssistantMessageEventStream();
     const iterator = inner[Symbol.asyncIterator]();
@@ -472,7 +541,9 @@ export class ModelGateway {
       const next = await iterator.next();
       if (next.done) {
         for (const event of buffered) out.push(event);
-        await record({ outcome: "dispatched" });
+        // The stream ended without a terminal event: there is no provider
+        // finish status and no usage to read, only the honest unknown.
+        await record({ outcome: { outcome: "dispatched" }, finish: "unknown" });
         out.end();
         return { status: "handed_off", stream: out };
       }
@@ -483,10 +554,16 @@ export class ModelGateway {
             status: "failed",
             detail: event.error.errorMessage ?? "provider stream failed",
             retryable: !NON_RETRYABLE_MARKERS.test(event.error.errorMessage ?? ""),
+            finish: finishFromEvent(event),
+            terminal: event.error,
           };
         }
         for (const bufferedEvent of buffered) out.push(bufferedEvent);
-        await record(outcomeFromTerminal(event));
+        await record({
+          outcome: outcomeFromTerminal(event),
+          finish: finishFromEvent(event),
+          ...(messageOf(event) ? { terminal: messageOf(event) } : {}),
+        });
         out.push(event);
         out.end();
         return { status: "handed_off", stream: out };
@@ -514,19 +591,23 @@ export class ModelGateway {
     iterator: AsyncIterator<AssistantMessageEvent>,
     out: AssistantMessageEventStream,
     model: Model<Api>,
-    record: (outcome: TerminalOutcome) => Promise<void>,
+    record: (close: AttemptClose) => Promise<void>,
   ): void {
     void (async () => {
       try {
         for (;;) {
           const next = await iterator.next();
           if (next.done) {
-            await record({ outcome: "dispatched" });
+            await record({ outcome: { outcome: "dispatched" }, finish: "unknown" });
             out.end();
             return;
           }
           if (isTerminalEvent(next.value)) {
-            await record(outcomeFromTerminal(next.value));
+            await record({
+              outcome: outcomeFromTerminal(next.value),
+              finish: finishFromEvent(next.value),
+              ...(messageOf(next.value) ? { terminal: messageOf(next.value) } : {}),
+            });
             out.push(next.value);
             out.end();
             return;
@@ -535,7 +616,10 @@ export class ModelGateway {
         }
       } catch (error) {
         const detail = scrubSecrets(error instanceof Error ? error.message : String(error));
-        await record({ outcome: "failed", detail });
+        // A mid-stream transport failure never produced a provider terminal
+        // message: record the attempt without usage instead of trusting the
+        // synthetic zero-filled stand-in below.
+        await record({ outcome: { outcome: "failed", detail }, finish: "transport_failed" });
         out.push({ type: "error", reason: "error", error: syntheticErrorMessage(model, detail) });
         out.end();
       }
@@ -565,6 +649,65 @@ export class ModelGateway {
     } catch (error) {
       const incident = error instanceof Error ? error.message : String(error);
       this.incident(`gateway outcome audit write failed: ${scrubSecrets(incident)}`);
+    }
+  }
+
+  /**
+   * Write this attempt's invocation usage record. The ledger is financial
+   * evidence: identity, timing, finish status and whatever usage the provider
+   * reported — with missing usage recorded as unknown, never as zeros. A
+   * ledger write failure raises an incident; it never replays or drops the
+   * attempt's audit outcome.
+   */
+  private recordUsage(
+    prepared: {
+      identity: GatewayRequestIdentity;
+      attempt: number;
+      endpoint: ApprovedEndpoint;
+      modelId: string;
+    },
+    startedAt: string,
+    close: AttemptClose,
+  ): void {
+    const sink = this.deps.usageLedger;
+    if (!sink) {
+      return;
+    }
+    const { identity, attempt, endpoint, modelId } = prepared;
+    const terminal = close.terminal;
+    try {
+      void Promise.resolve(
+        sink.recordAttempt({
+          identity: {
+            enterprise_id: identity.enterpriseId,
+            workspace_id: identity.workspaceId,
+            issue_id: identity.issueId,
+            run_id: identity.runId,
+            invocation_id: identity.invocationId,
+            trace_id: identity.traceId,
+          },
+          attempt,
+          destination: {
+            endpoint_id: endpoint.endpointId,
+            provider: endpoint.provider,
+            model_id: modelId,
+            internal: endpoint.internal,
+          },
+          api: endpoint.api,
+          started_at: startedAt,
+          ended_at: this.timestamp(),
+          finish_status: close.finish,
+          provider_request_id: terminal?.responseId ?? null,
+          returned_model: terminal?.responseModel ?? null,
+          usage_report: terminal ? { source: "transport_reported", payload: terminal.usage } : null,
+        }),
+      ).catch((error: unknown) => {
+        const incident = error instanceof Error ? error.message : String(error);
+        this.incident(`gateway usage ledger write failed: ${scrubSecrets(incident)}`);
+      });
+    } catch (error) {
+      const incident = error instanceof Error ? error.message : String(error);
+      this.incident(`gateway usage ledger write failed: ${scrubSecrets(incident)}`);
     }
   }
 

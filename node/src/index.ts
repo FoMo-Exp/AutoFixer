@@ -30,6 +30,7 @@ import {
   readCredentialFile,
 } from "./gateway/index.js";
 import type { ModelGateway } from "./gateway/index.js";
+import { createUsageLedgerStore } from "./ledger/index.js";
 import { resolveConfiguredModel } from "./pi/model.js";
 
 export interface OrchestratorOptions {
@@ -99,6 +100,12 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
     // (DAT-209); a deployment may swap in another SecretScanner backend.
     scanner: createPatternSecretScanner(),
     ...(config.gatewayAuditFile ? { sink: createFileEventSink(config.gatewayAuditFile) } : {}),
+    // Invocation usage ledger (DAT-227): every actual dispatch attempt is
+    // metered here — failures, retries and fallbacks included — so cost
+    // accounting reconciles against real attempts instead of guesses.
+    ...(config.usageLedgerFile
+      ? { usageLedger: createUsageLedgerStore({ persistencePath: config.usageLedgerFile }) }
+      : {}),
   });
 }
 
@@ -208,6 +215,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
 
 export { buildOpenApiDocument, configFromEnv };
 export * from "./gateway/index.js";
+export * from "./ledger/index.js";
 
 async function main(): Promise<void> {
   const config = configFromEnv();
