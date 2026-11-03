@@ -94,12 +94,7 @@ describe("github adapter paths and credentials", () => {
     );
 
     const roster = await collectRoster(adapterFor(provider.base_url), ctx, repository, {
-      available_token_scope: [
-        "metadata:read",
-        "contents:read",
-        "members:read",
-        "administration:read",
-      ],
+      available_token_scope: ["metadata:read", "contents:read", "members:read"],
     });
 
     // Exact request targets, in order: no `github:` prefix anywhere.
@@ -140,14 +135,30 @@ describe("github adapter paths and credentials", () => {
       "metadata:read",
       "contents:read",
       "members:read",
-      "administration:read",
     ]);
+    // Least privilege: nothing broader than what the endpoints used require.
+    expect(adapter.capabilities.required_token_scope).not.toContain("administration:read");
 
     await expect(
       collectRoster(adapter, ctx, repository, { available_token_scope: ["metadata:read"] }),
     ).rejects.toBeInstanceOf(MissingPermissionError);
     // Refused before any provider call: no partial roster, no requests.
     expect(provider.requests).toHaveLength(0);
+  });
+
+  test("a credential holding exactly the declared scopes is accepted", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        [REPO_URL]: { status: 200, body: ORG_REPO },
+        [COLLABORATORS_URL]: { status: 200, body: [COLLABORATOR] },
+        [OWNERS_URL]: { status: 200, body: [] },
+      }),
+    );
+
+    const roster = await collectRoster(adapterFor(provider.base_url), ctx, repository, {
+      available_token_scope: ["metadata:read", "contents:read", "members:read"],
+    });
+    expect(roster.entries).toHaveLength(1);
   });
 
   test("a personal-account repository has no organization owners to query", async () => {
@@ -159,12 +170,7 @@ describe("github adapter paths and credentials", () => {
     );
 
     const roster = await collectRoster(adapterFor(provider.base_url), ctx, repository, {
-      available_token_scope: [
-        "metadata:read",
-        "contents:read",
-        "members:read",
-        "administration:read",
-      ],
+      available_token_scope: ["metadata:read", "contents:read", "members:read"],
     });
 
     // The collaborator list IS the complete roster for a user-owned
@@ -367,7 +373,14 @@ describe("github effective permission", () => {
     provider = await startFakeProvider(
       exactRoutes({
         [REPO_URL]: { status: 200, body: ORG_REPO },
-        "/repos/Luthiel/AutoFixer/collaborators/octocat": { status: 200, body: COLLABORATOR },
+        "/repos/Luthiel/AutoFixer/collaborators/octocat/permission": {
+          status: 200,
+          body: {
+            permission: "admin",
+            role_name: "admin",
+            user: { id: 4242, login: "octocat" },
+          },
+        },
       }),
     );
 
@@ -377,7 +390,11 @@ describe("github effective permission", () => {
       repository,
       "4242",
     );
-    expect(provider.urls()).toEqual([REPO_URL, "/repos/Luthiel/AutoFixer/collaborators/octocat"]);
+    // The permission endpoint, not the 204-only "check a collaborator" one.
+    expect(provider.urls()).toEqual([
+      REPO_URL,
+      "/repos/Luthiel/AutoFixer/collaborators/octocat/permission",
+    ]);
     expect(role).toEqual({
       subject: "4242",
       login: "octocat",
@@ -392,7 +409,7 @@ describe("github effective permission", () => {
     provider = await startFakeProvider(
       exactRoutes({
         [REPO_URL]: { status: 200, body: ORG_REPO },
-        "/repos/Luthiel/AutoFixer/collaborators/octocat": {
+        "/repos/Luthiel/AutoFixer/collaborators/octocat/permission": {
           status: 404,
           body: { message: "Not Found" },
         },
@@ -402,6 +419,46 @@ describe("github effective permission", () => {
     await expect(
       fetchEffectivePermission(adapterFor(provider.base_url), ctx, repository, "4242"),
     ).resolves.toBeNull();
+  });
+
+  test("maps the permission endpoint's read/write spelling", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        [REPO_URL]: { status: 200, body: ORG_REPO },
+        "/repos/Luthiel/AutoFixer/collaborators/octocat/permission": {
+          status: 200,
+          body: { permission: "write", role_name: "write", user: { id: 4242, login: "octocat" } },
+        },
+      }),
+    );
+
+    const role = await fetchEffectivePermission(
+      adapterFor(provider.base_url),
+      ctx,
+      repository,
+      "4242",
+    );
+    expect(role?.provider_role).toBe("write");
+  });
+
+  test("a 204 without a role is a visibility gap, not a provider outage", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        [REPO_URL]: { status: 200, body: ORG_REPO },
+        "/repos/Luthiel/AutoFixer/collaborators/octocat/permission": { status: 204, body: "" },
+      }),
+    );
+
+    const error = await fetchEffectivePermission(
+      adapterFor(provider.base_url),
+      ctx,
+      repository,
+      "4242",
+    ).catch((thrown: unknown) => thrown);
+    // A 204 has no body to parse: reporting "provider unavailable" would be
+    // wrong, and claiming "no access" would be worse.
+    expect(error).toBeInstanceOf(MissingPermissionError);
+    expect((error as MissingPermissionError).detail).toBe("permission_query");
   });
 
   test("an unbound subject is a visibility gap, not an absence of access", async () => {

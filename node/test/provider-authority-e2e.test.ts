@@ -67,12 +67,7 @@ function reconcileDeps(fixture: Fixture) {
     identities: fixture.identity.identities,
     epoch: fixture.epoch,
     clock: () => fixture.clock.now,
-    available_token_scope: [
-      "metadata:read",
-      "contents:read",
-      "members:read",
-      "administration:read",
-    ],
+    available_token_scope: ["metadata:read", "contents:read", "members:read"],
   };
 }
 
@@ -440,7 +435,14 @@ describe("per-subject refresh before a sensitive action", () => {
     provider = await startFakeProvider(
       exactRoutes({
         [REPO_URL]: { status: 200, body: ORG_REPO },
-        "/repos/Luthiel/AutoFixer/collaborators/octocat": { status: 200, body: member("push") },
+        "/repos/Luthiel/AutoFixer/collaborators/octocat/permission": {
+          status: 200,
+          body: {
+            permission: "write",
+            role_name: "push",
+            user: { id: Number(SUBJECT), login: LOGIN },
+          },
+        },
       }),
     );
 
@@ -461,7 +463,10 @@ describe("per-subject refresh before a sensitive action", () => {
     expect(result.verified_at).toBe(fixture.clock.now.toISOString());
     expect(redemptionEligibility(fixture, SUBJECT)).toEqual({ status: 200, reason: "ok" });
     // The per-subject query is the exact collaborator path, not a roster sweep.
-    expect(provider.urls()).toEqual([REPO_URL, "/repos/Luthiel/AutoFixer/collaborators/octocat"]);
+    expect(provider.urls()).toEqual([
+      REPO_URL,
+      "/repos/Luthiel/AutoFixer/collaborators/octocat/permission",
+    ]);
   });
 
   test("a provider 404 removes authority and revokes capabilities", async () => {
@@ -486,7 +491,7 @@ describe("per-subject refresh before a sensitive action", () => {
     provider = await startFakeProvider(
       exactRoutes({
         [REPO_URL]: { status: 200, body: ORG_REPO },
-        "/repos/Luthiel/AutoFixer/collaborators/octocat": { status: 404, body: {} },
+        "/repos/Luthiel/AutoFixer/collaborators/octocat/permission": { status: 404, body: {} },
       }),
     );
 

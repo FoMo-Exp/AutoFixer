@@ -16,14 +16,14 @@
  *   `/repos/{owner}/{repo}`; the provider prefix never reaches the URL. This
  *   is the defect DAT-204's login-time OAuth probe shipped
  *   (`/repositories/github:<owner>/<repo>`, always 404).
- * - **Least privilege, declared.** Metadata read addresses the repository,
- *   Contents read covers checkout, Members read addresses organization
- *   owners, and Administration read is what GitHub requires of an installation
- *   token for the collaborator list — the one endpoint that returns everyone
- *   with access, including access inherited through teams and default
- *   organization permissions. `collectRoster` refuses to run when the
- *   credential does not hold every declared scope, so a narrower token fails
- *   closed instead of producing a short roster that reads as removals.
+ * - **Least privilege, declared.** Metadata read addresses the repository and
+ *   the collaborator list (the endpoint the GitHub docs list Metadata read
+ *   for, which returns everyone with access including team and default
+ *   permission inheritance), Contents read covers checkout, and Members read
+ *   addresses organization owners. Nothing broader is required.
+ *   `collectRoster` refuses to run when the credential does not hold every
+ *   declared scope, so a narrower token fails closed instead of producing a
+ *   short roster that reads as removals.
  * - **Organization membership alone is not authority.** Plain org members are
  *   deliberately absent: on GitHub, org membership without a team or direct
  *   grant is not repository access, so recording it would grant data access
@@ -62,22 +62,41 @@ import {
 } from "../types.js";
 
 /**
- * Scopes the integration credential must hold. Installation tokens realize
+ * Scopes the integration credential must hold — the minimum each endpoint the
+ * adapter uses actually requires, nothing more. Installation tokens realize
  * these as installation permissions; the service catalog maps each entry to
  * the granted permission it stands for.
+ *
+ * - `metadata:read` — repository metadata and the collaborator list (the
+ *   GitHub docs list Metadata read for fine-grained tokens on these
+ *   endpoints).
+ * - `contents:read` — code checkout, the integration's read capability.
+ * - `members:read` — organization owners, the one organization-level roster
+ *   source.
+ *
+ * Administration read is deliberately NOT required: least privilege here is
+ * the whole point of using a repository-scoped service integration instead of
+ * a `repo`-scoped user OAuth token, and the endpoints used do not need it.
  */
 export const GITHUB_REQUIRED_TOKEN_SCOPE: readonly string[] = Object.freeze([
   "metadata:read",
   "contents:read",
   "members:read",
-  "administration:read",
 ]);
 
-/** GitHub's collaborator `role_name` vocabulary → this project's roles. */
+/**
+ * GitHub role vocabulary → this project's roles.
+ *
+ * GitHub reports repository roles in two spellings: the collaborator list
+ * uses `pull` / `push`, while the permissions endpoint uses `read` / `write`.
+ * Both are accepted so the mapping never depends on which endpoint answered.
+ */
 const ROLE_NAME: Readonly<Record<string, string>> = Object.freeze({
   pull: "read",
+  read: "read",
   triage: "triage",
   push: "write",
+  write: "write",
   maintain: "maintain",
   admin: "admin",
 });
@@ -176,9 +195,14 @@ export function githubApiBaseUrl(options: {
 /** Map one collaborator record to the project's repository-role vocabulary. */
 function collaboratorRole(record: Record<string, unknown>, where: string): string {
   const roleName = typeof record["role_name"] === "string" ? record["role_name"] : "";
-  const mapped = ROLE_NAME[roleName];
-  if (mapped !== undefined) {
-    return mapped;
+  const mappedRoleName = ROLE_NAME[roleName];
+  if (mappedRoleName !== undefined) {
+    return mappedRoleName;
+  }
+  const permission = typeof record["permission"] === "string" ? record["permission"] : "";
+  const mappedPermission = ROLE_NAME[permission];
+  if (mappedPermission !== undefined) {
+    return mappedPermission;
   }
   const permissions = record["permissions"];
   if (typeof permissions === "object" && permissions !== null) {
@@ -448,12 +472,25 @@ export function createGitHubAdapter(options: GitHubAdapterOptions): ProviderAdap
           `no github login is bound to subject ${JSON.stringify(subject)}`,
         );
       }
-      const url = `${base}/repos/${repoPath}/collaborators/${encodeURIComponent(login)}`;
+      // `GET /collaborators/{login}/permission` returns 200 with
+      // `{ permission, role_name, user }`. The sibling
+      // `/collaborators/{login}` endpoint only answers 204 No Content for a
+      // collaborator, so it cannot supply the role this fact needs — parsing
+      // its empty body would look like a provider outage.
+      const url = `${base}/repos/${repoPath}/collaborators/${encodeURIComponent(login)}/permission`;
       const response = await request(ctx, url);
       assertProviderStatus("github", response, url);
       if (response.status === 404) {
         // GitHub's documented answer for "this user is not a collaborator".
         return null;
+      }
+      if (response.status === 204) {
+        // Defensive: a 204 carries no role. Knowing someone has *some* access
+        // while being unable to name it is a visibility gap, never a removal.
+        throw new MissingPermissionError(
+          "permission_query",
+          `github answered 204 without a role for ${url}; the permission cannot be determined`,
+        );
       }
       const record = parseJsonBody<Record<string, unknown>>(response.body, url);
       return {
