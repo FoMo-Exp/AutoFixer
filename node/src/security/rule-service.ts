@@ -77,6 +77,13 @@ export interface RuleServiceDeps {
 
 const SCHEMA_VERSION = 1;
 
+/**
+ * Reserved lineage for a rejected proposal too malformed to attribute (no
+ * detector id or scope). The rejection is still audited there — a lost audit
+ * record is worse than an unattributed one.
+ */
+const UNATTRIBUTED_LINEAGE = "unattributed";
+
 interface PersistedState {
   schema_version: number;
   revisions: RuleRevision[];
@@ -122,21 +129,17 @@ export class RuleCorrectionService {
     try {
       draft = validateRuleCorrection(raw, this.now());
     } catch (error) {
-      const lineage = correctionLineage(raw);
-      if (lineage !== undefined) {
-        const paths =
-          error instanceof SecurityError && Array.isArray(error.details["paths"])
-            ? error.details["paths"].join(",")
-            : "";
-        this.appendEvent(lineage, "rule.proposal_rejected", author, "security_handler", {
-          code: error instanceof SecurityError ? error.code : "RULE_PROPOSAL_INVALID",
-          ...(paths.length > 0 ? { paths } : {}),
-        });
-      }
+      this.recordProposalRejection(raw, author, error);
       throw error;
     }
     const scope = requireScope(draft.scope);
-    requireDuty("rule.propose", author, this.deps.directory, scope);
+    try {
+      requireDuty("rule.propose", author, this.deps.directory, scope);
+    } catch (error) {
+      // A duty denial is a proposal result too: audit it before returning.
+      this.recordProposalRejection(raw, author, error);
+      throw error;
+    }
     const lineage = [draft.detectorId, scope.enterpriseId, scope.workspaceId].join("|");
     // Evidence is computed here, from the trusted corpus, for exactly this
     // rule content — a proposal carries no evidence results of its own.
@@ -150,7 +153,7 @@ export class RuleCorrectionService {
         detectorId: draft.detectorId,
         ...(failed !== undefined ? { testRef: failed.testRef } : {}),
       });
-      this.persist();
+      this.persistOrFail();
       throw new SecurityError(
         code,
         evidence.length === 0
@@ -186,7 +189,8 @@ export class RuleCorrectionService {
       authorId: requireNonEmpty(author.actorId, "author.actorId"),
       proposedAt: at,
     };
-    this.lineageOf(lineage).push(revision);
+    const revisions = this.lineageOf(lineage);
+    revisions.push(revision);
     this.appendEvent(lineage, "rule.proposed", author, "security_handler", {
       version: revision.version,
       authorId: revision.authorId,
@@ -194,7 +198,14 @@ export class RuleCorrectionService {
       reason: revision.reason,
       expiresAt: revision.expiresAt,
     });
-    this.persist();
+    try {
+      this.persistOrFail();
+    } catch (error) {
+      // The durable record is the proposal; without it the operation failed.
+      revisions.pop();
+      this.events.get(lineage)?.pop();
+      throw error;
+    }
     return structuredClone(revision);
   }
 
@@ -246,7 +257,7 @@ export class RuleCorrectionService {
         authorId: revision.authorId,
         code: error instanceof SecurityError ? error.code : "SOD_REVIEW_DENIED",
       });
-      this.persist();
+      this.persistOrFail();
       throw error;
     }
     revision.review = {
@@ -279,7 +290,7 @@ export class RuleCorrectionService {
         }
       }
     }
-    this.persist();
+    this.persistOrFail();
     return structuredClone(revision);
   }
 
@@ -401,7 +412,7 @@ export class RuleCorrectionService {
           code: error instanceof SecurityError ? error.code : "RULE_ACTIVATION_DENIED",
         },
       );
-      this.persist();
+      this.persistOrFail();
       throw error;
     }
     for (const other of this.lineageOf(lineage)) {
@@ -422,7 +433,7 @@ export class RuleCorrectionService {
       authorId: revision.authorId,
       reviewerId: revision.review?.reviewerId ?? "",
     });
-    this.persist();
+    this.persistOrFail();
     return structuredClone(revision);
   }
 
@@ -448,7 +459,7 @@ export class RuleCorrectionService {
           code: "RULE_NOTHING_TO_ROLL_BACK",
         },
       );
-      this.persist();
+      this.persistOrFail();
       throw new SecurityError("RULE_NOTHING_TO_ROLL_BACK", `no active correction on ${lineage}`, {
         lineage,
       });
@@ -471,7 +482,7 @@ export class RuleCorrectionService {
           code: error instanceof SecurityError ? error.code : "RULE_ROLLBACK_DENIED",
         },
       );
-      this.persist();
+      this.persistOrFail();
       throw error;
     }
     const at = this.timestamp();
@@ -501,7 +512,7 @@ export class RuleCorrectionService {
       rollsBackVersion: active.version,
       rolledBackBy: administrator.actorId,
     });
-    this.persist();
+    this.persistOrFail();
     return structuredClone(entry);
   }
 
@@ -534,7 +545,7 @@ export class RuleCorrectionService {
         expired.push(structuredClone(revision));
       }
     }
-    if (expired.length > 0) this.persist();
+    if (expired.length > 0) this.persistOrFail();
     return expired;
   }
 
@@ -580,6 +591,42 @@ export class RuleCorrectionService {
   /** One lineage's append-only audit history (deep copies). */
   history(lineage: string): readonly RuleEvent[] {
     return structuredClone(this.events.get(lineage) ?? []);
+  }
+
+  /**
+   * Record one rejected proposal and persist it before the caller returns the
+   * error. Validation failures, disguised exemptions, and duty denials are all
+   * proposal results: the audit record must survive a restart, and a draft too
+   * malformed to attribute is still recorded under the reserved lineage. If the
+   * record cannot be persisted, the operation fails closed.
+   */
+  private recordProposalRejection(raw: unknown, author: SecurityActor, error: unknown): void {
+    const lineage = correctionLineage(raw) ?? UNATTRIBUTED_LINEAGE;
+    const paths =
+      error instanceof SecurityError && Array.isArray(error.details["paths"])
+        ? error.details["paths"].join(",")
+        : "";
+    this.appendEvent(lineage, "rule.proposal_rejected", author, "security_handler", {
+      code: error instanceof SecurityError ? error.code : "RULE_PROPOSAL_INVALID",
+      ...(paths.length > 0 ? { paths } : {}),
+    });
+    this.persistOrFail();
+  }
+
+  /**
+   * Persist the audit/state snapshot, or fail the operation closed: an action
+   * whose durable record cannot be written must never report success.
+   */
+  private persistOrFail(): void {
+    try {
+      this.persist();
+    } catch (error) {
+      throw new SecurityError(
+        "RULE_AUDIT_UNAVAILABLE",
+        "the rule audit record could not be persisted; the operation failed closed",
+        { cause: error instanceof Error ? error.name : "unknown" },
+      );
+    }
   }
 
   /** The trusted samples that prove this detector still catches secrets. */

@@ -586,3 +586,72 @@ describe("query snapshots (DAT-211)", () => {
     expect(service.lineage(LINEAGE)[0]?.status).toBe("activated");
   });
 });
+
+describe("rejection audit durability (DAT-211)", () => {
+  test("a validation rejection survives a restart", () => {
+    const stateFile = stateFilePath();
+    const { service } = buildService({ persistencePath: stateFile });
+    expectRuleCode(
+      () => service.propose(HANDLER, proposal({ caseId: "case_1" })),
+      "RULE_TARGETED_EXEMPTION",
+    );
+    // A fresh instance reads the persisted rejection record.
+    const reopened = buildService({ persistencePath: stateFile }).service;
+    const rejected = reopened
+      .history(LINEAGE)
+      .filter((entry) => entry.type === "rule.proposal_rejected");
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.detail["code"]).toBe("RULE_TARGETED_EXEMPTION");
+    expect(rejected[0]?.detail["paths"]).toContain("caseId");
+  });
+
+  test("a duty-denied proposal is audited and persisted", () => {
+    const stateFile = stateFilePath();
+    const { service } = buildService({ persistencePath: stateFile });
+    // A valid draft from a principal without the security_handler duty.
+    expectRuleCode(() => service.propose(OWNER_ACTOR, proposal()), "SOD_DUTY_REQUIRED");
+    const reopened = buildService({ persistencePath: stateFile }).service;
+    const rejected = reopened
+      .history(LINEAGE)
+      .filter((entry) => entry.type === "rule.proposal_rejected");
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.detail["code"]).toBe("SOD_DUTY_REQUIRED");
+    expect(rejected[0]?.actor).toMatchObject({ principalId: "human_owner" });
+    // No revision was created by the denied attempt.
+    expect(reopened.lineage(LINEAGE)).toHaveLength(0);
+  });
+
+  test("an unattributable rejection is still audited", () => {
+    const stateFile = stateFilePath();
+    const { service } = buildService({ persistencePath: stateFile });
+    expectRuleCode(() => service.propose(HANDLER, {}), "RULE_PROPOSAL_INVALID");
+    const reopened = buildService({ persistencePath: stateFile }).service;
+    const rejected = reopened.history("unattributed");
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.detail["code"]).toBe("RULE_PROPOSAL_INVALID");
+  });
+
+  test("a rejected proposal is persisted before the error is returned", () => {
+    // The audit write fails here (the state path is blocked by a regular
+    // file): the operation must fail closed rather than swallow the record.
+    const blocker = path.join(mkdtempSync(path.join(tmpdir(), "dat211-blocked-")), "blocker");
+    writeFileSync(blocker, "not a directory");
+    const persistencePath = path.join(blocker, "nested", "state.json");
+    const { service } = buildService({ persistencePath });
+    expectRuleCode(
+      () => service.propose(HANDLER, proposal({ caseId: "case_1" })),
+      "RULE_AUDIT_UNAVAILABLE",
+    );
+  });
+
+  test("a proposal whose audit record cannot be written fails closed", () => {
+    const blocker = path.join(mkdtempSync(path.join(tmpdir(), "dat211-blocked-")), "blocker");
+    writeFileSync(blocker, "not a directory");
+    const persistencePath = path.join(blocker, "nested", "state.json");
+    const { service } = buildService({ persistencePath });
+    expectRuleCode(() => service.propose(HANDLER, proposal()), "RULE_AUDIT_UNAVAILABLE");
+    // The tentative commit is rolled back: no half-written revision remains.
+    expect(service.lineage(LINEAGE)).toHaveLength(0);
+    expect(service.activeCorrections()).toEqual([]);
+  });
+});
