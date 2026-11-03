@@ -15,7 +15,12 @@ import type {
 import type { ProviderAdapter } from "./adapter.js";
 import { buildAdapterOptions } from "./adapter.js";
 import type { GatewayCredentialStore } from "./credentials.js";
-import type { LedgerFinishStatus, UsageLedgerSink } from "../ledger/index.js";
+import { UsageLedgerWriteError } from "../ledger/errors.js";
+import type {
+  LedgerFinishStatus,
+  UsageLedgerSink,
+  UsageReportObservation,
+} from "../ledger/index.js";
 import { matchEndpoint, matchFallback } from "./policy.js";
 import type { GatewayPolicyResolver } from "./policy.js";
 import { scrubSecrets } from "./redact.js";
@@ -40,6 +45,7 @@ import {
   ModelDispatchError,
   ModelEgressDeniedError,
   MODEL_EGRESS_DENIED,
+  PROVIDER_USAGE_DIAGNOSTIC,
   SENSITIVE_DATA_UNCERTAIN,
 } from "./types.js";
 import type { GatewayDenyReason } from "./types.js";
@@ -170,6 +176,23 @@ function finishFromEvent(event: AssistantMessageEvent): LedgerFinishStatus {
     return event.reason;
   }
   return "unknown";
+}
+
+/**
+ * The usage evidence for one attempt's ledger record. A transport that sees
+ * the provider's own usage payload attaches it to the terminal message under
+ * {@link PROVIDER_USAGE_DIAGNOSTIC} and it is passed through as `provider_wire`
+ * evidence; otherwise the transport's own usage report is passed through.
+ * Either way the ledger preserves the payload verbatim for reconciliation.
+ */
+function usageReportOf(terminal: AssistantMessage): UsageReportObservation {
+  const wire = (terminal.diagnostics ?? []).find(
+    (diagnostic) => diagnostic.type === PROVIDER_USAGE_DIAGNOSTIC && diagnostic.details,
+  );
+  if (wire?.details) {
+    return { source: "provider_wire", payload: wire.details };
+  }
+  return { source: "transport_reported", payload: terminal.usage };
 }
 
 /**
@@ -479,9 +502,11 @@ export class ModelGateway {
   }): Promise<AttemptResult> {
     const { identity, attempt, endpoint, modelId, policyRevision, credential } = prepared;
     const startedAt = this.timestamp();
+    // Closing an attempt means its audit outcome AND its usage record are
+    // written; record() settles only when both have.
     const record = async (close: AttemptClose): Promise<void> => {
       await this.recordOutcome(identity, attempt, policyRevision, endpoint, modelId, close.outcome);
-      this.recordUsage(prepared, startedAt, close);
+      await this.recordUsage(prepared, startedAt, close);
     };
     try {
       const inner = await this.deps.adapter.stream(
@@ -491,15 +516,30 @@ export class ModelGateway {
       );
       const head = await this.consumeHead(inner, prepared.pinnedModel, record);
       if (head.status === "failed") {
+        // The transport already gave this attempt its verdict: a ledger write
+        // failure must not rewrite its retryability (it surfaces as an
+        // incident), so the failure close is best-effort here.
         await record({
           outcome: { outcome: "failed", detail: scrubSecrets(head.detail, [credential]) },
           finish: head.finish,
           ...(head.terminal ? { terminal: head.terminal } : {}),
-        });
+        }).catch(() => undefined);
         return head;
       }
       return head;
     } catch (error) {
+      if (error instanceof UsageLedgerWriteError) {
+        // The attempt ran and its outcome is audited, but its usage record
+        // could not be persisted: fail closed instead of reporting a success
+        // whose metering is missing — and never re-dispatch over an
+        // accounting failure.
+        return {
+          status: "failed",
+          detail: "usage ledger write failed",
+          retryable: false,
+          finish: "unknown",
+        };
+      }
       const detail = error instanceof Error ? error.message : String(error);
       let retryable = isNetworkFailure(error);
       if (typeof error === "object" && error !== null && "retryable" in error) {
@@ -511,7 +551,7 @@ export class ModelGateway {
       await record({
         outcome: { outcome: "failed", detail: scrubSecrets(detail, [credential]) },
         finish: "transport_failed",
-      });
+      }).catch(() => undefined);
       return {
         status: "failed",
         detail: scrubSecrets(detail, [credential]),
@@ -594,16 +634,22 @@ export class ModelGateway {
     record: (close: AttemptClose) => Promise<void>,
   ): void {
     void (async () => {
+      // Post-handoff the content is already with the caller and cannot be
+      // retracted: a ledger write failure (already raised as an incident by
+      // recordUsage) never corrupts the delivered stream, so the closes here
+      // are best-effort.
+      const close = (attemptClose: AttemptClose): Promise<void> =>
+        record(attemptClose).catch(() => undefined);
       try {
         for (;;) {
           const next = await iterator.next();
           if (next.done) {
-            await record({ outcome: { outcome: "dispatched" }, finish: "unknown" });
+            await close({ outcome: { outcome: "dispatched" }, finish: "unknown" });
             out.end();
             return;
           }
           if (isTerminalEvent(next.value)) {
-            await record({
+            await close({
               outcome: outcomeFromTerminal(next.value),
               finish: finishFromEvent(next.value),
               ...(messageOf(next.value) ? { terminal: messageOf(next.value) } : {}),
@@ -619,7 +665,7 @@ export class ModelGateway {
         // A mid-stream transport failure never produced a provider terminal
         // message: record the attempt without usage instead of trusting the
         // synthetic zero-filled stand-in below.
-        await record({ outcome: { outcome: "failed", detail }, finish: "transport_failed" });
+        await close({ outcome: { outcome: "failed", detail }, finish: "transport_failed" });
         out.push({ type: "error", reason: "error", error: syntheticErrorMessage(model, detail) });
         out.end();
       }
@@ -653,13 +699,17 @@ export class ModelGateway {
   }
 
   /**
-   * Write this attempt's invocation usage record. The ledger is financial
-   * evidence: identity, timing, finish status and whatever usage the provider
-   * reported — with missing usage recorded as unknown, never as zeros. A
-   * ledger write failure raises an incident; it never replays or drops the
-   * attempt's audit outcome.
+   * Write this attempt's invocation usage record and wait for it to settle.
+   * The ledger is financial evidence: identity, timing, finish status and the
+   * usage the provider reported — preserved verbatim for reconciliation, with
+   * missing usage recorded as unknown, never as zeros.
+   *
+   * The write is awaited: a failure raises the operational incident and
+   * rejects with `UsageLedgerWriteError`, so no caller treats an unrecorded
+   * attempt as recorded. It never replays or drops the attempt's audit
+   * outcome, and it is never retried in a way that re-dispatches the model.
    */
-  private recordUsage(
+  private async recordUsage(
     prepared: {
       identity: GatewayRequestIdentity;
       attempt: number;
@@ -668,7 +718,7 @@ export class ModelGateway {
     },
     startedAt: string,
     close: AttemptClose,
-  ): void {
+  ): Promise<void> {
     const sink = this.deps.usageLedger;
     if (!sink) {
       return;
@@ -676,38 +726,34 @@ export class ModelGateway {
     const { identity, attempt, endpoint, modelId } = prepared;
     const terminal = close.terminal;
     try {
-      void Promise.resolve(
-        sink.recordAttempt({
-          identity: {
-            enterprise_id: identity.enterpriseId,
-            workspace_id: identity.workspaceId,
-            issue_id: identity.issueId,
-            run_id: identity.runId,
-            invocation_id: identity.invocationId,
-            trace_id: identity.traceId,
-          },
-          attempt,
-          destination: {
-            endpoint_id: endpoint.endpointId,
-            provider: endpoint.provider,
-            model_id: modelId,
-            internal: endpoint.internal,
-          },
-          api: endpoint.api,
-          started_at: startedAt,
-          ended_at: this.timestamp(),
-          finish_status: close.finish,
-          provider_request_id: terminal?.responseId ?? null,
-          returned_model: terminal?.responseModel ?? null,
-          usage_report: terminal ? { source: "transport_reported", payload: terminal.usage } : null,
-        }),
-      ).catch((error: unknown) => {
-        const incident = error instanceof Error ? error.message : String(error);
-        this.incident(`gateway usage ledger write failed: ${scrubSecrets(incident)}`);
+      await sink.recordAttempt({
+        identity: {
+          enterprise_id: identity.enterpriseId,
+          workspace_id: identity.workspaceId,
+          issue_id: identity.issueId,
+          run_id: identity.runId,
+          invocation_id: identity.invocationId,
+          trace_id: identity.traceId,
+        },
+        attempt,
+        destination: {
+          endpoint_id: endpoint.endpointId,
+          provider: endpoint.provider,
+          model_id: modelId,
+          internal: endpoint.internal,
+        },
+        api: endpoint.api,
+        started_at: startedAt,
+        ended_at: this.timestamp(),
+        finish_status: close.finish,
+        provider_request_id: terminal?.responseId ?? null,
+        returned_model: terminal?.responseModel ?? null,
+        usage_report: terminal ? usageReportOf(terminal) : null,
       });
     } catch (error) {
       const incident = error instanceof Error ? error.message : String(error);
       this.incident(`gateway usage ledger write failed: ${scrubSecrets(incident)}`);
+      throw new UsageLedgerWriteError(`usage ledger write failed: ${scrubSecrets(incident)}`);
     }
   }
 

@@ -65,6 +65,19 @@ function errorBeforeContentStream(terminal: AssistantMessage): AssistantMessageE
   return stream;
 }
 
+/** Content flows and the stream completes normally (post-handoff path). */
+function contentThenDoneStream(terminal: AssistantMessage): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream();
+  const partial = message({ content: [{ type: "text", text: "hello" }] });
+  queueMicrotask(() => {
+    stream.push({ type: "start", partial: { ...partial, content: [] } });
+    stream.push({ type: "text_start", contentIndex: 0, partial });
+    stream.push({ type: "text_delta", contentIndex: 0, delta: "hello", partial });
+    stream.push({ type: "done", reason: "stop", message: terminal });
+  });
+  return stream;
+}
+
 /** Content is flowing, then the provider stream dies mid-flight. */
 function contentThenErrorStream(terminal: AssistantMessage): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
@@ -451,5 +464,165 @@ describe("usage records feed independent completeness queries", () => {
         .query(SCOPE, { completeness: "known" })
         .map((r: InvocationUsageRecord) => r.usage.total_tokens),
     ).toEqual([15]);
+  });
+});
+
+describe("ledger writes are awaited, durable and fail closed", () => {
+  test("the dispatch settles only after the usage record is persisted", async () => {
+    const inner = new UsageLedgerStore();
+    let settled = false;
+    const slowLedger = {
+      recordAttempt(observation: Parameters<UsageLedgerStore["recordAttempt"]>[0]) {
+        // An async sink that persists later than the dispatch would return.
+        return new Promise<void>((resolve) => {
+          setTimeout(() => {
+            inner.recordAttempt(observation);
+            settled = true;
+            resolve();
+          }, 20);
+        });
+      },
+    };
+    const gw = scriptedGateway(TEST_MODEL, () => doneStream(message()), {
+      usageLedger: slowLedger,
+    }).bind(TEST_BINDING);
+    await gw(TEST_MODEL, { messages: [] }, undefined);
+
+    // No waiting games: if the gateway did not await the sink, the record
+    // would still be missing here.
+    expect(settled).toBe(true);
+    expect(inner.query(SCOPE)).toHaveLength(1);
+  });
+
+  test("a ledger write failure fails the dispatch without re-dispatching", async () => {
+    let calls = 0;
+    const failingLedger = {
+      recordAttempt() {
+        throw new Error("ledger disk full");
+      },
+    };
+    const gw = scriptedGateway(
+      TEST_MODEL,
+      () => {
+        calls += 1;
+        return doneStream(message({ usage: usage({ input: 10, output: 5, totalTokens: 15 }) }));
+      },
+      { usageLedger: failingLedger },
+    ).bind(TEST_BINDING);
+
+    // The provider answered, but its usage could not be recorded: the call is
+    // not handed back as a recorded success.
+    await expect(gw(TEST_MODEL, { messages: [] }, undefined)).rejects.toThrow(
+      /usage ledger write failed/,
+    );
+    // An accounting failure is never retried: no second provider dispatch.
+    expect(calls).toBe(1);
+  });
+
+  test("a ledger write failure never rewrites a transport failure's retry verdict", async () => {
+    let calls = 0;
+    const failingLedger = {
+      recordAttempt() {
+        throw new Error("ledger disk full");
+      },
+    };
+    const gw = scriptedGateway(
+      TEST_MODEL,
+      () => {
+        calls += 1;
+        return errorBeforeContentStream(
+          message({ content: [], stopReason: "error", errorMessage: "connection reset" }),
+        );
+      },
+      {
+        policy: testPolicyFor(TEST_MODEL, { retry: { maxAttempts: 2 } }),
+        usageLedger: failingLedger,
+      },
+    ).bind(TEST_BINDING);
+
+    // The transport failure decides retryability; the broken ledger write is
+    // an incident on the side, not a new verdict.
+    await expect(gw(TEST_MODEL, { messages: [] }, undefined)).rejects.toThrow(
+      /model dispatch failed after 2 attempt/,
+    );
+    expect(calls).toBe(2);
+  });
+
+  test("post-handoff, a delivered stream stands when the ledger write fails", async () => {
+    const failingLedger = {
+      recordAttempt() {
+        throw new Error("ledger disk full");
+      },
+    };
+    const gw = scriptedGateway(
+      TEST_MODEL,
+      () =>
+        contentThenDoneStream(message({ usage: usage({ input: 10, output: 5, totalTokens: 15 }) })),
+      { usageLedger: failingLedger },
+    ).bind(TEST_BINDING);
+    const stream = await gw(TEST_MODEL, { messages: [] }, undefined);
+    const events: string[] = [];
+    for await (const event of stream) {
+      events.push(event.type);
+    }
+    // Content already delivered cannot be retracted by an accounting failure.
+    expect(events).toContain("text_delta");
+    expect(events).toContain("done");
+  });
+});
+
+describe("the ledger keeps the actual reported provider usage", () => {
+  test("the transport's usage report is preserved verbatim on the record", async () => {
+    const ledger = new UsageLedgerStore();
+    const reported = {
+      input: 800,
+      output: 200,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 1000,
+      cost: { input: 0.0024, output: 0.003, cacheRead: 0, cacheWrite: 0, total: 0.0054 },
+    };
+    const gw = scriptedGateway(TEST_MODEL, () => doneStream(message({ usage: reported })), {
+      usageLedger: ledger,
+    }).bind(TEST_BINDING);
+    await gw(TEST_MODEL, { messages: [] }, undefined);
+
+    const records = ledger.query(SCOPE);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.raw_usage).toEqual(reported);
+    expect(records[0]?.usage.provenance).toBe("transport_reported");
+  });
+
+  test("a wire-exposing transport's provider usage is recorded as provider_wire", async () => {
+    const ledger = new UsageLedgerStore();
+    const wire = {
+      prompt_tokens: 1000,
+      completion_tokens: 500,
+      total_tokens: 1500,
+      prompt_tokens_details: { cached_tokens: 300 },
+      completion_tokens_details: { reasoning_tokens: 120 },
+    };
+    const gw = scriptedGateway(
+      TEST_MODEL,
+      () =>
+        doneStream(
+          message({
+            diagnostics: [{ type: "provider_usage", timestamp: Date.now(), details: wire }],
+          }),
+        ),
+      { usageLedger: ledger },
+    ).bind(TEST_BINDING);
+    await gw(TEST_MODEL, { messages: [] }, undefined);
+
+    const records = ledger.query(SCOPE);
+    expect(records).toHaveLength(1);
+    // The provider's own usage payload is kept verbatim and mapped with the
+    // provider's native metering semantics.
+    expect(records[0]?.raw_usage).toEqual(wire);
+    expect(records[0]?.usage.provenance).toBe("provider_wire");
+    expect(records[0]?.usage.input).toMatchObject({ tokens: 1000, included_in: null });
+    expect(records[0]?.usage.cache_read).toMatchObject({ tokens: 300, included_in: "input" });
+    expect(records[0]?.usage.reasoning).toMatchObject({ tokens: 120, included_in: "output" });
+    expect(records[0]?.usage.total_tokens).toBe(1500);
   });
 });

@@ -12,13 +12,16 @@
  * - A missing usage figure is `null` with completeness `unknown`. It is never
  *   recorded as zero (zero-filled missing usage is exactly what ADR-0008
  *   rejects).
- * - Figures from an attempt that did not complete are `estimated`: they are
- *   partial, never a reconciled amount.
+ * - Figures from an attempt that did not complete are `estimated`, and its
+ *   completion-dependent figures stay unknown — never a stale partial count,
+ *   never a reconciled amount.
  * - Without provider-native metering semantics (unmapped protocol), records
  *   stay `estimated` — no invented precision, no invented currency.
  * - Included categories (reasoning inside output, cache inside input, ...)
  *   carry their inclusion relation next to the figure, so totals and later
  *   rate computation cannot double-count them.
+ * - The reported usage payload is preserved verbatim (whatever its source) so
+ *   every figure can be checked against what the call actually reported.
  */
 import { LedgerValidationError } from "./errors.js";
 import {
@@ -68,6 +71,12 @@ const COMPLETED_FINISHES: readonly LedgerFinishStatus[] = ["stop", "length", "to
 export type UsageReportSource = "provider_wire" | "transport_reported";
 
 export interface UsageReportObservation {
+  /**
+   * `provider_wire` is the provider's own usage object as the transport
+   * surfaced it; `transport_reported` is the usage report the transport
+   * derives from the provider's metering (the pi-ai SDK normalizes usage and
+   * exposes no wire payload, so pi-ai-backed attempts report from here).
+   */
   source: UsageReportSource;
   /** Provider-native usage payload, or the transport's normalized report. */
   payload: unknown;
@@ -153,7 +162,15 @@ export interface InvocationUsageRecord {
     completeness: UsageCompleteness;
     provenance: UsageProvenance;
   };
-  /** Provider usage fields verbatim when exposed; never request/response content. */
+  /**
+   * The usage payload exactly as reported — the provider's native usage
+   * object when the transport exposes one (`provenance: provider_wire`),
+   * otherwise the transport's usage report as translated by the SDK
+   * (`provenance: transport_reported`; a transport report may carry an
+   * SDK-computed cost estimate, which is evidence of what the transport said,
+   * never a billed amount). Preserved verbatim so usage can be reconciled
+   * against provider records. Never request/response content.
+   */
   raw_usage: Record<string, unknown> | null;
   /** Store-stamped time this record was first written. */
   recorded_at: string;
@@ -215,8 +232,15 @@ function rollupCompleteness(
   return "estimated";
 }
 
-function rawPayload(report: UsageReportObservation | null): Record<string, unknown> | null {
-  if (!report || report.source !== "provider_wire") {
+/**
+ * The usage payload exactly as it was reported, preserved verbatim for
+ * reconciliation — whichever source it came from. A wire payload is the
+ * provider's own usage object; a transport report is the provider's metering
+ * as the SDK translated it. Both are checkable evidence of what the call
+ * reported; neither is ever request/response content.
+ */
+function reportedPayload(report: UsageReportObservation | null): Record<string, unknown> | null {
+  if (!report) {
     return null;
   }
   const payload = report.payload;
@@ -299,7 +323,7 @@ export function buildInvocationUsageRecord(
       completeness: rollupCompleteness(usage, completed, adapter.providerNative),
       provenance,
     },
-    raw_usage: rawPayload(report),
+    raw_usage: reportedPayload(report),
     recorded_at: defaultRecordedAt,
   });
 }

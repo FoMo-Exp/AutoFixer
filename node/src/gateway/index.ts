@@ -53,6 +53,7 @@ export type {
 export {
   DATA_CLASSES,
   MODEL_EGRESS_DENIED,
+  PROVIDER_USAGE_DIAGNOSTIC,
   ModelDispatchError,
   ModelEgressDeniedError,
   SENSITIVE_DATA_UNCERTAIN,

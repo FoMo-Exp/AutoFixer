@@ -12,6 +12,7 @@ export {
   LedgerConflictError,
   LedgerValidationError,
   UsageLedgerStore,
+  UsageLedgerWriteError,
   createUsageLedgerStore,
 } from "./store.js";
 export type {

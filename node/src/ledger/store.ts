@@ -9,19 +9,20 @@
  * silence (financial access is scoped like the trace store, and — per
  * ADR-0008 — never implies prompt-content access).
  *
+ * Durability contract: `recordAttempt` appends the record to the durable
+ * ledger before it returns, so its return is the confirmation that the record
+ * is persisted and its throw is the confirmation that nothing was. There is
+ * no deferred buffer and no shutdown flush to forget — an attempt is either
+ * durably recorded or its write failed loudly.
+ *
  * `completeness` is a first-class query field: known/estimated/unknown usage
  * is distinguishable without inspecting token figures.
  */
-import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
 import { LedgerAccessError, LedgerConflictError, LedgerValidationError } from "./errors.js";
-import {
-  USAGE_RECORD_SCHEMA_VERSION,
-  buildInvocationUsageRecord,
-  migrateInvocationUsageRecord,
-} from "./record.js";
+import { buildInvocationUsageRecord, migrateInvocationUsageRecord } from "./record.js";
 import type {
   InvocationAttemptObservation,
   InvocationUsageRecord,
@@ -30,7 +31,12 @@ import type {
   UsageProvenance,
 } from "./record.js";
 
-export { LedgerAccessError, LedgerConflictError, LedgerValidationError } from "./errors.js";
+export {
+  LedgerAccessError,
+  LedgerConflictError,
+  LedgerValidationError,
+  UsageLedgerWriteError,
+} from "./errors.js";
 
 /** Authenticated caller context; reads are confined to this enterprise/workspace. */
 export interface LedgerAccessScope {
@@ -68,6 +74,11 @@ export interface UsageLedgerFilter {
  * The gateway's metering seam: one observation per actual invocation attempt
  * (success, failure, retry, or fallback). Implementations build and store the
  * immutable ledger record.
+ *
+ * Durability contract: the call settles only once the record is durably
+ * persisted. A throw or rejection means the attempt is NOT recorded — callers
+ * must never treat it as recorded, and must not retry the write in a way that
+ * re-dispatches the model.
  */
 export interface UsageLedgerSink {
   recordAttempt(observation: InvocationAttemptObservation): void | Promise<void>;
@@ -84,11 +95,6 @@ interface StoredEntry {
   record: InvocationUsageRecord;
   /** Writer-owned content; excludes the store-stamped recorded_at. */
   fingerprint: string;
-}
-
-interface PersistedState {
-  schema_version: number;
-  records: InvocationUsageRecord[];
 }
 
 function identityKey(invocationId: string, attempt: number): string {
@@ -151,8 +157,6 @@ export class UsageLedgerStore implements UsageLedgerSink {
   private readonly entries = new Map<string, StoredEntry>();
   private readonly persistencePath: string | undefined;
   private readonly now: () => Date;
-  private persistTimer: NodeJS.Timeout | null = null;
-  private dirty = false;
 
   constructor(options: UsageLedgerStoreOptions = {}) {
     this.persistencePath = options.persistencePath;
@@ -164,6 +168,10 @@ export class UsageLedgerStore implements UsageLedgerSink {
    * Record one observed invocation attempt. A redelivery of identical content
    * is deduplicated; a redelivery with different content is refused so the
    * financial evidence of an attempt can never be rewritten.
+   *
+   * The record is appended to the durable ledger before this returns. A
+   * persistence failure throws without keeping an in-memory copy: the attempt
+   * is not recorded, loudly.
    */
   recordAttempt(observation: InvocationAttemptObservation): void {
     const record = buildInvocationUsageRecord(observation, this.now().toISOString());
@@ -179,8 +187,11 @@ export class UsageLedgerStore implements UsageLedgerSink {
       }
       return;
     }
+    if (this.persistencePath) {
+      // Durable first: if this throws, the attempt is not recorded anywhere.
+      this.appendDurable(record);
+    }
     this.entries.set(key, { record, fingerprint });
-    this.schedulePersist();
   }
 
   /** Arrival-ordered records visible to the scope, as defensive copies. */
@@ -198,24 +209,13 @@ export class UsageLedgerStore implements UsageLedgerSink {
     return out;
   }
 
-  /** Write the durable ledger now if it is dirty; idempotent. */
-  flushSync(): void {
-    if (this.persistTimer !== null) {
-      clearTimeout(this.persistTimer);
-      this.persistTimer = null;
-    }
-    if (!this.persistencePath || !this.dirty) {
+  /** One durable append per record; the only write path, and it is synchronous. */
+  private appendDurable(record: InvocationUsageRecord): void {
+    if (!this.persistencePath) {
       return;
     }
-    const state: PersistedState = {
-      schema_version: USAGE_RECORD_SCHEMA_VERSION,
-      records: [...this.entries.values()].map((entry) => structuredClone(entry.record)),
-    };
     fs.mkdirSync(path.dirname(this.persistencePath), { recursive: true, mode: 0o700 });
-    const temporary = `${this.persistencePath}.${process.pid}.${randomUUID()}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify(state), { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(temporary, this.persistencePath);
-    this.dirty = false;
+    fs.appendFileSync(this.persistencePath, `${JSON.stringify(record)}\n`, { mode: 0o600 });
   }
 
   private assertAuthenticated(scope: LedgerAccessScope): void {
@@ -266,13 +266,37 @@ export class UsageLedgerStore implements UsageLedgerSink {
     );
   }
 
+  /**
+   * Load the durable ledger: one record per line (JSONL). A line that will
+   * not parse or validate is corruption and fails startup — history is never
+   * quietly dropped. The one tolerated artifact is a torn FINAL line: the
+   * debris of an interrupted append whose write already failed loudly at
+   * `recordAttempt`, so no record was ever confirmed and none is lost here.
+   */
   private load(): void {
     if (!this.persistencePath || !fs.existsSync(this.persistencePath)) {
       return;
     }
-    const raw = JSON.parse(fs.readFileSync(this.persistencePath, "utf8")) as unknown;
-    for (const serialized of migratePersistedState(raw).records) {
-      const record = migrateInvocationUsageRecord(serialized);
+    const lines = fs.readFileSync(this.persistencePath, "utf8").split("\n");
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (line === undefined || line === "") {
+        continue;
+      }
+      let record: InvocationUsageRecord;
+      try {
+        record = migrateInvocationUsageRecord(JSON.parse(line));
+      } catch (error) {
+        const tornTail = lines.slice(index + 1).every((rest) => rest === "");
+        if (tornTail) {
+          const detail = error instanceof Error ? error.message : String(error);
+          console.error(`usage ledger: ignoring torn final record: ${detail}`);
+          continue;
+        }
+        throw new Error(
+          `usage ledger record on line ${index + 1} is corrupt; refusing to drop history`,
+        );
+      }
       const key = identityKey(record.invocation_id, record.attempt);
       const fingerprint = fingerprintOf(record);
       const existing = this.entries.get(key);
@@ -288,46 +312,6 @@ export class UsageLedgerStore implements UsageLedgerSink {
       this.entries.set(key, { record, fingerprint });
     }
   }
-
-  /** Coalesce mutations into one write per tick; attempt storms stay cheap. */
-  private schedulePersist(): void {
-    if (!this.persistencePath) {
-      return;
-    }
-    this.dirty = true;
-    if (this.persistTimer !== null) {
-      return;
-    }
-    this.persistTimer = setTimeout(() => {
-      this.persistTimer = null;
-      this.flushSync();
-    }, 25);
-    this.persistTimer.unref?.();
-  }
-}
-
-/** Corrupt state fails startup; it is never quietly read as an empty ledger. */
-function migratePersistedState(raw: unknown): PersistedState {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error("usage ledger store is not a JSON object");
-  }
-  const value = raw as Record<string, unknown>;
-  const version = typeof value["schema_version"] === "number" ? value["schema_version"] : 0;
-  if (version > USAGE_RECORD_SCHEMA_VERSION) {
-    throw new Error(
-      `usage ledger store schema ${version} is newer than ${USAGE_RECORD_SCHEMA_VERSION}`,
-    );
-  }
-  const records = value["records"];
-  if (!Array.isArray(records)) {
-    throw new Error(
-      "usage ledger store records are corrupt (missing or not an array); refusing to drop history",
-    );
-  }
-  return {
-    schema_version: USAGE_RECORD_SCHEMA_VERSION,
-    records: records as InvocationUsageRecord[],
-  };
 }
 
 /** Convenience constructor mirroring the other store modules. */

@@ -1,8 +1,8 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   LedgerAccessError,
@@ -193,6 +193,16 @@ describe("building one record per invocation attempt", () => {
     expect(record.usage.total_tokens).toBe(1500);
   });
 
+  test("a transport report is preserved verbatim, not just wire payloads", () => {
+    const report = { input: 800, output: 200, cacheRead: 0, cacheWrite: 0, totalTokens: 1000 };
+    const record = buildInvocationUsageRecord(
+      observation({ usage_report: { source: "transport_reported", payload: report } }),
+      "2026-11-03T00:00:03.000Z",
+    );
+    expect(record.raw_usage).toEqual(report);
+    expect(record.usage.provenance).toBe("transport_reported");
+  });
+
   test("an unmapped protocol never claims provider-native reconciliation", () => {
     const record = buildInvocationUsageRecord(
       observation({ api: "some-future-protocol" }),
@@ -331,20 +341,62 @@ describe("the ledger store records attempts and answers completeness queries", (
 });
 
 describe("durable ledger persistence", () => {
-  test("records survive a restart and corrupt state fails loudly", () => {
-    const file = path.join(tempDir(), "usage-ledger.json");
+  test("a record is durable the moment recordAttempt returns — no flush needed", () => {
+    const file = path.join(tempDir(), "usage-ledger.jsonl");
     const store = new UsageLedgerStore({ persistencePath: file, now: fixedNow() });
     store.recordAttempt(observation());
-    store.flushSync();
 
+    // A second store over the same file — as after a crash or restart — sees
+    // the record without any explicit flush or shutdown step.
     const reloaded = new UsageLedgerStore({ persistencePath: file });
     const records = reloaded.query(scopeA);
     expect(records).toHaveLength(1);
     expect(records[0]?.usage.total_tokens).toBe(1000);
+  });
 
-    writeFileSync(file, JSON.stringify({ schema_version: 1, records: "corrupt" }), "utf8");
-    expect(() => new UsageLedgerStore({ persistencePath: file })).toThrow(
+  test("a persistence failure fails the record and keeps nothing", () => {
+    const dir = tempDir();
+    const blocker = path.join(dir, "not-a-directory");
+    writeFileSync(blocker, "occupied", "utf8");
+    // The parent path is a regular file: neither the directory nor the append
+    // can be created, so the write must fail loudly.
+    const store = new UsageLedgerStore({
+      persistencePath: path.join(blocker, "usage-ledger.jsonl"),
+      now: fixedNow(),
+    });
+    expect(() => store.recordAttempt(observation())).toThrow();
+    // The failed attempt is recorded nowhere — not in memory either.
+    expect(store.query(scopeA)).toHaveLength(0);
+  });
+
+  test("corruption mid-file refuses startup; a torn final append is tolerated", () => {
+    const dir = tempDir();
+    const file = path.join(dir, "usage-ledger.jsonl");
+    const store = new UsageLedgerStore({ persistencePath: file, now: fixedNow() });
+    store.recordAttempt(observation({ invocation_id: "inv-1" }));
+    store.recordAttempt(observation({ invocation_id: "inv-2" }));
+    const lines = readFileSync(file, "utf8")
+      .split("\n")
+      .filter((line) => line !== "");
+
+    // Garbage between intact records is corruption: history is never dropped
+    // silently.
+    const midFile = path.join(dir, "mid.jsonl");
+    writeFileSync(midFile, [lines[0], "not json", lines[1]].join("\n"), "utf8");
+    expect(() => new UsageLedgerStore({ persistencePath: midFile })).toThrow(
       /refusing to drop history/,
     );
+
+    // A torn FINAL line is the debris of an interrupted append whose write
+    // already failed loudly at recordAttempt; the intact prefix loads.
+    const tornTail = path.join(dir, "torn.jsonl");
+    writeFileSync(tornTail, [lines[0], '{"schema_version":1,"entr'].join("\n"), "utf8");
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const recovered = new UsageLedgerStore({ persistencePath: tornTail });
+      expect(recovered.query(scopeA).map((r) => r.invocation_id)).toEqual(["inv-1"]);
+    } finally {
+      quiet.mockRestore();
+    }
   });
 });
