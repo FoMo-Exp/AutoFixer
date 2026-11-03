@@ -57,6 +57,12 @@ export interface ReconcileSummary {
   members_added: number;
   members_removed: number;
   roles_changed: number;
+  /**
+   * Rows dropped because their provenance key disappeared from a complete
+   * roster. Reported here only: the persisted run record tracks provider
+   * changes, not this derived cleanup.
+   */
+  roles_pruned: number;
   authority_reset: number;
   revocations: readonly RevocationEffects[];
   failure_code?: string;
@@ -132,6 +138,7 @@ export async function reconcileIntegration(
     members_added?: number;
     members_removed?: number;
     roles_changed?: number;
+    roles_pruned?: number;
     authority_reset?: number;
     failure_code?: string;
     revocations: readonly RevocationEffects[];
@@ -156,6 +163,7 @@ export async function reconcileIntegration(
       members_added: fields.members_added ?? 0,
       members_removed: fields.members_removed ?? 0,
       roles_changed: fields.roles_changed ?? 0,
+      roles_pruned: fields.roles_pruned ?? 0,
       authority_reset: fields.authority_reset ?? 0,
       revocations: fields.revocations,
       ...(fields.failure_code ? { failure_code: fields.failure_code } : {}),
@@ -242,7 +250,23 @@ export async function reconcileIntegration(
     subject_users: subjectUsers,
   });
 
-  // 2. Revoke everyone recorded locally but absent from the complete roster.
+  // 2. Drop rows whose provenance key is gone from this complete roster.
+  // Rows are upserted per (subject, source_kind, authority_ref), so a subject
+  // whose source changed (e.g. `direct_collaborator` -> `effective_access`)
+  // would otherwise keep displaying the old provenance forever. This belongs
+  // here and not in `applySnapshot`: subject refresh also applies snapshots,
+  // and pruning there would wipe the rest of the roster.
+  const rolesPruned = access.roster.pruneRoles(
+    scope,
+    integration.id,
+    normalized.map((entry) => ({
+      subject: entry.subject,
+      source_kind: entry.source_kind,
+      authority_ref: entry.authority_ref,
+    })),
+  );
+
+  // 3. Revoke everyone recorded locally but absent from the complete roster.
   const present = new Set(normalized.map((entry) => entry.subject));
   const revocations: RevocationEffects[] = [];
   let membersRemoved = 0;
@@ -274,6 +298,7 @@ export async function reconcileIntegration(
     members_added: snapshot.added,
     members_removed: membersRemoved,
     roles_changed: snapshot.changed,
+    roles_pruned: rolesPruned,
     revocations,
   });
 }

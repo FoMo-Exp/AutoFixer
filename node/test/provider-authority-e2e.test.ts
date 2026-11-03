@@ -47,6 +47,7 @@ const COLLABORATORS_URL = "/repos/Luthiel/AutoFixer/collaborators?per_page=100&p
 const OWNERS_URL = "/orgs/Luthiel/members?role=admin&per_page=100&page=1";
 
 const ORG_REPO = { id: 9001, owner: { id: 7, login: "Luthiel", type: "Organization" } };
+const PERSONAL_REPO = { id: 9002, owner: { id: 8, login: "Luthiel", type: "User" } };
 
 const credentials = createStaticServiceCredentialStore({ [CREDENTIAL_REF]: SECRET });
 
@@ -570,6 +571,107 @@ describe("per-subject refresh before a sensitive action", () => {
     expect(
       fixture.access.roster.getAuthority(fixture.scope, fixture.integration.id, "9999"),
     ).toBeUndefined();
+  });
+});
+
+describe("provenance cleanup after a complete roster", () => {
+  test("a provenance change drops the stale source row instead of keeping both", async () => {
+    const fixture = setupFixture();
+    await seedMember(fixture);
+
+    // A personal-account repository: the provider proves a direct grant.
+    provider = await startFakeProvider(
+      exactRoutes({
+        [REPO_URL]: { status: 200, body: PERSONAL_REPO },
+        [COLLABORATORS_URL]: { status: 200, body: [member("push")] },
+      }),
+    );
+    await reconcileIntegration(
+      reconcileDeps(fixture),
+      fixture.scope,
+      fixture.integration,
+      realAdapter(fixture, provider.base_url),
+    );
+    expect(
+      fixture.access.roster
+        .listRoles(fixture.scope, fixture.integration.id)
+        .map((row) => row.source_kind),
+    ).toEqual(["direct_collaborator"]);
+
+    // The same repository is now owned by an organization: the collaborator
+    // list becomes an aggregate and the row's provenance changes.
+    await provider.close();
+    provider = await startFakeProvider(
+      exactRoutes({
+        [REPO_URL]: { status: 200, body: ORG_REPO },
+        [COLLABORATORS_URL]: { status: 200, body: [member("push")] },
+        [OWNERS_URL]: { status: 200, body: [] },
+      }),
+    );
+    const summary = await reconcileIntegration(
+      reconcileDeps(fixture),
+      fixture.scope,
+      fixture.integration,
+      realAdapter(fixture, provider.base_url),
+    );
+    expect(summary.roles_pruned).toBe(1);
+
+    const roles = fixture.access.roster.listRoles(fixture.scope, fixture.integration.id);
+    expect(roles.map((row) => row.source_kind)).toEqual(["effective_access"]);
+    // Authority is untouched by provenance cleanup.
+    expect(authorityState(fixture)).toBe("active");
+    expect(redemptionEligibility(fixture, SUBJECT)).toEqual({ status: 200, reason: "ok" });
+  });
+
+  test("a subject refresh never prunes the rest of the roster", async () => {
+    const fixture = setupFixture();
+    await seedMember(fixture);
+    addMember(fixture, { subject: "4243", login: "second", role: "member" });
+    provider = await startFakeProvider(
+      exactRoutes({
+        [REPO_URL]: { status: 200, body: ORG_REPO },
+        [COLLABORATORS_URL]: {
+          status: 200,
+          body: [member("push"), { id: 4243, login: "second", role_name: "pull" }],
+        },
+        [OWNERS_URL]: { status: 200, body: [] },
+      }),
+    );
+    await reconcileIntegration(
+      reconcileDeps(fixture),
+      fixture.scope,
+      fixture.integration,
+      realAdapter(fixture, provider.base_url),
+    );
+    expect(fixture.access.roster.listRoles(fixture.scope, fixture.integration.id)).toHaveLength(2);
+
+    await provider.close();
+    provider = await startFakeProvider(
+      exactRoutes({
+        [REPO_URL]: { status: 200, body: ORG_REPO },
+        "/repos/Luthiel/AutoFixer/collaborators/octocat/permission": {
+          status: 200,
+          body: { permission: "write", role_name: "write", user: { id: Number(SUBJECT) } },
+        },
+      }),
+    );
+    await refreshSubjectAuthority(
+      {
+        access: fixture.access,
+        identities: fixture.identity.identities,
+        epoch: fixture.epoch,
+        clock: () => fixture.clock.now,
+      },
+      fixture.scope,
+      fixture.integration,
+      realAdapter(fixture, provider.base_url),
+      SUBJECT,
+    );
+
+    // Pruning must stay out of applySnapshot: a refresh of one subject would
+    // otherwise wipe every other row in the roster.
+    const roles = fixture.access.roster.listRoles(fixture.scope, fixture.integration.id);
+    expect(roles.map((row) => row.subject).sort()).toEqual(["4242", "4243"]);
   });
 });
 

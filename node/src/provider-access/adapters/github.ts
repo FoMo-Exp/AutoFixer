@@ -56,6 +56,7 @@ import {
   type ProviderAdapter,
   type ProviderAdapterCapabilities,
   type ProviderCallContext,
+  type ProviderRoleSourceKind,
   type RawProviderRole,
   type RepositoryRef,
   type RosterPage,
@@ -232,6 +233,24 @@ function subjectOf(
   return { subject, login };
 }
 
+/**
+ * Provenance of a row read from the collaborator endpoints.
+ *
+ * For an **organization** repository the collaborator list mixes direct
+ * collaborators, team-inherited members, organization default-permission
+ * members, and organization owners, and GitHub documents that the response
+ * cannot distinguish an organization-level grant from a repository-level one.
+ * Recording those rows as `direct_collaborator` would persist provenance the
+ * provider never proved, so they are `effective_access`.
+ *
+ * A **personal-account** repository has no teams and no organization default
+ * permissions, so the same endpoints do prove a direct grant there, and the
+ * row keeps `direct_collaborator`.
+ */
+function collaboratorKind(repository: GitHubRepository): ProviderRoleSourceKind {
+  return repository.owner_type === "organization" ? "effective_access" : "direct_collaborator";
+}
+
 const USER_AGENT = "AutoFixer-ProviderIntegration/1";
 
 /** Guard against a provider that only ever answers with empty pages. */
@@ -387,7 +406,7 @@ export function createGitHubAdapter(options: GitHubAdapterOptions): ProviderAdap
             return {
               subject,
               login,
-              kind: "direct_collaborator",
+              kind: collaboratorKind(repository),
               provider_role: collaboratorRole(record, "collaborator"),
               authority_ref: `repository:${coords.path}`,
               inherited_from: null,
@@ -462,7 +481,7 @@ export function createGitHubAdapter(options: GitHubAdapterOptions): ProviderAdap
       _repository: RepositoryRef,
       subject: string,
     ): Promise<RawProviderRole | null> {
-      await ensureRepositoryVisible(ctx);
+      const repository = await ensureRepositoryVisible(ctx);
       const login = options.resolve_login?.(subject);
       if (login === undefined || login === "") {
         // Without the subject → login binding the adapter cannot ask the
@@ -496,7 +515,7 @@ export function createGitHubAdapter(options: GitHubAdapterOptions): ProviderAdap
       return {
         subject,
         login,
-        kind: "direct_collaborator",
+        kind: collaboratorKind(repository),
         provider_role: collaboratorRole(record, "collaborator"),
         authority_ref: `repository:${coords.path}`,
         inherited_from: null,

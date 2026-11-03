@@ -112,7 +112,10 @@ describe("github adapter paths and credentials", () => {
       {
         subject: "4242",
         login: "octocat",
-        kind: "direct_collaborator",
+        // Organization repositories: the collaborator list cannot
+        // differentiate an organization-level from a repository-level grant,
+        // so the row claims effective access only.
+        kind: "effective_access",
         provider_role: "admin",
         authority_ref: "repository:Luthiel/AutoFixer",
         inherited_from: null,
@@ -177,7 +180,37 @@ describe("github adapter paths and credentials", () => {
     // repository; /orgs/{owner}/members does not exist there, so hitting it
     // would turn every reconciliation into an outage.
     expect(provider.urls()).toEqual([REPO_URL, COLLABORATORS_URL]);
+    // No teams, no organization default permissions: the provider does prove
+    // a direct grant here.
     expect(roster.entries.map((entry) => entry.kind)).toEqual(["direct_collaborator"]);
+    expect(roster.entries.map((entry) => entry.authority_ref)).toEqual([
+      "repository:Luthiel/AutoFixer",
+    ]);
+  });
+
+  test("a personal-account repository's per-subject refresh is a direct grant", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        [REPO_URL]: { status: 200, body: PERSONAL_REPO },
+        "/repos/Luthiel/AutoFixer/collaborators/octocat/permission": {
+          status: 200,
+          body: { permission: "write", role_name: "write", user: { id: 4242, login: "octocat" } },
+        },
+      }),
+    );
+
+    const role = await fetchEffectivePermission(
+      adapterFor(provider.base_url),
+      ctx,
+      repository,
+      "4242",
+    );
+    expect(role?.kind).toBe("direct_collaborator");
+    expect(role?.authority_ref).toBe("repository:Luthiel/AutoFixer");
+    expect(provider.urls()).toEqual([
+      REPO_URL,
+      "/repos/Luthiel/AutoFixer/collaborators/octocat/permission",
+    ]);
   });
 
   test("a GitHub Enterprise origin addresses /api/v3, public GitHub addresses api.github.com", () => {
@@ -398,7 +431,7 @@ describe("github effective permission", () => {
     expect(role).toEqual({
       subject: "4242",
       login: "octocat",
-      kind: "direct_collaborator",
+      kind: "effective_access",
       provider_role: "admin",
       authority_ref: "repository:Luthiel/AutoFixer",
       inherited_from: null,
