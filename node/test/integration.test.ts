@@ -372,6 +372,57 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     expect(run.execution_counts.actions_denied).toBe(1);
   });
 
+  test("an identical denied intent is never re-dispatched: the retry entry bounds dispatches", async () => {
+    const { base } = await startApp([
+      {
+        kind: "tool",
+        toolId: "sh",
+        args: { script: "pwned" },
+        pathScope: ["node/x.txt"],
+        rationale: "try an unregistered tool",
+      },
+      {
+        // The model re-issues the identical intent. A denied request is final
+        // for that intent: the controlled retry entry refuses the duplicate
+        // before it ever reaches dsh (DAT-226).
+        kind: "tool",
+        toolId: "sh",
+        args: { script: "pwned" },
+        pathScope: ["node/x.txt"],
+        rationale: "try an unregistered tool",
+      },
+      { kind: "text", text: "I cannot run shells." },
+    ]);
+    const created = await createAndApprove(base);
+    const runId = requireRunId(created);
+
+    await waitUntil(async () => {
+      const denied = (await timeline(base, created.id)).filter(
+        (event) => event.type === "tool.denied",
+      );
+      return denied.length >= 2;
+    }, "both attempts denied");
+    const denied = (await timeline(base, created.id)).filter(
+      (event) => event.type === "tool.denied",
+    );
+    expect(denied).toHaveLength(2);
+    // Both refusals keep the origin code for correlation, but only one
+    // dispatch ever reached dsh: the identical re-issue was blocked at the
+    // Node-side retry entry, so the dispatch total matches the service's
+    // decision instead of the model's persistence.
+    expect(denied.map((event) => event.data["error_code"])).toEqual([
+      "TOOL_NOT_REGISTERED",
+      "TOOL_NOT_REGISTERED",
+    ]);
+    const blockedEnvelope = denied[1]?.data["error_envelope"] as
+      { code: string; retryable: boolean; next_action: string } | undefined;
+    expect(blockedEnvelope?.code).toBe("TOOL_SCOPE_DENIED");
+    expect(blockedEnvelope?.retryable).toBe(false);
+    expect(blockedEnvelope?.next_action).toBe("request_review");
+    const run = await dsh.client.getRun(runId);
+    expect(run.execution_counts.actions_denied).toBe(1);
+  });
+
   test("cancel aborts the Pi run and projects dsh's cancelled state", async () => {
     const { base } = await startApp([
       {
