@@ -21,6 +21,10 @@ type ExecutionOutcome struct {
 	// by wall-clock timeout or cancellation. Empty defaults to
 	// AllowWithinGrant.
 	Code string
+	// ActualArguments is the command line that actually ran (for example a
+	// test profile's built argv), recorded redacted on the completion
+	// event's actual_tool. Nil records the request's evidence arguments.
+	ActualArguments []string
 }
 
 // RecordExecutionOutcome appends the completion evidence for an execution
@@ -40,11 +44,15 @@ func (r *Run) RecordExecutionOutcome(req ActionRequest, out ExecutionOutcome) er
 	ev := r.baseEvent(EventTypeToolInvocation, r.State, r.State)
 	ev.RequestedTool = &ToolRecord{
 		Identity:  req.Tool,
-		Arguments: append([]string{}, req.Arguments...),
+		Arguments: req.evidenceArgs(),
+	}
+	actualArgs := req.evidenceArgs()
+	if out.ActualArguments != nil {
+		actualArgs = append([]string{}, out.ActualArguments...)
 	}
 	ev.ActualTool = &ToolRecord{
 		Identity:  req.Tool,
-		Arguments: append([]string{}, req.Arguments...),
+		Arguments: actualArgs,
 	}
 	if out.ExitStatus != nil {
 		status := *out.ExitStatus

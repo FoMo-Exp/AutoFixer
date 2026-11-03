@@ -28,7 +28,7 @@ func testGrant() *CapabilityGrant {
 }
 
 func runningContext(now time.Time) ActionContext {
-	return ActionContext{State: StateRunning, Grant: testGrant(), Now: now}
+	return ActionContext{State: StateRunning, Grant: testGrant(), Now: now, RiskClass: RiskLow}
 }
 
 func withinGrantRequest() ActionRequest {
@@ -220,5 +220,70 @@ func TestEvaluateActionEnforcesPatchAndPRScopeFlags(t *testing.T) {
 	d = EvaluateAction(ctx, req)
 	if !d.Allowed {
 		t.Errorf("intents within granted scope: decision = %+v, want allow", d)
+	}
+}
+
+func TestEvaluateActionEnforcesEditPathClassAgainstRisk(t *testing.T) {
+	now := time.Date(2026, 10, 21, 9, 30, 0, 0, time.UTC)
+
+	// An edit request inside the grant's permitted paths still keeps the
+	// path's FP-01 class: a low-risk run may not change dependency or
+	// migration content, and workflow content is never editable, so a
+	// registered edit tool cannot implicitly widen either boundary.
+	ctx := runningContext(now)
+	ctx.Grant.MayCreatePatch = true
+
+	editOn := func(path string) ActionRequest {
+		req := withinGrantRequest()
+		req.WantsPatch = true
+		req.Paths = []string{path}
+		return req
+	}
+
+	d := EvaluateAction(ctx, editOn("harness/state.go"))
+	if !d.Allowed {
+		t.Errorf("low-risk edit of source path: decision = %+v, want allow", d)
+	}
+
+	d = EvaluateAction(ctx, editOn("harness/go.mod"))
+	if d.Allowed || d.Code != DenyPathClassRequiresElevated || d.StopCode != StopCodeOutOfGrant {
+		t.Errorf("low-risk edit of dependency path: decision = %+v, want deny %q + stop %q", d, DenyPathClassRequiresElevated, StopCodeOutOfGrant)
+	}
+
+	d = EvaluateAction(ctx, editOn("harness/migrations/0001.sql"))
+	if d.Allowed || d.Code != DenyPathClassRequiresElevated {
+		t.Errorf("low-risk edit of migration path: decision = %+v, want deny %q", d, DenyPathClassRequiresElevated)
+	}
+
+	elevated := ctx
+	elevated.RiskClass = RiskElevated
+	d = EvaluateAction(elevated, editOn("harness/go.mod"))
+	if !d.Allowed {
+		t.Errorf("elevated edit of dependency path: decision = %+v, want allow", d)
+	}
+	d = EvaluateAction(elevated, editOn("harness/migrations/0001.sql"))
+	if !d.Allowed {
+		t.Errorf("elevated edit of migration path: decision = %+v, want allow", d)
+	}
+
+	d = EvaluateAction(elevated, editOn("harness/.github/workflows/ci.yml"))
+	if d.Allowed || d.Code != DenyPathClassForbidden || d.StopCode != StopCodeOutOfGrant {
+		t.Errorf("elevated edit of workflow path: decision = %+v, want deny %q + stop %q", d, DenyPathClassForbidden, StopCodeOutOfGrant)
+	}
+
+	// An unknown assessment class fails closed rather than admitting an edit.
+	unknown := ctx
+	unknown.RiskClass = ""
+	d = EvaluateAction(unknown, editOn("harness/state.go"))
+	if d.Allowed || d.Code != DenyPathClassForbidden {
+		t.Errorf("edit under unknown risk class: decision = %+v, want deny %q", d, DenyPathClassForbidden)
+	}
+
+	// Non-edit dispatches are not gated by edit classes: reading under a
+	// low-risk run stays allowed even for dependency content.
+	readReq := withinGrantRequest()
+	readReq.Paths = []string{"harness/go.mod"}
+	if d := EvaluateAction(ctx, readReq); !d.Allowed {
+		t.Errorf("low-risk read of dependency path: decision = %+v, want allow", d)
 	}
 }
