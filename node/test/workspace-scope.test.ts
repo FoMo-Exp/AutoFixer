@@ -99,6 +99,7 @@ function seedTaskInWorkspace(authApp: AuthApp, workspaceId: string, id: string):
   const record = createTaskRecord({
     id,
     workspaceId,
+    enterpriseId: authApp.enterpriseId,
     repository: {
       id: "github:Luthiel/Beta",
       display_name: "Luthiel/Beta",

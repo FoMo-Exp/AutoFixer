@@ -129,6 +129,7 @@ describe("terminal statuses are absorbing (QA round-1 blocker)", () => {
     return createTaskRecord({
       id: "tsk_absorbing",
       workspaceId: "wsp_test",
+      enterpriseId: "ent_test",
       repository: {
         id: "github:Luthiel/AutoFixer",
         display_name: "Luthiel/AutoFixer",

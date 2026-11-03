@@ -211,6 +211,7 @@ function seedHistoricalState(stateFile: string): Record<string, string> {
     const record = createTaskRecord({
       id: taskId,
       workspaceId: "ws_test",
+      enterpriseId: "ent_test",
       repository: {
         id: REPOSITORY_ID,
         display_name: REPOSITORY_ID.replace(/^github:/, ""),

@@ -1482,14 +1482,82 @@ export function buildOpenApiDocument(): OpenApiDocument {
     // oracle.
 
     "/api/v1/workspaces/{workspace_id}/tasks": {
+      post: {
+        operationId: "createWorkspaceTask",
+        summary: "Create a task in one workspace",
+        description:
+          "Creates the task and its dsh run inside the path workspace. The " +
+          "workspace's own binding supplies the repository, base revision, " +
+          "and model-gateway enterprise/workspace identity; the deployment's " +
+          "configured repository is never a fallback. `repository_id` must " +
+          "equal the workspace's repository binding (`400 " +
+          "REPOSITORY_NOT_IN_WORKSPACE`) and `base_ref` must equal that " +
+          "binding's pinned base revision (`400 BASE_REF_NOT_SUPPORTED`). " +
+          "Unknown/archived workspaces and non-members are one " +
+          "`404 NOT_FOUND`; viewers are `403 FORBIDDEN`. A workspace whose " +
+          "repository has no pinned base revision in this deployment is " +
+          "`409 REPOSITORY_BINDING_UNAVAILABLE`, and a provider instance " +
+          "that is no longer registered is `409 " +
+          "PROVIDER_INSTANCE_NOT_APPROVED`; both refuse before any dsh " +
+          "dispatch. Each workspace has its own idempotency-key namespace.",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          {
+            name: "Idempotency-Key",
+            in: "header",
+            required: false,
+            schema: { type: "string", maxLength: 256 },
+            description:
+              "Replay-safe create scoped to this workspace. Repeating the " +
+              "request with the same key and payload returns the original " +
+              "task instead of minting a second run; the same key with a " +
+              "different payload is 409 IDEMPOTENCY_CONFLICT.",
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["repository_id", "base_ref", "summary"],
+                properties: {
+                  repository_id: { type: "string", examples: ["github:Luthiel/AutoFixer"] },
+                  base_ref: { type: "string", examples: ["main"] },
+                  summary: { type: "string" },
+                  source_reference: { type: "string" },
+                  acceptance_criteria: { type: "array", items: { type: "string" } },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: "Task created in this workspace",
+            ...jsonRef("#/components/schemas/Task"),
+          },
+          400: errorResponse(
+            "INVALID_REQUEST, REPOSITORY_NOT_IN_WORKSPACE, or BASE_REF_NOT_SUPPORTED",
+          ),
+          403: errorResponse("FORBIDDEN — viewer, or repository authority denied"),
+          404: errorResponse("NOT_FOUND — no live membership for this workspace"),
+          409: errorResponse(
+            "IDEMPOTENCY_CONFLICT, REPOSITORY_BINDING_UNAVAILABLE, or PROVIDER_INSTANCE_NOT_APPROVED",
+          ),
+          422: errorResponse(
+            "Prohibited work was rejected by dsh (details.task_id names the rejected task)",
+          ),
+          503: errorResponse("PI_UNAVAILABLE or DSH_UNAVAILABLE"),
+        },
+      },
       get: {
         operationId: "listWorkspaceTasks",
         summary: "List tasks owned by one workspace",
         description:
           "Cursor/status semantics are identical to `GET /api/v1/tasks`, but " +
           "only tasks whose durable `workspace_id` is this workspace are " +
-          "visible; a foreign task id is never a valid cursor. Creating a " +
-          "task in an arbitrary workspace is DAT-245, not this operation.",
+          "visible; a foreign task id is never a valid cursor.",
         parameters: [
           { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
           { name: "cursor", in: "query", schema: { type: "string" } },
@@ -3061,7 +3129,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
     openapi: "3.1.0",
     info: {
       title: "ForgePilot orchestrator API",
-      version: "0.8.0",
+      version: "0.9.0",
       description:
         "forgepilot-api/v1: the Node-to-UI contract of the ForgePilot pilot, the " +
         "enterprise identity surface (DAT-202, ADR-0006), and the workspace, " +
