@@ -40,7 +40,8 @@ Every event carries `source`, `event_id`, `version`, `sequence`, `event_time`,
 - Nullable IDs are explicitly `null` or a non-empty string; absence is never a
   substitute for a known empty value.
 - `payload` is free-form detail for humans under the content policy of
-  DAT-225. It is not evidence, not a label, and not metric-readable.
+  DAT-225 (`docs/contracts/trace-content-retention-v1.md`). It is not
+  evidence, not a label, and not metric-readable.
 
 ## 3. Identity, deduplication, and immutability
 
