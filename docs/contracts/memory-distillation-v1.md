@@ -124,9 +124,12 @@ violation rejects the whole response.
 - `statement` ≤ 2000 characters. `preconditions`: 1–8 entries, each ≤ 300
   characters — a candidate must state when it applies.
 - `scope` (optional) ∈ `team_id`, `path_prefix`, `language`, `task_family`.
-  Scope values are model output like the statement: they take the same
-  secret-scan/minimize path, and secret material in any scope value drops the
-  candidate.
+  Scope is **structured applicability metadata** — a team identifier, a path
+  prefix, a language, or a task family. It is not free text and not a field
+  for carrying instructions. Scope values are model output like the statement
+  and take the same treatment: secret- and PII-scan/minimize (secret material
+  in any scope value drops the candidate) and the policy scan below covers
+  every scope value.
 - `evidence` ≤ 10 citations. An empty array is parsed but the candidate is
   **dropped**: a candidate without evidence is never persisted.
 - At most 20 candidates per response.
@@ -143,10 +146,11 @@ dropped with a recorded reason and never persisted:
 | At least one citation comes from a known outcome | `no_known_outcome_evidence` |
 | Every positive claim (merged / tests passed / review approved) is backed by captured evidence of that kind | `unsupported_claim` |
 | No secret survives minimization (statement, preconditions, and scope values alike) | `secret_or_pii` |
-| No prohibited instructions (below) | `policy_violation` (rejects the whole batch) |
+| No prohibited instructions in the statement, preconditions, or scope values (below) | `policy_violation` (rejects the whole batch) |
 
-Claims are detected in the candidate text (negated statements are
-observations, not claims). A `merged` claim needs evidence captured from an
+Claims are detected in the statement and preconditions only (negated
+statements are observations, not claims); scope is applicability metadata and
+never an outcome assertion. A `merged` claim needs evidence captured from an
 `accepted` outcome — episode-only evidence can never support success. A
 `tests_passed` claim needs `test` evidence whose retained validation attempt
 exited 0. A `review_approved` claim needs a captured `reviewer_decision`.
@@ -154,7 +158,8 @@ The extractor cannot fabricate test results, reviewer decisions, or merge
 states: only capture writes ledger entries, and only from real envelopes.
 
 A candidate containing instructions to **expand permissions**, **bypass
-approval**, **ignore policy**, or **address the evaluator** rejects the whole
+approval**, **ignore policy**, or **address the evaluator** — in any persisted
+field: statement, preconditions, or applicability scope — rejects the whole
 distillation batch: nothing from that response is persisted.
 
 Accepted candidates persist as `proposed` items (`trust: agent`, provenance

@@ -10,11 +10,13 @@
  *   rejected-with-reason, cancelled-with-reason, classified failed) — an
  *   episode-only outcome (timeout, unknown, infra failure) never supports a
  *   candidate and never counts as success;
- * - every positive outcome claim (merged, tests passed, review approved) is
- *   backed by captured evidence of exactly that kind, so the extractor cannot
- *   fabricate test results, reviewer decisions, or merge state;
- * - the text carries no privilege-expansion / approval-bypass / policy-ignore
- *   / evaluator-directed instructions; a policy violation rejects the whole
+ * - every positive outcome claim (merged, tests passed, review approved) in
+ *   the statement or preconditions is backed by captured evidence of exactly
+ *   that kind, so the extractor cannot fabricate test results, reviewer
+ *   decisions, or merge state;
+ * - the statement, preconditions, and every applicability scope value carry
+ *   no privilege-expansion / approval-bypass / policy-ignore /
+ *   evaluator-directed instructions; a policy violation rejects the whole
  *   batch, not just the offending candidate;
  * - no secret survives minimization (the candidate is dropped), and personal
  *   data is minimized to placeholders before anything can be persisted.
@@ -110,10 +112,23 @@ export function validateCandidates(
   let rejected = false;
 
   for (const candidate of output.candidates) {
-    const text = [candidate.statement, ...candidate.preconditions].join("\n");
+    const claimText = [candidate.statement, ...candidate.preconditions].join("\n");
+
+    // Policy scanning covers every persisted model-supplied field: the
+    // statement, the preconditions, and the applicability scope values. A
+    // scope value gets no weaker gate than the statement (DAT-233 architect
+    // ruling): an instruction hidden in `team_id`, `path_prefix`, `language`,
+    // or `task_family` rejects the whole batch exactly like one in the
+    // statement. Outcome-claim detection below deliberately reads only
+    // statement + preconditions: scope is structured applicability metadata,
+    // never an outcome assertion.
+    const scopeValues = SCOPE_FIELD_KEYS.map((key) => candidate.scope[key]).filter(
+      (value): value is string => value !== undefined,
+    );
+    const policyText = [claimText, ...scopeValues].join("\n");
 
     // 1. Policy lint: prohibited instructions reject the batch outright.
-    const violations = lintForPolicyInstructions(text);
+    const violations = lintForPolicyInstructions(policyText);
     if (violations.length > 0) {
       rejected = true;
       dropped.push(
@@ -196,7 +211,7 @@ export function validateCandidates(
     }
 
     // 4. Outcome claims must resolve to captured evidence of that kind.
-    const claims = detectOutcomeClaims(text);
+    const claims = detectOutcomeClaims(claimText);
     let unsupported: OutcomeClaimKind | null = null;
     for (const claim of claims) {
       if (!claimSupported(claim, cited)) {
