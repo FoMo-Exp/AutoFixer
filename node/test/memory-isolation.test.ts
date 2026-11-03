@@ -345,6 +345,33 @@ describe("Deletion and erasure", () => {
     expect(erased[0]?.detail).toEqual({ items_purged: 2 });
   });
 
+  test("audit outlives deletions with no free-text residue", () => {
+    const previous = seededItem(scopeA, "statement SECRET_STATEMENT_MARKER");
+    const successor = seededItem(scopeA, "successor");
+    memory.items.supersede(scopeA, previous.item.id, successor.item.id, "SECRET_REASON_MARKER");
+    // While alive, the reason is preserved on the link row (content), and the
+    // event carries only the enum and opaque IDs.
+    expect(memory.links.listByItem(scopeA, successor.item.id)[0]?.reason).toBe(
+      "SECRET_REASON_MARKER",
+    );
+    const during = memory.audit.list(scopeA, { limit: 100 });
+    expect(during.length).toBeGreaterThan(0);
+    for (const event of during) {
+      expect(JSON.stringify(event.detail)).not.toContain("SECRET_REASON_MARKER");
+      expect(JSON.stringify(event.detail)).not.toContain("SECRET_STATEMENT_MARKER");
+    }
+    // After erasure the reason is gone with its rows; the surviving audit
+    // still carries no original text.
+    memory.eraseWorkspace(scopeA);
+    const survivors = memory.audit.list(scopeA, { limit: 100 });
+    expect(survivors.length).toBeGreaterThan(0);
+    for (const event of survivors) {
+      expect(JSON.stringify(event.detail)).not.toContain("SECRET_REASON_MARKER");
+      expect(JSON.stringify(event.detail)).not.toContain("SECRET_STATEMENT_MARKER");
+    }
+    expect(countRows("memory_links", "workspace_id = ?", [scopeA.workspace_id])).toBe(0);
+  });
+
   test("erasure is idempotent in content and always audited", () => {
     seededItem(scopeA);
     memory.eraseWorkspace(scopeA);

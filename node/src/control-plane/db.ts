@@ -215,7 +215,8 @@ const MIGRATIONS: Migration[] = [
         ON memory_links(enterprise_id, workspace_id)`,
       // Append-only audit trail. No foreign keys: the audit of a deletion or
       // erasure must outlive the rows it describes. Detail is metadata only —
-      // never statements, provenance payloads, or other memory content.
+      // opaque IDs, fixed enums, and counts; never statements, provenance
+      // payloads, free-text reasons, or other memory content.
       `CREATE TABLE IF NOT EXISTS memory_events (
         id TEXT PRIMARY KEY,
         enterprise_id TEXT NOT NULL,

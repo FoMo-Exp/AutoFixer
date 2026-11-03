@@ -153,7 +153,7 @@ describe("Memory items and immutable versions", () => {
     expect(record.current.scope).toEqual({ path_prefix: "node/src" });
     expect(record.current.trust).toBe("agent");
     expect(record.current.sensitivity).toBe("internal");
-    expect(record.current.valid_from).toBe("2026-11-01T00:00:00Z");
+    expect(record.current.valid_from).toBe("2026-11-01T00:00:00.000Z");
     expect(record.current.valid_to).toBeNull();
     expect(record.current.source_run_id).toBe("run_42");
     expect(record.current.content_hash).toBe(
@@ -174,7 +174,7 @@ describe("Memory items and immutable versions", () => {
     expect(result.version.version).toBe(2);
     const versions = memory.items.listVersions(scope, record.item.id);
     expect(versions.map((v) => v.version)).toEqual([1, 2]);
-    expect(versions[0]?.valid_to).toBe("2026-11-02T00:00:00Z");
+    expect(versions[0]?.valid_to).toBe("2026-11-02T00:00:00.000Z");
     expect(versions[1]?.valid_to).toBeNull();
     expect(memory.items.getById(scope, record.item.id)?.item.current_version).toBe(2);
   });
@@ -187,12 +187,12 @@ describe("Memory items and immutable versions", () => {
     const after = memory.items.getVersion(scope, record.item.id, 1);
     // Content fields are immutable; only valid_to transitions null → closed,
     // exactly at the successor's valid_from.
-    expect(after).toEqual({ ...before, valid_to: "2026-11-02T00:00:00Z" });
+    expect(after).toEqual({ ...before, valid_to: "2026-11-02T00:00:00.000Z" });
     // Later operations never rewrite the closed window.
     const successor = createItem({ statement: "successor" });
     memory.items.supersede(scope, record.item.id, successor.item.id, "stale");
     expect(memory.items.getVersion(scope, record.item.id, 1)?.valid_to).toBe(
-      "2026-11-02T00:00:00Z",
+      "2026-11-02T00:00:00.000Z",
     );
   });
 
@@ -340,6 +340,79 @@ describe("Temporal validity and run reconstruction", () => {
     const run43 = memory.items.listVersionsBySourceRun(scope, "run_43");
     expect(run43).toHaveLength(1);
     expect(run43[0]?.statement).toBe("second");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Timestamps compare as instants, not strings
+// ---------------------------------------------------------------------------
+
+describe("Timestamps are compared as instants, not strings", () => {
+  test("a lexicographically larger timestamp may be an earlier instant and is rejected as backwards", () => {
+    // "02:00:00+02:00" sorts after "00:30:00Z" but is the earlier instant.
+    const record = createItem({ valid_from: "2026-11-01T00:30:00Z" });
+    expect(() =>
+      memory.items.addVersion(
+        scope,
+        record.item.id,
+        versionContent({ valid_from: "2026-11-01T02:00:00+02:00" }),
+        1,
+      ),
+    ).toThrow(ValidationError);
+    expect(memory.items.listVersions(scope, record.item.id)).toHaveLength(1);
+  });
+
+  test("a later instant with a lexicographically smaller string is accepted and closes the window", () => {
+    // "02:00:00+02:00" == 00:00Z; "00:30:00Z" is the later instant.
+    const record = createItem({ valid_from: "2026-11-01T02:00:00+02:00" });
+    expect(record.current.valid_from).toBe("2026-11-01T00:00:00.000Z");
+    const result = memory.items.addVersion(
+      scope,
+      record.item.id,
+      versionContent({ valid_from: "2026-11-01T00:30:00Z" }),
+      1,
+    );
+    expect(result.created).toBe(true);
+    const versions = memory.items.listVersions(scope, record.item.id);
+    expect(versions[0]?.valid_to).toBe("2026-11-01T00:30:00.000Z");
+  });
+
+  test("a validity window is judged by instants across offsets", () => {
+    // valid_to 00:30Z is later than valid_from 00:00Z despite its string form.
+    const accepted = createItem({
+      valid_from: "2026-11-01T02:00:00+02:00",
+      valid_to: "2026-11-01T00:30:00Z",
+    });
+    expect(accepted.current.valid_to).toBe("2026-11-01T00:30:00.000Z");
+    // The mirror case is a backwards window and must be rejected.
+    expect(() =>
+      createItem({
+        valid_from: "2026-11-01T00:30:00Z",
+        valid_to: "2026-11-01T02:00:00+02:00",
+      }),
+    ).toThrow(ValidationError);
+  });
+
+  test("getEffectiveVersion resolves mixed-offset instants to the right version", () => {
+    const record = createItem({ valid_from: "2026-11-01T02:00:00+02:00" }); // 00:00Z
+    memory.items.addVersion(
+      scope,
+      record.item.id,
+      versionContent({ valid_from: "2026-11-02T00:00:00Z" }),
+      1,
+    );
+    // 03:00Z on Nov 1 → version 1, expressed with a +02:00 offset.
+    expect(
+      memory.items.getEffectiveVersion(scope, record.item.id, "2026-11-01T05:00:00+02:00")?.version,
+    ).toBe(1);
+    // Boundary: the exact instant of version 1's valid_from in yet another form.
+    expect(
+      memory.items.getEffectiveVersion(scope, record.item.id, "2026-10-31T19:00:00-05:00")?.version,
+    ).toBe(1);
+    // 03:00Z on Nov 2 → version 2, expressed with a -05:00 offset.
+    expect(
+      memory.items.getEffectiveVersion(scope, record.item.id, "2026-11-01T22:00:00-05:00")?.version,
+    ).toBe(2);
   });
 });
 
@@ -599,7 +672,7 @@ describe("Audit trail", () => {
     memory.items.addVersion(scope, record.item.id, versionContent(), 1);
     memory.items.reviewVersion(scope, record.item.id, 2, "usr_lead");
     const successor = createItem({ statement: "successor" });
-    memory.items.supersede(scope, record.item.id, successor.item.id, "stale");
+    memory.items.supersede(scope, record.item.id, successor.item.id, "SECRET_REASON_MARKER");
     memory.embeddings.put(scope, {
       item_id: successor.item.id,
       item_version: 1,
@@ -626,7 +699,10 @@ describe("Audit trail", () => {
     for (const event of events) {
       expect(event.actor_id).toBe(ACTOR);
       expect(event.workspace_id).toBe(scope.workspace_id);
+      // Audit survives deletion, so it must never carry memory content or the
+      // free-text supersession reason.
       expect(JSON.stringify(event.detail)).not.toContain("secret statement");
+      expect(JSON.stringify(event.detail)).not.toContain("SECRET_REASON_MARKER");
     }
     expect(memory.audit.list(scope, { item_id: record.item.id }).length).toBeGreaterThan(0);
     expect(memory.audit.list(scope, { event_type: "embedding_written" })).toHaveLength(1);

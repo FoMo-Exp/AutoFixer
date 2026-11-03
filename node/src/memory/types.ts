@@ -198,7 +198,7 @@ export interface MemoryEvent {
   event_type: MemoryEventType;
   actor_id: UserId;
   run_id: string | null;
-  /** Non-sensitive metadata only; never memory content. */
+  /** Non-sensitive metadata only: opaque IDs, fixed enums, counts. Never memory content or free-text reasons. */
   detail: Record<string, unknown>;
   created_at: string;
 }

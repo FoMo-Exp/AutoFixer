@@ -480,7 +480,23 @@ const STATUS_TRANSITIONS: Readonly<Record<MemoryStatus, readonly MemoryStatus[]>
   retired: [],
 };
 
-/** Validate a version's content fields; throws ValidationError on any violation. */
+/**
+ * RFC 3339 instants only compare correctly as instants: the same moment
+ * serializes with different timezone offsets, so byte order is not time order
+ * (`2026-11-01T02:00:00+02:00` is earlier than `2026-11-01T00:30:00Z`).
+ * Every temporal value is validated here and stored in canonical UTC
+ * (ISO 8601 via `toISOString`), where lexicographic order equals instant
+ * order. Comparisons go through epoch milliseconds so ordering can never
+ * depend on the input's offset.
+ */
+function normalizeTimestamp(value: string, field: string): string {
+  if (!isTimestamp(value)) {
+    throw new ValidationError(`memory ${field} must be an RFC 3339 timestamp`);
+  }
+  return new Date(value).toISOString();
+}
+
+/** Validate a version's content fields and canonicalize its validity window. */
 function validateVersionContent(content: {
   kind: MemoryKind;
   scope: MemoryApplicability;
@@ -491,7 +507,7 @@ function validateVersionContent(content: {
   sensitivity: MemorySensitivity;
   valid_from: string;
   valid_to: string | null;
-}): void {
+}): { valid_from: string; valid_to: string | null } {
   if (!MEMORY_KINDS.includes(content.kind)) {
     throw new ValidationError(`unsupported memory kind: ${String(content.kind)}`);
   }
@@ -525,31 +541,31 @@ function validateVersionContent(content: {
   if (authorType !== "human" && authorType !== "agent" && authorType !== "system") {
     throw new ValidationError(`unsupported provenance author_type: ${String(authorType)}`);
   }
-  if (!isTimestamp(content.valid_from)) {
-    throw new ValidationError("memory valid_from must be an RFC 3339 timestamp");
-  }
-  if (content.valid_to !== null && !isTimestamp(content.valid_to)) {
-    throw new ValidationError("memory valid_to must be an RFC 3339 timestamp or null");
-  }
-  if (content.valid_to !== null && content.valid_to <= content.valid_from) {
+  const valid_from = normalizeTimestamp(content.valid_from, "valid_from");
+  const valid_to =
+    content.valid_to === null ? null : normalizeTimestamp(content.valid_to, "valid_to");
+  if (valid_to !== null && Date.parse(valid_to) <= Date.parse(valid_from)) {
     throw new ValidationError("memory valid_to must be later than valid_from");
   }
+  return { valid_from, valid_to };
 }
 
 /**
  * Validity windows inside one item never overlap, so "which version was
- * effective at time T" always has exactly one answer.
+ * effective at time T" always has exactly one answer. All values are already
+ * canonical UTC here; epoch comparison keeps ordering independent of offsets.
  */
 function assertWindowFitsPrevious(
   previous: { valid_from: string; valid_to: string | null },
   next: { valid_from: string },
 ): void {
-  if (next.valid_from < previous.valid_from) {
+  const nextFrom = Date.parse(next.valid_from);
+  if (nextFrom < Date.parse(previous.valid_from)) {
     throw new ValidationError(
       `memory valid_from ${next.valid_from} precedes the previous version's window`,
     );
   }
-  if (previous.valid_to !== null && next.valid_from < previous.valid_to) {
+  if (previous.valid_to !== null && nextFrom < Date.parse(previous.valid_to)) {
     throw new ValidationError(
       `memory valid_from ${next.valid_from} overlaps the previous version's window ending ${previous.valid_to}`,
     );
@@ -685,9 +701,7 @@ class SqliteMemoryItemRepository implements MemoryItemRepository {
     requireWorkspaceScope(scope);
     const preconditions = input.preconditions ?? [];
     const sensitivity = input.sensitivity ?? "internal";
-    const valid_from = input.valid_from ?? nowIso();
-    const valid_to = input.valid_to ?? null;
-    validateVersionContent({
+    const { valid_from, valid_to } = validateVersionContent({
       kind: input.kind,
       scope: input.scope,
       statement: input.statement,
@@ -695,8 +709,8 @@ class SqliteMemoryItemRepository implements MemoryItemRepository {
       provenance: input.provenance,
       trust: input.trust,
       sensitivity,
-      valid_from,
-      valid_to,
+      valid_from: input.valid_from ?? nowIso(),
+      valid_to: input.valid_to ?? null,
     });
     const content_hash = memoryContentHash({
       kind: input.kind,
@@ -771,9 +785,7 @@ class SqliteMemoryItemRepository implements MemoryItemRepository {
     requireWorkspaceScope(scope);
     const preconditions = input.preconditions ?? [];
     const sensitivity = input.sensitivity ?? "internal";
-    const valid_from = input.valid_from ?? nowIso();
-    const valid_to = input.valid_to ?? null;
-    validateVersionContent({
+    const { valid_from, valid_to } = validateVersionContent({
       kind: input.kind,
       scope: input.scope,
       statement: input.statement,
@@ -781,8 +793,8 @@ class SqliteMemoryItemRepository implements MemoryItemRepository {
       provenance: input.provenance,
       trust: input.trust,
       sensitivity,
-      valid_from,
-      valid_to,
+      valid_from: input.valid_from ?? nowIso(),
+      valid_to: input.valid_to ?? null,
     });
     return this.store.runAtomically(() => {
       const record = requireRow("MemoryItem", itemId, this.getRecord(scope, itemId));
@@ -940,6 +952,9 @@ class SqliteMemoryItemRepository implements MemoryItemRepository {
     if (!isTimestamp(at)) {
       throw new ValidationError("getEffectiveVersion requires an RFC 3339 timestamp");
     }
+    // Temporal columns are stored in canonical UTC, so byte order equals
+    // instant order; normalize the query instant to the same form.
+    const atIso = new Date(at).toISOString();
     const row = this.db
       .prepare(
         `SELECT v.* FROM memory_item_versions v
@@ -948,7 +963,7 @@ class SqliteMemoryItemRepository implements MemoryItemRepository {
            AND v.valid_from <= ? AND (v.valid_to IS NULL OR v.valid_to > ?)
          ORDER BY v.version DESC LIMIT 1`,
       )
-      .get(scope.enterprise_id, scope.workspace_id, itemId, at, at) as
+      .get(scope.enterprise_id, scope.workspace_id, itemId, atIso, atIso) as
       MemoryItemVersionRow | undefined;
     return row ? toMemoryItemVersion(row) : undefined;
   }
@@ -1395,6 +1410,9 @@ class SqliteMemoryLinkRepository implements MemoryLinkRepository {
         }
         throw error;
       }
+      // Audit events outlive their items, so they carry only opaque IDs and
+      // fixed enums. The free-text reason stays on the link row, which purges
+      // with its items; it must never reach the surviving audit trail.
       this.store.recordEvent({
         scope,
         item_id: input.item_id,
@@ -1404,7 +1422,6 @@ class SqliteMemoryLinkRepository implements MemoryLinkRepository {
         detail: {
           link_type: input.link_type,
           target_item_id: input.target_item_id,
-          reason: input.reason ?? null,
         },
       });
       return toMemoryLink(

@@ -44,6 +44,10 @@ historical run's memory can be rebuilt exactly from the version table:
   one exception and is set at most once, when a successor version or a
   supersession closes the window. Validity windows inside one item never
   overlap and never move backwards.
+- Temporal values accept RFC 3339 with any timezone offset and are stored in
+  canonical UTC (ISO 8601 via `toISOString`); all ordering — window checks and
+  effective-version queries — compares instants (epoch), never raw strings, so
+  `2026-11-01T02:00:00+02:00` correctly sorts before `2026-11-01T00:30:00Z`.
 - `content_hash`: SHA-256 over the canonical form of
   `{kind, scope, statement, preconditions, sensitivity}` (sorted keys,
   sorted preconditions). A write whose hash matches an existing version of the
@@ -98,9 +102,11 @@ item's open validity window, and deprecates it — except a `quarantined` or
   idempotent in content: a second call purges nothing but is still audited.
 - Deleting the workspace row cascades all memory content rows, so a deleted
   workspace can never leave items or embeddings behind.
-- Tombstones and audit events contain opaque IDs, reasons, and actor/time
-  metadata only — never statements, hashes, or provenance. They outlive the
-  rows they describe.
+- Tombstones and audit events contain opaque IDs, fixed enums, and actor/time
+  metadata only — never statements, hashes, provenance, or free-text reasons.
+  A supersession reason is kept on the `memory_links` row (content) and purges
+  with its items; audit `detail` is limited to enums, opaque IDs, and counts so
+  a surviving event can never hold memory content.
 
 ## Migrations
 
