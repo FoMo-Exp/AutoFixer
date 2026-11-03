@@ -103,9 +103,8 @@ export type {
   CreateInvitationInput,
   Invitation,
   InvitationDenialReason,
+  InvitationEvaluationInput,
   InvitationId,
-  InvitationRedeemFacts,
-  InvitationRedeemInput,
   InvitationRedemptionDenied,
   InvitationRedemptionOutcome,
   InvitationRedemptionSuccess,
@@ -113,8 +112,28 @@ export type {
   InvitationStatus,
 } from "./invitation-types.js";
 
-export type { InvitationRepository, RedemptionDecision } from "./invitation-repositories.js";
-export { createInvitationRepository, evaluateRedemption } from "./invitation-repositories.js";
+export type {
+  InvitationRepository,
+  RedemptionDecision,
+  RedemptionFacts,
+  RepositoryAccessFact,
+} from "./invitation-repositories.js";
+export {
+  createInvitationRepository,
+  evaluateRedemption,
+  hasCurrentRepositoryAccess,
+} from "./invitation-repositories.js";
+
+export type {
+  RecordRepositoryAccessInput,
+  RepositoryAccessVerification,
+  RepositoryAccessVerificationRepository,
+  RepositoryAccessVerificationSource,
+} from "./repository-access.js";
+export {
+  createRepositoryAccessVerificationRepository,
+  REPOSITORY_ACCESS_MAX_AGE_SECONDS,
+} from "./repository-access.js";
 
 export type {
   AuthAuditRepository,

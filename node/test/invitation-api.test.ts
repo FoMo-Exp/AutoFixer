@@ -121,6 +121,33 @@ async function grantRole(userId: string, role: string): Promise<number> {
   return response.status;
 }
 
+/**
+ * Record a repository-access verification the way DAT-203's provider
+ * integration does — the only path by which eligibility facts enter storage.
+ * Without one, a user with a provider identity is still ineligible to redeem.
+ */
+function verifyAccess(
+  subject: string,
+  overrides: { has_access?: boolean; verified_at?: string } = {},
+): void {
+  const controlPlane =
+    app.orchestrator.controlPlane ??
+    (() => {
+      throw new Error("no control plane");
+    })();
+  createRepositories(controlPlane).repositoryAccess.record(
+    { enterprise_id: app.enterpriseId, workspace_id: app.workspaceId, actor_id: "usr_test" },
+    {
+      provider_instance_id: app.providerInstanceId,
+      subject,
+      has_access: overrides.has_access ?? true,
+      ...(overrides.verified_at !== undefined ? { verified_at: overrides.verified_at } : {}),
+      verified_by_source: "provider_api",
+      actor_id: "usr_test",
+    },
+  );
+}
+
 interface CreatedBody {
   invitation: { id: string; role: string; status: string; expires_at: string };
   token: string;
@@ -301,6 +328,7 @@ describe("join surface", () => {
   test("preview never consumes; redeem joins once and replays idempotently", async () => {
     const created = await inviteUrl(owner);
     const invitee = await loginAs({ id: 5005, login: "margaret" });
+    verifyAccess("5005");
 
     const previewed = await preview(invitee, created.body.token);
     expect(previewed.status).toBe(200);
@@ -373,6 +401,7 @@ describe("join surface", () => {
     expect(listGet.text).not.toContain(token);
     // Nothing consumed: the explicit authenticated POST still joins.
     const invitee = await loginAs({ id: 6006, login: "dorothy" });
+    verifyAccess("6006");
     const joined = await redeem(invitee, token);
     expect(joined.status).toBe(200);
   });
@@ -381,6 +410,8 @@ describe("join surface", () => {
     const created = await inviteUrl(owner);
     const first = await loginAs({ id: 7007, login: "edith" });
     const second = await loginAs({ id: 8008, login: "florence" });
+    verifyAccess("7007");
+    verifyAccess("8008");
     // Both redeemers race the same one-time invitation: exactly one joins.
     const outcomes = await Promise.all([
       redeem(first, created.body.token),
@@ -389,14 +420,17 @@ describe("join surface", () => {
     const statuses = outcomes.map((outcome) => outcome.status).sort();
     expect(statuses).toEqual([200, 403]);
     // The used invitation stays closed for everyone else afterwards.
-    const late = await redeem(await loginAs({ id: 9009, login: "harriet" }), created.body.token);
-    expect(late.status).toBe(403);
+    const late = await loginAs({ id: 9009, login: "harriet" });
+    verifyAccess("9009");
+    expect((await redeem(late, created.body.token)).status).toBe(403);
   });
 
   test("bound invitations reject wrong-subject and forwarded use", async () => {
     const intended = await loginAs({ id: 10_010, login: "irma" });
+    verifyAccess("10010");
     const created = await inviteUrl(owner, { bound_provider_subject: "10010" });
     const wrong = await loginAs({ id: 10_011, login: "jack" });
+    verifyAccess("10011");
     const denied = await redeem(wrong, created.body.token);
     expect(denied.status).toBe(403);
     const ok = await redeem(intended, created.body.token);
@@ -454,6 +488,31 @@ describe("join surface", () => {
     const denied = await redeem(gitlabOnly, created.body.token);
     expect(denied.status).toBe(403);
   });
+
+  test("a provider identity without verified repository access is rejected", async () => {
+    // The forwarded-to-ineligible case: a GitHub user with a verified
+    // identity but no repository-access verification (nobody confirmed they
+    // can access the workspace's repository) must not join.
+    const created = await inviteUrl(owner);
+    const withoutAccess = await loginAs({ id: 10_019, login: "wendy" });
+    expect((await preview(withoutAccess, created.body.token)).status).toBe(403);
+    expect((await redeem(withoutAccess, created.body.token)).status).toBe(403);
+    // The same invitation joins for a user whose access was verified…
+    const eligible = await loginAs({ id: 10_020, login: "xavier" });
+    verifyAccess("10020");
+    expect((await redeem(eligible, created.body.token)).status).toBe(200);
+
+    // …and a stale verification stops counting as current access.
+    const stale = await inviteUrl(owner);
+    const staleUser = await loginAs({ id: 10_021, login: "yvonne" });
+    verifyAccess("10021", {
+      verified_at: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+    });
+    expect((await redeem(staleUser, stale.body.token)).status).toBe(403);
+    // A fresh re-verification (the DAT-203 reconciliation loop) opens it.
+    verifyAccess("10021");
+    expect((await redeem(staleUser, stale.body.token)).status).toBe(200);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -475,6 +534,7 @@ describe("non-enumeration and hygiene", () => {
     };
 
     const probe = await loginAs({ id: 10_015, login: "mira" });
+    verifyAccess("10015");
     // Unknown bearer.
     await expectUniform403(await preview(probe, "inv_definitely-not-a-token"));
     // Revoked.
@@ -527,6 +587,7 @@ describe("non-enumeration and hygiene", () => {
     };
 
     const invitee = await loginAs({ id: 10_017, login: "olive" });
+    verifyAccess("10017");
     capture(await preview(invitee, token));
     capture(await redeem(invitee, token));
     capture(await redeem(invitee, token));
@@ -573,6 +634,7 @@ describe("non-enumeration and hygiene", () => {
   test("desktop-style bearer sessions redeem without CSRF", async () => {
     const created = await inviteUrl(owner);
     const invitee = await loginAs({ id: 10_018, login: "petra" });
+    verifyAccess("10018");
     const response = await postJson(
       `${app.base}/api/v1/invitations/redeem`,
       { token: created.body.token },
@@ -613,6 +675,7 @@ describe("rate limiting", () => {
       expect(body.error.retry_after_seconds).toBeGreaterThan(0);
 
       const invitee = await loginAs({ id: 20_021, login: "rosa" });
+      verifyAccess("20021");
       expect((await preview(invitee, first.body.token)).status).toBe(200);
       expect((await preview(invitee, first.body.token)).status).toBe(200);
       const limitedPreview = await preview(invitee, first.body.token);

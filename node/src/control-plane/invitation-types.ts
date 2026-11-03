@@ -83,27 +83,14 @@ export interface CreateInvitationInput {
 // ---------------------------------------------------------------------------
 
 /**
- * Facts the repository cannot see for itself. They are decided by the service
- * (authority and eligibility sources) and enforced inside the same
- * transaction as the storage-side checks.
+ * Everything the redemption decision needs is control-plane state, read by the
+ * repository inside the same transaction as the consume — the invitee's
+ * verified provider subject, the inviter's current role, the invitee's
+ * existing membership, and the fresh repository-access verification the
+ * eligibility policy requires. Callers supply only the locator and the
+ * subject redeeming.
  */
-export interface InvitationRedeemFacts {
-  /**
-   * Whether the creator still holds current repository administration
-   * authority over the workspace. Invitations never outlive the inviter's
-   * authority (ADR-0006).
-   */
-  inviter_authorized: boolean;
-  /** Whether the invitee is currently eligible for repository access. */
-  invitee_eligible: boolean;
-  /**
-   * The invitee's verified provider subject on the workspace's provider
-   * instance, if any; compared against `bound_provider_subject`.
-   */
-  invitee_provider_subject: string | null;
-}
-
-export interface InvitationRedeemInput extends InvitationRedeemFacts {
+export interface InvitationEvaluationInput {
   token_digest: string;
   invitee_user_id: UserId;
 }

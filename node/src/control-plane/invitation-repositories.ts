@@ -5,8 +5,10 @@
  * the interface and never write SQL. The bearer token is never stored or
  * looked up — callers present the token's keyed digest, and the digest is the
  * only locator. Redemption runs in one `BEGIN IMMEDIATE` transaction that
- * re-checks every storage-side condition and then adds the membership and
- * consumes the invitation together, so concurrent redeemers cannot both
+ * re-checks every fact the decision needs — expiry, revocation, remaining
+ * use, subject binding, the inviter's current role, the invitee's current
+ * repository access, and existing membership — and then adds the membership
+ * and consumes the invitation together, so concurrent redeemers cannot both
  * succeed and a crash can never leave a consumed invitation without its
  * membership (or a member without the consumed invitation).
  */
@@ -18,11 +20,12 @@ import type {
   CreateInvitationInput,
   Invitation,
   InvitationDenialReason,
+  InvitationEvaluationInput,
   InvitationId,
-  InvitationRedeemInput,
   InvitationRedemptionOutcome,
 } from "./invitation-types.js";
-import type { UserId, WorkspaceScope } from "./types.js";
+import { REPOSITORY_ACCESS_MAX_AGE_SECONDS } from "./repository-access.js";
+import type { UserId, WorkspaceRole, WorkspaceScope } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Redemption decision (shared by preview and the redeem transaction)
@@ -32,6 +35,49 @@ export type RedemptionDecision =
   | { kind: "join" }
   | { kind: "replay"; membership_id: string }
   | { kind: "deny"; reason: InvitationDenialReason };
+
+/** The latest repository-access verification for the invitee's subject. */
+export interface RepositoryAccessFact {
+  has_access: boolean;
+  verified_at: string;
+}
+
+/**
+ * Every fact the decision reads, gathered from one consistent snapshot.
+ * Callers never pass authority or eligibility in: those are control-plane
+ * state (memberships, identities, repository-access verifications) read in
+ * the same transaction as the consume, so the decision is valid at
+ * redemption time — not at request-assembly time.
+ */
+export interface RedemptionFacts {
+  invitee_user_id: UserId;
+  /** Verified subject of the invitee on the workspace's provider instance. */
+  invitee_provider_subject: string | null;
+  /** Current role of the invitation's creator in the workspace, if any. */
+  inviter_role: WorkspaceRole | null;
+  invitee_membership_id: string | null;
+  repository_access: RepositoryAccessFact | null;
+  workspace_status: "active" | "archived" | "missing";
+  now: string;
+}
+
+/**
+ * Eligibility policy: the invitee's current repository access counts only as
+ * a positive verification that is still fresh at the decision moment. A
+ * missing, negative, or stale fact denies the join — an old or absent check
+ * is never evidence of current access (ADR-0006: redemption checks the
+ * invitee's current repository access).
+ */
+export function hasCurrentRepositoryAccess(
+  fact: RepositoryAccessFact | null,
+  now: string,
+): boolean {
+  if (fact === null || !fact.has_access) {
+    return false;
+  }
+  const ageSeconds = (Date.parse(now) - Date.parse(fact.verified_at)) / 1000;
+  return ageSeconds >= 0 && ageSeconds <= REPOSITORY_ACCESS_MAX_AGE_SECONDS;
+}
 
 /**
  * The one decision procedure for consuming an invitation.
@@ -44,21 +90,13 @@ export type RedemptionDecision =
  */
 export function evaluateRedemption(
   invitation: Invitation,
-  context: {
-    invitee_user_id: UserId;
-    invitee_membership_id: string | null;
-    invitee_provider_subject: string | null;
-    inviter_authorized: boolean;
-    invitee_eligible: boolean;
-    workspace_status: "active" | "archived" | "missing";
-    now: string;
-  },
+  facts: RedemptionFacts,
 ): RedemptionDecision {
   // A same-subject retry of its own redemption is an idempotent replay of that
   // join — even past expiry — never a second join.
-  if (invitation.redeemed_by === context.invitee_user_id) {
-    if (context.invitee_membership_id !== null) {
-      return { kind: "replay", membership_id: context.invitee_membership_id };
+  if (invitation.redeemed_by === facts.invitee_user_id) {
+    if (facts.invitee_membership_id !== null) {
+      return { kind: "replay", membership_id: facts.invitee_membership_id };
     }
     // The redemption happened but its membership was removed later; the
     // one-time invitation cannot grant it again.
@@ -67,7 +105,7 @@ export function evaluateRedemption(
   if (invitation.revoked_at !== null) {
     return { kind: "deny", reason: "revoked" };
   }
-  if (Date.parse(invitation.expires_at) <= Date.parse(context.now)) {
+  if (Date.parse(invitation.expires_at) <= Date.parse(facts.now)) {
     return { kind: "deny", reason: "expired" };
   }
   if (invitation.redeemed_at !== null) {
@@ -75,21 +113,22 @@ export function evaluateRedemption(
   }
   if (
     invitation.bound_provider_subject !== null &&
-    invitation.bound_provider_subject !== context.invitee_provider_subject
+    invitation.bound_provider_subject !== facts.invitee_provider_subject
   ) {
     return { kind: "deny", reason: "wrong_subject" };
   }
-  // Invitations never outlive the inviter's authority (ADR-0006).
-  if (!context.inviter_authorized) {
+  // Invitations never outlive the inviter's authority (ADR-0006): current
+  // repository administration authority is a live owner/admin membership.
+  if (facts.inviter_role !== "owner" && facts.inviter_role !== "admin") {
     return { kind: "deny", reason: "inviter_authority_lost" };
   }
-  if (context.workspace_status !== "active") {
+  if (facts.workspace_status !== "active") {
     return { kind: "deny", reason: "workspace_archived" };
   }
-  if (!context.invitee_eligible) {
+  if (!hasCurrentRepositoryAccess(facts.repository_access, facts.now)) {
     return { kind: "deny", reason: "ineligible" };
   }
-  if (context.invitee_membership_id !== null) {
+  if (facts.invitee_membership_id !== null) {
     return { kind: "deny", reason: "already_member" };
   }
   return { kind: "join" };
@@ -115,15 +154,22 @@ export interface InvitationRepository {
    */
   revoke(scope: WorkspaceScope, id: InvitationId, actorId: UserId): Invitation | undefined;
   /**
-   * Atomic one-time redemption. Inside one transaction: expiry, revocation,
-   * remaining use (single-use guard), intended target, subject binding,
-   * inviter authority, eligibility, and existing membership are checked, then
-   * the `member` membership is inserted and the invitation consumed together.
-   * A same-subject retry of its own redemption is an idempotent `replayed`
-   * outcome — never a second join. Every other failure is `denied` with an
-   * internal reason; the API maps all reasons to one uniform denial.
+   * Read-only evaluation of the shared decision for the join-confirmation
+   * preview: the same facts, the same policy, no side effects.
    */
-  redeem(input: InvitationRedeemInput): InvitationRedemptionOutcome;
+  evaluate(input: InvitationEvaluationInput): RedemptionDecision;
+  /**
+   * Atomic one-time redemption. Inside one transaction every fact the
+   * decision needs is read and the policy applied — expiry, revocation,
+   * remaining use (single-use guard), intended target, subject binding, the
+   * inviter's current authority, the invitee's current repository access, and
+   * existing membership — then the `member` membership is inserted and the
+   * invitation consumed together. A same-subject retry of its own redemption
+   * is an idempotent `replayed` outcome — never a second join. Every other
+   * failure is `denied` with an internal reason; the API maps all reasons to
+   * one uniform denial.
+   */
+  redeem(input: InvitationEvaluationInput): InvitationRedemptionOutcome;
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +298,21 @@ class SqliteInvitationRepository implements InvitationRepository {
     return this.getById(scope, id);
   }
 
-  redeem(input: InvitationRedeemInput): InvitationRedemptionOutcome {
+  evaluate(input: InvitationEvaluationInput): RedemptionDecision {
+    const row = this.db
+      .prepare("SELECT * FROM invitation WHERE token_digest = ?")
+      .get(input.token_digest) as InvitationRow | undefined;
+    if (row === undefined) {
+      return { kind: "deny", reason: "unknown_token" };
+    }
+    const invitation = toInvitation(row);
+    return evaluateRedemption(
+      invitation,
+      this.#factsFor(invitation, input.invitee_user_id, nowIso()),
+    );
+  }
+
+  redeem(input: InvitationEvaluationInput): InvitationRedemptionOutcome {
     const at = nowIso();
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -269,7 +329,7 @@ class SqliteInvitationRepository implements InvitationRepository {
     }
   }
 
-  #redeemInTransaction(input: InvitationRedeemInput, at: string): InvitationRedemptionOutcome {
+  #redeemInTransaction(input: InvitationEvaluationInput, at: string): InvitationRedemptionOutcome {
     const row = this.db
       .prepare("SELECT * FROM invitation WHERE token_digest = ?")
       .get(input.token_digest) as InvitationRow | undefined;
@@ -277,25 +337,10 @@ class SqliteInvitationRepository implements InvitationRepository {
       return { status: "denied", reason: "unknown_token" };
     }
     const invitation = toInvitation(row);
-    const existing = this.db
-      .prepare("SELECT id FROM membership WHERE workspace_id = ? AND user_id = ?")
-      .get(invitation.workspace_id, input.invitee_user_id) as { id: string } | undefined;
-    const workspace = this.db
-      .prepare("SELECT status FROM workspace WHERE id = ?")
-      .get(invitation.workspace_id) as { status: string } | undefined;
-    let workspaceStatus: "active" | "archived" | "missing" = "missing";
-    if (workspace !== undefined) {
-      workspaceStatus = workspace.status === "active" ? "active" : "archived";
-    }
-    const decision = evaluateRedemption(invitation, {
-      invitee_user_id: input.invitee_user_id,
-      invitee_membership_id: existing?.id ?? null,
-      invitee_provider_subject: input.invitee_provider_subject,
-      inviter_authorized: input.inviter_authorized,
-      invitee_eligible: input.invitee_eligible,
-      workspace_status: workspaceStatus,
-      now: at,
-    });
+    const decision = evaluateRedemption(
+      invitation,
+      this.#factsFor(invitation, input.invitee_user_id, at),
+    );
     if (decision.kind === "deny") {
       return { status: "denied", reason: decision.reason };
     }
@@ -310,13 +355,14 @@ class SqliteInvitationRepository implements InvitationRepository {
           `INSERT INTO membership
              (id, enterprise_id, workspace_id, user_id, role,
               created_at, updated_at, created_by, updated_by, version)
-           VALUES (?, ?, ?, ?, 'member', ?, ?, ?, ?, 1)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
         )
         .run(
           newId("mbr"),
           invitation.enterprise_id,
           invitation.workspace_id,
           input.invitee_user_id,
+          invitation.role,
           at,
           at,
           input.invitee_user_id,
@@ -349,6 +395,54 @@ class SqliteInvitationRepository implements InvitationRepository {
       .prepare("SELECT * FROM invitation WHERE id = ?")
       .get(invitation.id) as unknown as InvitationRow;
     return { status: "joined", invitation: toInvitation(updated), membership_id: membership.id };
+  }
+
+  /**
+   * Gather every decision fact from storage. Called inside the redeem
+   * transaction (or a consistent read for preview), so the policy always
+   * evaluates state as of the decision moment.
+   */
+  #factsFor(invitation: Invitation, inviteeUserId: UserId, now: string): RedemptionFacts {
+    const workspace = this.db
+      .prepare("SELECT status, provider_instance_id FROM workspace WHERE id = ?")
+      .get(invitation.workspace_id) as { status: string; provider_instance_id: string } | undefined;
+    const subject = this.db
+      .prepare(
+        `SELECT subject FROM user_identity
+         WHERE user_id = ? AND provider_instance_id = ?
+         ORDER BY created_at LIMIT 1`,
+      )
+      .get(inviteeUserId, workspace?.provider_instance_id ?? "") as { subject: string } | undefined;
+    const inviteeMembership = this.db
+      .prepare("SELECT id FROM membership WHERE workspace_id = ? AND user_id = ?")
+      .get(invitation.workspace_id, inviteeUserId) as { id: string } | undefined;
+    const inviterMembership = this.db
+      .prepare("SELECT role FROM membership WHERE workspace_id = ? AND user_id = ?")
+      .get(invitation.workspace_id, invitation.created_by) as { role: string } | undefined;
+    const access = this.db
+      .prepare(
+        `SELECT has_access, verified_at FROM repository_access_verification
+         WHERE workspace_id = ? AND enterprise_id = ? AND provider_instance_id = ? AND subject = ?`,
+      )
+      .get(
+        invitation.workspace_id,
+        invitation.enterprise_id,
+        workspace?.provider_instance_id ?? "",
+        subject?.subject ?? "",
+      ) as { has_access: number; verified_at: string } | undefined;
+    return {
+      invitee_user_id: inviteeUserId,
+      invitee_provider_subject: subject?.subject ?? null,
+      inviter_role: (inviterMembership?.role as WorkspaceRole | undefined) ?? null,
+      invitee_membership_id: inviteeMembership?.id ?? null,
+      repository_access:
+        access !== undefined
+          ? { has_access: access.has_access === 1, verified_at: access.verified_at }
+          : null,
+      workspace_status:
+        workspace === undefined ? "missing" : workspace.status === "active" ? "active" : "archived",
+      now,
+    };
   }
 }
 

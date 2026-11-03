@@ -26,18 +26,15 @@ import type {
   EnterpriseScope,
   Invitation,
   InvitationDenialReason,
-  InvitationRedeemFacts,
   InvitationRedemptionOutcome,
   InvitationRepository,
   InvitationStatus,
   IdentityRepositories,
-  RedemptionDecision,
   UserId,
   Workspace,
   WorkspaceId,
   WorkspaceScope,
 } from "../control-plane/index.js";
-import { evaluateRedemption } from "../control-plane/index.js";
 import { ApiError } from "./errors.js";
 import type {
   EnterpriseRefView,
@@ -172,60 +169,6 @@ class FixedWindowRateLimiter {
 }
 
 // ---------------------------------------------------------------------------
-// Authority and eligibility seam
-// ---------------------------------------------------------------------------
-
-/**
- * Current authority and eligibility facts for one workspace (ADR-0006:
- * "effective access intersects enterprise membership, workspace role, current
- * repository access, and action policy").
- *
- * The stage-one source below answers from control-plane state: administration
- * authority is the live owner/admin membership, and invitee eligibility is a
- * verified identity on the workspace's provider instance. DAT-203's provider
- * integration replaces it with roster-backed, repository-aware answers; this
- * interface is the seam that keeps that upgrade out of the redemption logic.
- */
-export interface InvitationAuthoritySource {
-  /** Does this user currently hold repository administration authority? */
-  hasRepositoryAdmin(workspace: Workspace, userId: UserId): boolean;
-  /** Is this invitee currently eligible to receive repository access? */
-  isInviteeEligible(workspace: Workspace, inviteeUserId: UserId): boolean;
-  /** The invitee's verified provider subject on the workspace's provider instance. */
-  inviteeProviderSubject(workspace: Workspace, inviteeUserId: UserId): string | null;
-}
-
-export function membershipAuthoritySource(
-  repos: ControlPlaneRepositories,
-  identity: IdentityRepositories,
-): InvitationAuthoritySource {
-  const scopeOf = (workspace: Workspace, actorId: UserId): WorkspaceScope => ({
-    enterprise_id: workspace.enterprise_id,
-    workspace_id: workspace.id,
-    actor_id: actorId,
-  });
-  return {
-    hasRepositoryAdmin(workspace, userId) {
-      const membership = repos.memberships.getByUser(scopeOf(workspace, userId), userId);
-      return membership?.role === "owner" || membership?.role === "admin";
-    },
-    isInviteeEligible(workspace, inviteeUserId) {
-      // Stage-one eligibility: the invitee can only receive repository access
-      // through a provider instance they have a verified identity on. A
-      // forwarded invitation redeemed by a user from another provider is
-      // ineligible, and so is any invitee without that identity.
-      return this.inviteeProviderSubject(workspace, inviteeUserId) !== null;
-    },
-    inviteeProviderSubject(workspace, inviteeUserId) {
-      const match = identity.identities
-        .listByUser(inviteeUserId)
-        .find((entry) => entry.provider_instance_id === workspace.provider_instance_id);
-      return match?.subject ?? null;
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Views (contract shapes)
 // ---------------------------------------------------------------------------
 
@@ -296,8 +239,6 @@ export interface InvitationServiceDeps {
   identity: IdentityRepositories;
   invitations: InvitationRepository;
   config: InvitationServiceConfig;
-  /** Authority/eligibility source; defaults to control-plane membership state. */
-  authority?: InvitationAuthoritySource;
 }
 
 const INVITATION_NOT_ACCEPTED_MESSAGE =
@@ -312,7 +253,6 @@ export class InvitationService {
   readonly #identity: IdentityRepositories;
   readonly #invitations: InvitationRepository;
   readonly #config: Required<InvitationServiceConfig>;
-  readonly #authority: InvitationAuthoritySource;
   readonly #limiter = new FixedWindowRateLimiter();
 
   constructor(deps: InvitationServiceDeps) {
@@ -324,7 +264,6 @@ export class InvitationService {
       digestKey: deps.config.digestKey,
       rateLimits: deps.config.rateLimits ?? DEFAULT_INVITATION_RATE_LIMITS,
     };
-    this.#authority = deps.authority ?? membershipAuthoritySource(deps.repos, deps.identity);
   }
 
   // -------------------------------------------------------------------------
@@ -436,7 +375,13 @@ export class InvitationService {
       "invitation.preview",
       actor.user_id,
     );
-    const decision = this.#decide(invitation, workspace, actor.user_id);
+    // The same decision procedure the redeem transaction runs, with no side
+    // effects: eligibility is the fresh repository-access verification the
+    // policy requires, read from the control plane at this moment.
+    const decision = this.#invitations.evaluate({
+      token_digest: invitation.token_digest,
+      invitee_user_id: actor.user_id,
+    });
     if (decision.kind === "deny") {
       this.#auditAttempt(
         "invitation.preview",
@@ -465,14 +410,12 @@ export class InvitationService {
       "invitation.redeem",
       actor.user_id,
     );
-    // The transaction re-evaluates the shared decision against freshly read
-    // storage state and consumes atomically; the facts gathered here (inviter
-    // authority, eligibility) are the authority source's live answers for
-    // this request.
+    // The transaction re-reads every decision fact — including the invitee's
+    // current repository access and the inviter's current authority — and
+    // consumes atomically, so the decision is valid at redemption time.
     const outcome: InvitationRedemptionOutcome = this.#invitations.redeem({
       token_digest: invitation.token_digest,
       invitee_user_id: actor.user_id,
-      ...this.#facts(invitation, workspace, actor.user_id),
     });
     if (outcome.status === "denied") {
       this.#auditAttempt("invitation.redeem", invitation, actor.user_id, "denied", outcome.reason);
@@ -576,34 +519,6 @@ export class InvitationService {
     };
   }
 
-  /** Live authority/eligibility facts for the shared redemption decision. */
-  #facts(
-    invitation: Invitation,
-    workspace: Workspace,
-    inviteeUserId: UserId,
-  ): InvitationRedeemFacts {
-    return {
-      inviter_authorized: this.#authority.hasRepositoryAdmin(workspace, invitation.created_by),
-      invitee_eligible: this.#authority.isInviteeEligible(workspace, inviteeUserId),
-      invitee_provider_subject: this.#authority.inviteeProviderSubject(workspace, inviteeUserId),
-    };
-  }
-
-  /** Preview-side evaluation of the same decision the redeem transaction runs. */
-  #decide(invitation: Invitation, workspace: Workspace, inviteeUserId: UserId): RedemptionDecision {
-    const membership = this.#repos.memberships.getByUser(
-      this.#workspaceScope(workspace, inviteeUserId),
-      inviteeUserId,
-    );
-    return evaluateRedemption(invitation, {
-      invitee_user_id: inviteeUserId,
-      invitee_membership_id: membership?.id ?? null,
-      ...this.#facts(invitation, workspace, inviteeUserId),
-      workspace_status: workspace.status === "active" ? "active" : "archived",
-      now: new Date().toISOString(),
-    });
-  }
-
   #redemptionView(
     membershipId: string,
     workspace: Workspace,
@@ -666,7 +581,13 @@ export class InvitationService {
     if (workspace.status !== "active") {
       return "expired";
     }
-    if (!this.#authority.hasRepositoryAdmin(workspace, invitation.created_by)) {
+    // Invitations never outlive the inviter's authority (ADR-0006): current
+    // repository administration authority is a live owner/admin membership.
+    const inviterRole = this.#repos.memberships.getByUser(
+      this.#workspaceScope(workspace, invitation.created_by),
+      invitation.created_by,
+    )?.role;
+    if (inviterRole !== "owner" && inviterRole !== "admin") {
       return "expired";
     }
     return "active";

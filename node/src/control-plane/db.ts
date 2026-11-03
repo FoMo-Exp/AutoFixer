@@ -632,6 +632,36 @@ const MIGRATIONS: Migration[] = [
         ON invitation(workspace_id)`,
     ],
   },
+  {
+    // Verified repository-access facts (DAT-204 eligibility; DAT-203
+    // producers). Redemption checks the invitee's current repository access
+    // against these rows — never against identity existence alone. Only a
+    // trusted producer records a fact (verified_at + verified_by_source), and
+    // the redemption transaction counts it only while fresh. Rows die with
+    // their workspace.
+    version: 7,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS repository_access_verification (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        provider_instance_id TEXT NOT NULL REFERENCES provider_instance(id),
+        subject TEXT NOT NULL,
+        has_access INTEGER NOT NULL CHECK (has_access IN (0, 1)),
+        verified_at TEXT NOT NULL,
+        verified_by_source TEXT NOT NULL CHECK (
+          verified_by_source IN ('provider_api', 'roster_sync', 'reconciliation')
+        ),
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        UNIQUE (workspace_id, provider_instance_id, subject)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_repository_access_subject
+        ON repository_access_verification(workspace_id, subject)`,
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------

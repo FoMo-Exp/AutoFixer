@@ -12,6 +12,8 @@
 import type { ControlPlaneDb } from "./db.js";
 import { newId, nowIso } from "./db.js";
 import { ConflictError, NotFoundError, ValidationError, VersionConflictError } from "./errors.js";
+import type { RepositoryAccessVerificationRepository } from "./repository-access.js";
+import { createRepositoryAccessVerificationRepository } from "./repository-access.js";
 import type {
   CreateEnterpriseInput,
   CreateMembershipInput,
@@ -110,6 +112,8 @@ export interface ControlPlaneRepositories {
   workspaces: WorkspaceRepository;
   teams: TeamRepository;
   memberships: MembershipRepository;
+  /** Verified repository-access facts (DAT-204 eligibility; DAT-203 producers). */
+  repositoryAccess: RepositoryAccessVerificationRepository;
 }
 
 // ---------------------------------------------------------------------------
@@ -910,5 +914,6 @@ export function createRepositories(db: ControlPlaneDb): ControlPlaneRepositories
     workspaces: new SqliteWorkspaceRepository(db),
     teams: new SqliteTeamRepository(db),
     memberships: new SqliteMembershipRepository(db),
+    repositoryAccess: createRepositoryAccessVerificationRepository(db),
   };
 }
