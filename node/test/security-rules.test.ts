@@ -9,7 +9,7 @@
  * proposal, review, activation, and rollback is audited, and evidence is
  * computed server-side from a trusted corpus — never taken from a proposal.
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -653,5 +653,143 @@ describe("rejection audit durability (DAT-211)", () => {
     // The tentative commit is rolled back: no half-written revision remains.
     expect(service.lineage(LINEAGE)).toHaveLength(0);
     expect(service.activeCorrections()).toEqual([]);
+  });
+});
+
+/**
+ * Make every subsequent persist fail deterministically: the state path is
+ * replaced by an existing directory, so the atomic rename cannot land.
+ */
+function breakPersistence(stateFile: string): void {
+  rmSync(stateFile, { force: true });
+  mkdirSync(stateFile);
+}
+
+/** Everything the service exposes about this lineage, for equality checks. */
+function snapshotOf(service: RuleCorrectionService) {
+  return {
+    v1: service.revision(LINEAGE, 1),
+    v2: service.revision(LINEAGE, 2),
+    lineage: service.lineage(LINEAGE),
+    history: service.history(LINEAGE),
+    active: service.activeCorrections(),
+  };
+}
+
+describe("lifecycle transactions (DAT-211)", () => {
+  test("a failed activation leaves no activated revision and no active correction", () => {
+    const stateFile = stateFilePath();
+    const { service } = buildService({ persistencePath: stateFile });
+    service.propose(HANDLER, proposal());
+    service.review(LINEAGE, 1, REVIEWER, true, "fine");
+    const before = snapshotOf(service);
+    breakPersistence(stateFile);
+    expectRuleCode(() => service.activate(LINEAGE, 1, ADMIN), "RULE_AUDIT_UNAVAILABLE");
+    expect(snapshotOf(service)).toEqual(before);
+    expect(service.revision(LINEAGE, 1)?.status).toBe("approved");
+    expect(service.activeCorrections()).toEqual([]);
+  });
+
+  test("a failed activation rolls its supersede back, keeping the old correction active", () => {
+    const stateFile = stateFilePath();
+    const { service } = buildService({ persistencePath: stateFile });
+    service.propose(HANDLER, proposal());
+    service.review(LINEAGE, 1, REVIEWER, true, "v1");
+    service.activate(LINEAGE, 1, ADMIN);
+    service.propose(HANDLER, proposal({ constraints: { minShannonEntropy: 5.2 } }));
+    service.review(LINEAGE, 2, REVIEWER, true, "v2");
+    const before = snapshotOf(service);
+    breakPersistence(stateFile);
+    expectRuleCode(() => service.activate(LINEAGE, 2, ADMIN), "RULE_AUDIT_UNAVAILABLE");
+    expect(snapshotOf(service)).toEqual(before);
+    expect(service.revision(LINEAGE, 1)?.status).toBe("activated");
+    expect(service.activeCorrections().map((correction) => correction.version)).toEqual([1]);
+  });
+
+  test("a failed review approval and a failed rejection leave no partial record", () => {
+    const stateFile = stateFilePath();
+    const { service } = buildService({ persistencePath: stateFile });
+    service.propose(HANDLER, proposal());
+    const before = snapshotOf(service);
+    breakPersistence(stateFile);
+    expectRuleCode(
+      () => service.review(LINEAGE, 1, REVIEWER, true, "fine"),
+      "RULE_AUDIT_UNAVAILABLE",
+    );
+    expect(snapshotOf(service)).toEqual(before);
+    expect(service.revision(LINEAGE, 1)?.status).toBe("proposed");
+    expect(service.history(LINEAGE).map((event) => event.type)).not.toContain(
+      "rule.review_approved",
+    );
+    expectRuleCode(
+      () => service.review(LINEAGE, 1, REVIEWER, false, "no"),
+      "RULE_AUDIT_UNAVAILABLE",
+    );
+    expect(snapshotOf(service)).toEqual(before);
+    expect(service.history(LINEAGE).map((event) => event.type)).not.toContain(
+      "rule.review_rejected",
+    );
+  });
+
+  test("a failed rollback keeps the correction active", () => {
+    const stateFile = stateFilePath();
+    const { service } = buildService({ persistencePath: stateFile });
+    service.propose(HANDLER, proposal());
+    service.review(LINEAGE, 1, REVIEWER, true, "fine");
+    service.activate(LINEAGE, 1, ADMIN);
+    const before = snapshotOf(service);
+    breakPersistence(stateFile);
+    expectRuleCode(() => service.rollback(LINEAGE, ADMIN), "RULE_AUDIT_UNAVAILABLE");
+    expect(snapshotOf(service)).toEqual(before);
+    expect(service.revision(LINEAGE, 1)?.status).toBe("activated");
+    expect(service.activeCorrections().map((correction) => correction.version)).toEqual([1]);
+    expect(service.history(LINEAGE).map((event) => event.type)).not.toContain("rule.rolled_back");
+  });
+
+  test("a failed expiry sweep expires nothing", () => {
+    let clock = NOW.getTime();
+    const stateFile = stateFilePath();
+    const directory = staticDutyDirectory({
+      handlers: ["human_handler"],
+      reviewers: ["human_reviewer"],
+      admins: ["human_admin"],
+    });
+    const service = new RuleCorrectionService({
+      directory,
+      now: () => new Date(clock),
+      regression: { samples: TEST_SAMPLES, detectors: [TEST_DETECTOR] },
+      persistencePath: stateFile,
+    });
+    service.propose(HANDLER, proposal({ expiresAt: IN_7_DAYS, reviewAt: undefined }));
+    service.review(LINEAGE, 1, REVIEWER, true, "fine");
+    service.activate(LINEAGE, 1, ADMIN);
+    clock = Date.parse(IN_7_DAYS) + 1000;
+    const before = snapshotOf(service);
+    breakPersistence(stateFile);
+    expectRuleCode(() => service.expireOverdue(), "RULE_AUDIT_UNAVAILABLE");
+    expect(snapshotOf(service)).toEqual(before);
+    expect(service.revision(LINEAGE, 1)?.status).toBe("activated");
+    expect(service.history(LINEAGE).map((event) => event.type)).not.toContain("rule.expired");
+  });
+
+  test("a denied operation whose audit cannot be written fails closed without trace", () => {
+    const stateFile = stateFilePath();
+    const multiRole = staticDutyDirectory({
+      handlers: ["human_handler"],
+      reviewers: ["human_handler", "human_reviewer"],
+      admins: ["human_admin"],
+    });
+    const { service } = buildService({ directory: multiRole, persistencePath: stateFile });
+    service.propose(HANDLER, proposal());
+    const before = snapshotOf(service);
+    breakPersistence(stateFile);
+    // Self-review is a denial with its own audit event; when that record
+    // cannot be written, the attempt fails closed and leaves nothing behind.
+    expectRuleCode(
+      () => service.review(LINEAGE, 1, HANDLER, true, "self"),
+      "RULE_AUDIT_UNAVAILABLE",
+    );
+    expect(snapshotOf(service)).toEqual(before);
+    expect(service.history(LINEAGE).map((event) => event.type)).not.toContain("rule.review_denied");
   });
 });

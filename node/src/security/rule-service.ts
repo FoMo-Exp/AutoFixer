@@ -90,6 +90,13 @@ interface PersistedState {
   events: RuleEvent[];
 }
 
+/** In-memory state captured at the start of one lifecycle transaction. */
+interface RuleStateSnapshot {
+  revisions: Map<string, RuleRevision[]>;
+  events: Map<string, RuleEvent[]>;
+  eventCount: number;
+}
+
 function scrubDetail(
   detail: Record<string, string | number | boolean>,
 ): Record<string, string | number | boolean> {
@@ -124,89 +131,81 @@ export class RuleCorrectionService {
    * version of its lineage in status `proposed`.
    */
   propose(author: SecurityActor, raw: unknown): RuleRevision {
-    const at = this.timestamp();
-    let draft: RuleCorrectionDraft;
-    try {
-      draft = validateRuleCorrection(raw, this.now());
-    } catch (error) {
-      this.recordProposalRejection(raw, author, error);
-      throw error;
-    }
-    const scope = requireScope(draft.scope);
-    try {
-      requireDuty("rule.propose", author, this.deps.directory, scope);
-    } catch (error) {
-      // A duty denial is a proposal result too: audit it before returning.
-      this.recordProposalRejection(raw, author, error);
-      throw error;
-    }
-    const lineage = [draft.detectorId, scope.enterpriseId, scope.workspaceId].join("|");
-    // Evidence is computed here, from the trusted corpus, for exactly this
-    // rule content — a proposal carries no evidence results of its own.
-    const samples = this.regressionSamplesFor(draft.detectorId);
-    const evidence = samples.length === 0 ? [] : this.computeEvidence({ ...draft, scope }, at);
-    const failed = evidence.find((entry) => entry.result !== "pass");
-    if (evidence.length === 0 || failed !== undefined) {
-      const code = evidence.length === 0 ? "RULE_EVIDENCE_MISSING" : "RULE_EVIDENCE_FAILED";
-      this.appendEvent(lineage, "rule.proposal_rejected", author, "security_handler", {
-        code,
-        detectorId: draft.detectorId,
-        ...(failed !== undefined ? { testRef: failed.testRef } : {}),
-      });
-      this.persistOrFail();
-      throw new SecurityError(
-        code,
-        evidence.length === 0
-          ? "no trusted regression samples cover this detector"
-          : "regression evidence shows true-secret detection no longer effective",
-        {
+    return this.transact(() => {
+      const at = this.timestamp();
+      let draft: RuleCorrectionDraft;
+      try {
+        draft = validateRuleCorrection(raw, this.now());
+      } catch (error) {
+        this.recordProposalRejection(raw, author, error);
+        throw error;
+      }
+      const scope = requireScope(draft.scope);
+      try {
+        requireDuty("rule.propose", author, this.deps.directory, scope);
+      } catch (error) {
+        // A duty denial is a proposal result too: audit it before returning.
+        this.recordProposalRejection(raw, author, error);
+        throw error;
+      }
+      const lineage = [draft.detectorId, scope.enterpriseId, scope.workspaceId].join("|");
+      // Evidence is computed here, from the trusted corpus, for exactly this
+      // rule content — a proposal carries no evidence results of its own.
+      const samples = this.regressionSamplesFor(draft.detectorId);
+      const evidence = samples.length === 0 ? [] : this.computeEvidence({ ...draft, scope }, at);
+      const failed = evidence.find((entry) => entry.result !== "pass");
+      if (evidence.length === 0 || failed !== undefined) {
+        const code = evidence.length === 0 ? "RULE_EVIDENCE_MISSING" : "RULE_EVIDENCE_FAILED";
+        this.appendEvent(lineage, "rule.proposal_rejected", author, "security_handler", {
+          code,
           detectorId: draft.detectorId,
           ...(failed !== undefined ? { testRef: failed.testRef } : {}),
+        });
+        throw new SecurityError(
+          code,
+          evidence.length === 0
+            ? "no trusted regression samples cover this detector"
+            : "regression evidence shows true-secret detection no longer effective",
+          {
+            detectorId: draft.detectorId,
+            ...(failed !== undefined ? { testRef: failed.testRef } : {}),
+          },
+        );
+      }
+      const revision: RuleRevision = {
+        lineage,
+        version: this.nextVersion(lineage),
+        kind: "correction",
+        status: "proposed",
+        detectorId: draft.detectorId,
+        scope,
+        constraints: draft.constraints,
+        reason: scrubSecrets(draft.reason),
+        expiresAt: draft.expiresAt,
+        ...(draft.reviewAt !== undefined ? { reviewAt: draft.reviewAt } : {}),
+        regressionEvidence: evidence,
+        regressionBinding: {
+          ruleDigest: ruleDigest({
+            detectorId: draft.detectorId,
+            scope,
+            constraints: draft.constraints,
+          }),
+          corpusDigest: corpusDigest(samples),
+          at,
         },
-      );
-    }
-    const revision: RuleRevision = {
-      lineage,
-      version: this.nextVersion(lineage),
-      kind: "correction",
-      status: "proposed",
-      detectorId: draft.detectorId,
-      scope,
-      constraints: draft.constraints,
-      reason: scrubSecrets(draft.reason),
-      expiresAt: draft.expiresAt,
-      ...(draft.reviewAt !== undefined ? { reviewAt: draft.reviewAt } : {}),
-      regressionEvidence: evidence,
-      regressionBinding: {
-        ruleDigest: ruleDigest({
-          detectorId: draft.detectorId,
-          scope,
-          constraints: draft.constraints,
-        }),
-        corpusDigest: corpusDigest(samples),
-        at,
-      },
-      authorId: requireNonEmpty(author.actorId, "author.actorId"),
-      proposedAt: at,
-    };
-    const revisions = this.lineageOf(lineage);
-    revisions.push(revision);
-    this.appendEvent(lineage, "rule.proposed", author, "security_handler", {
-      version: revision.version,
-      authorId: revision.authorId,
-      detectorId: revision.detectorId,
-      reason: revision.reason,
-      expiresAt: revision.expiresAt,
+        authorId: requireNonEmpty(author.actorId, "author.actorId"),
+        proposedAt: at,
+      };
+      this.lineageOf(lineage).push(revision);
+      this.appendEvent(lineage, "rule.proposed", author, "security_handler", {
+        version: revision.version,
+        authorId: revision.authorId,
+        detectorId: revision.detectorId,
+        reason: revision.reason,
+        expiresAt: revision.expiresAt,
+      });
+      return structuredClone(revision);
     });
-    try {
-      this.persistOrFail();
-    } catch (error) {
-      // The durable record is the proposal; without it the operation failed.
-      revisions.pop();
-      this.events.get(lineage)?.pop();
-      throw error;
-    }
-    return structuredClone(revision);
   }
 
   /**
@@ -222,76 +221,76 @@ export class RuleCorrectionService {
     approve: boolean,
     reason: string,
   ): RuleRevision {
-    const revision = this.requireRevision(lineage, version);
-    try {
-      if (revision.kind !== "correction" || revision.status !== "proposed") {
-        throw new SecurityError(
-          "RULE_REVISION_NOT_REVIEWABLE",
-          `rule ${lineage} v${version} is not open for review`,
-          { lineage, version, status: revision.status },
-        );
+    return this.transact(() => {
+      const revision = this.requireRevision(lineage, version);
+      try {
+        if (revision.kind !== "correction" || revision.status !== "proposed") {
+          throw new SecurityError(
+            "RULE_REVISION_NOT_REVIEWABLE",
+            `rule ${lineage} v${version} is not open for review`,
+            { lineage, version, status: revision.status },
+          );
+        }
+        if (Date.parse(revision.expiresAt) <= this.now().getTime()) {
+          throw new SecurityError(
+            "RULE_REVISION_EXPIRED",
+            `rule ${lineage} v${version} has expired`,
+            {
+              lineage,
+              version,
+            },
+          );
+        }
+        assertIndependentReview(this.deps.directory, {
+          authorId: revision.authorId,
+          subjectIds: [revision.authorId],
+          reviewer,
+          action: "rule.review",
+          scope: requireScope(revision.scope),
+        });
+      } catch (error) {
+        // A denied review attempt is a review result and belongs in the audit
+        // trail before it throws.
+        this.appendEvent(lineage, "rule.review_denied", reviewer, "independent_reviewer", {
+          version,
+          reviewerId: reviewer?.actorId ?? "",
+          authorId: revision.authorId,
+          code: error instanceof SecurityError ? error.code : "SOD_REVIEW_DENIED",
+        });
+        throw error;
       }
-      if (Date.parse(revision.expiresAt) <= this.now().getTime()) {
-        throw new SecurityError(
-          "RULE_REVISION_EXPIRED",
-          `rule ${lineage} v${version} has expired`,
-          {
-            lineage,
-            version,
-          },
-        );
-      }
-      assertIndependentReview(this.deps.directory, {
-        authorId: revision.authorId,
-        subjectIds: [revision.authorId],
-        reviewer,
-        action: "rule.review",
-        scope: requireScope(revision.scope),
-      });
-    } catch (error) {
-      // A denied review attempt is a review result and belongs in the audit
-      // trail before it throws.
-      this.appendEvent(lineage, "rule.review_denied", reviewer, "independent_reviewer", {
-        version,
-        reviewerId: reviewer?.actorId ?? "",
-        authorId: revision.authorId,
-        code: error instanceof SecurityError ? error.code : "SOD_REVIEW_DENIED",
-      });
-      this.persistOrFail();
-      throw error;
-    }
-    revision.review = {
-      reviewerId: reviewer.actorId,
-      approved: approve,
-      reason: scrubSecrets(reason),
-      at: this.timestamp(),
-    };
-    revision.status = approve ? "approved" : "rejected";
-    this.appendEvent(
-      lineage,
-      approve ? "rule.review_approved" : "rule.review_rejected",
-      reviewer,
-      "independent_reviewer",
-      {
-        version,
+      revision.review = {
         reviewerId: reviewer.actorId,
-        authorId: revision.authorId,
-        reason: revision.review.reason,
-      },
-    );
-    if (approve) {
-      for (const earlier of this.lineageOf(lineage)) {
-        if (
-          earlier.version < version &&
-          earlier.kind === "correction" &&
-          earlier.status === "approved"
-        ) {
-          this.supersede(lineage, earlier);
+        approved: approve,
+        reason: scrubSecrets(reason),
+        at: this.timestamp(),
+      };
+      revision.status = approve ? "approved" : "rejected";
+      this.appendEvent(
+        lineage,
+        approve ? "rule.review_approved" : "rule.review_rejected",
+        reviewer,
+        "independent_reviewer",
+        {
+          version,
+          reviewerId: reviewer.actorId,
+          authorId: revision.authorId,
+          reason: revision.review.reason,
+        },
+      );
+      if (approve) {
+        for (const earlier of this.lineageOf(lineage)) {
+          if (
+            earlier.version < version &&
+            earlier.kind === "correction" &&
+            earlier.status === "approved"
+          ) {
+            this.supersede(lineage, earlier);
+          }
         }
       }
-    }
-    this.persistOrFail();
-    return structuredClone(revision);
+      return structuredClone(revision);
+    });
   }
 
   /**
@@ -302,139 +301,139 @@ export class RuleCorrectionService {
    * active correction and every earlier approval, permanently.
    */
   activate(lineage: string, version: number, administrator: SecurityActor): RuleRevision {
-    const revision = this.requireRevision(lineage, version);
-    try {
-      if (revision.kind !== "correction") {
-        throw new SecurityError(
-          "RULE_REVISION_NOT_REVIEWABLE",
-          `rule ${lineage} v${version} is not a correction`,
-          { lineage, version },
-        );
-      }
-      if (revision.status === "superseded" || revision.status === "rolled_back") {
-        // The core rollback invariant: a consumed or superseded approval is
-        // never restored — not by rollback, not by re-activation.
-        throw new SecurityError(
-          "RULE_APPROVAL_SUPERSEDED",
-          `the approval for rule ${lineage} v${version} is superseded and cannot be restored`,
-          { lineage, version },
-        );
-      }
-      if (revision.status === "expired") {
-        throw new SecurityError(
-          "RULE_REVISION_EXPIRED",
-          `rule ${lineage} v${version} has expired`,
-          {
-            lineage,
-            version,
-          },
-        );
-      }
-      if (revision.status !== "approved") {
-        throw new SecurityError(
-          "RULE_REVISION_NOT_REVIEWABLE",
-          `rule ${lineage} v${version} has no live approval to activate`,
-          { lineage, version, status: revision.status },
-        );
-      }
-      // Evidence is re-computed and re-bound server-side: persisted or
-      // proposal-supplied result fields are records, never authority.
-      const samples = this.regressionSamplesFor(revision.detectorId);
-      const binding = revision.regressionBinding;
-      if (samples.length === 0 || binding === undefined) {
-        throw new SecurityError(
-          "RULE_EVIDENCE_MISSING",
-          "activation requires trusted regression evidence for this detector",
-          { lineage, version },
-        );
-      }
-      const contentDigest = ruleDigest({
-        detectorId: revision.detectorId,
-        scope: requireScope(revision.scope),
-        constraints: revision.constraints,
-      });
-      if (contentDigest !== binding.ruleDigest) {
-        // The reviewed content is no longer what the evidence — and the
-        // approval — actually covered.
-        throw new SecurityError(
-          "RULE_EVIDENCE_INVALID",
-          "the committed evidence no longer covers this correction's content",
-          { lineage, version },
-        );
-      }
-      if (corpusDigest(samples) !== binding.corpusDigest) {
-        throw new SecurityError(
-          "RULE_EVIDENCE_STALE",
-          "the trusted regression corpus changed since this evidence was computed",
-          { lineage, version },
-        );
-      }
-      const evidence = this.computeEvidence(
-        {
+    return this.transact(() => {
+      const revision = this.requireRevision(lineage, version);
+      try {
+        if (revision.kind !== "correction") {
+          throw new SecurityError(
+            "RULE_REVISION_NOT_REVIEWABLE",
+            `rule ${lineage} v${version} is not a correction`,
+            { lineage, version },
+          );
+        }
+        if (revision.status === "superseded" || revision.status === "rolled_back") {
+          // The core rollback invariant: a consumed or superseded approval is
+          // never restored — not by rollback, not by re-activation.
+          throw new SecurityError(
+            "RULE_APPROVAL_SUPERSEDED",
+            `the approval for rule ${lineage} v${version} is superseded and cannot be restored`,
+            { lineage, version },
+          );
+        }
+        if (revision.status === "expired") {
+          throw new SecurityError(
+            "RULE_REVISION_EXPIRED",
+            `rule ${lineage} v${version} has expired`,
+            {
+              lineage,
+              version,
+            },
+          );
+        }
+        if (revision.status !== "approved") {
+          throw new SecurityError(
+            "RULE_REVISION_NOT_REVIEWABLE",
+            `rule ${lineage} v${version} has no live approval to activate`,
+            { lineage, version, status: revision.status },
+          );
+        }
+        // Evidence is re-computed and re-bound server-side: persisted or
+        // proposal-supplied result fields are records, never authority.
+        const samples = this.regressionSamplesFor(revision.detectorId);
+        const binding = revision.regressionBinding;
+        if (samples.length === 0 || binding === undefined) {
+          throw new SecurityError(
+            "RULE_EVIDENCE_MISSING",
+            "activation requires trusted regression evidence for this detector",
+            { lineage, version },
+          );
+        }
+        const contentDigest = ruleDigest({
           detectorId: revision.detectorId,
           scope: requireScope(revision.scope),
           constraints: revision.constraints,
-        },
-        this.timestamp(),
-      );
-      const failed = evidence.find((entry) => entry.result !== "pass");
-      if (evidence.length === 0 || failed !== undefined) {
-        throw new SecurityError(
-          "RULE_EVIDENCE_FAILED",
-          "regression evidence shows true-secret detection no longer effective",
-          { lineage, version, ...(failed !== undefined ? { testRef: failed.testRef } : {}) },
-        );
-      }
-      if (Date.parse(revision.expiresAt) <= this.now().getTime()) {
-        throw new SecurityError(
-          "RULE_REVISION_EXPIRED",
-          `rule ${lineage} v${version} has expired`,
+        });
+        if (contentDigest !== binding.ruleDigest) {
+          // The reviewed content is no longer what the evidence — and the
+          // approval — actually covered.
+          throw new SecurityError(
+            "RULE_EVIDENCE_INVALID",
+            "the committed evidence no longer covers this correction's content",
+            { lineage, version },
+          );
+        }
+        if (corpusDigest(samples) !== binding.corpusDigest) {
+          throw new SecurityError(
+            "RULE_EVIDENCE_STALE",
+            "the trusted regression corpus changed since this evidence was computed",
+            { lineage, version },
+          );
+        }
+        const evidence = this.computeEvidence(
           {
-            lineage,
+            detectorId: revision.detectorId,
+            scope: requireScope(revision.scope),
+            constraints: revision.constraints,
+          },
+          this.timestamp(),
+        );
+        const failed = evidence.find((entry) => entry.result !== "pass");
+        if (evidence.length === 0 || failed !== undefined) {
+          throw new SecurityError(
+            "RULE_EVIDENCE_FAILED",
+            "regression evidence shows true-secret detection no longer effective",
+            { lineage, version, ...(failed !== undefined ? { testRef: failed.testRef } : {}) },
+          );
+        }
+        if (Date.parse(revision.expiresAt) <= this.now().getTime()) {
+          throw new SecurityError(
+            "RULE_REVISION_EXPIRED",
+            `rule ${lineage} v${version} has expired`,
+            {
+              lineage,
+              version,
+            },
+          );
+        }
+        assertSeparateAdministrator(this.deps.directory, {
+          subjectIds: [revision.authorId, revision.review?.reviewerId ?? ""],
+          administrator,
+          action: "rule.activate",
+          scope: requireScope(revision.scope),
+        });
+      } catch (error) {
+        this.appendEvent(
+          lineage,
+          "rule.activation_denied",
+          administrator,
+          "enterprise_security_admin",
+          {
             version,
+            code: error instanceof SecurityError ? error.code : "RULE_ACTIVATION_DENIED",
           },
         );
+        throw error;
       }
-      assertSeparateAdministrator(this.deps.directory, {
-        subjectIds: [revision.authorId, revision.review?.reviewerId ?? ""],
-        administrator,
-        action: "rule.activate",
-        scope: requireScope(revision.scope),
+      for (const other of this.lineageOf(lineage)) {
+        if (other.version === version) continue;
+        if (
+          other.kind === "correction" &&
+          (other.status === "activated" || other.status === "approved")
+        ) {
+          this.supersede(lineage, other);
+        }
+      }
+      revision.status = "activated";
+      revision.activatedBy = administrator.actorId;
+      revision.activatedAt = this.timestamp();
+      this.appendEvent(lineage, "rule.activated", administrator, "enterprise_security_admin", {
+        version,
+        activatedBy: administrator.actorId,
+        authorId: revision.authorId,
+        reviewerId: revision.review?.reviewerId ?? "",
       });
-    } catch (error) {
-      this.appendEvent(
-        lineage,
-        "rule.activation_denied",
-        administrator,
-        "enterprise_security_admin",
-        {
-          version,
-          code: error instanceof SecurityError ? error.code : "RULE_ACTIVATION_DENIED",
-        },
-      );
-      this.persistOrFail();
-      throw error;
-    }
-    for (const other of this.lineageOf(lineage)) {
-      if (other.version === version) continue;
-      if (
-        other.kind === "correction" &&
-        (other.status === "activated" || other.status === "approved")
-      ) {
-        this.supersede(lineage, other);
-      }
-    }
-    revision.status = "activated";
-    revision.activatedBy = administrator.actorId;
-    revision.activatedAt = this.timestamp();
-    this.appendEvent(lineage, "rule.activated", administrator, "enterprise_security_admin", {
-      version,
-      activatedBy: administrator.actorId,
-      authorId: revision.authorId,
-      reviewerId: revision.review?.reviewerId ?? "",
+      return structuredClone(revision);
     });
-    this.persistOrFail();
-    return structuredClone(revision);
   }
 
   /**
@@ -446,74 +445,73 @@ export class RuleCorrectionService {
    * back.
    */
   rollback(lineage: string, administrator: SecurityActor): RuleRevision {
-    const active = this.lineageOf(lineage).find(
-      (revision) => revision.kind === "correction" && revision.status === "activated",
-    );
-    if (!active) {
-      this.appendEvent(
-        lineage,
-        "rule.rollback_denied",
-        administrator,
-        "enterprise_security_admin",
-        {
-          code: "RULE_NOTHING_TO_ROLL_BACK",
-        },
+    return this.transact(() => {
+      const active = this.lineageOf(lineage).find(
+        (revision) => revision.kind === "correction" && revision.status === "activated",
       );
-      this.persistOrFail();
-      throw new SecurityError("RULE_NOTHING_TO_ROLL_BACK", `no active correction on ${lineage}`, {
+      if (!active) {
+        this.appendEvent(
+          lineage,
+          "rule.rollback_denied",
+          administrator,
+          "enterprise_security_admin",
+          {
+            code: "RULE_NOTHING_TO_ROLL_BACK",
+          },
+        );
+        throw new SecurityError("RULE_NOTHING_TO_ROLL_BACK", `no active correction on ${lineage}`, {
+          lineage,
+        });
+      }
+      try {
+        assertSeparateAdministrator(this.deps.directory, {
+          subjectIds: [active.authorId, active.review?.reviewerId ?? ""],
+          administrator,
+          action: "rule.rollback",
+          scope: requireScope(active.scope),
+        });
+      } catch (error) {
+        this.appendEvent(
+          lineage,
+          "rule.rollback_denied",
+          administrator,
+          "enterprise_security_admin",
+          {
+            version: active.version,
+            code: error instanceof SecurityError ? error.code : "RULE_ROLLBACK_DENIED",
+          },
+        );
+        throw error;
+      }
+      const at = this.timestamp();
+      const entry: RuleRevision = {
         lineage,
+        version: this.nextVersion(lineage),
+        kind: "rollback",
+        status: "applied",
+        detectorId: active.detectorId,
+        scope: active.scope,
+        constraints: {},
+        reason: scrubSecrets(`rollback of version ${active.version}`),
+        expiresAt: active.expiresAt,
+        regressionEvidence: [],
+        authorId: administrator.actorId,
+        proposedAt: at,
+        rollsBackVersion: active.version,
+        rolledBackBy: administrator.actorId,
+        rolledBackAt: at,
+      };
+      active.status = "rolled_back";
+      active.rolledBackBy = administrator.actorId;
+      active.rolledBackAt = at;
+      this.lineageOf(lineage).push(entry);
+      this.appendEvent(lineage, "rule.rolled_back", administrator, "enterprise_security_admin", {
+        version: entry.version,
+        rollsBackVersion: active.version,
+        rolledBackBy: administrator.actorId,
       });
-    }
-    try {
-      assertSeparateAdministrator(this.deps.directory, {
-        subjectIds: [active.authorId, active.review?.reviewerId ?? ""],
-        administrator,
-        action: "rule.rollback",
-        scope: requireScope(active.scope),
-      });
-    } catch (error) {
-      this.appendEvent(
-        lineage,
-        "rule.rollback_denied",
-        administrator,
-        "enterprise_security_admin",
-        {
-          version: active.version,
-          code: error instanceof SecurityError ? error.code : "RULE_ROLLBACK_DENIED",
-        },
-      );
-      this.persistOrFail();
-      throw error;
-    }
-    const at = this.timestamp();
-    const entry: RuleRevision = {
-      lineage,
-      version: this.nextVersion(lineage),
-      kind: "rollback",
-      status: "applied",
-      detectorId: active.detectorId,
-      scope: active.scope,
-      constraints: {},
-      reason: scrubSecrets(`rollback of version ${active.version}`),
-      expiresAt: active.expiresAt,
-      regressionEvidence: [],
-      authorId: administrator.actorId,
-      proposedAt: at,
-      rollsBackVersion: active.version,
-      rolledBackBy: administrator.actorId,
-      rolledBackAt: at,
-    };
-    active.status = "rolled_back";
-    active.rolledBackBy = administrator.actorId;
-    active.rolledBackAt = at;
-    this.lineageOf(lineage).push(entry);
-    this.appendEvent(lineage, "rule.rolled_back", administrator, "enterprise_security_admin", {
-      version: entry.version,
-      rollsBackVersion: active.version,
-      rolledBackBy: administrator.actorId,
+      return structuredClone(entry);
     });
-    this.persistOrFail();
-    return structuredClone(entry);
   }
 
   /**
@@ -523,30 +521,37 @@ export class RuleCorrectionService {
    */
   expireOverdue(): RuleRevision[] {
     const now = this.now().getTime();
-    const expired: RuleRevision[] = [];
-    for (const [lineage, revisions] of this.revisions) {
+    const due: RuleRevision[] = [];
+    for (const revisions of this.revisions.values()) {
       for (const revision of revisions) {
+        if (revision.kind !== "correction") continue;
         if (
-          revision.kind !== "correction" ||
-          revision.status === "expired" ||
-          revision.status === "rejected" ||
-          revision.status === "superseded" ||
-          revision.status === "rolled_back"
+          revision.status !== "proposed" &&
+          revision.status !== "approved" &&
+          revision.status !== "activated"
         ) {
           continue;
         }
         if (Date.parse(revision.expiresAt) > now) continue;
+        due.push(revision);
+      }
+    }
+    if (due.length === 0) return [];
+    // One sweep, one transaction: either every expiry and its audit event is
+    // durable, or the whole sweep rolls back.
+    return this.transact(() => {
+      const expired: RuleRevision[] = [];
+      for (const revision of due) {
         revision.status = "expired";
         revision.expiredAt = this.timestamp();
-        this.appendEvent(lineage, "rule.expired", null, null, {
+        this.appendEvent(revision.lineage, "rule.expired", null, null, {
           version: revision.version,
           expiresAt: revision.expiresAt,
         });
         expired.push(structuredClone(revision));
       }
-    }
-    if (expired.length > 0) this.persistOrFail();
-    return expired;
+      return expired;
+    });
   }
 
   /**
@@ -594,6 +599,76 @@ export class RuleCorrectionService {
   }
 
   /**
+   * Run one lifecycle mutation as a single transaction over the durable
+   * record. The complete revision and audit state is snapshotted first; the
+   * mutation and its events are applied, then persisted. Any failure —
+   * including a denied operation whose audit record cannot be written —
+   * restores the snapshot and fails closed with `RULE_AUDIT_UNAVAILABLE`, so
+   * a caller that was told "failed" can never observe, serve from
+   * `activeCorrections()`, or later flush a half-applied change.
+   */
+  private transact<T>(run: () => T): T {
+    const snapshot = this.snapshotState();
+    let result: T;
+    try {
+      result = run();
+    } catch (error) {
+      // A denied operation is an audited result: its record must be durable
+      // too. Read-only failures (unknown revision, unattributable input)
+      // appended nothing and keep their own error.
+      if (this.eventCount() === snapshot.eventCount) {
+        this.restoreState(snapshot);
+        throw error;
+      }
+      try {
+        this.persistOrFail();
+      } catch (auditError) {
+        this.restoreState(snapshot);
+        throw auditError;
+      }
+      throw error;
+    }
+    try {
+      this.persistOrFail();
+    } catch (auditError) {
+      this.restoreState(snapshot);
+      throw auditError;
+    }
+    return result;
+  }
+
+  /** Deep snapshot of the revision state and audit history. */
+  private snapshotState(): RuleStateSnapshot {
+    const revisions = new Map<string, RuleRevision[]>();
+    for (const [lineage, entries] of this.revisions) {
+      revisions.set(lineage, structuredClone(entries));
+    }
+    const events = new Map<string, RuleEvent[]>();
+    for (const [lineage, entries] of this.events) {
+      events.set(lineage, structuredClone(entries));
+    }
+    return { revisions, events, eventCount: this.eventCount() };
+  }
+
+  /** Restore a snapshot: nothing a failed operation touched survives. */
+  private restoreState(snapshot: RuleStateSnapshot): void {
+    this.revisions.clear();
+    for (const [lineage, revisions] of snapshot.revisions) {
+      this.revisions.set(lineage, revisions);
+    }
+    this.events.clear();
+    for (const [lineage, events] of snapshot.events) {
+      this.events.set(lineage, events);
+    }
+  }
+
+  private eventCount(): number {
+    let total = 0;
+    for (const events of this.events.values()) total += events.length;
+    return total;
+  }
+
+  /**
    * Record one rejected proposal and persist it before the caller returns the
    * error. Validation failures, disguised exemptions, and duty denials are all
    * proposal results: the audit record must survive a restart, and a draft too
@@ -610,7 +685,6 @@ export class RuleCorrectionService {
       code: error instanceof SecurityError ? error.code : "RULE_PROPOSAL_INVALID",
       ...(paths.length > 0 ? { paths } : {}),
     });
-    this.persistOrFail();
   }
 
   /**
