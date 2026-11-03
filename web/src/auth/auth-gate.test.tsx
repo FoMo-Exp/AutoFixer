@@ -94,20 +94,15 @@ describe("auth gate", () => {
     expect(handle.bridge.signIn).toHaveBeenCalledWith({ provider_instance_id: "pi_github" });
   });
 
-  it("renders the workbench and switches among session workspaces", async () => {
+  it("renders the workbench for a signed-in session without a client-side scope switch", async () => {
     installDesktopAuth({ status: "signed_in", providers, session });
 
     render(<App />);
 
     expect(await screen.findByText("Ada Lovelace")).toBeTruthy();
     expect(ForgePilotClient.prototype.listTasks).toHaveBeenCalled();
-    const switcher = screen.getByRole("combobox", { name: "Workspace" });
-    expect(switcher.textContent).toContain("ws_alpha");
-
-    await userEvent.click(switcher);
-    await userEvent.click(screen.getByRole("option", { name: /ws_beta/ }));
-
-    expect(screen.getByRole("combobox", { name: "Workspace" }).textContent).toContain("ws_beta");
+    // Task workspace scope is server-resolved; no label-only switcher is shown.
+    expect(screen.queryByRole("combobox", { name: "Workspace" })).toBeNull();
   });
 
   it("turns a revoked desktop session into the recoverable expired gate", async () => {

@@ -7,7 +7,6 @@ import type { ApiConfig } from "./api/config";
 import { useAuth } from "./auth/useAuth";
 import type { AuthApi } from "./auth/useAuth";
 import { AuthLoadingScreen, LoginScreen, NoWorkspaceScreen } from "./auth/LoginScreen";
-import { WorkspaceSwitcher } from "./auth/WorkspaceSwitcher";
 import { useTaskStream } from "./api/hooks";
 import { CreateIdempotencyKeys } from "./api/idempotency";
 import { RepositoryPicker } from "./settings/RepositoryPicker";
@@ -522,13 +521,6 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
 
       <div className="workspace" data-view={mobileView}>
         <aside className="sidebar">
-          {auth.session && auth.session.memberships.length > 0 && (
-            <WorkspaceSwitcher
-              memberships={auth.session.memberships}
-              selected={auth.workspace}
-              onChange={auth.setWorkspace}
-            />
-          )}
           <div className="sidebar-heading">
             <div>
               <span className="eyebrow">Workspace</span>

@@ -38,9 +38,14 @@ a URL, referrer, `localStorage`, or renderer JavaScript.
   subsystem (`GET /api/v1/auth/providers` returns 404), the workbench keeps the
   launch-time local-operator bearer token path.
 
-The workspace switcher lists only the session's `memberships`. It is a display
-scope: authorization always comes from the session membership on the server,
-and a client-supplied workspace id is never treated as proof of access.
+The workbench deliberately has no workspace switch yet. `GET/POST /api/v1/tasks`
+take no workspace selector, and Node resolves session authority against one
+configured workspace (`AuthService.workspaceRole`). Relabeling tasks from
+another membership would therefore show the same data under a different name —
+a false affordance. Real switching needs a workspace-scoped task contract and
+server enforcement first; until then the session's `memberships` only decide
+the "no workspace access" gate. A client-supplied workspace id is never treated
+as proof of access.
 
 A 401 from the task surface drops the credential and shows the recoverable
 "session expired" sign-in screen. A 403 keeps the session and reports a

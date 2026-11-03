@@ -2515,33 +2515,6 @@ p {
   padding-top: 12px;
 }
 
-.workspace-switcher {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 18px;
-}
-
-.workspace-switcher-label {
-  color: var(--faint);
-  font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.workspace-switcher .custom-select-trigger {
-  min-height: 34px;
-  padding: 0 10px;
-}
-
-.workspace-switcher .custom-select-value {
-  font-size: var(--fs-meta);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .account-chip {
   align-items: center;
   border-left: 1px solid var(--line-soft);

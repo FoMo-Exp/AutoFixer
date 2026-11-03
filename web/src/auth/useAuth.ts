@@ -45,7 +45,6 @@ export function useAuth(config: ApiConfig): AuthApi {
       signIn: controller.signIn,
       cancelSignIn: controller.cancelSignIn,
       signOut: controller.signOut,
-      setWorkspace: controller.setWorkspace,
       csrfToken: controller.csrfToken,
       refreshCsrfToken: controller.refreshCsrfToken,
       handleUnauthorized: controller.handleUnauthorized,

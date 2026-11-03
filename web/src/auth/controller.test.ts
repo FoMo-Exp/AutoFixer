@@ -60,7 +60,6 @@ describe("browser auth controller", () => {
         { provider_instance_id: "pi_github", provider_type: "github" },
         { provider_instance_id: "pi_gitlab", provider_type: "gitlab" },
       ],
-      workspace: { workspace_id: "ws_alpha", role: "member" },
       session: { user: { display_name: "Ada Lovelace" } },
     });
     expect(controller.getSnapshot().session).not.toHaveProperty("csrf_token");
@@ -204,27 +203,6 @@ describe("browser auth controller", () => {
     expect(controller.getSnapshot().notice).toBeUndefined();
   });
 
-  it("switches the display workspace only within the session's memberships", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(providersResponse())
-      .mockResolvedValueOnce(jsonResponse(sessionInfo()));
-    const controller = createBrowserAuthController({
-      baseUrl: "http://127.0.0.1:4567",
-      fetchImpl,
-    });
-    await controller.initialize();
-
-    controller.setWorkspace("ws_beta");
-    expect(controller.getSnapshot().workspace).toMatchObject({
-      workspace_id: "ws_beta",
-      role: "admin",
-    });
-
-    controller.setWorkspace("ws_forged");
-    expect(controller.getSnapshot().workspace?.workspace_id).toBe("ws_beta");
-  });
-
   it("requires a membership instead of presenting a workspace-less app", async () => {
     const fetchImpl = vi
       .fn()
@@ -237,7 +215,6 @@ describe("browser auth controller", () => {
     await controller.initialize();
 
     expect(controller.getSnapshot()).toMatchObject({ status: "no_workspace" });
-    expect(controller.getSnapshot().workspace).toBeUndefined();
   });
 
   it("expires the gate at the contract expires_at time", async () => {

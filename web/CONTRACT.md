@@ -27,6 +27,14 @@ OpenAPI `0.7.0`). No UI fixture invents a field outside this baseline.
 | `POST /api/v1/auth/desktop/flows`                     | optional `provider_instance_id`                                                                                        | `DesktopFlow`                   | ✅     |
 | `POST /api/v1/auth/desktop/flows/{flow_id}/exchange`  | `secret`                                                                                                               | session grant                   | ✅     |
 
+Workspace switching is not implementable on this baseline: the task endpoints
+carry no workspace selector (path, query, or header), and `GET /api/v1/auth/session`
+memberships are not a task scope. Node resolves task authority against its
+single configured workspace (`node/src/api/auth-service.ts`, `workspaceRole`),
+so the UI must not present a switch that only changes a label. DAT-206 covers
+the auth/session client; a real switcher depends on a workspace-scoped task
+contract plus server enforcement.
+
 The Electron main process discovers an existing loopback service from launch
 configuration or a discovery file, or starts the local Node entrypoint with a
 Node executable and parses its loopback startup address. Renderer API calls

@@ -7,16 +7,17 @@ import {
   type AuthSessionView,
   type LoginProvider,
   type SessionInfo,
-  type WorkspaceMembership,
 } from "../api/auth";
 import type { JsonFetch } from "../api/client";
-import type { AuthMembership, DesktopAuthState, DesktopAuthStatus } from "../../electron/auth";
+import type { DesktopAuthState, DesktopAuthStatus } from "../../electron/auth";
 
 /**
  * Shared renderer auth state for both surfaces.
  *
- * The workspace switcher is a UI scope only: the Node service authorizes from
- * the session's membership, never from a workspace id supplied by the client.
+ * Task workspace context is resolved by the Node service from the
+ * authenticated session; this client never supplies a workspace id as
+ * authority. A UI workspace switcher needs a workspace-scoped task contract
+ * before it can change the data scope, so none is offered here.
  */
 
 export type AuthStatus = DesktopAuthStatus | "no_workspace";
@@ -29,7 +30,6 @@ export interface AuthSnapshot {
   errorCode?: string;
   /** Non-blocking permission feedback (a 403 from the task surface). */
   notice?: string;
-  workspace?: AuthMembership;
 }
 
 export interface AuthController {
@@ -40,7 +40,6 @@ export interface AuthController {
   signIn(providerInstanceId: string): Promise<void>;
   cancelSignIn(): Promise<void>;
   signOut(): Promise<void>;
-  setWorkspace(workspaceId: string): void;
   csrfToken(): string | undefined;
   refreshCsrfToken(): Promise<string | undefined>;
   handleUnauthorized(): void;
@@ -81,16 +80,6 @@ function defaultSchedule(callback: () => void, delayMs: number): () => void {
   return () => clearTimeout(timer);
 }
 
-function workspaceOf(
-  memberships: AuthMembership[],
-  selectedWorkspaceId: string | undefined,
-): AuthMembership | undefined {
-  return (
-    memberships.find((membership) => membership.workspace_id === selectedWorkspaceId) ??
-    memberships[0]
-  );
-}
-
 function browserSessionView(session: SessionInfo): AuthSessionView {
   return {
     user: session.user,
@@ -116,7 +105,6 @@ export function createBrowserAuthController(options: BrowserAuthOptions): AuthCo
 
   let snapshot: AuthSnapshot = { status: "checking", providers: [] };
   let session: SessionInfo | undefined;
-  let selectedWorkspaceId: string | undefined;
   let cancelExpiry: (() => void) | undefined;
   let initialized = false;
   let initializing: Promise<void> | undefined;
@@ -141,9 +129,7 @@ export function createBrowserAuthController(options: BrowserAuthOptions): AuthCo
         ...(snapshot.notice ? { notice: snapshot.notice } : {}),
       };
     }
-    const memberships = nextSession.memberships;
-    const workspace = workspaceOf(memberships, selectedWorkspaceId);
-    const resolvedStatus = memberships.length === 0 ? "no_workspace" : status;
+    const resolvedStatus = nextSession.memberships.length === 0 ? "no_workspace" : status;
     const expiresAt = Date.parse(nextSession.expires_at);
     if (resolvedStatus === "signed_in" && Number.isFinite(expiresAt)) {
       // Timers above 2^31-1 ms fire immediately in browsers; rearm instead of
@@ -165,7 +151,6 @@ export function createBrowserAuthController(options: BrowserAuthOptions): AuthCo
       status: resolvedStatus,
       providers: snapshot.providers,
       session: browserSessionView(nextSession),
-      ...(workspace ? { workspace } : {}),
       ...(message ? { message } : {}),
       ...(snapshot.notice ? { notice: snapshot.notice } : {}),
     };
@@ -278,11 +263,6 @@ export function createBrowserAuthController(options: BrowserAuthOptions): AuthCo
       }
       clearSession("signed_out");
     },
-    setWorkspace(workspaceId) {
-      if (!session?.memberships.some((item) => item.workspace_id === workspaceId)) return;
-      selectedWorkspaceId = workspaceId;
-      publish(snapshotWithSession("signed_in", session));
-    },
     csrfToken: () => session?.csrf_token,
     async refreshCsrfToken() {
       try {
@@ -327,18 +307,15 @@ export function createBrowserAuthController(options: BrowserAuthOptions): AuthCo
 export function createDesktopAuthController(bridge: DesktopAuthBridge): AuthController {
   const listeners = new Set<(snapshot: AuthSnapshot) => void>();
   let snapshot: AuthSnapshot = { status: "checking", providers: [] };
-  let selectedWorkspaceId: string | undefined;
   let unsubscribeBridge: (() => void) | undefined;
 
   function snapshotOf(state: DesktopAuthState): AuthSnapshot {
     const memberships = state.session?.memberships ?? [];
-    const workspace = workspaceOf(memberships, selectedWorkspaceId);
     return {
       status:
         memberships.length === 0 && state.status === "signed_in" ? "no_workspace" : state.status,
       providers: state.providers,
       ...(state.session ? { session: state.session } : {}),
-      ...(workspace ? { workspace } : {}),
       ...(state.message ? { message: state.message } : {}),
       ...(state.errorCode ? { errorCode: state.errorCode } : {}),
       ...(snapshot.notice ? { notice: snapshot.notice } : {}),
@@ -395,15 +372,6 @@ export function createDesktopAuthController(bridge: DesktopAuthBridge): AuthCont
     },
     cancelSignIn: () => run(bridge.cancelSignIn()),
     signOut: () => run(bridge.signOut()),
-    setWorkspace(workspaceId) {
-      const memberships = snapshot.session?.memberships ?? [];
-      if (!memberships.some((item) => item.workspace_id === workspaceId)) return;
-      selectedWorkspaceId = workspaceId;
-      publish({
-        ...snapshot,
-        workspace: workspaceOf(memberships, selectedWorkspaceId),
-      });
-    },
     csrfToken: () => undefined,
     refreshCsrfToken: async () => undefined,
     handleUnauthorized() {
@@ -444,7 +412,6 @@ export function createLegacyAuthController(): AuthController {
     signIn: async () => undefined,
     cancelSignIn: async () => undefined,
     signOut: async () => undefined,
-    setWorkspace: () => undefined,
     csrfToken: () => undefined,
     refreshCsrfToken: async () => undefined,
     handleUnauthorized: () => undefined,
@@ -455,5 +422,3 @@ export function createLegacyAuthController(): AuthController {
     },
   };
 }
-
-export type { WorkspaceMembership };
