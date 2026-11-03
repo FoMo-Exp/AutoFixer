@@ -58,9 +58,10 @@ Supporting codes distinguish the rest of the execution vocabulary:
 different code and a different category from `HARNESS_STOP_CONDITION` (category
 `stop`); `MODEL_EGRESS_DENIED` keeps gateway policy denials as denials;
 `MODEL_DISPATCH_FAILED` covers dispatch failures; `RISK_PROHIBITED`,
-`APPROVAL_REQUIRED`, `INVALID_REQUEST`, `ACTION_IN_FLIGHT`, `FORBIDDEN`,
-`STATE_CONFLICT`, `RATE_LIMITED`, and `INTERNAL_ERROR` cover the request,
-duplicate-submission, and policy refusals surfaces actually map into.
+`APPROVAL_REQUIRED`, `INVALID_REQUEST`, `ACTION_IN_FLIGHT`,
+`ACTION_OUTCOME_UNKNOWN`, `FORBIDDEN`, `STATE_CONFLICT`, `RATE_LIMITED`, and
+`INTERNAL_ERROR` cover the request, duplicate-submission, unknown-outcome,
+and policy refusals surfaces actually map into.
 
 Category semantics:
 
@@ -157,6 +158,22 @@ path where an agent can re-issue a failed intent:
   still in flight is refused (`ACTION_IN_FLIGHT`) instead of dispatching a
   second mutation alongside the first. The claim lasts exactly as long as
   the dispatch.
+- Cancellation is not an error result. A call cancelled before dispatch
+  produces no side effects at all: the gate's first step checks the abort
+  signal — before the in-flight claim, the attempt reservation, and any
+  failed-case change, with no `await` between check and dispatch — and the
+  call throws the signal's own reason (a standard `AbortError` by default),
+  never an envelope. It is reported even when the case's budget is already
+  spent.
+- A dispatch that was already sent when the run is cancelled has an unknown
+  outcome (`ACTION_OUTCOME_UNKNOWN`, category `unknown`): the case is
+  recorded with `uncertainMutation: true`, the governor refuses further
+  attempts with `unknown_requires_reconciliation`, the spent attempt stays
+  spent, and the same intent is refused before dispatch until it is
+  explicitly released after reconciliation against authoritative state —
+  never by the passage of time. The cancel signal is never propagated to
+  the transport to sever the in-flight request: that request owns its
+  outcome.
 - A denied intent is final: an identical re-issue is blocked. A different
   intent is a different case and dispatches normally. A success closes the
   case and refunds its attempt budget.

@@ -112,7 +112,7 @@ export interface DshRequestActionToolOptions {
 }
 
 /** Stable identity of the intent being retried: same tool, arguments and scope. */
-function intentCaseId(runId: string, params: DshRequestActionParams): string {
+export function intentCaseId(runId: string, params: DshRequestActionParams): string {
   const identity = JSON.stringify({
     run_id: runId,
     tool_id: params.tool_id,
@@ -147,6 +147,23 @@ interface FailedCase {
   decision: RetryDecision;
 }
 
+/*
+ * The tool handle. Besides the agent-facing tool it exposes the one explicit
+ * release for an unknown-outcome case: only after the authoritative state
+ * confirms what happened may the same intent dispatch again (DAT-226) —
+ * never the passage of time alone.
+ */
+export type DshRequestActionToolHandle = AgentTool<
+  typeof dshRequestActionSchema,
+  DshRequestActionDetails
+> & {
+  /**
+   * Release one intent case after reconciliation against authoritative
+   * state: forgets its failure and refunds its dispatch budget.
+   */
+  releaseIntentCase(params: DshRequestActionParams): void;
+};
+
 /**
  * The single Pi tool: an intent forwarder to dsh-control/v1.
  *
@@ -169,7 +186,7 @@ interface FailedCase {
  */
 export function createDshRequestActionTool(
   options: DshRequestActionToolOptions,
-): AgentTool<typeof dshRequestActionSchema, DshRequestActionDetails> {
+): DshRequestActionToolHandle {
   const governor = options.retryGovernor ?? new RetryGovernor();
   const failedCases = new Map<string, FailedCase>();
   /** Cases with one dispatch currently in the air. Claimed and released
@@ -301,11 +318,27 @@ export function createDshRequestActionTool(
       "early re-issue is refused without dispatch, and a duplicate of an action " +
       "that is still running is refused outright.",
     parameters: dshRequestActionSchema,
+    releaseIntentCase: (params: DshRequestActionParams): void => {
+      // Explicit release after reconciliation against authoritative state:
+      // the only way an unknown-outcome case dispatches again (DAT-226).
+      const caseId = intentCaseId(options.runId, params);
+      failedCases.delete(caseId);
+      governor.release(caseId);
+    },
     execute: async (
       toolCallId: string,
       params: DshRequestActionParams,
       signal?: AbortSignal,
     ): Promise<AgentToolResult<DshRequestActionDetails>> => {
+      // Cancelled before dispatch: no side effects at all. This check is the
+      // gate's first step — before the in-flight claim, before the attempt
+      // reservation, before any failed-case change — and nothing awaits
+      // between it and the dispatch below, so a cancellation cannot slip in
+      // after the check and before the request. A cancel is not an error
+      // result: it renders as the signal's reason (a standard AbortError by
+      // default), never as an envelope, and it reports even when the case's
+      // budget is already spent (DAT-226).
+      signal?.throwIfAborted();
       const actionId = `act_${randomUUID().replace(/-/g, "")}`;
       const caseId = intentCaseId(options.runId, params);
       const networkDestinations = params.network_destinations ?? [];
@@ -386,9 +419,6 @@ export function createDshRequestActionTool(
           },
         };
       } catch (error) {
-        if (signal?.aborted) {
-          throw error;
-        }
         // Every failure the model sees is rendered from the shared error
         // envelope (DAT-226): safe catalog text, the service-decided next
         // action, and the origin code for correlation — never raw dsh
@@ -405,6 +435,47 @@ export function createDshRequestActionTool(
           error instanceof DshError
             ? mapDshError(error, { caseRef: actionId })
             : mapForeignError(error, { caseRef: actionId });
+        if (signal?.aborted) {
+          // The dispatch was already issued and the run is cancelled: its
+          // outcome is unknown (ADR-0008). Never rethrow silently — record
+          // the case as unknown with an uncertain mutation, refuse further
+          // dispatches of the same intent until explicitly released after
+          // reconciliation, and keep the consumed attempt spent.
+          const decision = governor.decide({
+            caseId,
+            code: "ACTION_OUTCOME_UNKNOWN",
+            uncertainMutation: true,
+            deadlineMs: options.deadlineMs,
+          });
+          const envelope = buildErrorEnvelope({
+            code: "ACTION_OUTCOME_UNKNOWN",
+            traceId: mapped.envelope.trace_ref.trace_id,
+            caseRef: actionId,
+            facts: { uncertainMutation: true },
+          });
+          failedCases.set(caseId, {
+            code: envelope.code,
+            originCode,
+            deniedCapability: null,
+            uncertainMutation: true,
+            decision,
+          });
+          options.diagnostics?.record(mapped.diagnostics);
+          options.observe({
+            toolCallId,
+            toolId: params.tool_id,
+            pathScope: params.path_scope,
+            outcome: "denied",
+            actionId,
+            errorCode: originCode ?? envelope.code,
+            errorMessage: envelope.message,
+            errorEnvelope: envelope,
+          });
+          throw new Error(
+            renderAgentError(envelope, originCode),
+            error instanceof Error ? { cause: error } : undefined,
+          );
+        }
         // The producing service's own retry verdict is a fact; a model hint
         // is not, and none is consulted here.
         const serviceRetryAllowed =

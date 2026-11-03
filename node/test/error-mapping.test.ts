@@ -14,10 +14,16 @@ import {
   readSensitiveDiagnostics,
   sealDiagnostics,
 } from "../src/errors/index.js";
-import type { DiagnosticAccessPolicy, ErrorEnvelope } from "../src/errors/index.js";
+import type {
+  DiagnosticAccessPolicy,
+  ErrorEnvelope,
+  RetryDecision,
+  RetryDecisionInput,
+} from "../src/errors/index.js";
 import type { ModelGateway } from "../src/gateway/index.js";
 import {
   createDshRequestActionTool,
+  intentCaseId,
   type ActionObservation,
   type DshRequestActionParams,
 } from "../src/pi/dsh-request-action-tool.js";
@@ -183,6 +189,7 @@ interface FailingToolHarness {
   calls: () => number;
   seen: ActionObservation[];
   setNow: (ms: number) => void;
+  governor: RetryGovernor;
 }
 
 const toolParams: DshRequestActionParams = {
@@ -212,16 +219,17 @@ function failingTool(
       return Promise.reject(error);
     },
   } as unknown as DshClient;
+  const governor = new RetryGovernor({
+    maxAttempts: options.maxAttempts ?? 3,
+    clock: () => now,
+  });
   const tool = createDshRequestActionTool({
     client,
     runId: "run_1",
     sessionId: "pis_1",
     getTurnId: () => "turn_1",
     observe: (observation) => seen.push(observation),
-    retryGovernor: new RetryGovernor({
-      maxAttempts: options.maxAttempts ?? 3,
-      clock: () => now,
-    }),
+    retryGovernor: governor,
     ...(options.retryDelayMs === undefined ? {} : { retryDelayMs: options.retryDelayMs }),
     ...(options.deadlineMs === undefined ? {} : { deadlineMs: options.deadlineMs }),
     ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
@@ -230,6 +238,70 @@ function failingTool(
     tool,
     calls: () => calls,
     seen,
+    setNow: (ms: number) => {
+      now = ms;
+    },
+    governor,
+  };
+}
+
+/** A governor that records every adjudication for assertion. */
+class RecordingGovernor extends RetryGovernor {
+  readonly decisions: RetryDecision[] = [];
+  readonly inputs: RetryDecisionInput[] = [];
+
+  override decide(input: RetryDecisionInput): RetryDecision {
+    const decision = super.decide(input);
+    this.inputs.push(input);
+    this.decisions.push(decision);
+    return decision;
+  }
+}
+
+interface DeferredToolHarness {
+  tool: ReturnType<typeof createDshRequestActionTool>;
+  calls: () => number;
+  seen: ActionObservation[];
+  governor: RecordingGovernor;
+  failDispatch: (error: unknown) => void;
+  setNow: (ms: number) => void;
+}
+
+/** A tool whose dispatches stay in flight until the test fails them. */
+function deferredTool(options: { maxAttempts?: number } = {}): DeferredToolHarness {
+  const seen: ActionObservation[] = [];
+  const dispatches: Array<(error: unknown) => void> = [];
+  let calls = 0;
+  let now = 10_000;
+  const client = {
+    submitAction: () => {
+      calls += 1;
+      return new Promise((_resolve, reject) => {
+        dispatches.push(reject);
+      });
+    },
+  } as unknown as DshClient;
+  const governor = new RecordingGovernor({
+    maxAttempts: options.maxAttempts ?? 3,
+    clock: () => now,
+  });
+  const tool = createDshRequestActionTool({
+    client,
+    runId: "run_1",
+    sessionId: "pis_1",
+    getTurnId: () => "turn_1",
+    observe: (observation) => seen.push(observation),
+    retryGovernor: governor,
+  });
+  return {
+    tool,
+    calls: () => calls,
+    seen,
+    governor,
+    failDispatch: (error: unknown) => {
+      const reject = dispatches.shift();
+      reject?.(error);
+    },
     setNow: (ms: number) => {
       now = ms;
     },
@@ -448,18 +520,104 @@ describe("the tool is a controlled retry entry (DAT-226)", () => {
     expect(failure.message).toContain("[TRANSPORT_ERROR]");
   });
 
-  test("an interrupted dispatch still spends its attempt", async () => {
+  test("a cancelled call dispatches nothing and consumes nothing", async () => {
     const harness = failingTool(dshError(503, "DSH_UNAVAILABLE", "unreachable", true), {
       maxAttempts: 1,
     });
     const controller = new AbortController();
     controller.abort();
-    // The aborted dispatch consumed the case's only attempt without recording
-    // a failure, so a later identical call is refused as out of budget.
-    await expect(harness.tool.execute("tc_abort", toolParams, controller.signal)).rejects.toThrow();
+    // Cancel is not an error result: the signal's standard AbortError is
+    // thrown — no envelope, no observation, no dispatch, no spent attempt.
+    const thrown = (await harness.tool
+      .execute("tc_cancel", toolParams, controller.signal)
+      .catch((error: Error) => error)) as Error;
+    expect(thrown.name).toBe("AbortError");
+    expect(harness.calls()).toBe(0);
+    expect(harness.seen).toHaveLength(0);
+    expect(harness.governor.attemptsFor(intentCaseId("run_1", toolParams))).toBe(0);
+    // The cancelled call left nothing on the case: with a budget of one the
+    // same intent still dispatches its one attempt afterwards.
+    await failing(harness, "tc_after_cancel");
     expect(harness.calls()).toBe(1);
-    const blocked = await failing(harness, "tc_after_abort");
+  });
+
+  test("a pre-dispatch cancel reports the signal's own reason", async () => {
+    const harness = failingTool(dshError(503, "DSH_UNAVAILABLE", "unreachable", true));
+    const controller = new AbortController();
+    controller.abort(new Error("run cancelled by the operator"));
+    const thrown = (await harness.tool
+      .execute("tc_cancel_reason", toolParams, controller.signal)
+      .catch((error: Error) => error)) as Error;
+    expect(thrown.message).toBe("run cancelled by the operator");
+    expect(harness.calls()).toBe(0);
+    expect(harness.seen).toHaveLength(0);
+  });
+
+  test("a dispatch interrupted after it was sent is unknown and never auto-retried", async () => {
+    const harness = deferredTool();
+    const controller = new AbortController();
+    const first = harness.tool
+      .execute("tc_u1", toolParams, controller.signal)
+      .catch((error: Error) => error);
+    // The dispatch is already in the air when the run is cancelled; the
+    // request then fails on its own. The client is never handed the cancel
+    // signal — the in-flight request owns its outcome.
+    controller.abort();
+    harness.failDispatch(new Error("connection reset"));
+    const thrown = (await first) as Error;
     expect(harness.calls()).toBe(1);
-    expect(blocked.message).toContain("[STATE_CONFLICT]");
+    expect(thrown.message).toContain("[ACTION_OUTCOME_UNKNOWN]");
+    const envelope = envelopeOf(harness.seen, 0);
+    expect(envelope.code).toBe("ACTION_OUTCOME_UNKNOWN");
+    expect(envelope.category).toBe("unknown");
+    expect(envelope.retryable).toBe(false);
+    expect(envelope.next_action).toBe("refresh_state");
+    // The governor recorded a refusal of exactly the unknown kind, with the
+    // uncertain-mutation fact, and the spent attempt stays spent.
+    expect(harness.governor.inputs[0]).toMatchObject({
+      code: "ACTION_OUTCOME_UNKNOWN",
+      uncertainMutation: true,
+    });
+    expect(harness.governor.decisions[0]).toMatchObject({
+      retry: false,
+      reason: "unknown_requires_reconciliation",
+    });
+    expect(harness.governor.attemptsFor(intentCaseId("run_1", toolParams))).toBe(1);
+    // The same intent is refused before dispatch even much later: only an
+    // explicit release (authoritative-state reconciliation) unlocks it,
+    // never the passage of time.
+    harness.setNow(10_000_000);
+    const blocked = (await harness.tool
+      .execute("tc_u2", toolParams)
+      .catch((error: Error) => error)) as Error;
+    expect(harness.calls()).toBe(1);
+    expect(blocked.message).toContain("[ACTION_OUTCOME_UNKNOWN]");
+    expect(envelopeOf(harness.seen, 1).retryable).toBe(false);
+    expect(envelopeOf(harness.seen, 1).next_action).toBe("refresh_state");
+    // Explicit release after reconciliation lets the intent dispatch again.
+    harness.tool.releaseIntentCase(toolParams);
+    const retry = harness.tool.execute("tc_u3", toolParams).catch((error: Error) => error);
+    expect(harness.calls()).toBe(2);
+    harness.failDispatch(new Error("connection reset"));
+    await retry;
+  });
+
+  test("an unknown outcome does not block other intents", async () => {
+    const harness = deferredTool();
+    const controller = new AbortController();
+    const first = harness.tool
+      .execute("tc_o1", toolParams, controller.signal)
+      .catch((error: Error) => error);
+    controller.abort();
+    harness.failDispatch(new Error("connection reset"));
+    await first;
+    expect(harness.calls()).toBe(1);
+    // A different intent is a different case and dispatches normally.
+    const other = harness.tool
+      .execute("tc_o2", { ...toolParams, arguments: { message: "different" } })
+      .catch((error: Error) => error);
+    expect(harness.calls()).toBe(2);
+    harness.failDispatch(new Error("connection reset"));
+    await other;
   });
 });

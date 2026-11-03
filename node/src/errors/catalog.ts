@@ -310,6 +310,17 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCodeSpec>> = Object.fre
         "A duplicate submission was refused while the identical action is still running; its outcome appears in the run timeline.",
       ),
       spec(
+        "ACTION_OUTCOME_UNKNOWN",
+        "tool",
+        "unknown",
+        "reconcile",
+        "refresh_state",
+        "The outcome of this action is unknown.",
+        "Stop. Read the authoritative state and reconcile before any further write; never repeat this action speculatively.",
+        "The action was dispatched but its outcome is unknown; reconcile against the authoritative run state before any retry.",
+        "refresh_state",
+      ),
+      spec(
         "FORBIDDEN",
         "policy",
         "denial",
