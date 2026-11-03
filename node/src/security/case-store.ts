@@ -51,6 +51,12 @@ export interface OpenBlockResult {
   case: SecurityCase;
   /** True when this block opened a new case; false when it joined an open one. */
   created: boolean;
+  /**
+   * True when this exact invocation id was already recorded on the case:
+   * the call was a pure idempotent replay. A different invocation joining
+   * the same open case is NOT a duplicate — it records its own block.
+   */
+  duplicate: boolean;
 }
 
 const SCHEMA_VERSION = 1;
@@ -124,7 +130,7 @@ export class SecurityCaseStore {
     // A terminal case is final: it never absorbs a later block.
     if (existing && !isTerminalCaseState(existing.state)) {
       if (existing.blocks.some((block) => block.invocationId === identity.invocationId)) {
-        return { case: existing, created: false };
+        return { case: existing, created: false, duplicate: true };
       }
       existing.blocks.push(this.blockOf(identity, reason, safeDetail));
       existing.updatedAt = this.timestamp();
@@ -133,7 +139,7 @@ export class SecurityCaseStore {
         traceId: identity.traceId,
         reason,
       });
-      return { case: existing, created: false };
+      return { case: existing, created: false, duplicate: false };
     }
 
     const opened: SecurityCase = {
@@ -159,7 +165,7 @@ export class SecurityCaseStore {
       traceId: identity.traceId,
       reason,
     });
-    return { case: opened, created: true };
+    return { case: opened, created: true, duplicate: false };
   }
 
   /**

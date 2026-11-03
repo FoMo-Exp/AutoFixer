@@ -8,6 +8,10 @@
  * dependent work; it never redefines harness stop-condition or terminal
  * semantics and carries no harness run state.
  */
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import { describe, expect, test } from "vitest";
 
 import {
@@ -91,5 +95,23 @@ describe("DependentWorkPauseLedger release", () => {
     expect(pause.reason).not.toContain(SECRET_VALUE);
     const released = ledger.release(pause.pauseId, HANDLER, `handled ${SECRET_VALUE} rotated`);
     expect(released.releaseReason).not.toContain(SECRET_VALUE);
+  });
+});
+
+describe("DependentWorkPauseLedger durability", () => {
+  test("a hold survives a reload and still refuses self-release", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "security-pause-"));
+    const persistencePath = path.join(directory, "pauses.json");
+    const ledger = new DependentWorkPauseLedger({ persistencePath });
+    const pause = ledger.pauseDependentWork("case_1", SCOPE, "SENSITIVE_DATA_UNCERTAIN");
+    // A restart must not forget the hold: the admission boundary is only a
+    // boundary if it survives the process that recorded it.
+    const reopened = new DependentWorkPauseLedger({ persistencePath });
+    expect(reopened.isHeld(SCOPE.runId)).toBe(true);
+    expect(reopened.pauseFor(SCOPE.runId)?.pauseId).toBe(pause.pauseId);
+    expectCode(
+      () => reopened.release(pause.pauseId, { actorId: SCOPE.runId, actorKind: "run" }, "resume"),
+      "PAUSE_RELEASE_FORBIDDEN",
+    );
   });
 });

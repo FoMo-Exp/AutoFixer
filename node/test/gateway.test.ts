@@ -43,6 +43,7 @@ import {
   TEST_ENDPOINT_BASE_URL,
   TEST_SCOPE,
   memorySink,
+  securityStubs,
   testPolicyFor,
 } from "./helpers/test-gateway.js";
 
@@ -177,6 +178,7 @@ function gatewayWith(
     // Dispatch needs its required audit sink; default an in-memory one.
     sink: extras.sink ?? memorySink().sink,
     ...(extras.onIncident ? { onIncident: extras.onIncident } : {}),
+    ...securityStubs(),
     newInvocationId: counterIds(),
     now: () => new Date("2026-11-03T00:00:00Z"),
   });
@@ -276,6 +278,7 @@ describe("gateway denials", () => {
       policyResolver: denyAllPolicyResolver,
       credentials: createStaticCredentialStore({}),
       adapter,
+      ...securityStubs(),
       newInvocationId: counterIds(),
     });
     await expectDenial(
@@ -406,6 +409,7 @@ describe("gateway denials", () => {
       adapter,
       scanner: createPatternSecretScanner(),
       sink: memorySink().sink,
+      ...securityStubs(),
       newInvocationId: counterIds(),
     });
     let reads = 0;

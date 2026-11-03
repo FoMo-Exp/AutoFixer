@@ -12,6 +12,7 @@ import { createAssistantMessageEventStream } from "@mariozechner/pi-ai";
 import { describe, expect, test } from "vitest";
 
 import type {
+  DependentWorkHold,
   GatewayCaseIntake,
   GatewayRequestIdentity,
   ModelEgressDeniedError,
@@ -148,7 +149,14 @@ function realIntake(): {
   return { intake: service, service, caseStore };
 }
 
-function gatewayWith(caseIntake: GatewayCaseIntake | undefined, onIncident?: (m: string) => void) {
+function stubHold(): DependentWorkHold {
+  return { heldCaseFor: () => undefined };
+}
+
+function gatewayWith(
+  security: { caseIntake: GatewayCaseIntake; dependentWorkHold: DependentWorkHold },
+  onIncident?: (m: string) => void,
+) {
   const adapter = spyAdapter();
   const gateway = createModelGateway({
     policyResolver: createStaticPolicyResolver(testPolicyFor(TEST_MODEL), TEST_SCOPE),
@@ -156,7 +164,7 @@ function gatewayWith(caseIntake: GatewayCaseIntake | undefined, onIncident?: (m:
     adapter: adapter.adapter,
     scanner: createPatternSecretScanner(),
     sink: memorySink().sink,
-    ...(caseIntake ? { caseIntake } : {}),
+    ...security,
     ...(onIncident ? { onIncident } : {}),
   });
   return { gateway, adapter };
@@ -165,7 +173,10 @@ function gatewayWith(caseIntake: GatewayCaseIntake | undefined, onIncident?: (m:
 describe("gateway disposal cases (DAT-210)", () => {
   test("a secret-gate block opens a disposal case and still sends zero bytes", async () => {
     const spy = intakeSpy();
-    const { gateway, adapter } = gatewayWith(spy.intake);
+    const { gateway, adapter } = gatewayWith({
+      caseIntake: spy.intake,
+      dependentWorkHold: stubHold(),
+    });
     let thrown: ModelEgressDeniedError | undefined;
     try {
       await gateway.dispatch(TEST_MODEL, SECRET_CONTEXT, undefined, TEST_BINDING);
@@ -192,26 +203,48 @@ describe("gateway disposal cases (DAT-210)", () => {
     expect(thrown?.message ?? "").not.toContain(SECRET_VALUE);
   });
 
-  test("duplicate blocking associates the same case through the gateway", async () => {
-    const { intake, caseStore } = realIntake();
-    const { gateway, adapter } = gatewayWith(intake);
+  test("a held run's later invocations are rejected at admission and carry their case", async () => {
+    const { service, caseStore } = realIntake();
+    const { gateway, adapter } = gatewayWith({
+      caseIntake: service,
+      dependentWorkHold: service,
+    });
     const first = await gateway
       .dispatch(TEST_MODEL, SECRET_CONTEXT, undefined, TEST_BINDING)
       .catch((error: ModelEgressDeniedError) => error);
+    expect((first as ModelEgressDeniedError).reason).toBe("SENSITIVE_DATA_UNCERTAIN");
+    const caseId = (first as ModelEgressDeniedError).caseId as string;
+    expect(caseId).toBeTruthy();
+    // The run is now held: its dependent work never re-enters the gateway —
+    // the rejection happens before policy, scan, or any dispatch.
     const second = await gateway
       .dispatch(TEST_MODEL, SECRET_CONTEXT, undefined, TEST_BINDING)
       .catch((error: ModelEgressDeniedError) => error);
-    expect((first as ModelEgressDeniedError).caseId).toBeTruthy();
-    expect((second as ModelEgressDeniedError).caseId).toBe(
-      (first as ModelEgressDeniedError).caseId,
-    );
+    expect((second as ModelEgressDeniedError).reason).toBe("DEPENDENT_WORK_HELD");
+    expect((second as ModelEgressDeniedError).code).toBe("SECURITY_REVIEW_REQUIRED");
+    // The rejection points at the same case; it opens none of its own.
+    expect((second as ModelEgressDeniedError).caseId).toBe(caseId);
     expect(adapter.calls).toHaveLength(0);
-    // One case, one block association per invocation, nothing duplicated.
-    const opened = [...caseStore.events((first as ModelEgressDeniedError).caseId as string)];
-    expect(opened.filter((event) => event.type === "case.opened")).toHaveLength(1);
-    expect(
-      opened.filter((event) => event.type === "notification.undeliverable").length,
-    ).toBeLessThanOrEqual(1);
+    const events = [...caseStore.events(caseId)];
+    expect(events.filter((event) => event.type === "case.opened")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "block.recorded")).toHaveLength(1);
+  });
+
+  test("only the affected run is held; unrelated runs keep working", async () => {
+    const { service } = realIntake();
+    const { gateway, adapter } = gatewayWith({
+      caseIntake: service,
+      dependentWorkHold: service,
+    });
+    await gateway
+      .dispatch(TEST_MODEL, SECRET_CONTEXT, undefined, TEST_BINDING)
+      .catch((error: ModelEgressDeniedError) => error);
+    const otherRun = await gateway.dispatch(TEST_MODEL, CLEAN_CONTEXT, undefined, {
+      ...TEST_BINDING,
+      runId: "run_other",
+    });
+    expect(otherRun).toBeTruthy();
+    expect(adapter.calls).toHaveLength(1);
   });
 
   test("a failing case intake never unblocks the request", async () => {
@@ -219,7 +252,33 @@ describe("gateway disposal cases (DAT-210)", () => {
     const failing: GatewayCaseIntake = {
       recordGatewayBlock: () => Promise.reject(new Error("case store down")),
     };
-    const { gateway, adapter } = gatewayWith(failing, (message) => incidents.push(message));
+    const { gateway, adapter } = gatewayWith(
+      { caseIntake: failing, dependentWorkHold: stubHold() },
+      (message) => incidents.push(message),
+    );
+    let thrown: ModelEgressDeniedError | undefined;
+    try {
+      await gateway.dispatch(TEST_MODEL, SECRET_CONTEXT, undefined, TEST_BINDING);
+    } catch (error) {
+      thrown = error as ModelEgressDeniedError;
+    }
+    expect(thrown?.reason).toBe("SENSITIVE_DATA_UNCERTAIN");
+    expect(thrown?.caseId).toBeUndefined();
+    expect(adapter.calls).toHaveLength(0);
+    expect(incidents.length).toBeGreaterThan(0);
+  });
+
+  test("an unconfigured case intake records an incident and the block still stands", async () => {
+    const incidents: string[] = [];
+    // Untyped callers can omit the required intake; the gateway must still
+    // fail closed — the denial stands and the gap is loudly recorded.
+    const { gateway, adapter } = gatewayWith(
+      {
+        caseIntake: undefined as unknown as GatewayCaseIntake,
+        dependentWorkHold: stubHold(),
+      },
+      (message) => incidents.push(message),
+    );
     let thrown: ModelEgressDeniedError | undefined;
     try {
       await gateway.dispatch(TEST_MODEL, SECRET_CONTEXT, undefined, TEST_BINDING);
@@ -234,7 +293,10 @@ describe("gateway disposal cases (DAT-210)", () => {
 
   test("clean dispatches never open a case", async () => {
     const spy = intakeSpy();
-    const { gateway, adapter } = gatewayWith(spy.intake);
+    const { gateway, adapter } = gatewayWith({
+      caseIntake: spy.intake,
+      dependentWorkHold: stubHold(),
+    });
     const stream = await gateway.dispatch(TEST_MODEL, CLEAN_CONTEXT, undefined, TEST_BINDING);
     expect(stream).toBeTruthy();
     expect(adapter.calls).toHaveLength(1);
@@ -252,6 +314,7 @@ describe("gateway disposal cases (DAT-210)", () => {
       scanner: createPatternSecretScanner(),
       sink: memorySink().sink,
       caseIntake: spy.intake,
+      dependentWorkHold: stubHold(),
     });
     await expect(
       gateway.dispatch(

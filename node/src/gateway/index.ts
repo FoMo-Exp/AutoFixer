@@ -55,11 +55,13 @@ export {
   MODEL_EGRESS_DENIED,
   ModelDispatchError,
   ModelEgressDeniedError,
+  SECURITY_REVIEW_REQUIRED,
   SENSITIVE_DATA_UNCERTAIN,
 } from "./types.js";
 export type {
   ApprovedEndpoint,
   DataClass,
+  DependentWorkHold,
   GatewayAttemptDestination,
   GatewayAttemptEvent,
   GatewayBindingIdentity,

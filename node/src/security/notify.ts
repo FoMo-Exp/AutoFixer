@@ -11,6 +11,8 @@
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
 import { scrubSecrets } from "../gateway/redact.js";
 import { SecurityError, requireNonEmpty } from "./types.js";
@@ -55,6 +57,21 @@ export interface SecurityNotification {
 /** Delivery seam (mail, chat, pager…). Failures surface, never silently drop. */
 export interface NotificationSink {
   send(notification: SecurityNotification): void | Promise<void>;
+}
+
+/**
+ * Durable deployment-grade notification sink: one JSONL line per
+ * notification (non-secret by construction). A write failure propagates to
+ * the notifier, which records the delivery as undeliverable — a dropped
+ * notification is always explicit.
+ */
+export function createFileNotificationSink(file: string): NotificationSink {
+  fs.mkdirSync(path.dirname(file), { mode: 0o700, recursive: true });
+  return {
+    send(notification: SecurityNotification): void {
+      fs.appendFileSync(file, `${JSON.stringify(notification)}\n`, { mode: 0o600 });
+    },
+  };
 }
 
 export interface NotifyResult {

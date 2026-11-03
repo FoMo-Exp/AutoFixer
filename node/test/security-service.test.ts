@@ -128,6 +128,49 @@ describe("SecurityCaseService.recordBlock", () => {
     expect(sent).toHaveLength(1);
   });
 
+  test("a new invocation joining the open case still quarantines its own raw content", async () => {
+    const { service, sent } = buildService();
+    const first = await service.recordBlock({
+      identity: IDENTITY,
+      reason: "SENSITIVE_DATA_UNCERTAIN",
+      safeDetail: "blocked",
+      rawContent: `{"prompt":"token ${SECRET_VALUE}"}`,
+    });
+    const second = await service.recordBlock({
+      identity: { ...IDENTITY, invocationId: "inv_2", traceId: "trace_2" },
+      reason: "SENSITIVE_DATA_UNCERTAIN",
+      safeDetail: "blocked",
+      rawContent: `{"prompt":"second ${SECRET_VALUE}"}`,
+    });
+    expect(second.created).toBe(false);
+    expect(second.case.caseId).toBe(first.case.caseId);
+    // Every newly blocked request is retained in quarantine — not only the
+    // one that opened the case.
+    expect(second.case.quarantineIds).toHaveLength(2);
+    expect(second.quarantineId).toBeDefined();
+    expect(second.quarantineId).not.toBe(first.quarantineId);
+    const grant = service.grantQuarantineAccess(
+      second.quarantineId as string,
+      "human_handler",
+      HANDLER,
+    );
+    expect(
+      service.inspectQuarantine(second.quarantineId as string, HANDLER, grant.grantId),
+    ).toContain("second");
+    // One notification per case; and a same-invocation replay is a true
+    // no-op that quarantines nothing new.
+    expect(sent).toHaveLength(1);
+    const again = await service.recordBlock({
+      identity: IDENTITY,
+      reason: "SENSITIVE_DATA_UNCERTAIN",
+      safeDetail: "blocked",
+      rawContent: "replayed content",
+    });
+    expect(again.quarantineId).toBeUndefined();
+    expect(again.case.quarantineIds).toHaveLength(2);
+    expect(sent).toHaveLength(1);
+  });
+
   test("notifications and case history never carry the raw quarantined content", async () => {
     const { service, sent, caseStore } = buildService();
     const result = await service.recordBlock({
@@ -165,8 +208,10 @@ describe("SecurityCaseService disposition", () => {
     });
     service.transition(opened.caseId, "handling", HANDLER);
     service.transition(opened.caseId, "awaiting_review", HANDLER);
+    expect(service.heldCaseFor(IDENTITY.runId)?.caseId).toBe(opened.caseId);
     service.transition(opened.caseId, "resolved", REVIEWER);
     expect(pauses.isHeld(IDENTITY.runId)).toBe(false);
+    expect(service.heldCaseFor(IDENTITY.runId)).toBeUndefined();
     expect(caseStore.get(opened.caseId)?.state).toBe("resolved");
   });
 
@@ -208,7 +253,7 @@ describe("SecurityCaseService quarantine inspection", () => {
     const quarantineId = result.case.quarantineIds[0] as string;
     expect(() => service.inspectQuarantine(quarantineId, HANDLER)).toThrow(SecurityError);
     const grant = service.grantQuarantineAccess(quarantineId, "human_handler", HANDLER);
-    const content = service.inspectQuarantine(quarantineId, HANDLER, grant);
+    const content = service.inspectQuarantine(quarantineId, HANDLER, grant.grantId);
     expect(content).toContain(SECRET_VALUE);
     const types = caseStore.events(result.case.caseId).map((event) => event.type);
     expect(types).toContain("quarantine.access_granted");

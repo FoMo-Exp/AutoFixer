@@ -120,6 +120,21 @@ function metaOf(record: QuarantineRecord): QuarantineRecordMeta {
   };
 }
 
+/**
+ * Authorization-boundary principal check: a real, identified human or service
+ * actor. Anonymous shapes and `run` actors are refused outright — a run never
+ * grants or reads quarantined context.
+ */
+function isUsablePrincipal(actor: SecurityActor): boolean {
+  return (
+    typeof actor === "object" &&
+    actor !== null &&
+    typeof actor.actorId === "string" &&
+    actor.actorId.length > 0 &&
+    actor.actorKind !== "run"
+  );
+}
+
 export class EncryptedQuarantine {
   private readonly records = new Map<string, QuarantineRecord>();
   private readonly grants = new Map<string, QuarantineAccessGrant>();
@@ -175,7 +190,9 @@ export class EncryptedQuarantine {
   /**
    * Grant one subject scoped, time-limited inspection of one record. Human
    * or service principals only — a run never authorizes its own inspection —
-   * and the grant is separate from case handling or notification.
+   * and the grant is separate from case handling or notification. The calling
+   * actor is validated at this authorization boundary, before anything is
+   * recorded or issued.
    */
   grantAccess(quarantineId: string, subject: string, actor: SecurityActor): QuarantineAccessGrant {
     requireNonEmpty(subject, "subject");
@@ -185,10 +202,8 @@ export class EncryptedQuarantine {
         quarantineId,
       });
     }
-    if (actor?.actorKind === "run") {
-      this.emit("quarantine.access_denied", record.caseId, quarantineId, actor, {
-        action: "grant",
-      });
+    if (!isUsablePrincipal(actor)) {
+      this.emit("quarantine.access_denied", record.caseId, quarantineId, null, { action: "grant" });
       throw new SecurityError(
         "QUARANTINE_ACCESS_DENIED",
         "a run never grants or reads quarantined context",
@@ -221,11 +236,13 @@ export class EncryptedQuarantine {
   }
 
   /**
-   * View quarantined content under one scoped grant. Every attempt — allowed
-   * or denied — produces an audit event; the decrypted content is returned
-   * only to the grant's own subject while the grant and record are live.
+   * View quarantined content under one scoped grant, addressed by its id.
+   * Only a grant this store actually issued — looked up here, never a
+   * caller-supplied object — can authorize a read: the authorization is
+   * unforgeable. The calling actor is validated at this boundary before any
+   * decrypt, and every attempt — allowed or denied — produces an audit event.
    */
-  read(quarantineId: string, grant: QuarantineAccessGrant, actor: SecurityActor): string {
+  read(quarantineId: string, grantId: string, actor: SecurityActor): string {
     const record = this.records.get(quarantineId);
     if (!record) {
       throw new SecurityError("QUARANTINE_NOT_FOUND", `no quarantine record ${quarantineId}`, {
@@ -233,25 +250,29 @@ export class EncryptedQuarantine {
       });
     }
     const deny = (detail: Record<string, string | number | boolean>): never => {
-      this.emit("quarantine.access_denied", record.caseId, quarantineId, actor, detail);
+      this.emit("quarantine.access_denied", record.caseId, quarantineId, null, detail);
       throw new SecurityError(
         "QUARANTINE_ACCESS_DENIED",
         "quarantined context requires a separately granted scoped access",
         { quarantineId },
       );
     };
+    // Authorization boundary first: an anonymous or run principal never
+    // reads, whatever it presents.
+    if (!isUsablePrincipal(actor)) {
+      return deny({ action: "read" });
+    }
     if (this.isPast(record.expiresAt)) {
       this.emit("quarantine.expired", record.caseId, quarantineId, null, { grantId: "" });
       throw new SecurityError("QUARANTINE_EXPIRED", `quarantine record ${quarantineId} expired`, {
         quarantineId,
       });
     }
-    if (
-      !grant ||
-      grant.quarantineId !== quarantineId ||
-      actor?.actorKind === "run" ||
-      grant.subject !== actor.actorId
-    ) {
+    // The grant must be one this store issued, for this record, to this
+    // subject: a forged id or borrowed grant reads nothing.
+    const grant =
+      typeof grantId === "string" && grantId.length > 0 ? this.grants.get(grantId) : undefined;
+    if (!grant || grant.quarantineId !== quarantineId || grant.subject !== actor.actorId) {
       return deny({ action: "read" });
     }
     if (this.isPast(grant.expiresAt)) {

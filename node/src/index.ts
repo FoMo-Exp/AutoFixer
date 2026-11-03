@@ -1,5 +1,8 @@
 import type http from "node:http";
 
+import { randomBytes } from "node:crypto";
+import fs from "node:fs";
+
 import type { Api, Model } from "@mariozechner/pi-ai";
 
 import { buildOpenApiDocument } from "./api/openapi.js";
@@ -10,7 +13,7 @@ import { createApiServer } from "./api/server.js";
 import { TaskService } from "./api/task-service.js";
 import { TaskStore } from "./api/task-store.js";
 import type { OrchestratorConfig } from "./config.js";
-import { configFromEnv } from "./config.js";
+import { configFromEnv, defaultSecurityStatePath } from "./config.js";
 import type { ControlPlaneDb } from "./control-plane/index.js";
 import {
   createIdentityRepositories,
@@ -31,6 +34,15 @@ import {
 } from "./gateway/index.js";
 import type { ModelGateway } from "./gateway/index.js";
 import { resolveConfiguredModel } from "./pi/model.js";
+import {
+  DependentWorkPauseLedger,
+  EncryptedQuarantine,
+  SecurityCaseService,
+  SecurityCaseStore,
+  SecurityNotifier,
+  createFileNotificationSink,
+} from "./security/index.js";
+import type { QuarantineKeyProvider, SecurityRoleDirectory } from "./security/index.js";
 
 export interface OrchestratorOptions {
   config: OrchestratorConfig;
@@ -68,6 +80,76 @@ export interface OrchestratorHandle {
 }
 
 /**
+ * Quarantine key seam backed by a protected key file. Missing, unreadable, or
+ * malformed key material returns nothing: seals fail closed and nothing is
+ * ever stored in plaintext (DAT-210).
+ */
+function fileQuarantineKeyProvider(keyFile: string | undefined): QuarantineKeyProvider {
+  return {
+    keyId: "quarantine-key-file",
+    currentKey(): Buffer | undefined {
+      if (!keyFile) return undefined;
+      try {
+        const key = Buffer.from(fs.readFileSync(keyFile, "utf8").trim(), "base64");
+        return key.length === 32 ? key : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+  };
+}
+
+/**
+ * The deployment security disposal machinery (DAT-210): durable case
+ * history, durable dependent-work holds, encrypted quarantine, and handler
+ * notification with escalation. The production gateway receives this service
+ * as both its disposal-case intake and its admission-boundary hold — the
+ * gateway cannot be deployed without either.
+ */
+function deploymentSecurity(config: OrchestratorConfig): SecurityCaseService {
+  const referenceSecret = config.securityReferenceSecret
+    ? Buffer.from(config.securityReferenceSecret, "utf8")
+    : randomBytes(32);
+  const directory: SecurityRoleDirectory = {
+    resolve: () => ({
+      workspaceHandlers: (config.securityHandlerIds ?? []).map((recipientId) => ({
+        recipientId,
+        role: "workspace_security_handler" as const,
+      })),
+      enterpriseAdmins: (config.securityAdminIds ?? []).map((recipientId) => ({
+        recipientId,
+        role: "enterprise_security_admin" as const,
+      })),
+    }),
+  };
+  return new SecurityCaseService({
+    caseStore: new SecurityCaseStore(
+      config.securityCaseStateFile ? { persistencePath: config.securityCaseStateFile } : {},
+    ),
+    pauses: new DependentWorkPauseLedger(
+      config.securityPauseStateFile ? { persistencePath: config.securityPauseStateFile } : {},
+    ),
+    notifier: new SecurityNotifier({
+      directory,
+      sink: createFileNotificationSink(
+        config.securityNotificationsFile ??
+          defaultSecurityStatePath("security-notifications.jsonl"),
+      ),
+      referenceSecret,
+    }),
+    quarantine: new EncryptedQuarantine({
+      keyProvider: fileQuarantineKeyProvider(config.quarantineKeyFile),
+      // Bounded retention; the enterprise lifecycle governs longer terms.
+      retentionSeconds: 30 * 24 * 60 * 60,
+      ...(config.securityQuarantineStateFile
+        ? { persistencePath: config.securityQuarantineStateFile }
+        : {}),
+    }),
+    referenceSecret,
+  });
+}
+
+/**
  * The deployment model gateway: policy and credentials come from the
  * protected gateway files only.
  *
@@ -86,6 +168,9 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
     );
   }
   const scope = { enterpriseId: config.enterpriseId, workspaceId: config.workspaceId };
+  // Secret-gate blocks always open a disposal case and hold the affected
+  // run's dependent work (DAT-210): the production gateway carries both.
+  const security = deploymentSecurity(config);
   return createModelGateway({
     policyResolver: config.gatewayPolicyFile
       ? loadGatewayPolicyFile(config.gatewayPolicyFile, scope)
@@ -99,6 +184,8 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
     // (DAT-209); a deployment may swap in another SecretScanner backend.
     scanner: createPatternSecretScanner(),
     ...(config.gatewayAuditFile ? { sink: createFileEventSink(config.gatewayAuditFile) } : {}),
+    caseIntake: security,
+    dependentWorkHold: security,
   });
 }
 

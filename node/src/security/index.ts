@@ -31,7 +31,12 @@ export type { CaseStoreOptions, OpenBlockInput, OpenBlockResult } from "./case-s
 export { DependentWorkPauseLedger } from "./pause.js";
 export type { PauseLedgerOptions, RunPause } from "./pause.js";
 
-export { SecurityNotifier, mintCaseReference, verifyCaseReference } from "./notify.js";
+export {
+  SecurityNotifier,
+  createFileNotificationSink,
+  mintCaseReference,
+  verifyCaseReference,
+} from "./notify.js";
 export type {
   NotifierDeps,
   NotificationSink,

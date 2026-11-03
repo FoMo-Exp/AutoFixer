@@ -78,7 +78,7 @@ describe("EncryptedQuarantine sealing", () => {
     expect(persisted).not.toContain(SECRET_VALUE);
     expect(persisted).not.toContain("messages");
     const grant = quarantine.grantAccess(sealed.quarantineId, "human_handler", HANDLER);
-    expect(quarantine.read(sealed.quarantineId, grant, HANDLER)).toBe(SECRET_CONTEXT);
+    expect(quarantine.read(sealed.quarantineId, grant.grantId, HANDLER)).toBe(SECRET_CONTEXT);
   });
 
   test("an unavailable key fails closed and never stores plaintext", () => {
@@ -102,12 +102,9 @@ describe("EncryptedQuarantine access control", () => {
     const quarantine = quarantineWith({ onEvent });
     const sealed = quarantine.seal("case_1", SECRET_CONTEXT);
     if (!("quarantineId" in sealed)) return;
-    expectCode(
-      () => quarantine.read(sealed.quarantineId, undefined as never, HANDLER),
-      "QUARANTINE_ACCESS_DENIED",
-    );
+    expectCode(() => quarantine.read(sealed.quarantineId, "", HANDLER), "QUARANTINE_ACCESS_DENIED");
     const grant = quarantine.grantAccess(sealed.quarantineId, "human_handler", HANDLER);
-    expect(quarantine.read(sealed.quarantineId, grant, HANDLER)).toBe(SECRET_CONTEXT);
+    expect(quarantine.read(sealed.quarantineId, grant.grantId, HANDLER)).toBe(SECRET_CONTEXT);
     const types = events.map((event) => event.type);
     expect(types).toContain("quarantine.sealed");
     expect(types).toContain("quarantine.access_granted");
@@ -123,9 +120,62 @@ describe("EncryptedQuarantine access control", () => {
     if (!("quarantineId" in sealed)) return;
     const grant = quarantine.grantAccess(sealed.quarantineId, "human_handler", HANDLER);
     expectCode(
-      () => quarantine.read(sealed.quarantineId, grant, OTHER),
+      () => quarantine.read(sealed.quarantineId, grant.grantId, OTHER),
       "QUARANTINE_ACCESS_DENIED",
     );
+  });
+
+  test("only grants actually issued by the store are honored — a forged grant never reads", () => {
+    const { events, onEvent } = auditRecorder();
+    const quarantine = quarantineWith({ onEvent });
+    const sealedA = quarantine.seal("case_1", SECRET_CONTEXT);
+    const sealedB = quarantine.seal("case_2", "other content");
+    if (!("quarantineId" in sealedA) || !("quarantineId" in sealedB)) return;
+    // A caller-supplied grant id that was never issued in this store.
+    expectCode(
+      () => quarantine.read(sealedA.quarantineId, "forged-grant-id", HANDLER),
+      "QUARANTINE_ACCESS_DENIED",
+    );
+    // A genuine grant for one record never opens another record.
+    const grantForA = quarantine.grantAccess(sealedA.quarantineId, "human_handler", HANDLER);
+    expectCode(
+      () => quarantine.read(sealedB.quarantineId, grantForA.grantId, HANDLER),
+      "QUARANTINE_ACCESS_DENIED",
+    );
+    expect(quarantine.read(sealedA.quarantineId, grantForA.grantId, HANDLER)).toBe(SECRET_CONTEXT);
+    expect(events.map((event) => event.type)).toContain("quarantine.access_denied");
+    expect(JSON.stringify(events)).not.toContain(SECRET_VALUE);
+  });
+
+  test("the authorization boundary validates the calling actor before anything is decrypted", () => {
+    const quarantine = quarantineWith();
+    const sealed = quarantine.seal("case_1", SECRET_CONTEXT);
+    if (!("quarantineId" in sealed)) return;
+    const grant = quarantine.grantAccess(sealed.quarantineId, "human_handler", HANDLER);
+    // Anonymous or malformed actors are refused even with a genuine grant.
+    expectCode(
+      () =>
+        quarantine.read(sealed.quarantineId, grant.grantId, { actorId: "", actorKind: "human" }),
+      "QUARANTINE_ACCESS_DENIED",
+    );
+    expectCode(
+      () =>
+        quarantine.read(sealed.quarantineId, grant.grantId, {
+          actorId: "human_handler",
+          actorKind: "run",
+        }),
+      "QUARANTINE_ACCESS_DENIED",
+    );
+    expectCode(
+      () =>
+        quarantine.grantAccess(sealed.quarantineId, "human_handler", {
+          actorId: "",
+          actorKind: "human",
+        }),
+      "QUARANTINE_ACCESS_DENIED",
+    );
+    // The legitimate viewer still reads.
+    expect(quarantine.read(sealed.quarantineId, grant.grantId, HANDLER)).toBe(SECRET_CONTEXT);
   });
 
   test("an expired grant refuses access while the record is still retained", () => {
@@ -135,7 +185,10 @@ describe("EncryptedQuarantine access control", () => {
     if (!("quarantineId" in sealed)) return;
     const grant = quarantine.grantAccess(sealed.quarantineId, "human_handler", HANDLER);
     now = new Date("2026-11-03T02:00:00.000Z");
-    expectCode(() => quarantine.read(sealed.quarantineId, grant, HANDLER), "QUARANTINE_EXPIRED");
+    expectCode(
+      () => quarantine.read(sealed.quarantineId, grant.grantId, HANDLER),
+      "QUARANTINE_EXPIRED",
+    );
     expect(quarantine.get(sealed.quarantineId)).toBeDefined();
   });
 
@@ -164,7 +217,10 @@ describe("EncryptedQuarantine retention", () => {
     if (!("quarantineId" in sealed)) return;
     const grant = quarantine.grantAccess(sealed.quarantineId, "human_handler", HANDLER);
     now = new Date("2026-11-03T02:00:00.000Z");
-    expectCode(() => quarantine.read(sealed.quarantineId, grant, HANDLER), "QUARANTINE_EXPIRED");
+    expectCode(
+      () => quarantine.read(sealed.quarantineId, grant.grantId, HANDLER),
+      "QUARANTINE_EXPIRED",
+    );
     const swept = quarantine.sweep();
     expect(swept).toEqual([sealed.quarantineId]);
     expect(quarantine.get(sealed.quarantineId)).toBeUndefined();

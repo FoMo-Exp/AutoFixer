@@ -151,7 +151,13 @@ export type GatewayDenyReason =
   /** A deterministic policy change was claimed without its authorization. */
   | "AUTHORIZATION_MISSING"
   /** The request carries a data class the destination is not authorized for. */
-  | "DATA_CLASS_NOT_AUTHORIZED";
+  | "DATA_CLASS_NOT_AUTHORIZED"
+  /**
+   * The run's dependent work is held pending security case disposition
+   * (DAT-210): the hold is checked at the admission boundary and the run
+   * cannot proceed until an authorized human releases it.
+   */
+  | "DEPENDENT_WORK_HELD";
 
 /** Stable redacted error contract (ADR-0005): all gateway denials share it. */
 export const MODEL_EGRESS_DENIED = "MODEL_EGRESS_DENIED";
@@ -161,6 +167,13 @@ export const MODEL_EGRESS_DENIED = "MODEL_EGRESS_DENIED";
  * code when secret removal cannot be established by the configured checks.
  */
 export const SENSITIVE_DATA_UNCERTAIN = "SENSITIVE_DATA_UNCERTAIN";
+
+/**
+ * Stable redacted error contract (ADR-0005): a security case is holding the
+ * run's dependent work. Not a retryable failure and never a bypass: only the
+ * case disposition releases the hold.
+ */
+export const SECURITY_REVIEW_REQUIRED = "SECURITY_REVIEW_REQUIRED";
 
 /** A policy, scan, or configuration denial. Never retried, never bypassable. */
 export class ModelEgressDeniedError extends Error {
@@ -283,4 +296,16 @@ export interface GatewayCaseIntake {
     /** Raw blocked request for encrypted quarantine; never for logs. */
     rawContent?: string;
   }): Promise<{ caseId: string; caseReference: string }>;
+}
+
+/**
+ * The dependent-work hold to consult at the work-admission boundary (DAT-210).
+ * Structurally satisfied by the security module's `SecurityCaseService`. A
+ * held run's dependent work — its later gateway invocations included — is
+ * rejected until an authorized disposition releases the hold; unrelated runs
+ * are never affected.
+ */
+export interface DependentWorkHold {
+  /** The open security case holding this run's dependent work, if any. */
+  heldCaseFor(runId: string): { caseId: string; caseReference: string } | undefined;
 }

@@ -15,6 +15,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
 import { scrubSecrets } from "../gateway/redact.js";
 import { SecurityError, isRunItself, requireNonEmpty } from "./types.js";
@@ -36,19 +38,32 @@ export interface RunPause {
 }
 
 export interface PauseLedgerOptions {
+  /** JSON state file; every mutation persists atomically when set. Holds are
+   * durable: a restart must not forget that a run is held. */
+  persistencePath?: string;
   now?: () => Date;
   newPauseId?: () => string;
+}
+
+const SCHEMA_VERSION = 1;
+
+interface PersistedPauseState {
+  schema_version: number;
+  pauses: RunPause[];
 }
 
 export class DependentWorkPauseLedger {
   private readonly pauses = new Map<string, RunPause>();
   private readonly activeByRun = new Map<string, string>();
+  private readonly persistencePath: string | undefined;
   private readonly now: () => Date;
   private readonly newPauseId: () => string;
 
   constructor(options: PauseLedgerOptions = {}) {
+    this.persistencePath = options.persistencePath;
     this.now = options.now ?? (() => new Date());
     this.newPauseId = options.newPauseId ?? (() => randomUUID());
+    this.load();
   }
 
   /**
@@ -74,6 +89,7 @@ export class DependentWorkPauseLedger {
     };
     this.pauses.set(pause.pauseId, pause);
     this.activeByRun.set(scope.runId, pause.pauseId);
+    this.persist();
     return pause;
   }
 
@@ -115,10 +131,42 @@ export class DependentWorkPauseLedger {
     pause.releasedAt = this.timestamp();
     pause.releasedBy = actor.actorId;
     pause.releaseReason = scrubSecrets(reason);
+    this.persist();
     return pause;
   }
 
   private timestamp(): string {
     return this.now().toISOString();
+  }
+
+  private load(): void {
+    if (!this.persistencePath || !fs.existsSync(this.persistencePath)) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(fs.readFileSync(this.persistencePath, "utf8"));
+    } catch {
+      throw new SecurityError("PAUSE_STORE_INVALID", "pause state file is not valid JSON");
+    }
+    const state = parsed as Partial<PersistedPauseState>;
+    if (state.schema_version !== SCHEMA_VERSION || !Array.isArray(state.pauses)) {
+      throw new SecurityError("PAUSE_STORE_INVALID", "pause state file has an unsupported shape");
+    }
+    for (const pause of state.pauses) {
+      this.pauses.set(pause.pauseId, pause);
+      // Latest pause per run wins: it is the one `pauseFor` observes.
+      this.activeByRun.set(pause.scope.runId, pause.pauseId);
+    }
+  }
+
+  private persist(): void {
+    if (!this.persistencePath) return;
+    const state: PersistedPauseState = {
+      schema_version: SCHEMA_VERSION,
+      pauses: [...this.pauses.values()],
+    };
+    fs.mkdirSync(path.dirname(this.persistencePath), { recursive: true, mode: 0o700 });
+    const temporary = `${this.persistencePath}.${process.pid}.${randomUUID()}.tmp`;
+    fs.writeFileSync(temporary, JSON.stringify(state), { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(temporary, this.persistencePath);
   }
 }

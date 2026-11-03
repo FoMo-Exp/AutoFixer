@@ -10,7 +10,7 @@ import { buildAnalysisContext, dispatchBriefing } from "../src/intake/analysis.j
 import { minimizeSignal } from "../src/intake/minimize.js";
 import type { MinimizeInput, ModelSignalBriefing } from "../src/intake/minimize.js";
 import { TEST_MODEL, scriptedStream } from "./helpers/scripted-stream.js";
-import { TEST_BINDING, scriptedGateway } from "./helpers/test-gateway.js";
+import { TEST_BINDING, scriptedGateway, securityStubs } from "./helpers/test-gateway.js";
 
 const rawInput: MinimizeInput = {
   signal_key: "fp1:abc",
@@ -170,6 +170,7 @@ describe("model dispatch through the ADR-0005 gateway", () => {
       policyResolver: denyAllPolicyResolver,
       credentials: createStaticCredentialStore({}),
       adapter: { stream: scripted.streamFn },
+      ...securityStubs(),
     });
 
     await expect(

@@ -40,9 +40,10 @@ import {
   ModelDispatchError,
   ModelEgressDeniedError,
   MODEL_EGRESS_DENIED,
+  SECURITY_REVIEW_REQUIRED,
   SENSITIVE_DATA_UNCERTAIN,
 } from "./types.js";
-import type { GatewayDenyReason } from "./types.js";
+import type { DependentWorkHold, GatewayDenyReason } from "./types.js";
 
 /**
  * Scan-gate denials about uncertain secret handling surface under the stable
@@ -75,11 +76,19 @@ export interface ModelGatewayDeps {
   sink?: GatewayEventSink;
   /**
    * Disposal-case intake for secret-gate blocks (DAT-210): opening or
-   * associating the scoped human-handling case after the block. Optional —
-   * without it the block still stands and is recorded on the sink — and its
-   * failure never unblocks a request.
+   * associating the scoped human-handling case after the block. Required —
+   * the production gateway always configures it; an untyped caller that
+   * omits it still gets the full block and an explicit incident, never a
+   * silent skip of human handling.
    */
-  caseIntake?: GatewayCaseIntake;
+  caseIntake: GatewayCaseIntake;
+  /**
+   * Dependent-work hold consulted at the admission boundary (DAT-210):
+   * a held run's later invocations are rejected before any check or dispatch.
+   * Required like `caseIntake`; without hold state the gateway cannot admit
+   * work and fails closed.
+   */
+  dependentWorkHold: DependentWorkHold;
   now?: () => Date;
   newInvocationId?: () => string;
   /** Operational-incident channel for post-outcome audit failures. */
@@ -185,6 +194,38 @@ export class ModelGateway {
     options: SimpleStreamOptions | undefined,
     binding: GatewayBindingIdentity,
   ): Promise<AssistantMessageEventStream> {
+    // Work-admission boundary (DAT-210): a run whose dependent work is held
+    // pending security case disposition never re-enters the gateway. The hold
+    // is scoped to the affected run alone; unrelated runs proceed untouched.
+    const holdState = this.deps.dependentWorkHold;
+    if (!holdState) {
+      // Defensive (typed construction always provides hold state): without it
+      // the gateway cannot establish that the run is unheld, so it fails
+      // closed rather than admitting unproven work.
+      this.incident("dependent-work hold state is not configured; refusing to admit run work");
+      throw this.deny(
+        this.mintIdentity(binding),
+        1,
+        "DEPENDENT_WORK_HELD",
+        "dependent-work hold state is unavailable; failing closed",
+        undefined,
+        undefined,
+        SECURITY_REVIEW_REQUIRED,
+      );
+    }
+    const hold = holdState.heldCaseFor(binding.runId);
+    if (hold) {
+      throw this.deny(
+        this.mintIdentity(binding),
+        1,
+        "DEPENDENT_WORK_HELD",
+        "the run's dependent work is held pending security case disposition",
+        undefined,
+        undefined,
+        SECURITY_REVIEW_REQUIRED,
+        hold,
+      );
+    }
     const scope = { enterpriseId: binding.enterpriseId, workspaceId: binding.workspaceId };
     const schedulePolicy = await this.deps.policyResolver.resolve(scope);
     if (!schedulePolicy) {
@@ -599,7 +640,14 @@ export class ModelGateway {
     identity: GatewayRequestIdentity,
     gate: { reason: GatewayDenyReason; detail: string; context?: Context },
   ): Promise<{ caseId: string; caseReference: string } | undefined> {
-    if (!this.deps.caseIntake) return undefined;
+    const intake = this.deps.caseIntake;
+    if (!intake) {
+      // Typed construction always configures the intake; an untyped caller
+      // that omits it still gets the full block — plus a loud incident, never
+      // a silent skip of human handling (DAT-210).
+      this.incident("security case intake is not configured; the block stands without a case");
+      return undefined;
+    }
     let rawContent: string | undefined;
     if (gate.context !== undefined) {
       try {
@@ -609,7 +657,7 @@ export class ModelGateway {
       }
     }
     try {
-      return await this.deps.caseIntake.recordGatewayBlock({
+      return await intake.recordGatewayBlock({
         identity,
         reason: gate.reason,
         safeDetail: gate.detail,

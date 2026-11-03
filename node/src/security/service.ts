@@ -82,14 +82,20 @@ export class SecurityCaseService implements SecurityCaseIntake {
   }
 
   /**
-   * Post-block intake. Idempotent per blocked invocation and per affected
-   * run scope: duplicate blocking keeps one case, one pause, and one
-   * notification. Failure of quarantine or notification never reopens the
-   * block — the denial stands — but is recorded and raised as an incident.
+   * Post-block intake. One case and one pause per affected run scope, one
+   * notification per case; a replay of an already-recorded invocation is a
+   * pure no-op, while a newly blocked invocation — including one joining an
+   * open case — always quarantines its own raw request. Failure of quarantine
+   * or notification never reopens the block — the denial stands — but is
+   * recorded and raised as an incident.
    */
   async recordBlock(input: RecordBlockInput): Promise<RecordBlockResult> {
     const identity = input.identity;
-    const { case: caseRecord, created } = this.deps.caseStore.openForBlock({
+    const {
+      case: caseRecord,
+      created,
+      duplicate,
+    } = this.deps.caseStore.openForBlock({
       identity,
       reason: input.reason,
       ...(input.safeDetail !== undefined ? { safeDetail: input.safeDetail } : {}),
@@ -101,11 +107,12 @@ export class SecurityCaseService implements SecurityCaseIntake {
       `run:${identity.runId}`,
     );
     const existingPause = this.deps.pauses.pauseFor(identity.runId);
-    if (!created) {
-      // The open case already holds its pause; never a second one.
-      const pause =
-        existingPause ??
-        this.deps.pauses.pauseDependentWork(caseRecord.caseId, caseRecord.scope, input.reason);
+    const pause =
+      existingPause ??
+      this.deps.pauses.pauseDependentWork(caseRecord.caseId, caseRecord.scope, input.reason);
+    if (duplicate) {
+      // A pure replay of an already-recorded block: nothing new is
+      // quarantined, notified, or appended — true idempotency.
       return {
         case: caseRecord,
         created,
@@ -114,18 +121,22 @@ export class SecurityCaseService implements SecurityCaseIntake {
         runCaseReference,
       };
     }
+    if (created) {
+      // Precise pause: only the affected run's dependent work is held.
+      this.deps.caseStore.appendEvent(
+        caseRecord.caseId,
+        "run.dependent_work_paused",
+        SERVICE_ACTOR,
+        {
+          pauseId: pause.pauseId,
+          runId: identity.runId,
+        },
+      );
+    }
 
-    // Precise pause: only the affected run's dependent work is held.
-    const pause = this.deps.pauses.pauseDependentWork(
-      caseRecord.caseId,
-      caseRecord.scope,
-      input.reason,
-    );
-    this.deps.caseStore.appendEvent(caseRecord.caseId, "run.dependent_work_paused", SERVICE_ACTOR, {
-      pauseId: pause.pauseId,
-      runId: identity.runId,
-    });
-
+    // Every newly blocked request is sealed into quarantine — including a
+    // later invocation joining an already-open case. Each blocked request's
+    // raw context is retained encrypted or not at all; never silently dropped.
     let quarantineId: string | undefined;
     if (input.rawContent !== undefined) {
       const sealed = this.deps.quarantine.seal(caseRecord.caseId, input.rawContent);
@@ -149,7 +160,11 @@ export class SecurityCaseService implements SecurityCaseIntake {
       }
     }
 
-    const notifications = await this.dispatchNotifications(caseRecord, input);
+    // One notification per case: handlers are alerted when the case opens,
+    // and later blocks attach evidence to the case they already track.
+    const notifications = created
+      ? await this.dispatchNotifications(caseRecord, input)
+      : { notifications: [], escalated: false, undeliverable: false };
     return {
       case: caseRecord,
       created,
@@ -200,6 +215,20 @@ export class SecurityCaseService implements SecurityCaseIntake {
   }
 
   /**
+   * The open security case holding this run's dependent work, if any — the
+   * admission-boundary seam (`DependentWorkHold`) that work admission
+   * boundaries consult so a held run's dependent work never proceeds.
+   */
+  heldCaseFor(runId: string): { caseId: string; caseReference: string } | undefined {
+    const pause = this.deps.pauses.pauseFor(runId);
+    if (!pause || pause.state !== "active") return undefined;
+    return {
+      caseId: pause.caseId,
+      caseReference: mintCaseReference(this.deps.referenceSecret, pause.caseId, `run:${runId}`),
+    };
+  }
+
+  /**
    * Grant one subject separately scoped, time-limited quarantine inspection.
    * The grant is not case authority and not a case reference.
    */
@@ -219,24 +248,17 @@ export class SecurityCaseService implements SecurityCaseIntake {
   }
 
   /**
-   * Inspect quarantined raw context under a scoped grant. Denied attempts
-   * are audited onto the case as well — every view attempt leaves a trace.
+   * Inspect quarantined raw context under the id of a grant the quarantine
+   * store actually issued. Denied attempts are audited onto the case as well
+   * — every view attempt leaves a trace.
    */
-  inspectQuarantine(
-    quarantineId: string,
-    actor: SecurityActor,
-    grant?: QuarantineAccessGrant,
-  ): string {
+  inspectQuarantine(quarantineId: string, actor: SecurityActor, grantId?: string): string {
     const caseId = this.caseOfQuarantine(quarantineId);
     try {
-      const content = this.deps.quarantine.read(
-        quarantineId,
-        grant as QuarantineAccessGrant,
-        actor,
-      );
+      const content = this.deps.quarantine.read(quarantineId, grantId ?? "", actor);
       this.deps.caseStore.appendEvent(caseId, "quarantine.accessed", actor, {
         quarantineId,
-        ...(grant ? { grantId: grant.grantId } : {}),
+        ...(grantId !== undefined && grantId !== "" ? { grantId } : {}),
       });
       return content;
     } catch (error) {
