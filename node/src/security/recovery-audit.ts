@@ -26,9 +26,26 @@
  * must inject an append-only/WORM backend for that guarantee, which is why
  * {@link RecoveryAuditSink} carries an explicit `durability` marker and the
  * service refuses an unmarked test sink unless a test opts in.
+ *
+ * Lock policy (Architect ruling on DAT-212): the lock is acquired only by an
+ * exclusive create, {@link openAuditLogLock} stores a unique random token in
+ * the lock file, and releasing it first reads that file back and removes it
+ * only when the token still matches this process. There is deliberately **no
+ * automatic stale-lock recovery**: "judge stale, then unlink by path" has a
+ * time-of-check/time-of-use hole (two writers can both judge the same old lock
+ * stale, one deletes the other's fresh lock, and both enter the append
+ * critical section, forking the chain), so an expired lock fails closed with
+ * `RECOVERY_AUDIT_LOCK_TIMEOUT` and the dispatch that needed the record is
+ * blocked. A crashed holder's lock must be removed by an operator who has
+ * confirmed the recorded pid/host is gone; never delete a live lock. Boundary
+ * of the token check: while this process holds the lock, no legitimate writer
+ * can create a new lock at that path, so a token mismatch can only come from
+ * manual intervention — and an operator deleting a lock during a live write is
+ * outside this guarantee, which is why a mismatch refuses to continue instead
+ * of claiming the log is intact.
  */
 
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -141,8 +158,6 @@ export interface RecoveryAuditSinkOptions {
   key?: Buffer;
   /** How long to wait for another writer's lock before failing closed. */
   lockTimeoutMs?: number;
-  /** Age after which a lock whose owner is gone may be broken. */
-  lockStaleMs?: number;
 }
 
 function chainHash(
@@ -320,7 +335,6 @@ export function verifyRecoveryAuditLog(
 }
 
 const DEFAULT_LOCK_TIMEOUT_MS = 2_000;
-const DEFAULT_LOCK_STALE_MS = 30_000;
 const LOCK_RETRY_MS = 5;
 
 /** Synchronous sleep: append order must not interleave with other writers. */
@@ -328,53 +342,87 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function isProcessAlive(pid: number): boolean {
+/** What one holder writes into its lock file; the token proves ownership. */
+interface LockIdentity {
+  token: string;
+  pid: number;
+  host: string;
+  at: string;
+}
+
+/** Read the lock file as evidence; `null` when it is unreadable or malformed. */
+function readLockIdentity(lockFile: string): LockIdentity | null {
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as { code?: unknown } | null)?.code !== "ESRCH";
+    const parsed = JSON.parse(fs.readFileSync(lockFile, "utf8")) as Partial<LockIdentity>;
+    if (typeof parsed.token !== "string" || parsed.token.length === 0) return null;
+    return {
+      token: parsed.token,
+      pid: typeof parsed.pid === "number" ? parsed.pid : -1,
+      host: typeof parsed.host === "string" ? parsed.host : "",
+      at: typeof parsed.at === "string" ? parsed.at : "",
+    };
+  } catch {
+    return null;
   }
 }
 
 /**
- * A lock older than `staleMs` whose owning process is gone (same host) is
- * abandoned by a crashed writer and may be broken; a live or remote writer's
- * lock is never broken.
+ * Fail closed with the evidence an operator needs to decide by hand. No
+ * automatic recovery is attempted: the lock is never deleted from here.
  */
-function isStaleLock(lockFile: string, staleMs: number): boolean {
-  let stat: fs.Stats;
+function lockTimeoutError(file: string, lockFile: string): SecurityError {
+  let lockMtime: string | null = null;
   try {
-    stat = fs.statSync(lockFile);
+    lockMtime = new Date(fs.statSync(lockFile).mtimeMs).toISOString();
   } catch {
-    return false;
+    lockMtime = null;
   }
-  if (Date.now() - stat.mtimeMs < staleMs) return false;
-  let owner: { pid?: unknown; host?: unknown } = {};
-  try {
-    owner = JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid?: unknown; host?: unknown };
-  } catch {
-    owner = {};
-  }
-  const host = typeof owner.host === "string" ? owner.host : undefined;
-  const pid = typeof owner.pid === "number" ? owner.pid : undefined;
-  // Never break another host's lock: its process liveness is unknowable here.
-  if (host !== undefined && host !== os.hostname()) return false;
-  if (pid === undefined) return true;
-  return !isProcessAlive(pid);
+  const holder = readLockIdentity(lockFile);
+  return new SecurityError(
+    "RECOVERY_AUDIT_LOCK_TIMEOUT",
+    "another writer holds the recovery audit log; the record was not appended and the dispatch that needed it is blocked. No automatic lock recovery is performed: confirm the holder pid/host below is gone, then delete the lock file by hand. Never delete a live lock.",
+    {
+      file,
+      lockFile,
+      lockMtime,
+      lockHolder: holder
+        ? { pid: holder.pid, host: holder.host, at: holder.at, parseable: true }
+        : { parseable: false },
+      manualAction: `confirm the process ${holder ? `pid=${holder.pid} host=${holder.host}` : "that owns"} is gone, then remove ${lockFile}; never remove a live lock`,
+    },
+  );
+}
+
+/** A held audit-log lock: a unique token plus the only legitimate release. */
+export interface AuditLogLock {
+  /** Unique ownership token written into the lock file. */
+  readonly token: string;
+  /**
+   * Remove the lock file, but only if it still carries this token. A mismatch
+   * means the path no longer holds our lock (manual intervention), so nothing
+   * is deleted and `RECOVERY_AUDIT_LOCK_LOST` is raised.
+   */
+  release(): void;
 }
 
 /**
- * Serialize every mutation of one audit log across processes with an
- * exclusive-create lock file, then release it. Waiting is bounded: a writer
- * that cannot get the lock raises instead of appending on a stale head, which
- * blocks the dispatch that depends on this record.
+ * Acquire the exclusive log lock. The only acquisition path is an exclusive
+ * create of `<log>.lock`; nothing reclaims another writer's lock, however old
+ * or evidently abandoned it looks, because a check-then-unlink on a path is a
+ * time-of-check/time-of-use hole that can delete a fresh lock and put two
+ * writers inside the append critical section. The only path-based delete this
+ * module performs is the release of a lock whose owner token it read back and
+ * verified; a lock whose token was never written is left for an operator.
+ *
+ * Exported for the release-path regression test; not a public contract.
  */
-function withLogLock<T>(file: string, options: RecoveryAuditSinkOptions, fn: () => T): T {
+export function openAuditLogLock(
+  file: string,
+  options: RecoveryAuditSinkOptions = {},
+): AuditLogLock {
   const lockFile = `${file}.lock`;
-  const timeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
-  const staleMs = options.lockStaleMs ?? DEFAULT_LOCK_STALE_MS;
-  const deadline = Date.now() + timeoutMs;
+  const token = randomUUID();
+  const deadline = Date.now() + (options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS);
   for (;;) {
     let fd: number | undefined;
     try {
@@ -384,50 +432,77 @@ function withLogLock<T>(file: string, options: RecoveryAuditSinkOptions, fn: () 
       fd = undefined;
     }
     if (fd !== undefined) {
+      const identity: LockIdentity = {
+        token,
+        pid: process.pid,
+        host: os.hostname(),
+        at: new Date().toISOString(),
+      };
+      // If the owner token cannot be written durably, this process cannot
+      // prove the path is still its own, so nothing is deleted: the leftover
+      // lock blocks later writers until an operator inspects and removes it.
+      // That availability loss is the fail-closed choice this ruling requires.
       try {
-        fs.writeSync(
-          fd,
-          JSON.stringify({ pid: process.pid, host: os.hostname(), at: new Date().toISOString() }),
-        );
+        fs.writeSync(fd, JSON.stringify(identity));
         fs.fsyncSync(fd);
-      } catch (error) {
-        // Never leak a half-created lock: it would block every later writer.
-        try {
-          fs.unlinkSync(lockFile);
-        } catch {
-          // Already gone.
-        }
-        throw error;
       } finally {
         fs.closeSync(fd);
       }
-      try {
-        return fn();
-      } finally {
-        try {
+      return {
+        token,
+        release(): void {
+          const current = readLockIdentity(lockFile);
+          if (!current || current.token !== token) {
+            throw new SecurityError(
+              "RECOVERY_AUDIT_LOCK_LOST",
+              "the audit log lock no longer carries this process's ownership token; it was left in place and the write is not treated as exclusive",
+              {
+                file,
+                lockFile,
+                expectedToken: token,
+                foundToken: current?.token ?? null,
+                lockHolder: current
+                  ? { pid: current.pid, host: current.host, at: current.at }
+                  : { parseable: false },
+                manualAction: `inspect ${lockFile}; a live lock must not be removed`,
+              },
+            );
+          }
           fs.unlinkSync(lockFile);
-        } catch {
-          // Already released by a stale-lock sweep; the append itself stands.
-        }
-      }
+        },
+      };
     }
-    if (isStaleLock(lockFile, staleMs)) {
-      try {
-        fs.unlinkSync(lockFile);
-      } catch {
-        // Somebody else broke it first; retry the acquisition.
-      }
-      continue;
-    }
-    if (Date.now() >= deadline) {
-      throw new SecurityError(
-        "RECOVERY_AUDIT_LOCK_TIMEOUT",
-        "another writer holds the recovery audit log; refusing to append unaudited or forked evidence",
-        { file, lockFile },
-      );
-    }
+    if (Date.now() >= deadline) throw lockTimeoutError(file, lockFile);
     sleepSync(LOCK_RETRY_MS);
   }
+}
+
+/**
+ * Run one mutation under the exclusive log lock. A release that finds the lock
+ * no longer ours fails closed instead of silently continuing; when the body
+ * itself failed, the body's error is the one raised (the lock stays in place,
+ * which blocks later writers until an operator acts).
+ */
+function withLogLock<T>(file: string, options: RecoveryAuditSinkOptions, fn: () => T): T {
+  const lock = openAuditLogLock(file, options);
+  let result: T | undefined;
+  let bodyFailure: unknown;
+  let bodyFailed = false;
+  try {
+    result = fn();
+  } catch (error) {
+    bodyFailed = true;
+    bodyFailure = error;
+  }
+  let releaseFailure: unknown;
+  try {
+    lock.release();
+  } catch (error) {
+    releaseFailure = error;
+  }
+  if (bodyFailed) throw bodyFailure;
+  if (releaseFailure !== undefined) throw releaseFailure;
+  return result as T;
 }
 
 /**

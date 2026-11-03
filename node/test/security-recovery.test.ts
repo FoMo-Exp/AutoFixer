@@ -40,6 +40,8 @@ import type {
   SecurityDuty,
   SecurityDutyDirectory,
 } from "../src/security/index.js";
+import { openAuditLogLock } from "../src/security/recovery-audit.js";
+
 import {
   DATA_CLASSES,
   ModelEgressDeniedError,
@@ -1659,7 +1661,7 @@ describe("audit log concurrent append (DAT-212 QA round 2)", () => {
   test("a held lock fails closed: no record, and no dispatch", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "recovery-audit-lock-"));
     const file = path.join(directory, "audit.jsonl");
-    const sink = createFileRecoveryAuditSink(file, { lockTimeoutMs: 30, lockStaleMs: 60_000 });
+    const sink = createFileRecoveryAuditSink(file, { lockTimeoutMs: 30 });
     const harness = buildHarness({ scanner: cleanScanner(), audit: sink });
     const authorization = await harness.service.approve({
       caseId: harness.caseId,
@@ -1670,10 +1672,32 @@ describe("audit log concurrent append (DAT-212 QA round 2)", () => {
     // never be appended, so the dispatch must not happen.
     writeFileSync(
       `${file}.lock`,
-      JSON.stringify({ pid: process.pid, host: os.hostname(), at: new Date().toISOString() }),
+      JSON.stringify({
+        token: "holder-token",
+        pid: process.pid,
+        host: os.hostname(),
+        at: new Date().toISOString(),
+      }),
       { mode: 0o600 },
     );
-    expect(() => sink.record({ ...recordFor(99) })).toThrow(/another writer holds/);
+    let timeoutError: unknown;
+    try {
+      sink.record({ ...recordFor(99) });
+    } catch (error) {
+      timeoutError = error;
+    }
+    expect(timeoutError).toBeInstanceOf(SecurityError);
+    const timedOut = timeoutError as SecurityError;
+    expect(timedOut.code).toBe("RECOVERY_AUDIT_LOCK_TIMEOUT");
+    // Holder evidence for manual handling: pid/host/at plus the lock's mtime.
+    expect(timedOut.details.lockHolder).toMatchObject({
+      pid: process.pid,
+      host: os.hostname(),
+      parseable: true,
+    });
+    expect(timedOut.details.lockMtime).toEqual(expect.any(String));
+    expect(String(timedOut.details.manualAction)).toContain("never remove a live lock");
+    expect(timedOut.message).toContain("delete the lock file by hand");
     await expect(
       harness.service.recover({
         authorizationId: authorization.authorizationId,
@@ -1724,5 +1748,194 @@ describe("audit log concurrent append (DAT-212 QA round 2)", () => {
     ).rejects.toMatchObject({ code: "MODEL_EGRESS_DENIED", reason: "AUDIT_UNAVAILABLE" });
     expect(harness.calls).toHaveLength(0);
     expect(harness.authorizations.statusAt(authorization.authorizationId)).toBe("approved");
+  });
+});
+
+describe("no automatic stale-lock recovery (DAT-212 Architect ruling)", () => {
+  const DEAD_PID_SCRIPT = "process.exit(0)";
+
+  async function deadPid(): Promise<number> {
+    const child = spawn(process.execPath, ["-e", DEAD_PID_SCRIPT], { stdio: "ignore" });
+    const pid = child.pid;
+    await new Promise<void>((resolve, reject) => {
+      child.on("error", reject);
+      child.on("exit", () => resolve());
+    });
+    if (pid === undefined) throw new Error("no pid");
+    return pid;
+  }
+
+  function staleLockContent(pid: number): string {
+    return JSON.stringify({
+      token: "stale-holder-token",
+      pid,
+      host: os.hostname(),
+      at: "2026-01-01T00:00:00.000Z",
+    });
+  }
+
+  function makeStale(lockFile: string): void {
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(lockFile, old, old);
+  }
+
+  function sampleRecord(): RecoveryAuditRecord {
+    return {
+      event: "recovery.approval_recorded",
+      at: "2026-11-03T12:00:00.000Z",
+      authorizationId: "auth_stale",
+      caseId: "case_1",
+      invocationId: null,
+      traceId: null,
+      scope: CASE_SCOPE,
+      actor: REVIEWER,
+      approval: {
+        contextRevision: "k1.request-context.x",
+        policyRevision: "policy-1",
+        rulesRevision: "k1.rule-revisions.y",
+        scanPolicyRevision: "k1.scan-policy.z",
+        approvedBy: REVIEWER.actorId,
+        approvedAt: "2026-11-03T12:00:00.000Z",
+        expiresAt: "2026-11-03T12:15:00.000Z",
+      },
+      destination: {
+        endpointId: "ep_test",
+        provider: "openai",
+        api: "openai-completions",
+        modelId: TEST_MODEL.id,
+        internal: false,
+      },
+      requestDigest: null,
+      scan: null,
+      outcome: "approved",
+      reason: "approved",
+      detail: {},
+    };
+  }
+
+  test("two processes facing one stale lock both fail closed and leave it untouched", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-stale-lock-"));
+    const file = path.join(directory, "audit.jsonl");
+    const lockFile = `${file}.lock`;
+    // A valid, anchored chain exists before the stale lock appears.
+    createFileRecoveryAuditSink(file).record(sampleRecord());
+    const logBefore = readFileSync(file, "utf8");
+    const logInodeBefore = fs.statSync(file).ino;
+
+    const pid = await deadPid();
+    const lockContent = staleLockContent(pid);
+    writeFileSync(lockFile, lockContent, { mode: 0o600 });
+    makeStale(lockFile);
+    const lockInodeBefore = fs.statSync(lockFile).ino;
+
+    const script = path.join(directory, "locked.ts");
+    const sinkModule = path.resolve(import.meta.dirname, "../src/security/recovery-audit.ts");
+    const viteNode = path.resolve(import.meta.dirname, "../node_modules/.bin/vite-node");
+    writeFileSync(
+      script,
+      `import { createFileRecoveryAuditSink } from ${JSON.stringify(sinkModule)};\n` +
+        `const file = process.argv[2];\n` +
+        `try {\n` +
+        `  const sink = createFileRecoveryAuditSink(file, { lockTimeoutMs: 150 });\n` +
+        `  sink.record(${JSON.stringify(sampleRecord())});\n` +
+        `  process.stdout.write(JSON.stringify({ ok: true }));\n` +
+        `} catch (error) {\n` +
+        `  process.stdout.write(JSON.stringify({ ok: false, code: error.code, message: error.message }));\n` +
+        `}\n`,
+      "utf8",
+    );
+    const run = (): Promise<{ code: number | null; stdout: string; stderr: string }> =>
+      new Promise((resolve, reject) => {
+        const child = spawn(viteNode, [script, file], { stdio: ["ignore", "pipe", "pipe"] });
+        let stdout = "";
+        let stderr = "";
+        child.stdout?.on("data", (chunk: Buffer) => {
+          stdout += chunk.toString("utf8");
+        });
+        child.stderr?.on("data", (chunk: Buffer) => {
+          stderr += chunk.toString("utf8");
+        });
+        child.on("error", reject);
+        child.on("exit", (code) => resolve({ code, stdout, stderr }));
+      });
+    const results = await Promise.all([run(), run()]);
+    for (const result of results) {
+      expect(result.code, result.stderr).toBe(0);
+      const parsed = JSON.parse(result.stdout) as { ok: boolean; code?: string };
+      expect(parsed.ok).toBe(false);
+      expect(parsed.code).toBe("RECOVERY_AUDIT_LOCK_TIMEOUT");
+    }
+
+    // Zero records written, and the lock file itself is untouched: same
+    // content, same inode, same mtime.
+    expect(readFileSync(file, "utf8")).toBe(logBefore);
+    expect(verifyRecoveryAuditLog(file).seq).toBe(1);
+    expect(fs.statSync(lockFile).ino).toBe(lockInodeBefore);
+    expect(readFileSync(lockFile, "utf8")).toBe(lockContent);
+    expect(fs.statSync(file).ino).toBe(logInodeBefore);
+  });
+
+  test("a stale lock blocks recovery with zero dispatch and an unspent approval", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-stale-recover-"));
+    const file = path.join(directory, "audit.jsonl");
+    const lockFile = `${file}.lock`;
+    const pid = await deadPid();
+    const sink = createFileRecoveryAuditSink(file, { lockTimeoutMs: 50 });
+    const harness = buildHarness({ scanner: cleanScanner(), audit: sink });
+    const authorization = await harness.service.approve({
+      caseId: harness.caseId,
+      reviewer: REVIEWER,
+      destination: DESTINATION,
+    });
+    // An abandoned lock stays abandoned: no automatic reclaim, so the
+    // required pre-dispatch record cannot be appended.
+    writeFileSync(lockFile, staleLockContent(pid), { mode: 0o600 });
+    makeStale(lockFile);
+    await expect(
+      harness.service.recover({
+        authorizationId: authorization.authorizationId,
+        identity: REQUEST_IDENTITY,
+        workerId: "worker-1",
+        model: TEST_MODEL,
+      }),
+    ).rejects.toMatchObject({ code: "MODEL_EGRESS_DENIED", reason: "AUDIT_UNAVAILABLE" });
+    expect(harness.calls).toHaveLength(0);
+    expect(harness.authorizations.statusAt(authorization.authorizationId)).toBe("approved");
+    expect(fs.existsSync(lockFile)).toBe(true);
+    fs.unlinkSync(lockFile);
+  });
+
+  test("a lock whose token is no longer ours is never deleted", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-lock-token-"));
+    const file = path.join(directory, "audit.jsonl");
+    const lockFile = `${file}.lock`;
+    const lock = openAuditLogLock(file, { lockTimeoutMs: 100 });
+    const foreign = JSON.stringify({
+      token: "someone-elses-token",
+      pid: 1,
+      host: os.hostname(),
+      at: new Date().toISOString(),
+    });
+    writeFileSync(lockFile, foreign, { mode: 0o600 });
+    let error: unknown;
+    try {
+      lock.release();
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(SecurityError);
+    expect((error as SecurityError).code).toBe("RECOVERY_AUDIT_LOCK_LOST");
+    // The foreign lock is left exactly where it is.
+    expect(readFileSync(lockFile, "utf8")).toBe(foreign);
+    fs.unlinkSync(lockFile);
+  });
+
+  test("the holder removes its own lock", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-lock-own-"));
+    const file = path.join(directory, "audit.jsonl");
+    const lock = openAuditLogLock(file, { lockTimeoutMs: 100 });
+    expect(fs.existsSync(`${file}.lock`)).toBe(true);
+    lock.release();
+    expect(fs.existsSync(`${file}.lock`)).toBe(false);
   });
 });
