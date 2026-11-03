@@ -369,7 +369,7 @@ describe("durable ledger persistence", () => {
     expect(store.query(scopeA)).toHaveLength(0);
   });
 
-  test("corruption mid-file refuses startup; a torn final append is tolerated", () => {
+  test("corruption anywhere in the body refuses startup", () => {
     const dir = tempDir();
     const file = path.join(dir, "usage-ledger.jsonl");
     const store = new UsageLedgerStore({ persistencePath: file, now: fixedNow() });
@@ -387,16 +387,102 @@ describe("durable ledger persistence", () => {
       /refusing to drop history/,
     );
 
-    // A torn FINAL line is the debris of an interrupted append whose write
-    // already failed loudly at recordAttempt; the intact prefix loads.
-    const tornTail = path.join(dir, "torn.jsonl");
-    writeFileSync(tornTail, [lines[0], '{"schema_version":1,"entr'].join("\n"), "utf8");
+    // A complete-but-invalid record line in the body is corruption too — even
+    // though its JSON parses.
+    const invalidLine = path.join(dir, "invalid-mid.jsonl");
+    writeFileSync(invalidLine, [lines[0], '{"schema_version":99}', lines[1]].join("\n"), "utf8");
+    expect(() => new UsageLedgerStore({ persistencePath: invalidLine })).toThrow(
+      /refusing to drop history/,
+    );
+  });
+
+  test("a complete but invalid final line refuses startup", () => {
+    const dir = tempDir();
+    const file = path.join(dir, "usage-ledger.jsonl");
+    const store = new UsageLedgerStore({ persistencePath: file, now: fixedNow() });
+    store.recordAttempt(observation({ invocation_id: "inv-1" }));
+    const [line] = readFileSync(file, "utf8").split("\n");
+
+    // Newline-terminated: a complete write whose record does not validate is
+    // corruption, never a torn append.
+    const terminated = path.join(dir, "terminated.jsonl");
+    writeFileSync(terminated, [line, '{"schema_version":99}', ""].join("\n"), "utf8");
+    expect(() => new UsageLedgerStore({ persistencePath: terminated })).toThrow(
+      /refusing to drop history/,
+    );
+
+    // Unterminated but complete JSON: still corruption — only confirmed
+    // incomplete tail bytes are tolerated.
+    const unterminated = path.join(dir, "unterminated.jsonl");
+    writeFileSync(unterminated, [line, '{"schema_version":99}'].join("\n"), "utf8");
+    expect(() => new UsageLedgerStore({ persistencePath: unterminated })).toThrow(
+      /refusing to drop history/,
+    );
+  });
+
+  test("garbage that is not an interrupted append refuses startup", () => {
+    const dir = tempDir();
+    const file = path.join(dir, "usage-ledger.jsonl");
+    const store = new UsageLedgerStore({ persistencePath: file, now: fixedNow() });
+    store.recordAttempt(observation({ invocation_id: "inv-1" }));
+    const [line] = readFileSync(file, "utf8").split("\n");
+
+    const garbage = path.join(dir, "garbage.jsonl");
+    writeFileSync(garbage, [line, "not json"].join("\n"), "utf8");
+    expect(() => new UsageLedgerStore({ persistencePath: garbage })).toThrow(
+      /refusing to drop history/,
+    );
+  });
+
+  test("a complete tail record that lost only its newline is kept and re-terminated", () => {
+    const dir = tempDir();
+    const file = path.join(dir, "usage-ledger.jsonl");
+    const store = new UsageLedgerStore({ persistencePath: file, now: fixedNow() });
+    store.recordAttempt(observation({ invocation_id: "inv-1" }));
+    const [line] = readFileSync(file, "utf8").split("\n");
+    // A second record whose bytes are complete but whose newline was lost.
+    const second = JSON.stringify(
+      buildInvocationUsageRecord(
+        observation({ invocation_id: "inv-2" }),
+        "2026-11-03T00:00:03.000Z",
+      ),
+    );
+    writeFileSync(file, [line, second].join("\n"), "utf8");
+
+    const recovered = new UsageLedgerStore({ persistencePath: file });
+    expect(recovered.query(scopeA).map((r) => r.invocation_id)).toEqual(["inv-1", "inv-2"]);
+
+    // The repair re-terminated it, so a later append and restart stay intact.
+    recovered.recordAttempt(observation({ invocation_id: "inv-3" }));
+    const restarted = new UsageLedgerStore({ persistencePath: file });
+    expect(restarted.query(scopeA).map((r) => r.invocation_id)).toEqual([
+      "inv-1",
+      "inv-2",
+      "inv-3",
+    ]);
+  });
+
+  test("an interrupted append is dropped at the record boundary and later appends stay readable", () => {
+    const dir = tempDir();
+    const file = path.join(dir, "usage-ledger.jsonl");
+    const store = new UsageLedgerStore({ persistencePath: file, now: fixedNow() });
+    store.recordAttempt(observation({ invocation_id: "inv-1" }));
+    const [line] = readFileSync(file, "utf8").split("\n");
+
+    // An append interrupted mid-write leaves incomplete tail bytes.
+    writeFileSync(file, [line, '{"schema_version":1,"entr'].join("\n"), "utf8");
     const quiet = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
-      const recovered = new UsageLedgerStore({ persistencePath: tornTail });
+      const recovered = new UsageLedgerStore({ persistencePath: file });
       expect(recovered.query(scopeA).map((r) => r.invocation_id)).toEqual(["inv-1"]);
+
+      // Recovery truncated the debris to the record boundary, so this append
+      // cannot merge into it and the next startup stays readable.
+      recovered.recordAttempt(observation({ invocation_id: "inv-3" }));
     } finally {
       quiet.mockRestore();
     }
+    const restarted = new UsageLedgerStore({ persistencePath: file });
+    expect(restarted.query(scopeA).map((r) => r.invocation_id)).toEqual(["inv-1", "inv-3"]);
   });
 });
