@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import type { IdentityClient, SessionInfo, Workspace } from "../api/identity";
 import { AuditPanel } from "./AuditPanel";
@@ -33,6 +33,9 @@ export function WorkspaceAdminDialog({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ErrorDescription>();
   const [activeTab, setActiveTab] = useState<AdminTab>("members");
+  const dialogRef = useRef<HTMLElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -57,12 +60,52 @@ export function WorkspaceAdminDialog({
   }, [load]);
 
   useEffect(() => {
+    const previousFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    const dialog = dialogRef.current;
+    const focusable = (): HTMLElement[] =>
+      dialog
+        ? Array.from(
+            dialog.querySelectorAll<HTMLElement>(
+              'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+            ),
+          ).filter((element) => element.closest("[hidden]") === null)
+        : [];
+
+    (focusable()[0] ?? dialog)?.focus();
+
     function onKeyDown(event: KeyboardEvent): void {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog) return;
+      const items = focusable();
+      if (items.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+      const inside = active instanceof Node && dialog.contains(active);
+      if (event.shiftKey && (!inside || active === first)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (!inside || active === last)) {
+        event.preventDefault();
+        first.focus();
+      }
     }
+
     document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, []);
 
   const workspace = workspaces.find((item) => item.id === selectedId);
   const canManage = canManageWorkspace(workspace, session);
@@ -79,10 +122,12 @@ export function WorkspaceAdminDialog({
       onMouseDown={(event) => event.target === event.currentTarget && onClose()}
     >
       <section
+        ref={dialogRef}
         className="modal modal-admin"
         role="dialog"
         aria-modal="true"
         aria-labelledby="workspace-admin-title"
+        tabIndex={-1}
       >
         <div className="modal-heading">
           <div>

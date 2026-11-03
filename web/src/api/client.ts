@@ -108,6 +108,10 @@ export class ApiTransport {
     }
     return this.fetchImpl(`${this.baseUrl}${path}`, {
       ...init,
+      // The cookie transport must attach fp_session even when the workbench and
+      // a loopback API are different origins. Electron's IPC fetch ignores
+      // this field and keeps its own bearer attachment in the main process.
+      credentials: "include",
       redirect: "error",
       headers: {
         ...this.headers(),

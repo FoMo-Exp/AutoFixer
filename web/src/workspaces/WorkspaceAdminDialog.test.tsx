@@ -258,6 +258,43 @@ describe("WorkspaceAdminDialog", () => {
     ).toBeTruthy();
   });
 
+  it("moves focus into the dialog, traps Tab, and restores the trigger on close", async () => {
+    const trigger = document.createElement("button");
+    trigger.textContent = "Open workspaces";
+    document.body.append(trigger);
+    trigger.focus();
+    const onClose = vi.fn();
+    const client = fakeClient();
+
+    const { unmount } = render(
+      <WorkspaceAdminDialog
+        client={client as unknown as IdentityClient}
+        session={session}
+        onClose={onClose}
+      />,
+    );
+
+    const dialog = await screen.findByRole("dialog", { name: "Workspaces" });
+    await screen.findByText("Ada Lovelace");
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    for (let step = 0; step < 30; step += 1) await userEvent.tab();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    const focusables = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), [role="combobox"]',
+      ),
+    ).filter((element) => element.closest("[hidden]") === null);
+    focusables[focusables.length - 1]?.focus();
+    await userEvent.tab();
+    expect(document.activeElement).toBe(focusables[0]);
+
+    unmount();
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
+  });
+
   it("lists the enterprise audit trail for enterprise administrators", async () => {
     const client = fakeClient();
     renderDialog(client);

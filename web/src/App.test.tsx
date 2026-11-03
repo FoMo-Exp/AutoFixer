@@ -3,7 +3,8 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import { ForgePilotClient } from "./api/client";
+import { ApiConfigurationError, ForgePilotClient } from "./api/client";
+import { IdentityClient } from "./api/identity";
 import type { Task } from "./api/client";
 
 function task(id: string, summary: string): Task {
@@ -273,8 +274,13 @@ describe("invitation landing", () => {
     window.sessionStorage.clear();
   });
 
-  it("captures the fragment token without a GET, clears the URL, and shows the join screen", async () => {
+  it("clears the fragment before the session request and shows the join screen", async () => {
     window.history.replaceState(null, "", `/#${token}`);
+    const hashAtSession: string[] = [];
+    vi.spyOn(IdentityClient.prototype, "getSession").mockImplementation(async () => {
+      hashAtSession.push(window.location.hash);
+      throw new ApiConfigurationError("not configured for the landing smoke");
+    });
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     render(<App />);
 
@@ -282,7 +288,9 @@ describe("invitation landing", () => {
     expect(window.location.hash).toBe("");
     expect(window.location.pathname).toBe("/");
     expect(document.body.innerHTML).not.toContain(token);
-    // The landing page consumes nothing on load: the token never enters a URL.
+    // The fragment is captured and cleared before any request can observe it.
+    expect(hashAtSession.length).toBeGreaterThan(0);
+    expect(hashAtSession.every((hash) => hash === "")).toBe(true);
     for (const [input] of fetchSpy.mock.calls) {
       expect(String(input)).not.toContain(token);
     }

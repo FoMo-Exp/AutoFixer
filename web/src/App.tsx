@@ -73,6 +73,7 @@ export default function App(): ReactElement {
   const identityClient = useMemo(() => new IdentityClient(apiConfig), [apiConfig]);
   const [session, setSession] = useState<SessionInfo>();
   const [inviteToken, setInviteToken] = useState<string>();
+  const inviteTokenRef = useRef<string | undefined>(undefined);
   const [showWorkspaces, setShowWorkspaces] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
@@ -142,10 +143,9 @@ export default function App(): ReactElement {
     }
   }, [client, identityClient]);
 
-  useEffect(() => {
-    void refreshSession();
-  }, [refreshSession]);
-
+  // Declared before every network effect: the invitation fragment is captured
+  // and cleared in the same commit that would otherwise start the session
+  // request, so no request can race the token still sitting in the URL.
   useEffect(() => {
     const token = captureInviteToken(
       window.location.hash,
@@ -153,8 +153,16 @@ export default function App(): ReactElement {
       window.sessionStorage,
       `${window.location.pathname}${window.location.search}`,
     );
-    if (token) setInviteToken(token);
+    if (!token) return;
+    inviteTokenRef.current = token;
+    setInviteToken(token);
   }, []);
+
+  useEffect(() => {
+    // The join screen runs its own authenticated session/preview flow.
+    if (inviteTokenRef.current) return;
+    void refreshSession();
+  }, [refreshSession]);
 
   const selectTask = useCallback((task: Task | undefined): void => {
     const taskId = task?.id;

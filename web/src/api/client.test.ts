@@ -101,4 +101,23 @@ describe("ForgePilotClient", () => {
       expect.any(Object),
     );
   });
+
+  it("sends the session cookie when the workbench and API differ in origin", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(response({ items: [], next_cursor: null }));
+    const client = new ForgePilotClient({
+      baseUrl: "http://127.0.0.1:4599",
+      token: "",
+      csrfToken: "csrf_1",
+      fetchImpl,
+    });
+
+    // The Vite dev server runs on another loopback port, so the browser must
+    // opt into cross-origin credentials or `fp_session` is never attached.
+    await client.listTasks();
+
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({
+      credentials: "include",
+      headers: expect.objectContaining({ "X-CSRF-Token": "csrf_1" }),
+    });
+  });
 });

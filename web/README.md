@@ -166,5 +166,8 @@ denial. A sign-in round trip keeps the token in `sessionStorage` only for the
 length of that redirect and removes it on return.
 
 Cookie-authenticated deployments need the session's CSRF echo: after `GET
-/api/v1/auth/session` the renderer attaches `X-CSRF-Token` to mutating
-requests, while bearer-authenticated requests never send it.
+/auth/session` the renderer attaches `X-CSRF-Token` to mutating requests, while
+bearer-authenticated requests never send it. API requests opt into cross-origin
+credentials so a loopback API on another port still receives `fp_session`;
+Electron's IPC fetch ignores that field and keeps its bearer attachment in the
+main process.
