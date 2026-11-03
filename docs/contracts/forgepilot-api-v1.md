@@ -135,6 +135,12 @@ SSE events contain `event_id`, `sequence`, `occurred_at`, `task_id`,
 `validation.completed`, `artifact.available`, `evidence.appended`, and
 `task.terminal`. Node replays by `Last-Event-ID` in sequence order.
 
+`tool.denied` data carries the shared error envelope
+(`docs/contracts/error-envelope-v1.md`) in `data.error_envelope`, the origin
+dsh code in `data.error_code`, and the envelope's safe message in
+`data.message` — actionable guidance without secrets or policy internals;
+raw failure detail stays behind the separate diagnostics access check.
+
 ## Safe Pi text summary
 
 `pi.text_delta` carries raw assistant text and is **never** a display

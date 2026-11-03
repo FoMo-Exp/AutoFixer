@@ -7,6 +7,8 @@ import type { Static } from "typebox";
 import type { DshClient } from "../dsh/client.js";
 import { DshError } from "../dsh/client.js";
 import type { DshState } from "../dsh/types.js";
+import type { DiagnosticsVault, ErrorEnvelope } from "../errors/index.js";
+import { mapDshError, mapForeignError, renderAgentError } from "../errors/index.js";
 
 export const dshRequestActionSchema = Type.Object({
   tool_id: Type.String({
@@ -50,8 +52,12 @@ export interface ActionObservation {
   state?: DshState;
   /** dsh audit event reference for an accepted action (drives evidence.appended). */
   auditEventReference?: string;
+  /** Origin (dsh) error code of a denial, kept for correlation. */
   errorCode?: string;
+  /** Safe message from the shared error envelope; never raw diagnostics. */
   errorMessage?: string;
+  /** The shared error envelope rendered for this denial. */
+  errorEnvelope?: ErrorEnvelope;
 }
 
 export type ActionObserver = (observation: ActionObservation) => void;
@@ -65,6 +71,12 @@ export interface DshRequestActionToolOptions {
   getTurnId: () => string;
   /** Sink for accepted/denied observations; DI boundary for the task event log. */
   observe: ActionObserver;
+  /**
+   * Optional holder for sealed sensitive diagnostics (DAT-226). Raw failure
+   * detail lands here — behind its own access check — instead of the task
+   * timeline or the model-facing error text.
+   */
+  diagnostics?: DiagnosticsVault;
 }
 
 /**
@@ -144,23 +156,39 @@ export function createDshRequestActionTool(
         if (signal?.aborted) {
           throw error;
         }
-        if (!(error instanceof DshError)) {
-          throw error;
-        }
+        // Every failure the model sees is rendered from the shared error
+        // envelope (DAT-226): safe catalog text, the service-decided next
+        // action, and the origin code for correlation — never raw dsh
+        // diagnostics, and never a model-chosen retry or widened grant.
+        const originCode =
+          error instanceof DshError
+            ? error.code
+            : error !== null &&
+                typeof error === "object" &&
+                typeof (error as { code?: unknown }).code === "string"
+              ? String((error as { code: unknown }).code)
+              : null;
+        const mapped =
+          error instanceof DshError
+            ? mapDshError(error, { caseRef: actionId })
+            : mapForeignError(error, { caseRef: actionId });
+        options.diagnostics?.record(mapped.diagnostics);
         options.observe({
           toolCallId,
           toolId: params.tool_id,
           pathScope: params.path_scope,
           outcome: "denied",
           actionId,
-          errorCode: error.code,
-          errorMessage: error.message,
+          errorCode: originCode ?? mapped.envelope.code,
+          errorMessage: mapped.envelope.message,
+          errorEnvelope: mapped.envelope,
         });
         // Denied intents are thrown so the agent loop records an error tool
         // result: the model must see the refusal, and the task timeline has
         // already recorded it through observe().
         throw new Error(
-          `dsh denied action ${actionId} for tool "${params.tool_id}": ${error.code} — ${error.message}`,
+          renderAgentError(mapped.envelope, originCode),
+          error instanceof Error ? { cause: error } : undefined,
         );
       }
     },
