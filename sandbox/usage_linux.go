@@ -17,13 +17,17 @@ import (
 // /proc/<pid>/stat (utime and stime are in clock ticks).
 const linuxUserHZ = 100
 
+// platformSnapshot captures the host's whole process table.
+var platformSnapshot snapshotFunc = platformProcs
+
 // usageAccountingAvailable reports that this platform can account a process
 // domain's resident memory and CPU time.
 func usageAccountingAvailable() bool { return true }
 
 // platformProcs snapshots every process from /proc: parent, process group,
-// CPU time, and resident pages from /proc/<pid>/stat. Processes that vanish
-// mid-snapshot are skipped; only an unreadable /proc is an error.
+// start time, CPU time, and resident pages from /proc/<pid>/stat. Processes
+// that vanish mid-snapshot are skipped; only an unreadable /proc is an
+// error.
 func platformProcs() ([]procInfo, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -58,8 +62,8 @@ func platformProcs() ([]procInfo, error) {
 
 // parseProcStat parses one /proc/<pid>/stat line. The comm field may contain
 // spaces and parentheses, so the fields after the last ')' carry state (3),
-// ppid (4), pgrp (5), utime (14), stime (15), and the resident page count
-// (24) at fixed offsets in the tail.
+// ppid (4), pgrp (5), utime (14), stime (15), starttime (22), and the
+// resident page count (24) at fixed offsets in the tail.
 func parseProcStat(pid int, stat string) (procInfo, bool) {
 	cut := strings.LastIndex(stat, ")")
 	if cut < 0 {
@@ -85,6 +89,10 @@ func parseProcStat(pid int, stat string) (procInfo, bool) {
 	if err != nil {
 		return procInfo{}, false
 	}
+	start, err := strconv.ParseInt(fields[19], 10, 64)
+	if err != nil {
+		return procInfo{}, false
+	}
 	rss, err := strconv.ParseInt(fields[21], 10, 64)
 	if err != nil {
 		return procInfo{}, false
@@ -94,10 +102,30 @@ func parseProcStat(pid int, stat string) (procInfo, bool) {
 		resident = rss * int64(os.Getpagesize())
 	}
 	cpu := time.Duration(utime+stime) * time.Second / linuxUserHZ
-	return procInfo{pid: pid, ppid: ppid, pgid: pgid, resident: resident, cpu: cpu}, true
+	return procInfo{
+		pid:      pid,
+		ppid:     ppid,
+		pgid:     pgid,
+		start:    start,
+		zombie:   fields[0] == "Z",
+		resident: resident,
+		cpu:      cpu,
+	}, true
 }
 
-// killProc SIGKILLs one process; a process already gone is success.
-func killProc(pid int) {
+// processCwd reports one process's working directory — the fingerprint that
+// keeps a daemonized child of this execution discoverable after it has left
+// the process group and been reparented.
+func processCwd(pid int) (string, bool) {
+	target, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "cwd"))
+	if err != nil {
+		return "", false
+	}
+	return target, true
+}
+
+// killProc SIGKILLs one process; a process already gone is success. It is a
+// variable so tests can record kills instead of signaling real processes.
+var killProc = func(pid int) {
 	_ = syscall.Kill(pid, syscall.SIGKILL) // ESRCH: already gone
 }

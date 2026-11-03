@@ -187,9 +187,10 @@ export interface DshExecutionResult {
   timed_out?: boolean;
   canceled?: boolean;
   /**
-   * The granted resource cap that terminated the execution (`memory`,
-   * `cpu`), or `accounting` when enforcement broke down and the execution
-   * was stopped rather than left uncapped.
+   * What terminated the execution: the granted resource cap that was
+   * crossed (`memory`, `cpu`), `accounting` when enforcement broke down
+   * and the execution was stopped rather than left uncapped, or `cleanup`
+   * when descendants of the execution survived every termination attempt.
    */
   resource_exceeded?: string;
   digest: string;

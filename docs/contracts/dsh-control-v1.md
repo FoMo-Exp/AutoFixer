@@ -96,7 +96,11 @@ otherwise `403 DSH_SCOPE_DENIED` (`grant_scope_exceeded`). Declared
 resource limits are enforced, never merely recorded: the whole process
 domain (group plus descendants) is killed on a memory or CPU breach, a
 kernel CPU cap is pinned where the platform has one, and an execution whose
-caps cannot be enforced is blocked instead of running uncapped.
+caps cannot be enforced is blocked instead of running uncapped. An
+execution's process lifecycle ends with the execution: every surviving
+descendant is terminated when the command ends — background children and
+children that created their own session included — and supervision keeps
+enforcing the caps until nothing of the execution is still alive.
 
 Returns `202` with `action_id`, `state`, `accepted_tool_id`, an audit event
 reference, and — for structured operations — `result` and `output`.

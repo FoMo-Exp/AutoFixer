@@ -203,11 +203,11 @@ type Result struct {
 	// Canceled reports termination by caller cancellation; the run
 	// transitions to cancelled and the workspace is destroyed.
 	Canceled bool
-	// ResourceExceeded names the granted resource cap that terminated the
-	// execution ("memory", "cpu"), or "accounting" when enforcement itself
-	// broke down mid-run and the execution was stopped rather than left to
-	// run uncapped. A resource violation stops the run and revokes the
-	// grant.
+	// ResourceExceeded names what terminated the execution: the granted
+	// resource cap that was crossed ("memory", "cpu"), "accounting" when
+	// enforcement itself broke down mid-run, or "cleanup" when descendants
+	// of the execution survived every termination attempt at its end. A
+	// resource violation stops the run and revokes the grant.
 	ResourceExceeded string
 	// Record binds a structured dispatch's result to the exact revision
 	// and test environment it ran in. Nil for plain process tools.
@@ -587,7 +587,7 @@ func (r *Runner) runCommand(execCtx, ctx context.Context, cmd *exec.Cmd, req har
 	startErr := cmd.Start()
 	breach := ""
 	if startErr == nil {
-		supervisor, err := startSupervision(cmd, limits)
+		supervisor, stopWatch, err := r.supervise(cmd, limits)
 		if err != nil {
 			killExecution(cmd)
 			_ = cmd.Wait()
@@ -599,7 +599,14 @@ func (r *Runner) runCommand(execCtx, ctx context.Context, cmd *exec.Cmd, req har
 		// classified from the contexts below.
 		_ = cmd.Wait()
 		if supervisor != nil {
-			breach = supervisor.stop()
+			// The execution is not over while anything of it is still
+			// alive: finish removes every surviving descendant —
+			// including background children and session escapees — and
+			// keeps enforcing the caps until the domain is empty.
+			breach = supervisor.finish()
+		}
+		if stopWatch != nil {
+			stopWatch()
 		}
 		if breach == "" {
 			breach = signalBreach(cmd)
@@ -732,23 +739,42 @@ func resourceLimitsFrom(grant *harness.CapabilityGrant) resourceLimits {
 	return limits
 }
 
-// startSupervision pins the grant's resource caps on a started execution:
-// the kernel-hard CPU cap where the platform has one, and the kill-on-breach
-// supervisor over the execution domain. A nil supervisor with a nil error
-// means no cap is declared and nothing needs enforcing.
-func startSupervision(cmd *exec.Cmd, limits resourceLimits) (*limitSupervisor, error) {
-	if !limits.declared() {
-		return nil, nil
+// supervise pins the grant's resource caps on a started execution and arms
+// its process-lifecycle supervision: the supervisor over the execution
+// domain (accounting, kill-on-breach, and the end-of-execution sweep), plus
+// a fork watcher where the platform can notify on forks so newborn children
+// are tracked before they can detach. A nil supervisor with a nil error
+// means there is nothing to enforce or clean up on this platform.
+func (r *Runner) supervise(cmd *exec.Cmd, limits resourceLimits) (*limitSupervisor, func(), error) {
+	if limits.declared() {
+		if err := applyKernelLimits(cmd.Process.Pid, limits); err != nil {
+			return nil, nil, fmt.Errorf("sandbox: pin kernel resource limits on %q: %w", cmd.Path, err)
+		}
 	}
-	if err := applyKernelLimits(cmd.Process.Pid, limits); err != nil {
-		return nil, fmt.Errorf("sandbox: pin kernel resource limits on %q: %w", cmd.Path, err)
-	}
-	supervisor, err := newLimitSupervisor(cmd.Process.Pid, limits, supervisorInterval, platformUsage, func() { killExecution(cmd) })
+	supervisor, err := newLimitSupervisor(cmd.Process.Pid, limits, supervisorInterval, platformSnapshot, func() { killExecution(cmd) })
 	if err != nil {
-		return nil, fmt.Errorf("sandbox: supervise resource limits on %q: %w", cmd.Path, err)
+		return nil, nil, fmt.Errorf("sandbox: supervise resource limits on %q: %w", cmd.Path, err)
+	}
+	if supervisor == nil {
+		return nil, nil, nil
+	}
+	// A daemonized child that left the group and was reparented before any
+	// observation is unattributable by ancestry — but it still works
+	// inside this run's one-time workspace, whose path is unique. The
+	// sweep consults that fingerprint once, so such a child can never
+	// outlive its execution.
+	workspace := r.workspace
+	separator := string(os.PathSeparator)
+	supervisor.stray = func(p procInfo) bool {
+		cwd, ok := processCwd(p.pid)
+		if !ok {
+			return false
+		}
+		return cwd == workspace || strings.HasPrefix(cwd, workspace+separator)
 	}
 	supervisor.start()
-	return supervisor, nil
+	stop := startForkWatch(cmd.Process.Pid, supervisor.trackedPids, supervisor.poke)
+	return supervisor, stop, nil
 }
 
 // killExecution removes a running execution's whole supervision domain: its
@@ -765,10 +791,14 @@ func killExecution(cmd *exec.Cmd) {
 
 // breachCode maps a resource breach kind to its evidence code.
 func breachCode(breach string) string {
-	if breach == BreachAccounting {
+	switch breach {
+	case BreachAccounting:
 		return CodeExecutionUnenforcedLimit
+	case BreachCleanup:
+		return CodeExecutionDescendantsSurvived
+	default:
+		return CodeExecutionResourceExceeded
 	}
-	return CodeExecutionResourceExceeded
 }
 
 // gateRefusal records the operation gate's refusal of an in-grant dispatch
