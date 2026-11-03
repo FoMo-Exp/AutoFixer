@@ -15,7 +15,7 @@ import path from "node:path";
 
 import { TraceAccessError, TraceConflictError, TraceValidationError } from "./errors.js";
 import { METRIC_DIMENSION_KEYS } from "./labels.js";
-import { TRACE_SCHEMA_VERSION, migrateTraceEvent } from "./schema.js";
+import { TRACE_SCHEMA_VERSION, buildTraceEvent, isTimestamp, migrateTraceEvent } from "./schema.js";
 import type { NewTraceEvent, TraceEvent, TraceEventKind, TraceRecordClass } from "./schema.js";
 
 export { TraceAccessError, TraceConflictError } from "./errors.js";
@@ -162,10 +162,7 @@ export class TraceStore {
    * recorded evidence can never be rewritten through the delivery path.
    */
   append(input: NewTraceEvent): AppendResult {
-    const event = migrateTraceEvent({
-      ...input,
-      ingest_time: input.ingest_time ?? this.now().toISOString(),
-    });
+    const event = buildTraceEvent(input, this.now().toISOString());
     const key = identityKey(event.source, event.event_id);
     const fingerprint = fingerprintOf(event);
     const existing = this.entries.get(key);
@@ -190,7 +187,7 @@ export class TraceStore {
   /** Arrival-ordered records visible to the scope, as defensive copies. */
   query(scope: AccessScope, filter?: TraceFilter): TraceEvent[] {
     this.assertAuthenticated(scope);
-    this.assertScopeTarget(scope, filter);
+    this.assertReadPreconditions(scope, filter);
     const out: TraceEvent[] = [];
     for (const { event } of this.entries.values()) {
       if (this.isVisible(scope, filter, event)) {
@@ -207,7 +204,7 @@ export class TraceStore {
     onEvent: (event: TraceEvent) => void,
   ): () => void {
     this.assertAuthenticated(scope);
-    this.assertScopeTarget(scope, filter);
+    this.assertReadPreconditions(scope, filter);
     const listener: Listener = { scope, filter, onEvent };
     this.listeners.add(listener);
     return () => {
@@ -231,7 +228,7 @@ export class TraceStore {
     dimensions: readonly string[],
   ): TraceAggregate {
     this.assertAuthenticated(scope);
-    this.assertScopeTarget(scope, filter);
+    this.assertReadPreconditions(scope, filter);
     for (const dimension of dimensions) {
       if (!METRIC_DIMENSION_KEYS.includes(dimension)) {
         throw new TraceValidationError(
@@ -294,7 +291,7 @@ export class TraceStore {
     }
   }
 
-  private assertScopeTarget(scope: AccessScope, filter: TraceFilter | undefined): void {
+  private assertReadPreconditions(scope: AccessScope, filter: TraceFilter | undefined): void {
     if (!filter) {
       return;
     }
@@ -307,6 +304,13 @@ export class TraceStore {
       throw new TraceAccessError(
         `trace reads are scoped to workspace ${scope.workspace_id}; refusing cross-workspace query`,
       );
+    }
+    // A malformed bound would silently match nothing; refuse it instead.
+    if (filter.since !== undefined && !isTimestamp(filter.since)) {
+      throw new TraceValidationError(`trace filter "since" must be an RFC 3339 timestamp`);
+    }
+    if (filter.until !== undefined && !isTimestamp(filter.until)) {
+      throw new TraceValidationError(`trace filter "until" must be an RFC 3339 timestamp`);
     }
   }
 
@@ -370,6 +374,12 @@ function migratePersistedState(raw: unknown): PersistedState {
   if (version > TRACE_SCHEMA_VERSION) {
     throw new Error(`trace store schema ${version} is newer than ${TRACE_SCHEMA_VERSION}`);
   }
-  const events = Array.isArray(value["events"]) ? (value["events"] as TraceEvent[]) : [];
-  return { schema_version: TRACE_SCHEMA_VERSION, events };
+  const events = value["events"];
+  // Corrupt state fails startup; it is never quietly read as an empty store.
+  if (!Array.isArray(events)) {
+    throw new Error(
+      "trace store events are corrupt (missing or not an array); refusing to drop history",
+    );
+  }
+  return { schema_version: TRACE_SCHEMA_VERSION, events: events as TraceEvent[] };
 }

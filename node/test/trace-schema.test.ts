@@ -117,6 +117,20 @@ describe("schema version and migration strategy", () => {
     expect(migrateTraceEvent(event)).toEqual(event);
   });
 
+  test("a current-version record with missing fields is rejected, not defaulted", () => {
+    // Defaults belong to the v0 migration path only; a record claiming v1
+    // must be complete, or corruption would masquerade as known-empty data.
+    const missingTruncated = makeEvent() as unknown as Record<string, unknown>;
+    delete missingTruncated["truncated"];
+    expect(() => migrateTraceEvent(missingTruncated)).toThrow(TraceValidationError);
+    const missingIngestTime = makeEvent() as unknown as Record<string, unknown>;
+    delete missingIngestTime["ingest_time"];
+    expect(() => migrateTraceEvent(missingIngestTime)).toThrow(TraceValidationError);
+    const missingNullableId = makeEvent() as unknown as Record<string, unknown>;
+    delete missingNullableId["issue_id"];
+    expect(() => migrateTraceEvent(missingNullableId)).toThrow(TraceValidationError);
+  });
+
   test("a future schema version is rejected loudly instead of misread", () => {
     const future = makeEvent({ version: TRACE_SCHEMA_VERSION + 1 });
     expect(() => migrateTraceEvent(future)).toThrow(TraceValidationError);

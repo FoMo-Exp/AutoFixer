@@ -57,8 +57,12 @@ defensive copies.
 global sequence number. Projections sort a display merge by
 `(event_time, source, sequence)`; that order is explicitly not authoritative.
 A record is **late** when it arrives after its source had already recorded a
-higher `sequence`. A **missing** range is a gap inside one source's sequence.
-A **truncated** record carries the writer's `truncated: true` marker.
+higher `sequence`. A **missing** range is a run of unseen sequences for one
+source, counting from 1: both a leading run below the first observation and
+interior gaps are reported, so a view holding only sequence 5 reports 1–4 as
+missing instead of claiming completeness. A **truncated** record carries the
+writer's `truncated: true` marker. Late and truncated records are referenced
+by `source/event_id` (the dedup identity), never by bare `event_id`.
 
 ## 5. Metric labels
 
@@ -76,7 +80,8 @@ Every query, stream, export, and aggregate runs inside an authenticated
 to that enterprise and workspace even without an explicit filter. A filter that
 targets another workspace or enterprise is refused with `TraceAccessError` —
 including same-enterprise workspace boundaries (ADR-0006). Scope fields MUST
-be non-empty.
+be non-empty, and malformed `since`/`until` bounds are refused with
+`TraceValidationError` instead of silently matching nothing.
 
 ## 7. Schema versioning and migration strategy
 
@@ -88,6 +93,9 @@ be non-empty.
   empty `evidence_refs`/`labels`, `payload: null`, `truncated: false`, and
   `ingest_time` falling back to `event_time` — and is stamped current. Future
   revisions extend this chain; they never rewrite earlier steps.
+- Defaults live only in that v0 migration path. A record that already claims
+  the current version is validated strictly: a missing field is rejected, so
+  corruption cannot masquerade as known-empty data.
 - A record or store envelope with a **newer** version is refused loudly
   (`TraceValidationError` / startup failure) instead of being misread.
   Corrupt or future-versioned state fails startup rather than dropping

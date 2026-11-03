@@ -3,11 +3,13 @@
  *
  * A projection is a read-only view: it annotates, never edits. It is explicit
  * about what it cannot promise — freshness (`as_of` and the two watermarks),
- * missing ranges (gaps in a source's own sequence), late records (arrived
- * after their source had already recorded a higher sequence), and truncated
- * records (writer-marked). The merged `events` list is a display order by
- * `(event_time, source, sequence)`; the only ordering authority remains each
- * source's own sequence, so no single global order is implied.
+ * missing ranges (unseen sequences from 1 up, inside a source's own stream),
+ * late records (arrived after their source had already recorded a higher
+ * sequence), and truncated records (writer-marked). The merged `events` list
+ * is a display order by `(event_time, source, sequence)`; the only ordering
+ * authority remains each source's own sequence, so no single global order is
+ * implied. Completeness describes the projected view; project a source's
+ * full stream to assess that source's capture.
  */
 import type { TraceEvent } from "./schema.js";
 
@@ -16,7 +18,11 @@ export interface ProjectedTraceEvent extends TraceEvent {
   late: boolean;
 }
 
-/** A gap inside one source's sequence: those records have not been seen. */
+/**
+ * Unseen sequences for one source: a leading run from 1, or an interior gap.
+ * Sequences start at 1, so records below the first observation are missing
+ * too — a view holding only sequence 5 has plainly not seen 1 through 4.
+ */
 export interface MissingRange {
   source: string;
   from_sequence: number;
@@ -34,8 +40,10 @@ export interface ProjectionCompleteness {
   /** False when records are missing or truncated; late alone keeps data complete. */
   complete: boolean;
   missing: MissingRange[];
-  late_event_ids: string[];
-  truncated_event_ids: string[];
+  /** `source/event_id` refs; bare event ids collide across writers. */
+  late_event_refs: string[];
+  /** `source/event_id` refs; bare event ids collide across writers. */
+  truncated_event_refs: string[];
 }
 
 export interface TraceProjection {
@@ -56,8 +64,8 @@ export function projectTraceEvents(
   const maxSequenceBySource = new Map<string, number>();
   const sequencesBySource = new Map<string, number[]>();
   const projected: ProjectedTraceEvent[] = [];
-  const lateEventIds: string[] = [];
-  const truncatedEventIds: string[] = [];
+  const lateEventRefs: string[] = [];
+  const truncatedEventRefs: string[] = [];
   let eventTimeWatermark: string | null = null;
   let ingestTimeWatermark: string | null = null;
 
@@ -65,7 +73,7 @@ export function projectTraceEvents(
     const seenMax = maxSequenceBySource.get(event.source) ?? 0;
     const late = event.sequence < seenMax;
     if (late) {
-      lateEventIds.push(event.event_id);
+      lateEventRefs.push(`${event.source}/${event.event_id}`);
     }
     if (event.sequence > seenMax) {
       maxSequenceBySource.set(event.source, event.sequence);
@@ -74,7 +82,7 @@ export function projectTraceEvents(
     sequences.push(event.sequence);
     sequencesBySource.set(event.source, sequences);
     if (event.truncated) {
-      truncatedEventIds.push(event.event_id);
+      truncatedEventRefs.push(`${event.source}/${event.event_id}`);
     }
     if (
       eventTimeWatermark === null ||
@@ -94,6 +102,10 @@ export function projectTraceEvents(
   const missing: MissingRange[] = [];
   for (const [source, sequences] of sequencesBySource) {
     const sorted = [...new Set(sequences)].sort((a, b) => a - b);
+    const first = sorted[0];
+    if (first !== undefined && first > 1) {
+      missing.push({ source, from_sequence: 1, to_sequence: first - 1 });
+    }
     for (let index = 1; index < sorted.length; index += 1) {
       const previous = sorted[index - 1];
       const current = sorted[index];
@@ -122,10 +134,10 @@ export function projectTraceEvents(
       ingest_time_watermark: ingestTimeWatermark,
     },
     completeness: {
-      complete: missing.length === 0 && truncatedEventIds.length === 0,
+      complete: missing.length === 0 && truncatedEventRefs.length === 0,
       missing,
-      late_event_ids: lateEventIds,
-      truncated_event_ids: truncatedEventIds,
+      late_event_refs: lateEventRefs,
+      truncated_event_refs: truncatedEventRefs,
     },
   };
 }

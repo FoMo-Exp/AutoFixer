@@ -154,6 +154,19 @@ describe("authenticated access scope", () => {
     ).toThrow(TraceValidationError);
   });
 
+  test("invalid time bounds are rejected instead of silently disabling the filter", () => {
+    const store = new TraceStore({ now: fixedNow() });
+    store.append(newEvent({ event_id: "a1" }));
+    expect(() => store.query(scopeA, { since: "not-a-timestamp" })).toThrow(TraceValidationError);
+    expect(() => store.query(scopeA, { until: "yesterday" })).toThrow(TraceValidationError);
+    expect(() => store.stream(scopeA, { since: "" }, () => undefined)).toThrow(
+      TraceValidationError,
+    );
+    expect(() => store.aggregate(scopeA, { until: "2026-13-99" }, ["kind"])).toThrow(
+      TraceValidationError,
+    );
+  });
+
   test("a scoped stream only delivers its own workspace's events", () => {
     const store = new TraceStore({ now: fixedNow() });
     const seen: string[] = [];
@@ -243,6 +256,18 @@ describe("persistence and envelope migration", () => {
     const file = path.join(tempDir(), "trace.json");
     writeFileSync(file, JSON.stringify({ schema_version: TRACE_SCHEMA_VERSION + 1, events: [] }));
     expect(() => new TraceStore({ persistencePath: file })).toThrow(/newer/);
+  });
+
+  test("corrupt persisted events fail startup instead of silently dropping history", () => {
+    const file = path.join(tempDir(), "trace.json");
+    writeFileSync(file, JSON.stringify({ schema_version: 1, events: { corrupt: true } }));
+    expect(() => new TraceStore({ persistencePath: file })).toThrow(/corrupt|not an array/);
+  });
+
+  test("a persisted envelope without events fails startup instead of loading empty", () => {
+    const file = path.join(tempDir(), "trace.json");
+    writeFileSync(file, JSON.stringify({ schema_version: 1 }));
+    expect(() => new TraceStore({ persistencePath: file })).toThrow(/corrupt|not an array/);
   });
 });
 

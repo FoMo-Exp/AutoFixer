@@ -123,6 +123,11 @@ export interface NewTraceEvent {
 
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
+/** RFC 3339 check for caller-supplied bounds; store filters reject the rest. */
+export function isTimestamp(value: unknown): value is string {
+  return typeof value === "string" && TIMESTAMP_PATTERN.test(value);
+}
+
 function asRecord(value: unknown, field: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new TraceValidationError(`trace ${field} must be a JSON object`);
@@ -227,12 +232,55 @@ export function validateTraceEvent(value: unknown): TraceEvent {
 }
 
 /**
+ * Build a complete current-version event from writer input and validate it.
+ *
+ * This is the `NewTraceEvent` writer contract, not a migration path: the
+ * correlation fields the interface marks optional receive their documented
+ * defaults here before strict validation. Stored current-version records
+ * never go through this function — see `migrateTraceEvent`.
+ */
+export function buildTraceEvent(input: NewTraceEvent, defaultIngestTime: string): TraceEvent {
+  return validateTraceEvent({
+    source: input.source,
+    event_id: input.event_id,
+    version: input.version ?? TRACE_SCHEMA_VERSION,
+    sequence: input.sequence,
+    event_time: input.event_time,
+    ingest_time: input.ingest_time ?? defaultIngestTime,
+    record_class: input.record_class,
+    kind: input.kind,
+    enterprise_id: input.enterprise_id,
+    workspace_id: input.workspace_id,
+    issue_id: input.issue_id ?? null,
+    task_id: input.task_id ?? null,
+    run_id: input.run_id ?? null,
+    attempt_id: input.attempt_id ?? null,
+    agent_id: input.agent_id ?? null,
+    agent_config_revision: input.agent_config_revision ?? null,
+    invocation_id: input.invocation_id ?? null,
+    tool_id: input.tool_id ?? null,
+    artifact_id: input.artifact_id ?? null,
+    delivery_id: input.delivery_id ?? null,
+    trace_id: input.trace_id,
+    span_id: input.span_id,
+    parent_span_id: input.parent_span_id ?? null,
+    causation_id: input.causation_id ?? null,
+    evidence_refs: input.evidence_refs ?? [],
+    labels: input.labels ?? {},
+    payload: input.payload ?? null,
+    truncated: input.truncated ?? false,
+  });
+}
+
+/**
  * Upgrade one stored record to the current schema and validate it.
  *
- * Version 0 is the unversioned legacy shape; it receives explicit defaults
- * (an operational trace with no payload, no evidence refs, and `ingest_time`
- * falling back to `event_time`) rather than being guessed as authority it
- * never claimed. Newer versions are refused instead of misread.
+ * Only version 0 (the unversioned legacy shape) is upgraded with defaults —
+ * an operational trace with no payload, no evidence refs, and `ingest_time`
+ * falling back to `event_time`. A record that already claims the current
+ * version must be complete: missing fields are rejected, never defaulted into
+ * existence, so corruption cannot masquerade as known-empty data. Newer
+ * versions are refused instead of misread.
  */
 export function migrateTraceEvent(raw: unknown): TraceEvent {
   const record = asRecord(raw, "event");
@@ -245,6 +293,9 @@ export function migrateTraceEvent(raw: unknown): TraceEvent {
       throw new TraceValidationError(
         `trace event schema ${version} is newer than ${TRACE_SCHEMA_VERSION}`,
       );
+    }
+    if (version === TRACE_SCHEMA_VERSION) {
+      return validateTraceEvent(record);
     }
   }
   const upgraded = {

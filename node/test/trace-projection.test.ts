@@ -51,6 +51,30 @@ describe("projection completeness markers", () => {
     expect(projection.completeness.complete).toBe(false);
   });
 
+  test("a leading gap before the first observed record is visible as missing", () => {
+    // Sequences start at 1 per the schema contract: a view holding only
+    // sequence 5 has plainly not seen 1-4 and must not claim completeness.
+    const projection = projectTraceEvents([
+      makeEvent({ event_id: "e5", sequence: 5, span_id: "span-5" }),
+    ]);
+    expect(projection.completeness.missing).toEqual([
+      { source: "worker-1", from_sequence: 1, to_sequence: 4 },
+    ]);
+    expect(projection.completeness.complete).toBe(false);
+  });
+
+  test("leading and interior gaps are both reported", () => {
+    const projection = projectTraceEvents([
+      makeEvent({ event_id: "e3", sequence: 3 }),
+      makeEvent({ event_id: "e6", sequence: 6, span_id: "span-6" }),
+    ]);
+    expect(projection.completeness.missing).toEqual([
+      { source: "worker-1", from_sequence: 1, to_sequence: 2 },
+      { source: "worker-1", from_sequence: 4, to_sequence: 5 },
+    ]);
+    expect(projection.completeness.complete).toBe(false);
+  });
+
   test("out-of-order arrival is flagged late without losing the record", () => {
     const projection = projectTraceEvents([
       makeEvent({ event_id: "e1", sequence: 1, event_time: "2026-11-03T00:00:01.000Z" }),
@@ -67,7 +91,7 @@ describe("projection completeness markers", () => {
         event_time: "2026-11-03T00:00:02.000Z",
       }),
     ]);
-    expect(projection.completeness.late_event_ids).toEqual(["e2"]);
+    expect(projection.completeness.late_event_refs).toEqual(["worker-1/e2"]);
     expect(projection.events.find((event) => event.event_id === "e2")?.late).toBe(true);
     expect(projection.events.find((event) => event.event_id === "e1")?.late).toBe(false);
     expect(projection.completeness.missing).toEqual([]);
@@ -75,9 +99,37 @@ describe("projection completeness markers", () => {
 
   test("truncated records are labeled instead of silently dropped", () => {
     const projection = projectTraceEvents([makeEvent({ event_id: "e1", truncated: true })]);
-    expect(projection.completeness.truncated_event_ids).toEqual(["e1"]);
+    expect(projection.completeness.truncated_event_refs).toEqual(["worker-1/e1"]);
     expect(projection.completeness.complete).toBe(false);
     expect(projection.events).toHaveLength(1);
+  });
+
+  test("late and truncated references use the source/event identity", () => {
+    // Bare event ids collide across writers; identity is (source, event_id).
+    const projection = projectTraceEvents([
+      makeEvent({
+        source: "writer-a",
+        event_id: "e1",
+        truncated: true,
+        event_time: "2026-11-03T00:00:01.000Z",
+      }),
+      makeEvent({
+        source: "writer-b",
+        event_id: "e1",
+        sequence: 2,
+        span_id: "span-b1",
+        event_time: "2026-11-03T00:00:02.000Z",
+      }),
+      makeEvent({
+        source: "writer-b",
+        event_id: "e2",
+        sequence: 1,
+        span_id: "span-b2",
+        event_time: "2026-11-03T00:00:03.000Z",
+      }),
+    ]);
+    expect(projection.completeness.truncated_event_refs).toEqual(["writer-a/e1"]);
+    expect(projection.completeness.late_event_refs).toEqual(["writer-b/e2"]);
   });
 
   test("a clean projection reports complete", () => {
@@ -88,8 +140,8 @@ describe("projection completeness markers", () => {
     expect(projection.completeness).toEqual({
       complete: true,
       missing: [],
-      late_event_ids: [],
-      truncated_event_ids: [],
+      late_event_refs: [],
+      truncated_event_refs: [],
     });
     expect(projection.events.every((event) => event.late === false)).toBe(true);
   });
