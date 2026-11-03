@@ -40,13 +40,19 @@ export interface FakeProvider {
   fetchImpl: typeof fetch;
   /** Profile returned by the user endpoint; swap between logins. */
   profile: FakeProfile;
+  /**
+   * Answer for repository-access probes (login-time verification of the
+   * workspace's bound repository): `true`/`false` is the provider's verdict,
+   * `"error"` simulates an unusable provider answer (fail closed).
+   */
+  repoAccess: true | false | "error";
   /** Every provider request seen, for leak assertions. */
   requests: Array<{ url: string; method: string; body: string }>;
 }
 
 export function fakeProvider(profile: FakeProfile): FakeProvider {
   const requests: FakeProvider["requests"] = [];
-  const state = { profile };
+  const state = { profile, repoAccess: true as FakeProvider["repoAccess"] };
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = String(input);
     const body = String(init?.body ?? "");
@@ -60,6 +66,22 @@ export function fakeProvider(profile: FakeProfile): FakeProvider {
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
+    }
+    // Repository-access probes: the provider's verdict on whether the
+    // authenticated subject can reach the workspace's bound repository.
+    if (url.includes("/repositories/") || url.includes("/members/all/")) {
+      if (state.repoAccess === "error") {
+        return new Response("provider unavailable", { status: 500 });
+      }
+      return state.repoAccess
+        ? new Response(JSON.stringify({ id: 1, private: true }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        : new Response(JSON.stringify({ message: "Not Found" }), {
+            status: 404,
+            headers: { "Content-Type": "application/json" },
+          });
     }
     return new Response(
       JSON.stringify({
@@ -78,6 +100,12 @@ export function fakeProvider(profile: FakeProfile): FakeProvider {
     },
     set profile(next: FakeProfile) {
       state.profile = next;
+    },
+    get repoAccess() {
+      return state.repoAccess;
+    },
+    set repoAccess(next: FakeProvider["repoAccess"]) {
+      state.repoAccess = next;
     },
     requests,
   };

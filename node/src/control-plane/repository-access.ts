@@ -1,5 +1,5 @@
 /**
- * Verified repository-access facts (DAT-204 eligibility; DAT-203 producers).
+ * Verified repository-access facts (DAT-204 eligibility).
  *
  * Invitation redemption must check the invitee's *current repository access*
  * (ADR-0006): holding a provider identity is not enough — a forwarded
@@ -8,17 +8,18 @@
  * trusted producer that verified it against the provider, with the
  * verification time and source attached:
  *
- * - `provider_api` — a direct provider check (the DAT-203 repository-scoped
- *   service integration),
+ * - `provider_api` — a direct provider check. The login surface produces
+ *   these today: while the user's OAuth access token is in hand, it asks the
+ *   provider whether the subject can currently reach each active workspace's
+ *   bound repository (DAT-204),
  * - `roster_sync` / `reconciliation` — DAT-203's member normalization and
- *   periodic reconciliation.
+ *   periodic reconciliation, which also refresh facts so they stay inside
+ *   the freshness window.
  *
  * Recording is the only way a fact enters storage; nothing on the HTTP
- * surface can self-assert access. Until a producer is deployed, no facts
- * exist and redemption fails closed as ineligible. Facts are read inside the
- * redemption transaction and only count while fresh
- * ({@link REPOSITORY_ACCESS_MAX_AGE_SECONDS}), so a stale or missing fact
- * denies the join instead of granting on old evidence.
+ * surface can self-assert access. A check that cannot run records nothing,
+ * and a missing, negative, or stale fact denies the join
+ * ({@link REPOSITORY_ACCESS_MAX_AGE_SECONDS}).
  */
 
 import type { ControlPlaneDb } from "./db.js";
