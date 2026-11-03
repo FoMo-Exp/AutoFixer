@@ -770,7 +770,7 @@ export interface components {
                  * @enum {string}
                  */
                 category: "denial" | "stop" | "retry" | "unknown";
-                /** @description Safe user-facing guidance. Localizable without changing `code`; a trace ID alone is never the only guidance. */
+                /** @description Safe user-facing guidance. Localizable without changing `code`; a trace ID alone is never the only guidance. An unexpected INTERNAL_ERROR serves one fixed safe message; its cause stays in server-side logs, correlated by `request_id`. */
                 message: string;
                 retryable: boolean;
                 /** @description Seconds to wait before a retry; non-null when applicable (typically 429 and retryable 503), matching the Retry-After header where the server sends one. */

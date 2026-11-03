@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 
 import type { StreamFn } from "@mariozechner/pi-agent-core";
 
@@ -14,6 +14,7 @@ import type { OrchestratorConfig } from "../src/config.js";
 import { configFromEnv } from "../src/config.js";
 import type { ApiErrorBody } from "../src/api/errors.js";
 import type { RunSummary, TaskResource, TimelineItem } from "../src/api/task-store.js";
+import { DshClient } from "../src/dsh/client.js";
 import type { DshServerHandle } from "./helpers/dsh-server.js";
 import { startDshServer } from "./helpers/dsh-server.js";
 import { getJson, postJson, postRaw, readSse, setAuthToken, waitUntil } from "./helpers/http.js";
@@ -574,6 +575,41 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     expect(response.body.error.retryable).toBe(false);
     expect(response.body.error.retry_after_seconds).toBeNull();
     expect(response.body.error.next_action).toBeNull();
+  });
+
+  test("unexpected failures serve a fixed safe INTERNAL_ERROR message", async () => {
+    const { base } = await startApp([]);
+    const marker = "SECRET_MARKER_INTERNAL_PATH";
+    // A non-ApiError failure is the unhandled-exception path: its message may
+    // carry internal diagnostics and must never reach the client, while the
+    // cause stays in server-side logs correlated by request_id.
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const spy = vi
+      .spyOn(DshClient.prototype, "createRun")
+      .mockRejectedValue(new Error(`simulated crash reading /srv/private/${marker}`));
+    try {
+      const response = await postJson<ApiErrorBody>(`${base}/api/v1/tasks`, {
+        repository_id: REPOSITORY_ID,
+        base_ref: "main",
+        summary: "Fix the export",
+        acceptance_criteria: ["export works"],
+      });
+      expect(response.status).toBe(500);
+      expect(response.body.error.code).toBe("INTERNAL_ERROR");
+      expect(response.body.error.message).toBe("An unexpected internal error occurred.");
+      expect(response.body.error.details).toEqual({});
+      expect(JSON.stringify(response.body)).not.toContain(marker);
+      // The diagnostic cause is retained server-side: the logged call carries
+      // the original error object.
+      expect(
+        logged.mock.calls.some((args) =>
+          args.some((arg) => arg instanceof Error && arg.message.includes(marker)),
+        ),
+      ).toBe(true);
+    } finally {
+      spy.mockRestore();
+      logged.mockRestore();
+    }
   });
 });
 

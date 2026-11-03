@@ -4332,7 +4332,7 @@
               },
               "message": {
                 "type": "string",
-                "description": "Safe user-facing guidance. Localizable without changing `code`; a trace ID alone is never the only guidance."
+                "description": "Safe user-facing guidance. Localizable without changing `code`; a trace ID alone is never the only guidance. An unexpected INTERNAL_ERROR serves one fixed safe message; its cause stays in server-side logs, correlated by `request_id`."
               },
               "retryable": {
                 "type": "boolean"

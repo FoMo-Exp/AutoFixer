@@ -450,7 +450,8 @@ invitation tokens, or sensitive diagnostics.
   a client, decides retry eligibility; a policy denial is never rewritten as
   a generic server error and no grant is ever widened automatically.
 - `message` — safe user-facing guidance; a trace ID alone is never the only
-  guidance.
+  guidance. An unexpected `INTERNAL_ERROR` serves one fixed safe message; its
+  cause stays in server-side logs, correlated by `request_id`.
 - `retryable` — the service's retry judgment for this instance.
 - `retry_after_seconds` — seconds to wait before a retry; non-null when
   applicable (typically `429` and retryable `503`), matching the

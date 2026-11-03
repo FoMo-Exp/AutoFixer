@@ -96,7 +96,9 @@ const errorSchema: JsonObject = {
           type: "string",
           description:
             "Safe user-facing guidance. Localizable without changing `code`; " +
-            "a trace ID alone is never the only guidance.",
+            "a trace ID alone is never the only guidance. An unexpected " +
+            "INTERNAL_ERROR serves one fixed safe message; its cause stays in " +
+            "server-side logs, correlated by `request_id`.",
         },
         retryable: { type: "boolean" },
         retry_after_seconds: {
