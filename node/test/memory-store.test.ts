@@ -138,7 +138,10 @@ describe("Memory migrations", () => {
       .prepare("SELECT version FROM schema_migrations ORDER BY version")
       .all()
       .map((row) => (row as { version: number }).version);
-    expect(applied).toEqual([1, 2, 3, 4]);
+    // Versions 1-3 predate both; version 4 is DAT-203's provider access
+    // tables, version 5 is DAT-234's admission decisions and retirement
+    // candidates. A future migration bumps this list again.
+    expect(applied).toEqual([1, 2, 3, 4, 5]);
   });
 });
 
