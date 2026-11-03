@@ -14,7 +14,7 @@ import { startDshServer } from "./helpers/dsh-server.js";
 import { getJson, postJson, setAuthToken, waitUntil } from "./helpers/http.js";
 import { scriptedStream, TEST_MODEL } from "./helpers/scripted-stream.js";
 import type { ScriptedTurn } from "./helpers/scripted-stream.js";
-import { scriptedGateway } from "./helpers/test-gateway.js";
+import { scriptedGateway, testRunScope } from "./helpers/test-gateway.js";
 
 /**
  * Real-response golden fixtures for the safe Pi summary contract (DAT-191,
@@ -84,6 +84,7 @@ async function startApp(turns: ScriptedTurn[]): Promise<string> {
     config: testConfig(),
     model: TEST_MODEL,
     gateway: scriptedGateway(TEST_MODEL, scripted.streamFn),
+    runScope: testRunScope(),
   });
   apps.push(orchestrator);
   setAuthToken(orchestrator.apiToken);

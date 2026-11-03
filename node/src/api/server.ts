@@ -6,6 +6,7 @@ import type { AuthService, SessionContext } from "./auth-service.js";
 import { handleAuthRequest, requireSessionActor } from "./auth-http.js";
 import { ApiError, apiErrorFromControlPlane } from "./errors.js";
 import { ControlPlaneError } from "../control-plane/errors.js";
+import { principalFromSession } from "../control-plane/request-scope.js";
 import { handleInvitationRequest } from "./invitation-http.js";
 import type { InvitationService } from "./invitation-service.js";
 import {
@@ -186,6 +187,10 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
             ? { idempotencyKey }
             : {}),
           ...(ctx.scoped ? { workspaceId } : {}),
+          // The run's gateway scope binds to this authenticated request
+          // (DAT-242); a request without a session carries no scope and its
+          // model dispatches fail closed.
+          principal: actor.kind === "session" ? principalFromSession(actor.ctx) : null,
         },
       );
       writeJson(res, 201, presentTask(ctx, created));
@@ -237,6 +242,7 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
       {
         decision,
         scope_digest: requireString(body, "scope_digest"),
+        principal: actor.kind === "session" ? principalFromSession(actor.ctx) : null,
       },
       workspaceId,
     );

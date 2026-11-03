@@ -3,8 +3,8 @@ import type { Api, Model } from "@mariozechner/pi-ai";
 
 import {
   createModelGateway,
+  createScopeBackedPolicyResolver,
   createStaticCredentialStore,
-  createStaticPolicyResolver,
 } from "../../src/gateway/index.js";
 import type {
   DependentWorkHold,
@@ -12,16 +12,34 @@ import type {
   GatewayCaseIntake,
   GatewayEventSink,
   GatewayPolicy,
+  GatewayScope,
+  GatewayScopeBinding,
   ModelGateway,
   SecretScanPolicy,
   SecretScanner,
   SecretScanReport,
 } from "../../src/gateway/index.js";
+import type { AuthenticatedPrincipal } from "../../src/control-plane/request-scope.js";
 import type { UsageLedgerSink } from "../../src/ledger/index.js";
 import { DATA_CLASSES } from "../../src/gateway/index.js";
 
 /** Scope the test policies resolve for; matches the test configs' identity. */
 export const TEST_SCOPE = { enterpriseId: "ent_test", workspaceId: "ws_test" };
+
+/**
+ * A fixed scope binding: the test-seam stand-in for the DAT-241 helper's
+ * authenticated resolution. Tests that exercise the authoritative pipeline
+ * itself (isolation, revocation) build bindings from `resolveRequestScope`
+ * instead.
+ */
+export function fixedScopeBinding(scope: GatewayScope): GatewayScopeBinding {
+  return { ...scope, scopeAuthority: { resolve: () => scope } };
+}
+
+/** Fixed run-scope seam for orchestrator tests (behind real gateway checks). */
+export function testRunScope(): (principal: AuthenticatedPrincipal | null) => GatewayScopeBinding {
+  return () => fixedScopeBinding(TEST_SCOPE);
+}
 
 /**
  * Scanner stub for suites that are not about secret scanning: it reports a
@@ -56,7 +74,7 @@ export function memorySink(): { sink: GatewayEventSink; events: GatewayAttemptEv
 
 /** Fixed run identity for direct gateway tests. */
 export const TEST_BINDING = {
-  ...TEST_SCOPE,
+  ...fixedScopeBinding(TEST_SCOPE),
   issueId: "issue_test",
   runId: "run_test",
   traceId: "trace_test",
@@ -133,7 +151,9 @@ export function scriptedGateway(
   } = {},
 ): ModelGateway {
   return createModelGateway({
-    policyResolver: createStaticPolicyResolver(extras.policy ?? testPolicyFor(model), TEST_SCOPE),
+    policyResolver: createScopeBackedPolicyResolver([
+      { scope: TEST_SCOPE, policy: extras.policy ?? testPolicyFor(model) },
+    ]),
     credentials: createStaticCredentialStore(
       extras.credentials ?? { [TEST_CREDENTIAL_REF]: TEST_CREDENTIAL },
     ),

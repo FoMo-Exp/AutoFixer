@@ -43,9 +43,12 @@ export interface OrchestratorConfig {
   /** Optional API origin override for a compatible provider endpoint. */
   piBaseUrl?: string;
   /**
-   * Enterprise/workspace scope whose policy governs model egress. The
-   * deployment names both explicitly; gateway policy resolution (ADR-0006
-   * seam) never accepts a caller-supplied scope as authority.
+   * The task surface's enterprise/workspace (ADR-0006): session access
+   * gating and the DAT-203 provider-authority boundary consult membership in
+   * this workspace. Since DAT-242 these values no longer govern model egress:
+   * gateway policy resolution and each run's binding scope come from the
+   * authenticated request's live membership (`resolveRequestScope`, DAT-241),
+   * never from deployment configuration.
    */
   enterpriseId: string;
   workspaceId: string;

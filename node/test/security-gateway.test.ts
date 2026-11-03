@@ -25,8 +25,8 @@ import {
   SecurityNotifier,
   createModelGateway,
   createPatternSecretScanner,
+  createScopeBackedPolicyResolver,
   createStaticCredentialStore,
-  createStaticPolicyResolver,
 } from "../src/index.js";
 import { TEST_MODEL } from "./helpers/scripted-stream.js";
 import {
@@ -159,7 +159,9 @@ function gatewayWith(
 ) {
   const adapter = spyAdapter();
   const gateway = createModelGateway({
-    policyResolver: createStaticPolicyResolver(testPolicyFor(TEST_MODEL), TEST_SCOPE),
+    policyResolver: createScopeBackedPolicyResolver([
+      { scope: TEST_SCOPE, policy: testPolicyFor(TEST_MODEL) },
+    ]),
     credentials: createStaticCredentialStore({ [TEST_CREDENTIAL_REF]: TEST_CREDENTIAL }),
     adapter: adapter.adapter,
     scanner: createPatternSecretScanner(),
@@ -308,7 +310,9 @@ describe("gateway disposal cases (DAT-210)", () => {
     const adapter = spyAdapter();
     // A model the policy does not approve: a policy denial, not a secret block.
     const gateway = createModelGateway({
-      policyResolver: createStaticPolicyResolver(testPolicyFor(TEST_MODEL), TEST_SCOPE),
+      policyResolver: createScopeBackedPolicyResolver([
+        { scope: TEST_SCOPE, policy: testPolicyFor(TEST_MODEL) },
+      ]),
       credentials: createStaticCredentialStore({ [TEST_CREDENTIAL_REF]: TEST_CREDENTIAL }),
       adapter: adapter.adapter,
       scanner: createPatternSecretScanner(),
