@@ -18,6 +18,13 @@ import type { GatewayCredentialStore } from "./credentials.js";
 import { matchEndpoint, matchFallback } from "./policy.js";
 import type { GatewayPolicyResolver } from "./policy.js";
 import { scrubSecrets } from "./redact.js";
+import {
+  authorizeRequestDataClasses,
+  runRequestScanGate,
+  type ScanDenyReason,
+  type SecretScanPolicy,
+  type SecretScanner,
+} from "./scan.js";
 import type {
   ApprovedEndpoint,
   GatewayAttemptDestination,
@@ -26,15 +33,44 @@ import type {
   GatewayEventSink,
   GatewayFallback,
   GatewayRequestIdentity,
+  RequestScanEvidence,
 } from "./types.js";
-import { ModelDispatchError, ModelEgressDeniedError } from "./types.js";
+import {
+  ModelDispatchError,
+  ModelEgressDeniedError,
+  MODEL_EGRESS_DENIED,
+  SENSITIVE_DATA_UNCERTAIN,
+} from "./types.js";
 import type { GatewayDenyReason } from "./types.js";
+
+/**
+ * Scan-gate denials about uncertain secret handling surface under the stable
+ * `SENSITIVE_DATA_UNCERTAIN` error code (ADR-0005); authorization and audit
+ * denials stay `MODEL_EGRESS_DENIED`.
+ */
+function scanDenyErrorCode(reason: ScanDenyReason): string {
+  return reason === "AUTHORIZATION_MISSING" ? MODEL_EGRESS_DENIED : SENSITIVE_DATA_UNCERTAIN;
+}
 
 export interface ModelGatewayDeps {
   policyResolver: GatewayPolicyResolver;
   credentials: GatewayCredentialStore;
   adapter: ProviderAdapter;
-  /** Audit/metering sink; every attempt is recorded through it. */
+  /**
+   * Complete-request secret scanner (DAT-209). A missing or failing scanner
+   * is never clean: the gateway blocks the invocation instead of sending.
+   */
+  scanner?: SecretScanner;
+  /** Separately authorized deterministic scan policies (minimization, derived). */
+  scanPolicy?: SecretScanPolicy;
+  /** Scanner timeout; a hung scanner is unavailable and blocks. */
+  scanTimeoutMs?: number;
+  /**
+   * Required audit/metering sink; every attempt is recorded through it. The
+   * gateway denies every dispatch when it is missing — required pre-dispatch
+   * evidence (including scan evidence) must be durable before any byte is
+   * sent.
+   */
   sink?: GatewayEventSink;
   now?: () => Date;
   newInvocationId?: () => string;
@@ -181,11 +217,11 @@ export class ModelGateway {
       for (let round = 0; round < schedulePolicy.retry.maxAttempts; round += 1) {
         attempt += 1;
         const identity = this.mintIdentity(binding);
-        const prepared = await this.prepare(slot, model, options, identity, attempt);
+        const prepared = await this.prepare(slot, model, options, identity, attempt, context);
         if (prepared instanceof ModelEgressDeniedError) {
           throw prepared;
         }
-        const result = await this.runAttempt(prepared, context);
+        const result = await this.runAttempt(prepared);
         if (result.status === "handed_off") {
           return result.stream;
         }
@@ -209,7 +245,8 @@ export class ModelGateway {
    * Per-attempt checks against a freshly resolved policy. Returns either the
    * fully resolved attempt inputs or the denial to throw. Nothing about a
    * previous attempt is reused: a retry, fallback, or model switch re-resolves
-   * policy, endpoint, and credential from scratch.
+   * policy, endpoint, and credential from scratch — and re-runs the complete
+   * request scan gate over the full request, so no path around the checks.
    */
   private async prepare(
     slot: DestinationSlot,
@@ -217,6 +254,7 @@ export class ModelGateway {
     options: SimpleStreamOptions | undefined,
     identity: GatewayRequestIdentity,
     attempt: number,
+    context: Context,
   ): Promise<
     | ModelEgressDeniedError
     | {
@@ -228,6 +266,8 @@ export class ModelGateway {
         credential: string;
         pinnedModel: Model<Api>;
         adapterOptions: SimpleStreamOptions;
+        /** The scanned (possibly minimized) request the adapter may dispatch. */
+        context: Context;
       }
   > {
     const scope = { enterpriseId: identity.enterpriseId, workspaceId: identity.workspaceId };
@@ -282,16 +322,62 @@ export class ModelGateway {
         { policyRevision: policy.revision, destination },
       );
     }
+    // Required audit sink: without it there is nowhere to persist the
+    // pre-dispatch evidence (scan result included), so nothing may be sent.
+    if (!this.deps.sink) {
+      return this.deny(
+        identity,
+        attempt,
+        "AUDIT_UNAVAILABLE",
+        "no required audit sink is configured",
+        { policyRevision: policy.revision, destination },
+      );
+    }
+    // Complete-request scan gate (DAT-209): every string of the request —
+    // system prompt, tools, user input, history, code, logs, diffs, tool
+    // results, derived summaries — is scanned before any byte is sent. A
+    // suspected secret whose removal cannot be confirmed, an unknown
+    // classification, or an unavailable scanner blocks with zero bytes.
+    const gate = await runRequestScanGate(context, {
+      ...(this.deps.scanner ? { scanner: this.deps.scanner } : {}),
+      ...(this.deps.scanPolicy ? { scanPolicy: this.deps.scanPolicy } : {}),
+      ...(this.deps.scanTimeoutMs !== undefined ? { scanTimeoutMs: this.deps.scanTimeoutMs } : {}),
+    });
+    if (!gate.ok) {
+      return this.deny(
+        identity,
+        attempt,
+        gate.reason,
+        gate.detail,
+        { policyRevision: policy.revision, destination },
+        gate.evidence,
+        scanDenyErrorCode(gate.reason),
+      );
+    }
+    // Destination data-class authorization: a destination is enabled together
+    // with its permitted data classes; missing authorization fails closed.
+    const authorization = authorizeRequestDataClasses(gate.evidence.dataClasses, endpoint);
+    if (!authorization.ok) {
+      return this.deny(
+        identity,
+        attempt,
+        authorization.reason,
+        authorization.detail,
+        { policyRevision: policy.revision, destination },
+        gate.evidence,
+      );
+    }
     const pre: GatewayAttemptEvent = {
       phase: "pre_dispatch",
       identity,
       attempt,
       policyRevision: policy.revision,
       destination,
+      scan: gate.evidence,
       timestamp: this.timestamp(),
     };
     try {
-      await this.deps.sink?.record(pre);
+      await this.deps.sink.record(pre);
     } catch {
       return this.deny(
         identity,
@@ -299,6 +385,7 @@ export class ModelGateway {
         "AUDIT_UNAVAILABLE",
         "required pre-dispatch audit evidence could not be recorded",
         { policyRevision: policy.revision, destination },
+        gate.evidence,
       );
     }
     return {
@@ -308,6 +395,7 @@ export class ModelGateway {
       modelId: slot.modelId,
       policyRevision: policy.revision,
       credential,
+      context: gate.context,
       pinnedModel: {
         ...model,
         id: slot.modelId,
@@ -323,26 +411,24 @@ export class ModelGateway {
   }
 
   /** Dispatch one checked attempt and classify its outcome. */
-  private async runAttempt(
-    prepared: {
-      identity: GatewayRequestIdentity;
-      attempt: number;
-      endpoint: ApprovedEndpoint;
-      modelId: string;
-      policyRevision: string;
-      credential: string;
-      pinnedModel: Model<Api>;
-      adapterOptions: SimpleStreamOptions;
-    },
-    context: Context,
-  ): Promise<AttemptResult> {
+  private async runAttempt(prepared: {
+    identity: GatewayRequestIdentity;
+    attempt: number;
+    endpoint: ApprovedEndpoint;
+    modelId: string;
+    policyRevision: string;
+    credential: string;
+    pinnedModel: Model<Api>;
+    adapterOptions: SimpleStreamOptions;
+    context: Context;
+  }): Promise<AttemptResult> {
     const { identity, attempt, endpoint, modelId, policyRevision, credential } = prepared;
     const record = (outcome: TerminalOutcome): Promise<void> =>
       this.recordOutcome(identity, attempt, policyRevision, endpoint, modelId, outcome);
     try {
       const inner = await this.deps.adapter.stream(
         prepared.pinnedModel,
-        context,
+        prepared.context,
         prepared.adapterOptions,
       );
       const head = await this.consumeHead(inner, prepared.pinnedModel, record);
@@ -495,6 +581,8 @@ export class ModelGateway {
     reason: GatewayDenyReason,
     detail: string,
     resolved?: { policyRevision: string; destination?: GatewayAttemptDestination },
+    scan?: RequestScanEvidence,
+    code: string = MODEL_EGRESS_DENIED,
   ): ModelEgressDeniedError {
     const event: GatewayAttemptEvent = {
       phase: "outcome",
@@ -504,6 +592,7 @@ export class ModelGateway {
       destination: resolved?.destination ?? null,
       outcome: "denied",
       denyReason: reason,
+      ...(scan ? { scan } : {}),
       detail: scrubSecrets(detail),
       timestamp: this.timestamp(),
     };
@@ -513,6 +602,7 @@ export class ModelGateway {
     return new ModelEgressDeniedError(
       reason,
       `model egress denied (${reason}): ${scrubSecrets(detail)}`,
+      code,
     );
   }
 
