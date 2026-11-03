@@ -9,6 +9,7 @@ export {
   CASE_TRANSITIONS,
   SecurityError,
   canTransitionCase,
+  isHumanOrService,
   isRunItself,
   isTerminalCaseState,
   requireNonEmpty,

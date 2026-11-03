@@ -79,6 +79,20 @@ describe("DependentWorkPauseLedger release", () => {
     expect(ledger.isHeld(SCOPE.runId)).toBe(true);
   });
 
+  test("an unknown actorKind never releases a hold", () => {
+    const ledger = new DependentWorkPauseLedger();
+    const pause = ledger.pauseDependentWork("case_1", SCOPE, "SENSITIVE_DATA_UNCERTAIN");
+    // Release requires exactly a human or service actor: a runtime kind
+    // outside the vocabulary is never a disposition principal.
+    const unknown = { actorId: "other", actorKind: "unknown" } as unknown as SecurityActor;
+    expectCode(() => ledger.release(pause.pauseId, unknown, "resume"), "PAUSE_RELEASE_FORBIDDEN");
+    expectCode(
+      () => ledger.release(pause.pauseId, {} as unknown as SecurityActor, "resume"),
+      "PAUSE_RELEASE_FORBIDDEN",
+    );
+    expect(ledger.isHeld(SCOPE.runId)).toBe(true);
+  });
+
   test("human or service disposition releases the hold exactly once", () => {
     const ledger = new DependentWorkPauseLedger();
     const pause = ledger.pauseDependentWork("case_1", SCOPE, "SENSITIVE_DATA_UNCERTAIN");

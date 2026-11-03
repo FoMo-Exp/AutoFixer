@@ -14,7 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { scrubSecrets } from "../gateway/redact.js";
-import { SecurityError, requireNonEmpty } from "./types.js";
+import { SecurityError, isHumanOrService, requireNonEmpty } from "./types.js";
 import type { SecurityActor } from "./types.js";
 
 /**
@@ -121,18 +121,12 @@ function metaOf(record: QuarantineRecord): QuarantineRecordMeta {
 }
 
 /**
- * Authorization-boundary principal check: a real, identified human or service
- * actor. Anonymous shapes and `run` actors are refused outright — a run never
- * grants or reads quarantined context.
+ * Authorization-boundary principal check: exactly an identified human or
+ * service actor. Anonymous shapes, `run` actors, and unrecognized actorKind
+ * values are refused outright — unknown kinds never become principals.
  */
 function isUsablePrincipal(actor: SecurityActor): boolean {
-  return (
-    typeof actor === "object" &&
-    actor !== null &&
-    typeof actor.actorId === "string" &&
-    actor.actorId.length > 0 &&
-    actor.actorKind !== "run"
-  );
+  return isHumanOrService(actor);
 }
 
 export class EncryptedQuarantine {
@@ -206,7 +200,7 @@ export class EncryptedQuarantine {
       this.emit("quarantine.access_denied", record.caseId, quarantineId, null, { action: "grant" });
       throw new SecurityError(
         "QUARANTINE_ACCESS_DENIED",
-        "a run never grants or reads quarantined context",
+        "quarantine access is restricted to human or service actors",
         { quarantineId },
       );
     }

@@ -16,6 +16,7 @@ import { scrubSecrets } from "../gateway/redact.js";
 import {
   SecurityError,
   canTransitionCase,
+  isHumanOrService,
   isRunItself,
   isTerminalCaseState,
   requireNonEmpty,
@@ -263,6 +264,15 @@ export class SecurityCaseStore {
   private assertActor(scope: CaseScope, actor: SecurityActor): void {
     if (!actor || typeof actor.actorId !== "string" || actor.actorId.length === 0) {
       throw new SecurityError("SECURITY_INPUT_INVALID", "actor must carry a non-empty actorId");
+    }
+    // Exactly human or service: an unrecognized actorKind is refused here,
+    // before any state change, and never defaulted into authority (DAT-210).
+    if (!isHumanOrService(actor)) {
+      throw new SecurityError(
+        "CASE_ACTOR_FORBIDDEN",
+        "case actions are restricted to human or service actors",
+        { runId: scope.runId },
+      );
     }
     if (isRunItself(actor, scope)) {
       throw new SecurityError(

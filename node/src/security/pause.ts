@@ -19,7 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { scrubSecrets } from "../gateway/redact.js";
-import { SecurityError, isRunItself, requireNonEmpty } from "./types.js";
+import { SecurityError, isHumanOrService, isRunItself, requireNonEmpty } from "./types.js";
 import type { CaseScope, SecurityActor } from "./types.js";
 
 export interface RunPause {
@@ -106,14 +106,25 @@ export class DependentWorkPauseLedger {
   }
 
   /**
-   * Release one hold after case disposition. Human/service actors only: the
-   * paused run — `run` actors and any actor id equal to the run id — never
+   * Release one hold after case disposition. Human/service actors only —
+   * exactly `human` or `service`, never an unrecognized kind — and the
+   * paused run (`run` actors and any actor id equal to the run id) never
    * resumes itself. A hold releases exactly once.
    */
   release(pauseId: string, actor: SecurityActor, reason: string): RunPause {
     const pause = this.pauses.get(pauseId);
     if (!pause) {
       throw new SecurityError("PAUSE_NOT_FOUND", `no run pause ${pauseId}`, { pauseId });
+    }
+    // Authorization boundary, before any state change: an unknown actorKind
+    // is refused exactly like the run itself — never defaulted into the
+    // authority to release (DAT-210).
+    if (!isHumanOrService(actor)) {
+      throw new SecurityError(
+        "PAUSE_RELEASE_FORBIDDEN",
+        "a hold is released only through human or service disposition",
+        { pauseId, runId: pause.scope.runId },
+      );
     }
     if (isRunItself(actor, pause.scope)) {
       throw new SecurityError(

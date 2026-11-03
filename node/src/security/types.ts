@@ -157,3 +157,20 @@ export function requireNonEmpty(value: unknown, name: string): string {
 export function isRunItself(actor: SecurityActor, scope: CaseScope): boolean {
   return actor.actorKind === "run" || actor.actorId === scope.runId;
 }
+
+/**
+ * Exactly the principals allowed to act on cases, release holds, or inspect
+ * quarantine: an identified human or service. A `run` actor is never one —
+ * and neither is a runtime `actorKind` outside the closed vocabulary.
+ * Unknown kinds are refused at the authorization boundary, never defaulted
+ * into authority (DAT-210).
+ */
+export function isHumanOrService(actor: SecurityActor): boolean {
+  return (
+    typeof actor === "object" &&
+    actor !== null &&
+    typeof actor.actorId === "string" &&
+    actor.actorId.length > 0 &&
+    (actor.actorKind === "human" || actor.actorKind === "service")
+  );
+}

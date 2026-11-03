@@ -174,6 +174,23 @@ describe("EncryptedQuarantine access control", () => {
         }),
       "QUARANTINE_ACCESS_DENIED",
     );
+    // An unknown actorKind is never a principal: exactly human or service.
+    expectCode(
+      () =>
+        quarantine.read(sealed.quarantineId, grant.grantId, {
+          actorId: "human_handler",
+          actorKind: "unknown",
+        } as unknown as SecurityActor),
+      "QUARANTINE_ACCESS_DENIED",
+    );
+    expectCode(
+      () =>
+        quarantine.grantAccess(sealed.quarantineId, "human_other", {
+          actorId: "someone",
+          actorKind: "unknown",
+        } as unknown as SecurityActor),
+      "QUARANTINE_ACCESS_DENIED",
+    );
     // The legitimate viewer still reads.
     expect(quarantine.read(sealed.quarantineId, grant.grantId, HANDLER)).toBe(SECRET_CONTEXT);
   });

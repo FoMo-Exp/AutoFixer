@@ -211,6 +211,22 @@ describe("SecurityCaseStore append-only transitions", () => {
     );
     expect(store.get(opened.caseId)?.state).toBe("pending");
   });
+
+  test("only human and service actors act; an unknown actorKind is refused before any change", () => {
+    const store = new SecurityCaseStore();
+    const { case: opened } = store.openForBlock(blockInput());
+    // Runtime input is untyped: a kind outside the vocabulary must never
+    // become a disposition principal — it is not "run", and it is granted
+    // nothing by default.
+    const unknown = { actorId: "someone", actorKind: "unknown" } as unknown as SecurityActor;
+    expectCode(() => store.transition(opened.caseId, "handling", unknown), "CASE_ACTOR_FORBIDDEN");
+    expectCode(() => store.openForBlock(blockInput({ actor: unknown })), "CASE_ACTOR_FORBIDDEN");
+    expectCode(
+      () => store.transition(opened.caseId, "terminated", {} as unknown as SecurityActor),
+      "SECURITY_INPUT_INVALID",
+    );
+    expect(store.get(opened.caseId)?.state).toBe("pending");
+  });
 });
 
 describe("SecurityCaseStore durability", () => {
