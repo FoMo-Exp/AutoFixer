@@ -48,6 +48,10 @@ _Avoid_: chat history, personal note, model weight update
 The workspace-scoped store of working context, episodes, facts, lessons, and institutional policy available to later runs; it is advisory and never grants authority.
 _Avoid_: global memory, cross-workspace knowledge base
 
+**Enterprise template**:
+A scrubbed, versioned memory item explicitly published by an enterprise administrator for other workspaces to adopt locally; adoption never exposes the source workspace's data.
+_Avoid_: shared workspace memory, global lesson
+
 **Recursive self-improvement (RSI)**:
 The governed loop that proposes, evaluates, canaries, and rolls back changes to workspace memory and retrieval policy from observed outcomes, without modifying guardrails, approvals, or capability grants.
 _Avoid_: autonomous self-modification, unrestricted self-training

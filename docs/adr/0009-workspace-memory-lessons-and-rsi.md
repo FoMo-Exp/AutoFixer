@@ -73,7 +73,7 @@ the optimizer define or contaminate its own objective.
 | Tier | Horizon | Scope and contents | Lifetime | Retrieval |
 | --- | --- | --- | --- | --- |
 | L0 working | Short-term | Current run's task brief, hypotheses, selected plan, tool observations, test output, open questions | One run attempt; not indexed | Always present, bounded by the run's context budget |
-| L1 episodic | Short-term | Completed-run episode: problem, approach, outcome, failures, reviewer disposition, evidence pointers | Configurable retention (default 90 days) | Similarity to the current issue plus recency |
+| L1 episodic | Short-term | Completed-run episode: problem, approach, outcome, failures, reviewer disposition, evidence pointers | Confirmed default 90 days; workspace-configurable within enterprise retention | Similarity to the current issue plus recency |
 | L2 semantic | Long-term | Workspace facts: build/test commands, architecture notes, ownership, environment quirks, known flaky tests | Until superseded, contradicted, expired, or deleted | Hybrid keyword + vector search, scope-filtered |
 | L3 procedural | Long-term | **Lessons** and playbooks: ordered steps with preconditions, anti-patterns, reviewer expectations | Versioned; reviewed or evidence-promoted | Applicability filter plus hybrid search |
 | L4 institutional | Long-term | Enterprise/workspace policy, security rules, approval requirements | Human-authored, rarely changed | Always injected; never learned or rewritten by an agent |
@@ -135,6 +135,36 @@ dsh control plane remains the sole gate for tool actions. A lesson that says
 "skip the test gate" is a policy violation and must be rejected or quarantined,
 even if it was learned from a run that appeared successful.
 
+### Enterprise template publication
+
+The confirmed direction permits an enterprise administrator to publish a
+scrubbed memory item as an enterprise template for other workspaces to adopt.
+Publication is explicit and additive; it never creates a shared index or
+implicit cross-workspace retrieval.
+
+- Publication is an administrator action from one source workspace. There is
+  no automatic propagation, background federation, or enterprise-wide
+  similarity search.
+- The item is scrubbed before publication: no raw source, repository names,
+  issue or PR links, logs, credentials, customer or employee data, or
+  workspace-specific identifiers. The template keeps its evidence class and a
+  publication record, not the source evidence payload.
+- Every template is immutable and versioned. Publishing a revision creates a
+  new template version; adopting workspaces pin the version they adopted.
+- Adoption is opt-in per workspace. It creates a local `candidate` copy with
+  `provenance=enterprise_template`, which becomes `active` only through local
+  validation and the promotion rule above, or by local human approval. An
+  administrator's publication cannot make a template active in another
+  workspace.
+- Procedural templates require security review before publication and may not
+  contain permission-expanding instructions, approval claims, or evaluator
+  instructions.
+- Revocation stops new adoption and marks adopted copies `deprecated` with a
+  reason. It does not rewrite historical evidence or silently delete local
+  copies; affected workspace owners are notified.
+- An enterprise template is not L4 policy. Only an explicit enterprise policy
+  publication can bind a workspace without local adoption.
+
 ### Write path: capture, distill, validate, promote, consolidate
 
 **1. Capture outcomes, not narratives.** The orchestrator emits an outcome
@@ -165,12 +195,16 @@ policy lint, prompt-injection and poisoning heuristics, and evidence
 resolution. Failures keep the item as `proposed` for human review or discard
 it; they never enter retrieval.
 
-**5. Promote by risk.** The default promotion rule for low-risk semantic
-items is at least two independent supporting runs, no unresolved
-contradiction, passing validation, and a non-negative offline evaluation
-delta. Procedural lessons and playbooks require human approval. Institutional
-policy always requires human authorship and approval. A workspace can disable
-automatic promotion entirely.
+**5. Promote by risk.** The confirmed default for low-risk semantic `fact`
+items is automatic promotion to `active` when there are at least two
+independent supporting runs, no unresolved contradiction, passing validation,
+and a non-negative offline evaluation delta. "Independent" means distinct runs
+and evidence: a retried attempt or repackaged evidence does not count twice.
+Automatic promotion does not apply to `lesson`, `playbook`, or `anti_pattern`
+items; procedural content requires named human approval. Institutional policy
+always requires human authorship and approval. A workspace can disable
+automatic promotion, raise the evidence threshold, or require human approval
+for every item without changing this ADR.
 
 **6. Consolidate on a schedule.** A bounded background job merges duplicates,
 recomputes support and contradiction counts, detects stale facts (for example,
@@ -411,24 +445,32 @@ Rejected alternatives:
 1. Substituting another workspace's id cannot read, search, export, or infer
    its memory; deletion purges items and embeddings and leaves only an
    auditable tombstone.
-2. Short-term memory is bounded and expires; raw secrets and unnecessary
+2. Short-term memory is bounded and expires at the confirmed 90-day default
+   unless a workspace configures otherwise; raw secrets and unnecessary
    personal data never enter an item; content retention matches ADR-0008.
-3. Every active long-term item has evidence, provenance, a version, and an
+3. Automatic promotion applies only to `fact` items meeting the two-independent-
+   run, no-unresolved-contradiction, passing-validation, and non-negative-
+   evaluation rule; retries and repackaged evidence do not count as independent.
+   `lesson`, `playbook`, `anti_pattern`, and policy items require human approval.
+4. Enterprise template publication scrubs source-identifying content; adoption
+   is opt-in, creates a local candidate, requires local promotion, and
+   revocation deprecates adopted copies without rewriting history.
+5. Every active long-term item has evidence, provenance, a version, and an
    explicit status; contradictory items are not silently overwritten.
-4. A malicious or poisoned lesson cannot cause an out-of-grant tool action,
+6. A malicious or poisoned lesson cannot cause an out-of-grant tool action,
    cannot alter approval state, and cannot suppress evidence; quarantine
    removes it from all bundles.
-5. Retrieval respects the token/item budget, cites item ids, labels unapproved
+7. Retrieval respects the token/item budget, cites item ids, labels unapproved
    candidates, and fails open for availability while policy remains
    fail-closed.
-6. The RSI loop enforces the target ladder, separate evaluation, hidden
+8. The RSI loop enforces the target ladder, separate evaluation, hidden
    holdout, human gates, canary, rollback, budgets, and a per-workspace kill
    switch; each run records the memory version it used.
-7. Unknown or timed-out outcomes are never treated as success or used as
+9. Unknown or timed-out outcomes are never treated as success or used as
    positive evidence.
-8. Memory outage degrades a run to policy-only with a visible label and does
-   not block remediation or relax dsh.
-9. Generated API contracts merge before dependent frontend work. Delivery
-   uses main-based linked PRs, applicable checks, a new remote head,
-   `in_review`, and an exact QA mention; done requires QA pass. This ADR
-   certifies design only and creates no implemented memory service.
+10. Memory outage degrades a run to policy-only with a visible label and does
+    not block remediation or relax dsh.
+11. Generated API contracts merge before dependent frontend work. Delivery
+    uses main-based linked PRs, applicable checks, a new remote head,
+    `in_review`, and an exact QA mention; done requires QA pass. This ADR
+    certifies design only and creates no implemented memory service.
