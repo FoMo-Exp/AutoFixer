@@ -153,7 +153,11 @@ func TestDepPreparePrimesApprovedSourceThenInstallsIsolated(t *testing.T) {
 		},
 		func(c *Config) { c.Profiles = profiles },
 	)
-	status, raw := env.do("POST", "/v1/runs", structuredCreate("tsk_dep", "dep.prepare"))
+	depCreate := structuredCreate("tsk_dep", "dep.prepare")
+	// Dependency preparation is repository-wide work: it needs a
+	// repository-wide grant, and a narrow one is refused at dispatch.
+	depCreate.RequestedScope.PathHints = []string{"."}
+	status, raw := env.do("POST", "/v1/runs", depCreate)
 	wantStatus(t, status, raw, http.StatusCreated)
 	created := decodeInto[createRunResponse](t, raw)
 
@@ -169,5 +173,30 @@ func TestDepPreparePrimesApprovedSourceThenInstallsIsolated(t *testing.T) {
 	}
 	if accepted.Result.Environment.Network != "denied" {
 		t.Errorf("environment network = %q, want denied", accepted.Result.Environment.Network)
+	}
+}
+
+func TestRootScopeHintCreatesRepositoryWideGrant(t *testing.T) {
+	env := startEnv(t, func(c *Config) { c.RevisionSource = structuredSource() })
+	req := structuredCreate("tsk_root", "repo.read")
+	req.RequestedScope.PathHints = []string{"."}
+	status, raw := env.do("POST", "/v1/runs", req)
+	wantStatus(t, status, raw, http.StatusCreated)
+	created := decodeInto[createRunResponse](t, raw)
+	if created.Grant == nil || len(created.Grant.PermittedPaths) != 1 || created.Grant.PermittedPaths[0] != "." {
+		t.Fatalf("grant permitted_paths = %+v, want the repository-wide root", created.Grant)
+	}
+
+	// A suite run is refused under any narrower grant, so the root hint is
+	// the only way to authorize one.
+	narrow := structuredCreate("tsk_narrow", "test.run")
+	status, raw = env.do("POST", "/v1/runs", narrow)
+	wantStatus(t, status, raw, http.StatusCreated)
+	narrowRun := decodeInto[createRunResponse](t, raw)
+	status, raw = env.do("POST", "/v1/runs/"+narrowRun.RunID+"/actions",
+		structuredAction("act_suite_1", "test.run", map[string]any{"profile": "go.test", "mode": "suite"}, "web/src/export.ts"))
+	body := wantError(t, status, raw, http.StatusForbidden, CodeScopeDenied)
+	if body.Error.Details["gate_code"] != "grant_scope_exceeded" {
+		t.Errorf("details = %v, want grant_scope_exceeded", body.Error.Details)
 	}
 }

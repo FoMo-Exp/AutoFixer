@@ -101,6 +101,37 @@ func DefaultExecProfiles() []ExecProfile {
 	}
 }
 
+// scopeDir returns the repository directory one focused target executes in:
+// a file target runs its containing directory's package, a directory target
+// runs itself.
+func scopeDir(target string) string {
+	if strings.Contains(path.Base(target), ".") {
+		return path.Dir(target)
+	}
+	return target
+}
+
+// ExecutionScope reports the repository paths one request executes against
+// and whether the execution is repository-wide. Suite runs and dependency
+// preparation touch the whole checkout; focused runs are bounded to the
+// target and its execution directory. The runner checks this scope against
+// the capability grant, so a narrow grant can never run repository-wide work
+// and a target outside the grant can never execute.
+func (p ExecProfile) ExecutionScope(mode, target string) (paths []string, treeWide bool) {
+	if p.Kind == ProfileDependency || mode == "suite" {
+		return nil, true
+	}
+	dir := scopeDir(target)
+	if dir == "." || dir == "" {
+		return nil, true
+	}
+	paths = []string{dir}
+	if target != dir {
+		paths = append(paths, target)
+	}
+	return paths, false
+}
+
 // ProfileFor looks up one registered profile. The vocabulary is closed:
 // anything not registered is not runnable.
 func ProfileFor(profiles []ExecProfile, id string) (ExecProfile, bool) {
@@ -157,14 +188,15 @@ func goTestArgv(mode, target string) ([]string, error) {
 }
 
 // nodeTestArgv builds `npm test` argv. Focused runs pass the target behind
-// the "--" separator, so it stays positional filter data and can never be
-// parsed as an npm option.
+// the "--" separator with the discovery base pinned to the target's
+// directory via "--dir", so the filter stays positional data and the run
+// cannot pick up matching tests outside its execution scope.
 func nodeTestArgv(mode, target string) ([]string, error) {
 	switch mode {
 	case "suite":
 		return []string{"test"}, nil
 	case "focused":
-		return []string{"test", "--", target}, nil
+		return []string{"test", "--", "--dir", scopeDir(target), target}, nil
 	}
 	return nil, fmt.Errorf("sandbox: node.test has no mode %q", mode)
 }

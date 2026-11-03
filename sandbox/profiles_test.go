@@ -60,7 +60,7 @@ func TestTestArgvBuildsOnlyRegisteredShapes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("node Argv(focused): %v", err)
 	}
-	if strings.Join(argv, " ") != "test -- web/src/export/export-button.test.ts" {
+	if strings.Join(argv, " ") != "test -- --dir web/src/export web/src/export/export-button.test.ts" {
 		t.Errorf("node focused argv = %v", argv)
 	}
 }
@@ -97,8 +97,33 @@ func TestTestArgvRejectsOverprivilegedRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("node Argv(focused, --help): %v", err)
 	}
-	if strings.Join(argv, " ") != "test -- --help" {
-		t.Errorf("node argv for flag-shaped target = %v, want test -- --help", argv)
+	if len(argv) < 3 || argv[0] != "test" || argv[1] != "--" || argv[len(argv)-1] != "--help" {
+		t.Errorf("node argv for flag-shaped target = %v, want the target kept positional after --", argv)
+	}
+}
+
+func TestExecutionScopeBoundedToTargetAndDirectory(t *testing.T) {
+	goProfile, _ := defaultProfile("go.test")
+	scope, treeWide := goProfile.ExecutionScope("focused", "harness/policy_test.go")
+	if treeWide || strings.Join(scope, " ") != "harness harness/policy_test.go" {
+		t.Errorf("go focused scope = %v treeWide=%v, want the package dir and target", scope, treeWide)
+	}
+	if _, treeWide = goProfile.ExecutionScope("suite", ""); !treeWide {
+		t.Error("suite scope must be repository-wide")
+	}
+	nodeProfile, _ := defaultProfile("node.test")
+	scope, treeWide = nodeProfile.ExecutionScope("focused", "web/src/x.test.ts")
+	if treeWide || strings.Join(scope, " ") != "web/src web/src/x.test.ts" {
+		t.Errorf("node focused scope = %v treeWide=%v", scope, treeWide)
+	}
+	depProfile, _ := defaultProfile("go.mod")
+	if _, treeWide = depProfile.ExecutionScope("", ""); !treeWide {
+		t.Error("dependency preparation scope must be repository-wide")
+	}
+	// A root-level target executes the root package, which is repository-wide
+	// for grant purposes.
+	if _, treeWide = goProfile.ExecutionScope("focused", "root_test.go"); !treeWide {
+		t.Error("root-level target scope must require a repository-wide grant")
 	}
 }
 

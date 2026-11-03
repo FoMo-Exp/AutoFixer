@@ -164,7 +164,12 @@ export interface DshEnvironmentIdentity {
   writable: string[];
   max_wall_clock_seconds: number;
   output_limit_bytes: number;
-  declared_limits: { max_memory_mb: number; max_cpu_seconds: number };
+  enforced_limits: {
+    max_memory_mb: number;
+    max_cpu_seconds: number;
+    /** How the caps are enforced: `supervisor_kill`, `supervisor_kill+rlimit_cpu`, or `none`. */
+    enforcement: string;
+  };
 }
 
 /**
@@ -181,6 +186,12 @@ export interface DshExecutionResult {
   output_digest?: { algorithm: string; value: string };
   timed_out?: boolean;
   canceled?: boolean;
+  /**
+   * The granted resource cap that terminated the execution (`memory`,
+   * `cpu`), or `accounting` when enforcement broke down and the execution
+   * was stopped rather than left uncapped.
+   */
+  resource_exceeded?: string;
   digest: string;
 }
 

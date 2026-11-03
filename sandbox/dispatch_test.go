@@ -17,7 +17,21 @@ import (
 // revision, with the given extra options applied.
 func structuredFixture(t *testing.T, mods ...func(*Options)) (*Runner, *harness.Run) {
 	t.Helper()
-	run := mustApprovedRun(t)
+	return structuredFixtureWithPaths(t, []string{"web/src", "go.mod"}, mods...)
+}
+
+// structuredFixtureWithPaths is structuredFixture with an explicit grant
+// path scope.
+func structuredFixtureWithPaths(t *testing.T, permittedPaths []string, mods ...func(*Options)) (*Runner, *harness.Run) {
+	t.Helper()
+	return structuredFixtureFull(t, permittedPaths, harness.ResourceLimits{}, mods...)
+}
+
+// structuredFixtureFull is structuredFixture with an explicit grant path
+// scope and declared resource limits.
+func structuredFixtureFull(t *testing.T, permittedPaths []string, limits harness.ResourceLimits, mods ...func(*Options)) (*Runner, *harness.Run) {
+	t.Helper()
+	run := mustApprovedRunWithLimits(t, permittedPaths, limits)
 	opts := Options{
 		WorkspaceRoot:  t.TempDir(),
 		RevisionSource: fixtureRevisionSource(),
@@ -49,6 +63,16 @@ func fixtureRevisionSource() RevisionSource {
 // fixture repository, matching the grant the dispatches are checked against.
 func mustApprovedRun(t *testing.T) *harness.Run {
 	t.Helper()
+	return mustApprovedRunWithPaths(t, []string{"web/src", "go.mod"})
+}
+
+func mustApprovedRunWithPaths(t *testing.T, permittedPaths []string) *harness.Run {
+	t.Helper()
+	return mustApprovedRunWithLimits(t, permittedPaths, harness.ResourceLimits{})
+}
+
+func mustApprovedRunWithLimits(t *testing.T, permittedPaths []string, limits harness.ResourceLimits) *harness.Run {
+	t.Helper()
 	store := harness.NewEventStore()
 	assessment, err := harness.NewRiskAssessment(harness.RiskAssessmentInput{
 		TaskID: "task-1", RunID: "run-1",
@@ -73,7 +97,7 @@ func mustApprovedRun(t *testing.T) *harness.Run {
 		CapabilityGrantVersion: "grant-1",
 		RepositoryURL:          "https://github.com/Luthiel/AutoFixer.git",
 		BaseSHA:                "abc123",
-		PermittedPaths:         []string{"web/src", "go.mod"},
+		PermittedPaths:         append([]string{}, permittedPaths...),
 		PermittedTools: []harness.PermittedTool{
 			{Identity: "repo.read", AllowedArguments: []string{"path:path"}},
 			{Identity: "workspace.patch", AllowedArguments: []string{"path:path", "text:content"}},
@@ -82,6 +106,7 @@ func mustApprovedRun(t *testing.T) *harness.Run {
 		},
 		NetworkDestinations: []string{},
 		MaxWallClockSeconds: 600,
+		ResourceLimits:      limits,
 		MayCreatePatch:      true,
 	}
 	if err := run.Approve(grant); err != nil {
@@ -378,4 +403,78 @@ func (f *flakyRevisionSource) Materialize(ctx context.Context, repoDir, reposito
 		f.inner = fixtureRevisionSource()
 	}
 	return f.inner.Materialize(ctx, repoDir, repositoryURL, baseSHA)
+}
+
+func TestExecuteProfileRejectsScopeBeyondGrant(t *testing.T) {
+	profiles := []ExecProfile{{
+		ID:      "probe.test",
+		Kind:    ProfileTest,
+		Command: "/bin/echo",
+		Modes:   []string{"focused", "suite"},
+		Build: func(mode, target string) ([]string, error) {
+			return []string{"ran", mode, target}, nil
+		},
+	}}
+	runner, run := structuredFixture(t, func(o *Options) { o.Profiles = profiles })
+
+	// A focused target outside the granted paths is refused: the target and
+	// its execution directory face the grant even when the declared path
+	// scope looks narrow and honest.
+	res, err := runner.Execute(context.Background(), Spec{
+		Tool:    "test.run",
+		Paths:   []string{"web/src/export.ts"},
+		Kind:    DispatchProfile,
+		Process: &ProcessRequest{ProfileID: "probe.test", Mode: "focused", Target: "outside/evil_test.go"},
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Decision.Allowed {
+		t.Fatalf("decision = %+v, want a scope denial", res.Decision)
+	}
+	if run.State != harness.StateStopped {
+		t.Errorf("run state = %q, want stopped", run.State)
+	}
+}
+
+func TestExecuteSuiteRequiresTreeWideGrant(t *testing.T) {
+	profiles := []ExecProfile{{
+		ID:      "probe.test",
+		Kind:    ProfileTest,
+		Command: "/bin/echo",
+		Modes:   []string{"focused", "suite"},
+		Build:   func(mode, target string) ([]string, error) { return []string{"ran"}, nil },
+	}}
+	suiteSpec := func() Spec {
+		return Spec{
+			Tool:    "test.run",
+			Paths:   []string{"web/src/export.ts"},
+			Kind:    DispatchProfile,
+			Process: &ProcessRequest{ProfileID: "probe.test", Mode: "suite"},
+		}
+	}
+
+	// A narrow grant cannot run the repository-wide suite: the profile's
+	// real execution scope is checked against the grant and refused.
+	runner, run := structuredFixture(t, func(o *Options) { o.Profiles = profiles })
+	res, err := runner.Execute(context.Background(), suiteSpec())
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Gate == nil || res.Gate.Code != CodeGrantScopeExceeded {
+		t.Fatalf("gate = %+v, want %q", res.Gate, CodeGrantScopeExceeded)
+	}
+	if run.State != harness.StateStopped {
+		t.Errorf("run state = %q, want stopped", run.State)
+	}
+
+	// A repository-wide grant admits the suite.
+	rootRunner, _ := structuredFixtureWithPaths(t, []string{"."}, func(o *Options) { o.Profiles = profiles })
+	res, err = rootRunner.Execute(context.Background(), suiteSpec())
+	if err != nil {
+		t.Fatalf("Execute under root grant: %v", err)
+	}
+	if !res.Decision.Allowed || res.Gate != nil {
+		t.Fatalf("suite under root grant: decision = %+v gate = %+v, want allowed", res.Decision, res.Gate)
+	}
 }

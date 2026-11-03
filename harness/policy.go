@@ -130,7 +130,7 @@ func EvaluateAction(ctx ActionContext, req ActionRequest) Decision {
 		return deny(DenyPRNotPermitted, StopCodeOutOfGrant)
 	}
 	for _, path := range req.Paths {
-		if !pathWithinAny(ctx.Grant.PermittedPaths, path) {
+		if !PathWithinAny(ctx.Grant.PermittedPaths, path) {
 			return deny(DenyPathNotPermitted, StopCodeOutOfGrant)
 		}
 	}
@@ -189,13 +189,13 @@ func containsString(list []string, s string) bool {
 	return false
 }
 
-// pathWithinAny reports whether path is the permitted root itself or lives
+// PathWithinAny reports whether path is the permitted root itself or lives
 // under it. Requested paths are untrusted input, so they are lexically
 // normalized first: an absolute path, or one whose cleaned form escapes
 // every permitted root via ".." (for example "harness/../../.github"), is
 // denied. Roots and paths are compared on path-segment boundaries so
 // "harness-evil" does not match a grant for "harness".
-func pathWithinAny(permitted []string, requested string) bool {
+func PathWithinAny(permitted []string, requested string) bool {
 	if requested == "" {
 		return false
 	}
@@ -218,6 +218,22 @@ func pathWithinAny(permitted []string, requested string) bool {
 			return true
 		}
 		if cleaned == trimmed || strings.HasPrefix(cleaned, trimmed+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// GrantCoversRoot reports whether the permitted path roots admit the whole
+// repository tree: a suite or dependency run touches everything, so only a
+// repository-wide grant can authorize it.
+func GrantCoversRoot(permitted []string) bool {
+	for _, root := range permitted {
+		if root == "" {
+			continue
+		}
+		trimmed := strings.TrimSuffix(path.Clean(root), "/")
+		if trimmed == "." || trimmed == "" {
 			return true
 		}
 	}

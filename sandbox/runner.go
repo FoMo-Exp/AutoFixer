@@ -58,7 +58,13 @@ const (
 	CodeProhibitedPathDenied  = "prohibited_path_denied"
 	CodeEditScopeDenied       = "edit_scope_denied"
 	CodeOverprivilegedRequest = "overprivileged_request_denied"
+	CodeGrantScopeExceeded    = "grant_scope_exceeded"
 )
+
+// ErrGrantScopeExceeded names a profile request whose real execution scope
+// reaches outside the capability grant: a repository-wide suite or
+// dependency run under a narrow grant, or a focused target beyond it.
+var ErrGrantScopeExceeded = errors.New("sandbox: profile execution scope exceeds the granted paths")
 
 const defaultOutputLimit = 1 << 20 // 1 MiB of retained output per execution
 
@@ -197,6 +203,12 @@ type Result struct {
 	// Canceled reports termination by caller cancellation; the run
 	// transitions to cancelled and the workspace is destroyed.
 	Canceled bool
+	// ResourceExceeded names the granted resource cap that terminated the
+	// execution ("memory", "cpu"), or "accounting" when enforcement itself
+	// broke down mid-run and the execution was stopped rather than left to
+	// run uncapped. A resource violation stops the run and revokes the
+	// grant.
+	ResourceExceeded string
 	// Record binds a structured dispatch's result to the exact revision
 	// and test environment it ran in. Nil for plain process tools.
 	Record *ExecutionResult
@@ -314,6 +326,20 @@ func (r *Runner) Execute(ctx context.Context, spec Spec) (Result, error) {
 	paths := append([]string{}, spec.Paths...)
 	if spec.Op != nil && spec.Op.Path != "" && spec.Op.Path != "." && !containsPath(paths, spec.Op.Path) {
 		paths = append(paths, spec.Op.Path)
+	}
+	// Profile execution scope faces the grant too: the target and its
+	// execution directory are checked as part of the action's path scope,
+	// so a request cannot declare one directory and execute another.
+	if spec.Process != nil && spec.Process.Target != "" {
+		if profile, ok := ProfileFor(r.profiles, spec.Process.ProfileID); ok {
+			if scope, treeWide := profile.ExecutionScope(spec.Process.Mode, spec.Process.Target); !treeWide {
+				for _, p := range scope {
+					if !containsPath(paths, p) {
+						paths = append(paths, p)
+					}
+				}
+			}
+		}
 	}
 	req := harness.ActionRequest{
 		Tool:                spec.Tool,
@@ -462,6 +488,15 @@ func (r *Runner) executeProfile(ctx context.Context, spec Spec, req harness.Acti
 	if err != nil {
 		return r.gateRefusal(req, result, err, []string{spec.Process.ProfileID, spec.Process.Mode})
 	}
+	// The profile's real execution scope must fit the grant. Repository-wide
+	// scope (suite, dependency preparation, root-level targets) needs a
+	// repository-wide grant; nothing executes wider than what was granted.
+	if _, treeWide := profile.ExecutionScope(spec.Process.Mode, spec.Process.Target); treeWide {
+		if !harness.GrantCoversRoot(r.run.Grant.PermittedPaths) {
+			return r.gateRefusal(req, result, ErrGrantScopeExceeded,
+				[]string{spec.Process.ProfileID, spec.Process.Mode})
+		}
+	}
 	if err := r.sandboxSetup(ctx); err != nil {
 		return result, err
 	}
@@ -494,7 +529,7 @@ func (r *Runner) executeProfile(ctx context.Context, spec Spec, req harness.Acti
 		Writable:            []string{filepath.Join(r.workspace, "repo"), filepath.Join(r.workspace, "tmp"), filepath.Join(r.workspace, "home")},
 		DenyRead:            append([]string{}, r.denyRead...),
 		Network:             NetworkPolicy{DenyAll: true},
-		DeclaredLimits:      DeclaredLimits{MaxMemoryMB: grant.ResourceLimits.MaxMemoryMB, MaxCPUSeconds: grant.ResourceLimits.MaxCPUSeconds},
+		Limits:              EnforcedLimits{MaxMemoryMB: grant.ResourceLimits.MaxMemoryMB, MaxCPUSeconds: grant.ResourceLimits.MaxCPUSeconds},
 		MaxWallClockSeconds: int(timeout / time.Second),
 		OutputLimitBytes:    r.outputLimit,
 	}
@@ -532,28 +567,50 @@ func actualArgsFor(spec Spec, argv []string) []string {
 	return append([]string{spec.Process.ProfileID}, argv...)
 }
 
-// runCommand runs an already-wrapped command under the grant's wall clock,
-// records the completion evidence, and classifies timeout and cancellation.
-// environment binds the test environment identity into the structured result
-// when one applies.
+// runCommand runs an already-wrapped command under the grant's wall clock
+// and resource caps, records the completion evidence, and classifies
+// timeout, cancellation, and resource-limit breaches. environment binds the
+// test environment identity into the structured result when one applies.
 func (r *Runner) runCommand(execCtx, ctx context.Context, cmd *exec.Cmd, req harness.ActionRequest, result Result, environment *EnvironmentIdentity, actualArgs []string) (Result, error) {
 	out := &cappedBuffer{limit: r.outputLimit}
 	cmd.Stdout = out
 	cmd.Stderr = out
 
+	// The grant's resource caps are enforced, never merely declared: an
+	// execution whose caps cannot be enforced on this platform is refused
+	// before anything starts (fail closed), never run uncapped.
+	limits := resourceLimitsFrom(r.run.Grant)
+	if limits.declared() && !usageAccountingAvailable() {
+		return result, fmt.Errorf("%w: resource accounting is unavailable; the grant's limits cannot be enforced", ErrIsolationUnavailable)
+	}
+
 	startErr := cmd.Start()
+	breach := ""
 	if startErr == nil {
+		supervisor, err := startSupervision(cmd, limits)
+		if err != nil {
+			killExecution(cmd)
+			_ = cmd.Wait()
+			return result, err
+		}
 		// The wait error only describes how the process ended, and an
 		// ordinary failure (non-zero exit, external signal) is surfaced
 		// in Result.ExitStatus, not as an Execute error; outcomes are
 		// classified from the contexts below.
 		_ = cmd.Wait()
+		if supervisor != nil {
+			breach = supervisor.stop()
+		}
+		if breach == "" {
+			breach = signalBreach(cmd)
+		}
 	}
 	// Outcomes come from the contexts, not the exit status: a tool that
 	// exits non-zero completed under policy; a deadline or cancellation
 	// terminates the run itself. The first context error wins, so a
 	// parent cancellation is a cancellation even if the grant deadline
-	// has also passed.
+	// has also passed. A breach that raced the deadline is classified as
+	// the termination that came first: the contexts.
 	canceled := ctx.Err() != nil
 	timedOut := !canceled && execCtx.Err() == context.DeadlineExceeded
 
@@ -585,6 +642,8 @@ func (r *Runner) runCommand(execCtx, ctx context.Context, cmd *exec.Cmd, req har
 			outcomeCode = CodeExecutionTimedOut
 		case canceled:
 			outcomeCode = CodeExecutionCancelled
+		case breach != "":
+			outcomeCode = breachCode(breach)
 		}
 		if err := r.run.RecordExecutionOutcome(req, harness.ExecutionOutcome{
 			ExitStatus:      result.ExitStatus,
@@ -599,13 +658,14 @@ func (r *Runner) runCommand(execCtx, ctx context.Context, cmd *exec.Cmd, req har
 		}
 		if r.revision != nil {
 			record, err := NewExecutionResult(ExecutionResultInput{
-				Tool:         req.Tool,
-				Revision:     r.revision,
-				Environment:  environment,
-				ExitStatus:   result.ExitStatus,
-				OutputDigest: digest,
-				TimedOut:     timedOut,
-				Canceled:     canceled,
+				Tool:             req.Tool,
+				Revision:         r.revision,
+				Environment:      environment,
+				ExitStatus:       result.ExitStatus,
+				OutputDigest:     digest,
+				TimedOut:         timedOut,
+				Canceled:         canceled,
+				ResourceExceeded: breach,
 			})
 			if err != nil {
 				return result, err
@@ -615,6 +675,7 @@ func (r *Runner) runCommand(execCtx, ctx context.Context, cmd *exec.Cmd, req har
 	}
 	result.TimedOut = timedOut
 	result.Canceled = canceled
+	result.ResourceExceeded = breach
 	if startErr == nil {
 		r.mutated = true
 	}
@@ -634,8 +695,16 @@ func (r *Runner) runCommand(execCtx, ctx context.Context, cmd *exec.Cmd, req har
 			r.run.Revoked = true
 			errs = append(errs, err)
 		}
+	case breach != "" && !timedOut && !canceled && r.run.State == harness.StateRunning:
+		// A resource violation stops the run and revokes the grant: the
+		// execution exceeded what it was allowed to consume, or its caps
+		// could no longer be enforced at all.
+		r.run.Revoked = true
+		if err := r.run.Transition(harness.StateStopped, breachCode(breach)); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	if timedOut || canceled {
+	if timedOut || canceled || (breach != "" && !timedOut && !canceled) {
 		// The one-time environment dies with the terminated execution;
 		// the evidence lives in the event store, never in the workspace.
 		if err := r.Close(); err != nil {
@@ -646,6 +715,60 @@ func (r *Runner) runCommand(execCtx, ctx context.Context, cmd *exec.Cmd, req har
 		return result, errors.Join(errs...)
 	}
 	return result, nil
+}
+
+// resourceLimitsFrom derives the enforced caps from the grant's declared
+// resource limits.
+func resourceLimitsFrom(grant *harness.CapabilityGrant) resourceLimits {
+	var limits resourceLimits
+	if grant != nil {
+		if mb := grant.ResourceLimits.MaxMemoryMB; mb > 0 {
+			limits.MemoryBytes = int64(mb) << 20
+		}
+		if cpu := grant.ResourceLimits.MaxCPUSeconds; cpu > 0 {
+			limits.CPUSeconds = int64(cpu)
+		}
+	}
+	return limits
+}
+
+// startSupervision pins the grant's resource caps on a started execution:
+// the kernel-hard CPU cap where the platform has one, and the kill-on-breach
+// supervisor over the execution domain. A nil supervisor with a nil error
+// means no cap is declared and nothing needs enforcing.
+func startSupervision(cmd *exec.Cmd, limits resourceLimits) (*limitSupervisor, error) {
+	if !limits.declared() {
+		return nil, nil
+	}
+	if err := applyKernelLimits(cmd.Process.Pid, limits); err != nil {
+		return nil, fmt.Errorf("sandbox: pin kernel resource limits on %q: %w", cmd.Path, err)
+	}
+	supervisor, err := newLimitSupervisor(cmd.Process.Pid, limits, supervisorInterval, platformUsage, func() { killExecution(cmd) })
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: supervise resource limits on %q: %w", cmd.Path, err)
+	}
+	supervisor.start()
+	return supervisor, nil
+}
+
+// killExecution removes a running execution's whole supervision domain: its
+// process group and every descendant, including children that started their
+// own session to escape the group.
+func killExecution(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		killDomain(cmd.Process.Pid)
+	}
+	if cmd.Cancel != nil {
+		_ = cmd.Cancel()
+	}
+}
+
+// breachCode maps a resource breach kind to its evidence code.
+func breachCode(breach string) string {
+	if breach == BreachAccounting {
+		return CodeExecutionUnenforcedLimit
+	}
+	return CodeExecutionResourceExceeded
 }
 
 // gateRefusal records the operation gate's refusal of an in-grant dispatch
@@ -685,7 +808,7 @@ func (r *Runner) gateRefusal(req harness.ActionRequest, result Result, refusal e
 func isGateRefusal(err error) bool {
 	return errors.Is(err, ErrPathEscape) || errors.Is(err, ErrSymlinkEscape) ||
 		errors.Is(err, ErrProhibitedPath) || errors.Is(err, ErrEditForbidden) ||
-		errors.Is(err, ErrLimitExceeded)
+		errors.Is(err, ErrLimitExceeded) || errors.Is(err, ErrGrantScopeExceeded)
 }
 
 // containsPath reports whether list already names path.
@@ -709,6 +832,8 @@ func gateCode(err error) string {
 		return CodeProhibitedPathDenied
 	case errors.Is(err, ErrEditForbidden):
 		return CodeEditScopeDenied
+	case errors.Is(err, ErrGrantScopeExceeded):
+		return CodeGrantScopeExceeded
 	default:
 		return CodeOverprivilegedRequest
 	}

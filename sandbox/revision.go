@@ -181,13 +181,14 @@ func treeDigest(root string) (string, error) {
 // ExecutionResultInput carries the facts one execution result binds
 // together before its tamper-evident digest is computed.
 type ExecutionResultInput struct {
-	Tool         string
-	Revision     *RevisionIdentity
-	Environment  *EnvironmentIdentity
-	ExitStatus   *int
-	OutputDigest *harness.Digest
-	TimedOut     bool
-	Canceled     bool
+	Tool             string
+	Revision         *RevisionIdentity
+	Environment      *EnvironmentIdentity
+	ExitStatus       *int
+	OutputDigest     *harness.Digest
+	TimedOut         bool
+	Canceled         bool
+	ResourceExceeded string
 }
 
 // ExecutionResult is one structured operation's outcome, bound to the exact
@@ -202,19 +203,24 @@ type ExecutionResult struct {
 	OutputDigest *harness.Digest      `json:"output_digest,omitempty"`
 	TimedOut     bool                 `json:"timed_out,omitempty"`
 	Canceled     bool                 `json:"canceled,omitempty"`
-	Digest       string               `json:"digest"`
+	// ResourceExceeded names the granted resource cap that terminated the
+	// execution ("memory", "cpu"), or "accounting" when enforcement broke
+	// down and the execution was stopped rather than left uncapped.
+	ResourceExceeded string `json:"resource_exceeded,omitempty"`
+	Digest           string `json:"digest"`
 }
 
 // NewExecutionResult computes the binding digest over the result record.
 func NewExecutionResult(in ExecutionResultInput) (ExecutionResult, error) {
 	result := ExecutionResult{
-		Tool:         in.Tool,
-		Revision:     in.Revision,
-		Environment:  in.Environment,
-		ExitStatus:   in.ExitStatus,
-		OutputDigest: in.OutputDigest,
-		TimedOut:     in.TimedOut,
-		Canceled:     in.Canceled,
+		Tool:             in.Tool,
+		Revision:         in.Revision,
+		Environment:      in.Environment,
+		ExitStatus:       in.ExitStatus,
+		OutputDigest:     in.OutputDigest,
+		TimedOut:         in.TimedOut,
+		Canceled:         in.Canceled,
+		ResourceExceeded: in.ResourceExceeded,
 	}
 	digest, err := resultDigest(result)
 	if err != nil {

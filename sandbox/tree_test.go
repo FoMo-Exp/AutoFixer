@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -194,5 +195,63 @@ func TestTreeSearchRejectsPathEscapesAndBadPatterns(t *testing.T) {
 	}
 	if _, err := tree.Search(`(unclosed`, "", OpLimits{}); err == nil {
 		t.Error("Search with invalid pattern: want error, got nil")
+	}
+}
+
+func TestTreeReadIsBoundedByLimit(t *testing.T) {
+	_, tree := newTreeFixture(t)
+	// A large file must not be pulled into memory whole: the read is
+	// bounded by the limit and reports truncation.
+	big := filepath.Join(tree.Root(), "huge.bin")
+	if err := os.WriteFile(big, make([]byte, 8<<20), 0o644); err != nil {
+		t.Fatalf("write huge file: %v", err)
+	}
+	got, err := tree.Read("huge.bin", OpLimits{MaxReadBytes: 1024})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(got.Content) != 1024 || !got.Truncated {
+		t.Errorf("bounded read = %d bytes truncated=%v, want 1024 bytes truncated", len(got.Content), got.Truncated)
+	}
+
+	// A file at exactly the limit is not marked truncated.
+	exact := filepath.Join(tree.Root(), "exact.bin")
+	if err := os.WriteFile(exact, make([]byte, 1024), 0o644); err != nil {
+		t.Fatalf("write exact file: %v", err)
+	}
+	got, err = tree.Read("exact.bin", OpLimits{MaxReadBytes: 1024})
+	if err != nil {
+		t.Fatalf("Read exact: %v", err)
+	}
+	if len(got.Content) != 1024 || got.Truncated {
+		t.Errorf("exact read = %d bytes truncated=%v, want 1024 bytes untruncated", len(got.Content), got.Truncated)
+	}
+}
+
+// countingReader counts how many bytes were pulled through it, so the
+// bounded-read contract is observable: the reader must never be drained
+// past the limit plus the truncation probe byte.
+type countingReader struct {
+	data io.Reader
+	read int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.data.Read(p)
+	c.read += int64(n)
+	return n, err
+}
+
+func TestReadBoundedNeverDrainsTheSource(t *testing.T) {
+	source := &countingReader{data: strings.NewReader(strings.Repeat("a", 1<<20))}
+	got, truncated, err := readBounded(source, 1024)
+	if err != nil {
+		t.Fatalf("readBounded: %v", err)
+	}
+	if len(got) != 1024 || !truncated {
+		t.Errorf("readBounded = %d bytes truncated=%v, want 1024 bytes truncated", len(got), truncated)
+	}
+	if source.read > 1025 {
+		t.Errorf("source drained %d bytes, want at most limit+1 (1025)", source.read)
 	}
 }

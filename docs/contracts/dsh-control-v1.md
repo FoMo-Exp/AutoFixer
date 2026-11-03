@@ -88,14 +88,24 @@ and target but can never name a command, and an over-privileged request
 refused with `403 DSH_TOOL_NOT_ALLOWLISTED` and a run-stopping evidence
 record. Paths are lexically and symlink contained; secret-looking paths and
 `.git` are prohibited for every tool; dependency and migration edits require
-an elevated run and workflow/governance edits are never allowed.
+an elevated run and workflow/governance edits are never allowed. A profile's
+real execution scope must fit the grant: a focused run is bounded to its
+target and package directory, while `suite`, dependency preparation, and
+root-level targets are repository-wide and need a repository-wide grant —
+otherwise `403 DSH_SCOPE_DENIED` (`grant_scope_exceeded`). Declared
+resource limits are enforced, never merely recorded: the whole process
+domain (group plus descendants) is killed on a memory or CPU breach, a
+kernel CPU cap is pinned where the platform has one, and an execution whose
+caps cannot be enforced is blocked instead of running uncapped.
 
 Returns `202` with `action_id`, `state`, `accepted_tool_id`, an audit event
 reference, and — for structured operations — `result` and `output`.
 `result` binds the outcome to the exact revision (`revision`:
 repository/base SHA/tree digest) and, for test and dependency runs, the test
 environment (`environment`: OS isolation backend, applied-profile digest,
-network policy, limits) under one tamper-evident `digest`. `output` is the
+network policy, and the enforced resource caps with the mechanism that
+enforces them — `enforced_limits`) under one tamper-evident `digest`.
+`output` is the
 redacted, bounded output (file content, search matches, tool output).
 Completion is observed through events, never inferred from `202`.
 Errors: `400 INVALID_ACTION_INTENT|INVALID_TOOL_ARGUMENTS`, `404

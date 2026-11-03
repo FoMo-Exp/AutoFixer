@@ -28,12 +28,17 @@ type NetworkPolicy struct {
 	Destinations []string
 }
 
-// DeclaredLimits carries the grant's declared resource limits. They are part
-// of the environment identity a result binds to; wall-clock, output, and
-// operation budgets are the enforced limits (see Runner and OpLimits).
-type DeclaredLimits struct {
+// EnforcedLimits carries the resource limits one execution is held to and
+// the mechanism that enforces them: never merely declared, always enforced
+// (see supervise.go) or the execution is refused. Wall-clock, output, and
+// operation budgets are enforced as well (see Runner and OpLimits).
+type EnforcedLimits struct {
 	MaxMemoryMB   int `json:"max_memory_mb"`
 	MaxCPUSeconds int `json:"max_cpu_seconds"`
+	// Enforcement names how the caps are enforced on this platform:
+	// "supervisor_kill", "supervisor_kill+rlimit_cpu", or "none" when no
+	// cap is declared.
+	Enforcement string `json:"enforcement"`
 }
 
 // IsolationRequest describes one untrusted execution's isolation scope.
@@ -52,8 +57,10 @@ type IsolationRequest struct {
 	DenyRead []string
 	// Network is the egress policy.
 	Network NetworkPolicy
-	// DeclaredLimits are the grant's declared resource limits.
-	DeclaredLimits DeclaredLimits
+	// Limits are the grant's resource caps; the enforcement mechanism in
+	// force is recorded in the environment identity. Enforcement itself is
+	// the runner's supervisor (see runCommand).
+	Limits EnforcedLimits
 	// MaxWallClockSeconds and OutputLimitBytes are the enforced runtime
 	// budgets, recorded in the environment identity alongside the profile.
 	MaxWallClockSeconds int
@@ -72,7 +79,7 @@ type EnvironmentIdentity struct {
 	Writable            []string       `json:"writable"`
 	MaxWallClockSeconds int            `json:"max_wall_clock_seconds"`
 	OutputLimitBytes    int64          `json:"output_limit_bytes"`
-	DeclaredLimits      DeclaredLimits `json:"declared_limits"`
+	EnforcedLimits      EnforcedLimits `json:"enforced_limits"`
 }
 
 // Isolator wraps one command in OS-level process/filesystem/network
@@ -141,7 +148,11 @@ func isolationIdentity(backend, profileDigest string, req IsolationRequest) Envi
 		Writable:            roles,
 		MaxWallClockSeconds: req.MaxWallClockSeconds,
 		OutputLimitBytes:    req.OutputLimitBytes,
-		DeclaredLimits:      req.DeclaredLimits,
+		EnforcedLimits: EnforcedLimits{
+			MaxMemoryMB:   req.Limits.MaxMemoryMB,
+			MaxCPUSeconds: req.Limits.MaxCPUSeconds,
+			Enforcement:   enforcementFor(req.Limits),
+		},
 	}
 }
 

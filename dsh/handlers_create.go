@@ -287,6 +287,10 @@ func normalizePathHint(hint string) string {
 			trimmed = strings.TrimSuffix(trimmed, suffix)
 		}
 	}
+	// "." is the repository-wide root a suite or dependency run needs.
+	if trimmed == "." {
+		return "."
+	}
 	if trimmed == "" || strings.Contains(trimmed, "*") || strings.Contains(trimmed, "\\") {
 		return ""
 	}

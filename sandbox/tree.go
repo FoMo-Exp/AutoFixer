@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bufio"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -255,14 +256,14 @@ func (t *Tree) Read(rel string, limits OpLimits) (ReadResult, error) {
 	if err != nil {
 		return ReadResult{}, err
 	}
-	data, err := os.ReadFile(resolved.Abs)
+	file, err := os.Open(resolved.Abs)
 	if err != nil {
 		return ReadResult{}, err
 	}
-	limit := limits.readBytes()
-	truncated := int64(len(data)) > limit
-	if truncated {
-		data = data[:limit]
+	defer func() { _ = file.Close() }()
+	data, truncated, err := readBounded(file, limits.readBytes())
+	if err != nil {
+		return ReadResult{}, err
 	}
 	return ReadResult{
 		Path:      resolved.Rel,
@@ -270,6 +271,20 @@ func (t *Tree) Read(rel string, limits OpLimits) (ReadResult, error) {
 		Content:   data,
 		Truncated: truncated,
 	}, nil
+}
+
+// readBounded pulls at most limit+1 bytes from source — the one probe byte
+// decides truncation — so a huge file can never be read into memory whole.
+func readBounded(source io.Reader, limit int64) ([]byte, bool, error) {
+	data, err := io.ReadAll(io.LimitReader(source, limit+1))
+	if err != nil {
+		return nil, false, err
+	}
+	truncated := int64(len(data)) > limit
+	if truncated {
+		data = data[:limit]
+	}
+	return data, truncated, nil
 }
 
 // Edit replaces or creates one file through the gate. The edit keeps the

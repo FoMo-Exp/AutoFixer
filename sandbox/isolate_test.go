@@ -23,7 +23,7 @@ func isolationRequest(dir string) IsolationRequest {
 		},
 		DenyRead:            []string{filepath.Join(dir, "ctl", "boot.token")},
 		Network:             NetworkPolicy{DenyAll: true},
-		DeclaredLimits:      DeclaredLimits{MaxMemoryMB: 512, MaxCPUSeconds: 60},
+		Limits:              EnforcedLimits{MaxMemoryMB: 512, MaxCPUSeconds: 60},
 		MaxWallClockSeconds: 60,
 		OutputLimitBytes:    1 << 20,
 	}
@@ -88,8 +88,11 @@ func TestEnvironmentIdentityBindsProfileAndRevision(t *testing.T) {
 	if len(identity.Writable) == 0 || filepath.IsAbs(identity.Writable[0]) {
 		t.Errorf("Writable = %v, want workspace-relative roles", identity.Writable)
 	}
-	if identity.DeclaredLimits.MaxMemoryMB != 512 {
-		t.Errorf("DeclaredLimits = %+v, want the granted limits", identity.DeclaredLimits)
+	if identity.EnforcedLimits.MaxMemoryMB != 512 {
+		t.Errorf("EnforcedLimits = %+v, want the granted limits", identity.EnforcedLimits)
+	}
+	if identity.EnforcedLimits.Enforcement == "" || identity.EnforcedLimits.Enforcement == EnforcementNone {
+		t.Errorf("EnforcedLimits.Enforcement = %q, want the platform's enforcement label", identity.EnforcedLimits.Enforcement)
 	}
 
 	// The same request must derive the same profile identity, and a change
