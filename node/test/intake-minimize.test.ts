@@ -74,6 +74,23 @@ describe("signal minimization", () => {
     const briefing = minimizeSignal({ ...rawInput, message: "x".repeat(1000) });
     expect(briefing.message_excerpt.length).toBeLessThanOrEqual(160);
   });
+
+  test("scrubs credential material from every raw-derived briefing field", () => {
+    const briefing = minimizeSignal({
+      ...rawInput,
+      error_class: "sk-live-abcdef123456",
+      error_signature:
+        "sk-live-abcdef123456 | failed with API_KEY=prod-secret-value | ghp_abcdef1234567890.ts:run",
+      message: "failed with API_KEY=prod-secret-value",
+      stack_locations: ["run (/var/app/ghp_abcdef1234567890.ts:1)"],
+    });
+    const serialized = JSON.stringify(briefing);
+
+    expect(serialized).not.toContain("sk-live-abcdef123456");
+    expect(serialized).not.toContain("prod-secret-value");
+    expect(serialized).not.toContain("ghp_abcdef1234567890");
+    expect(serialized).not.toContain("/var/app");
+  });
 });
 
 describe("model dispatch through the ADR-0005 gateway", () => {
@@ -106,6 +123,43 @@ describe("model dispatch through the ADR-0005 gateway", () => {
     const visible = (scripted.calls[0] ?? []).join("\n");
     expect(visible).toContain(briefing.message_excerpt);
     expect(visible).not.toContain("1234");
+    expect(visible).not.toContain("sk-live-abcdef123456");
+  });
+
+  test("the analysis context scrubs credentials even from a hand-built briefing", () => {
+    const poisoned: ModelSignalBriefing = {
+      ...briefing,
+      error_class: "sk-live-abcdef123456",
+      error_signature: "TimeoutError | Bearer sk-live-abcdef123456 | f",
+      message_excerpt: "token ghp_abcdef1234567890 and API_KEY=prod-secret-value",
+    };
+
+    const text = buildAnalysisContext(poisoned)
+      .messages.map((message) => String(message.content))
+      .join("\n");
+
+    expect(text).not.toContain("sk-live-abcdef123456");
+    expect(text).not.toContain("ghp_abcdef1234567890");
+    expect(text).not.toContain("prod-secret-value");
+  });
+
+  test("credentials in a briefing never reach the provider stream", async () => {
+    const scripted = scriptedStream([{ kind: "text", text: "analyzed" }]);
+    const gateway = scriptedGateway(TEST_MODEL, scripted.streamFn);
+    const poisoned: ModelSignalBriefing = {
+      ...briefing,
+      error_signature: "TimeoutError | Bearer sk-live-abcdef123456 | f",
+    };
+
+    const stream = await dispatchBriefing({
+      gateway,
+      model: TEST_MODEL,
+      identity: TEST_BINDING,
+      briefing: poisoned,
+    });
+    await stream.result();
+
+    const visible = (scripted.calls[0] ?? []).join("\n");
     expect(visible).not.toContain("sk-live-abcdef123456");
   });
 

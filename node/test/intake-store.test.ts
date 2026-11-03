@@ -7,6 +7,8 @@ import { describe, expect, test } from "vitest";
 import { IntakeStore } from "../src/intake/store.js";
 import type { BudgetConfig } from "../src/intake/store.js";
 
+const WS = { enterprise_id: "ent", workspace_id: "ws" };
+
 const budgets: BudgetConfig = {
   source_max_new_issues: 2,
   workspace_max_new_issues: 3,
@@ -31,18 +33,36 @@ function fixedNow(startIso = "2026-11-03T12:00:00.000Z", stepMs = 1000): () => D
 }
 
 describe("event registry", () => {
-  test("records and finds events by (source, provider event id)", () => {
+  test("records and finds events by (workspace, source, provider event id)", () => {
     const store = new IntakeStore();
-    expect(store.findEvent("src", "evt-1")).toBeUndefined();
+    expect(store.findEvent(WS, "src", "evt-1")).toBeUndefined();
     store.recordEvent({
+      enterprise_id: WS.enterprise_id,
+      workspace_id: WS.workspace_id,
       source_id: "src",
       provider_event_id: "evt-1",
       event_time: "2026-11-03T12:00:00Z",
       signal_key: "fp1:x",
       outcome: "issue_created",
     });
-    expect(store.findEvent("src", "evt-1")?.signal_key).toBe("fp1:x");
-    expect(store.findEvent("src", "evt-2")).toBeUndefined();
+    expect(store.findEvent(WS, "src", "evt-1")?.signal_key).toBe("fp1:x");
+    expect(store.findEvent(WS, "src", "evt-2")).toBeUndefined();
+  });
+
+  test("keeps the same provider event id separate across workspaces", () => {
+    const store = new IntakeStore();
+    store.recordEvent({
+      enterprise_id: "ent-a",
+      workspace_id: "ws-a",
+      source_id: "src",
+      provider_event_id: "evt-1",
+      event_time: "2026-11-03T12:00:00Z",
+      signal_key: "fp1:x",
+      outcome: "issue_created",
+    });
+    expect(
+      store.findEvent({ enterprise_id: "ent-b", workspace_id: "ws-b" }, "src", "evt-1"),
+    ).toBeUndefined();
   });
 });
 
@@ -53,6 +73,8 @@ describe("signals and evidence", () => {
       signal_key: "fp1:a",
       source_id: "src",
       identity: {
+        enterprise_id: WS.enterprise_id,
+        workspace_id: WS.workspace_id,
         service: "checkout",
         environment: "prod",
         error_signature: "TimeoutError | x | f",
@@ -105,10 +127,10 @@ describe("gap records", () => {
 describe("budget counters", () => {
   test("allows creation under the window limit and denies beyond it", () => {
     const store = new IntakeStore({ now: fixedNow() });
-    expect(store.budgetCheck("src", budgets)).toBeNull();
-    store.recordCreation("src", "2026-11-03T12:00:00.000Z");
-    store.recordCreation("src", "2026-11-03T12:00:01.000Z");
-    expect(store.budgetCheck("src", budgets)).toEqual({
+    expect(store.budgetCheck("src", WS, budgets)).toBeNull();
+    store.recordCreation("src", WS, "2026-11-03T12:00:00.000Z");
+    store.recordCreation("src", WS, "2026-11-03T12:00:01.000Z");
+    expect(store.budgetCheck("src", WS, budgets)).toEqual({
       reason: "source_window_exhausted",
       source_id: "src",
     });
@@ -117,17 +139,27 @@ describe("budget counters", () => {
   test("denies on source cooldown until it elapses", () => {
     const store = new IntakeStore({ now: fixedNow() });
     const cooldown: BudgetConfig = { ...budgets, source_cooldown_seconds: 60 };
-    store.recordCreation("src", "2026-11-03T12:00:00.000Z");
-    expect(store.budgetCheck("src", cooldown)?.reason).toBe("source_cooldown");
-    expect(store.budgetCheck("src", cooldown, "2026-11-03T12:01:00.000Z")).toBeNull();
+    store.recordCreation("src", WS, "2026-11-03T12:00:00.000Z");
+    expect(store.budgetCheck("src", WS, cooldown)?.reason).toBe("source_cooldown");
+    expect(store.budgetCheck("src", WS, cooldown, "2026-11-03T12:01:00.000Z")).toBeNull();
   });
 
-  test("counts the workspace budget across sources", () => {
+  test("counts the workspace budget across sources of one workspace", () => {
     const store = new IntakeStore({ now: fixedNow() });
-    store.recordCreation("src-a", "2026-11-03T12:00:00.000Z");
-    store.recordCreation("src-a", "2026-11-03T12:00:01.000Z");
-    store.recordCreation("src-b", "2026-11-03T12:00:02.000Z");
-    expect(store.budgetCheck("src-c", budgets)?.reason).toBe("workspace_window_exhausted");
+    store.recordCreation("src-a", WS, "2026-11-03T12:00:00.000Z");
+    store.recordCreation("src-a", WS, "2026-11-03T12:00:01.000Z");
+    store.recordCreation("src-b", WS, "2026-11-03T12:00:02.000Z");
+    expect(store.budgetCheck("src-c", WS, budgets)?.reason).toBe("workspace_window_exhausted");
+  });
+
+  test("never counts one workspace's creations against another workspace", () => {
+    const store = new IntakeStore({ now: fixedNow() });
+    const other = { enterprise_id: "ent-b", workspace_id: "ws-b" };
+    store.recordCreation("src-a", WS, "2026-11-03T12:00:00.000Z");
+    store.recordCreation("src-a", WS, "2026-11-03T12:00:01.000Z");
+    store.recordCreation("src-a", WS, "2026-11-03T12:00:02.000Z");
+    expect(store.budgetCheck("src-x", other, budgets)).toBeNull();
+    expect(store.budgetCheck("src-x", WS, budgets)?.reason).toBe("workspace_window_exhausted");
   });
 });
 
@@ -138,10 +170,16 @@ describe("deferred backlog", () => {
       deferred_id: "def_1",
       signal_key: "fp1:a",
       source_id: "src",
-      identity: { service: "s", environment: "e", error_signature: "sig" },
+      identity: {
+        enterprise_id: WS.enterprise_id,
+        workspace_id: WS.workspace_id,
+        service: "s",
+        environment: "e",
+        error_signature: "sig",
+      },
       summary: "s/e: sig",
       reason: "source_window_exhausted",
-      workspace: { enterprise_id: "ent", workspace_id: "ws" },
+      workspace: WS,
       requested_at: "2026-11-03T12:00:00.000Z",
       occurrences: 1,
       decision: {
@@ -180,18 +218,20 @@ describe("durable restart", () => {
     const store = new IntakeStore({ persistencePath: file, now: fixedNow() });
     store.setCheckpoint("src", { value: "c-1" }, "2026-11-03T12:00:00.000Z");
     store.recordEvent({
+      enterprise_id: WS.enterprise_id,
+      workspace_id: WS.workspace_id,
       source_id: "src",
       provider_event_id: "evt-1",
       event_time: "2026-11-03T12:00:00Z",
       signal_key: "fp1:a",
       outcome: "issue_created",
     });
-    store.recordCreation("src", "2026-11-03T12:00:00.000Z");
+    store.recordCreation("src", WS, "2026-11-03T12:00:00.000Z");
     store.flushSync();
 
     const reloaded = new IntakeStore({ persistencePath: file });
     expect(reloaded.checkpoint("src")?.value).toBe("c-1");
-    expect(reloaded.findEvent("src", "evt-1")?.outcome).toBe("issue_created");
-    expect(reloaded.budgetCheck("src", budgets)).toBeNull(); // 1 of 2 used
+    expect(reloaded.findEvent(WS, "src", "evt-1")?.outcome).toBe("issue_created");
+    expect(reloaded.budgetCheck("src", WS, budgets)).toBeNull(); // 1 of 2 used
   });
 });

@@ -126,6 +126,8 @@ describe("error signature", () => {
 
 describe("signal fingerprint", () => {
   const identity = {
+    enterprise_id: "ent",
+    workspace_id: "ws",
     service: "checkout",
     environment: "prod",
     error_signature: "TimeoutError | checkout <n> timed out after <n>s | checkout.ts:processOrder",
@@ -141,6 +143,8 @@ describe("signal fingerprint", () => {
       error_signature: identity.error_signature,
       environment: identity.environment,
       service: identity.service,
+      workspace_id: identity.workspace_id,
+      enterprise_id: identity.enterprise_id,
     };
     expect(signalFingerprint(reordered)).toBe(signalFingerprint(identity));
   });
@@ -154,6 +158,20 @@ describe("signal fingerprint", () => {
     );
     expect(signalFingerprint({ ...identity, error_signature: "Other" })).not.toBe(
       signalFingerprint(identity),
+    );
+  });
+
+  test("scopes the fingerprint to the enterprise and workspace", () => {
+    const base = {
+      enterprise_id: "ent-a",
+      workspace_id: "ws-a",
+      service: "checkout",
+      environment: "prod",
+      error_signature: "sig",
+    };
+    expect(signalFingerprint({ ...base, workspace_id: "ws-b" })).not.toBe(signalFingerprint(base));
+    expect(signalFingerprint({ ...base, enterprise_id: "ent-b" })).not.toBe(
+      signalFingerprint(base),
     );
   });
 });

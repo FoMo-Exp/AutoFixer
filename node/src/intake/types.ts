@@ -33,8 +33,15 @@ export type EventOutcomeKind =
   | "budget_deferred"
   | "invalid_event";
 
-/** Event-level dedup registry entry: one row per (source, provider event id). */
+/**
+ * Event-level dedup registry entry: one row per
+ * (enterprise, workspace, source, provider event id). The workspace scope is
+ * part of the identity, so two workspaces delivering the same provider event
+ * id never deduplicate against each other.
+ */
 export interface EventRecord {
+  enterprise_id: string;
+  workspace_id: string;
   source_id: string;
   provider_event_id: string;
   event_time: string;

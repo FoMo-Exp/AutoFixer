@@ -408,7 +408,7 @@ export class LogIntake {
       typeof input.submission_id === "string" && input.submission_id.trim().length > 0
         ? input.submission_id.trim()
         : `msub_${randomUUID().replaceAll("-", "")}`;
-    if (this.deps.store.findEvent(MANUAL_SOURCE_ID, submissionId)) {
+    if (this.deps.store.findEvent(input.workspace, MANUAL_SOURCE_ID, submissionId)) {
       return outcome("duplicate_event", { event_ref: submissionId });
     }
     const at = this.clock().toISOString();
@@ -426,6 +426,8 @@ export class LogIntake {
     const invalid = validateProviderEvent(synthetic);
     if (invalid !== null) {
       this.deps.store.recordEvent({
+        enterprise_id: input.workspace.enterprise_id,
+        workspace_id: input.workspace.workspace_id,
         source_id: MANUAL_SOURCE_ID,
         provider_event_id: submissionId,
         event_time: at,
@@ -437,7 +439,12 @@ export class LogIntake {
     const result = this.processSignal(
       {
         providerEventId: submissionId,
-        eventIdentity: JSON.stringify([MANUAL_SOURCE_ID, submissionId]),
+        eventIdentity: JSON.stringify([
+          input.workspace.enterprise_id,
+          input.workspace.workspace_id,
+          MANUAL_SOURCE_ID,
+          submissionId,
+        ]),
         eventTime: at,
         providerSeverity: input.provider_severity,
         providerService: input.provider_service,
@@ -455,6 +462,8 @@ export class LogIntake {
       },
     );
     this.deps.store.recordEvent({
+      enterprise_id: input.workspace.enterprise_id,
+      workspace_id: input.workspace.workspace_id,
       source_id: MANUAL_SOURCE_ID,
       provider_event_id: submissionId,
       event_time: at,
@@ -507,7 +516,12 @@ export class LogIntake {
     const drained: { deferred_id: string; outcome: EventOutcome }[] = [];
     for (const entry of this.deps.store.deferred()) {
       const at = this.clock().toISOString();
-      const denial = this.deps.store.budgetCheck(entry.source_id, this.deps.budgets, at);
+      const denial = this.deps.store.budgetCheck(
+        entry.source_id,
+        entry.workspace,
+        this.deps.budgets,
+        at,
+      );
       if (denial !== null) {
         continue;
       }
@@ -537,12 +551,18 @@ export class LogIntake {
       last_poll_at: state.last_poll_at,
       counts: structuredClone(state.counts),
       gaps: this.deps.store.gaps(sourceId),
-      budget: this.deps.store.budgetStatus(sourceId, this.deps.budgets),
+      budget: this.deps.store.budgetStatus(
+        sourceId,
+        state.workspace ?? this.requireSource(sourceId).workspace,
+        this.deps.budgets,
+      ),
     };
   }
 
   budgetStatus(sourceId: string): BudgetStatusView {
-    return this.deps.store.budgetStatus(sourceId, this.deps.budgets);
+    const workspace =
+      this.deps.store.source(sourceId)?.workspace ?? this.requireSource(sourceId).workspace;
+    return this.deps.store.budgetStatus(sourceId, workspace, this.deps.budgets);
   }
 
   suppressionLog(): ReturnType<IntakeStore["suppressionLog"]> {
@@ -567,6 +587,7 @@ export class LogIntake {
     index: number,
     state: SourceState,
   ): EventOutcome {
+    const workspace = state.workspace ?? { enterprise_id: "", workspace_id: "" };
     const invalid = validateProviderEvent(raw);
     const record = (raw ?? {}) as Record<string, unknown>;
     const usableId =
@@ -575,8 +596,13 @@ export class LogIntake {
         : null;
 
     if (invalid !== null) {
-      if (usableId !== null && this.deps.store.findEvent(sourceId, usableId) === undefined) {
+      if (
+        usableId !== null &&
+        this.deps.store.findEvent(workspace, sourceId, usableId) === undefined
+      ) {
         this.deps.store.recordEvent({
+          enterprise_id: workspace.enterprise_id,
+          workspace_id: workspace.workspace_id,
           source_id: sourceId,
           provider_event_id: usableId,
           event_time: typeof record["event_time"] === "string" ? record["event_time"] : "",
@@ -593,7 +619,7 @@ export class LogIntake {
     }
 
     const event = raw as ProviderLogEvent;
-    if (this.deps.store.findEvent(sourceId, event.provider_event_id) !== undefined) {
+    if (this.deps.store.findEvent(workspace, sourceId, event.provider_event_id) !== undefined) {
       state.counts.events += 1;
       state.counts.duplicates += 1;
       return outcome("duplicate_event", { event_ref: event.provider_event_id });
@@ -619,7 +645,12 @@ export class LogIntake {
     const result = this.processSignal(
       {
         providerEventId: event.provider_event_id,
-        eventIdentity: JSON.stringify([sourceId, event.provider_event_id]),
+        eventIdentity: JSON.stringify([
+          workspace.enterprise_id,
+          workspace.workspace_id,
+          sourceId,
+          event.provider_event_id,
+        ]),
         eventTime: event.event_time,
         providerSeverity: event.provider_severity,
         providerService: event.provider_service,
@@ -630,13 +661,15 @@ export class LogIntake {
       },
       {
         sourceId,
-        workspace: state.workspace ?? { enterprise_id: "", workspace_id: "" },
+        workspace,
         at,
         sourceState: state,
         repositoryOverride: null,
       },
     );
     this.deps.store.recordEvent({
+      enterprise_id: workspace.enterprise_id,
+      workspace_id: workspace.workspace_id,
       source_id: sourceId,
       provider_event_id: event.provider_event_id,
       event_time: event.event_time,
@@ -669,6 +702,8 @@ export class LogIntake {
     // pure, so the two-step evaluation stays deterministic.
     const probe = evaluateRules(this.deps.rules, evaluation, { count_in_window: 0 });
     const signalKey = signalFingerprint({
+      enterprise_id: ctx.workspace.enterprise_id,
+      workspace_id: ctx.workspace.workspace_id,
       service: probe.service,
       environment: probe.environment,
       error_signature: signature,
@@ -704,6 +739,8 @@ export class LogIntake {
 
     const summary = buildSummary(decision, input.message, errorShape);
     const identity: SignalIdentity = {
+      enterprise_id: ctx.workspace.enterprise_id,
+      workspace_id: ctx.workspace.workspace_id,
       service: decision.service,
       environment: decision.environment,
       error_signature: signature,
@@ -733,7 +770,12 @@ export class LogIntake {
       });
     }
 
-    const denial = this.deps.store.budgetCheck(ctx.sourceId, this.deps.budgets, ctx.at);
+    const denial = this.deps.store.budgetCheck(
+      ctx.sourceId,
+      ctx.workspace,
+      this.deps.budgets,
+      ctx.at,
+    );
     if (denial !== null) {
       this.deps.store.putSignal({
         signal_key: signalKey,
@@ -836,7 +878,7 @@ export class LogIntake {
         source_reference: `signal:${ctx.sourceId}:${signal.signalKey}`,
       });
       const occurrences = link(issue.issue_id, null);
-      this.deps.store.recordCreation(ctx.sourceId, at);
+      this.deps.store.recordCreation(ctx.sourceId, ctx.workspace, at);
       if (ctx.sourceState) {
         ctx.sourceState.counts.issues_created += 1;
       }
@@ -866,7 +908,7 @@ export class LogIntake {
       resolved_issue_id: null,
     });
     const occurrences = link(null, triageId);
-    this.deps.store.recordCreation(ctx.sourceId, at);
+    this.deps.store.recordCreation(ctx.sourceId, ctx.workspace, at);
     if (ctx.sourceState) {
       ctx.sourceState.counts.triaged += 1;
     }

@@ -68,7 +68,12 @@ export type {
   SourceConfig,
   SourceStatus,
 } from "./pipeline.js";
-export { BRIEFING_MESSAGE_MAX, BRIEFING_STACK_MAX, minimizeSignal } from "./minimize.js";
+export {
+  BRIEFING_FIELD_MAX,
+  BRIEFING_MESSAGE_MAX,
+  BRIEFING_STACK_MAX,
+  minimizeSignal,
+} from "./minimize.js";
 export type { MinimizeInput, ModelSignalBriefing } from "./minimize.js";
 export { buildAnalysisContext, dispatchBriefing } from "./analysis.js";
 export type { BriefingDispatch } from "./analysis.js";

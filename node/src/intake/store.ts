@@ -64,9 +64,10 @@ export interface IntakeStoreOptions {
 
 interface BudgetBook {
   source_creations: Map<string, string[]>;
-  workspace_creations: string[];
+  /** Workspace key -> creation stamps; budgets never leak across workspaces. */
+  workspace_creations: Map<string, string[]>;
   last_source_creation: Map<string, string>;
-  last_workspace_creation: string | null;
+  last_workspace_creation: Map<string, string>;
 }
 
 interface PersistedState {
@@ -80,16 +81,29 @@ interface PersistedState {
   deferred: DeferredSignal[];
   budget: {
     source_creations: [string, string[]][];
-    workspace_creations: string[];
+    workspace_creations: [string, string[]][];
     last_source_creation: [string, string][];
-    last_workspace_creation: string | null;
+    last_workspace_creation: [string, string][];
   };
 }
 
 const SCHEMA_VERSION = 1;
 
-function eventIdentity(sourceId: string, providerEventId: string): string {
-  return JSON.stringify([sourceId, providerEventId]);
+function workspaceKey(workspace: WorkspaceScope): string {
+  return JSON.stringify([workspace.enterprise_id, workspace.workspace_id]);
+}
+
+function eventIdentity(
+  workspace: WorkspaceScope,
+  sourceId: string,
+  providerEventId: string,
+): string {
+  return JSON.stringify([
+    workspace.enterprise_id,
+    workspace.workspace_id,
+    sourceId,
+    providerEventId,
+  ]);
 }
 
 export class IntakeStore {
@@ -102,9 +116,9 @@ export class IntakeStore {
   private readonly deferredQueue: DeferredSignal[] = [];
   private readonly budget: BudgetBook = {
     source_creations: new Map(),
-    workspace_creations: [],
+    workspace_creations: new Map(),
     last_source_creation: new Map(),
-    last_workspace_creation: null,
+    last_workspace_creation: new Map(),
   };
   private readonly persistencePath: string | undefined;
   private readonly clock: () => Date;
@@ -203,12 +217,16 @@ export class IntakeStore {
 
   // ------------------------------------------------------------------ events
 
-  findEvent(sourceId: string, providerEventId: string): EventRecord | undefined {
-    return this.events.get(eventIdentity(sourceId, providerEventId));
+  findEvent(
+    workspace: WorkspaceScope,
+    sourceId: string,
+    providerEventId: string,
+  ): EventRecord | undefined {
+    return this.events.get(eventIdentity(workspace, sourceId, providerEventId));
   }
 
   recordEvent(record: EventRecord): void {
-    this.events.set(eventIdentity(record.source_id, record.provider_event_id), record);
+    this.events.set(eventIdentity(record, record.source_id, record.provider_event_id), record);
   }
 
   // ----------------------------------------------------------------- signals
@@ -299,30 +317,41 @@ export class IntakeStore {
 
   // ------------------------------------------------------------------ budgets
 
-  recordCreation(sourceId: string, at: string): void {
+  recordCreation(sourceId: string, workspace: WorkspaceScope, at: string): void {
     const perSource = this.budget.source_creations.get(sourceId) ?? [];
     perSource.push(at);
     this.budget.source_creations.set(sourceId, perSource);
-    this.budget.workspace_creations.push(at);
+    const key = workspaceKey(workspace);
+    const perWorkspace = this.budget.workspace_creations.get(key) ?? [];
+    perWorkspace.push(at);
+    this.budget.workspace_creations.set(key, perWorkspace);
     this.budget.last_source_creation.set(sourceId, at);
-    this.budget.last_workspace_creation = at;
+    this.budget.last_workspace_creation.set(key, at);
   }
 
   /**
    * Deterministic budget gate for one new-issue request at time `at`: sliding
-   * window limits first (source, then workspace), then cooldowns. A denial
-   * names exactly one reason so operators can see which gate held.
+   * window limits first (source, then the owning workspace), then cooldowns.
+   * Counters are per workspace — one tenant's traffic never consumes another
+   * tenant's budget. A denial names exactly one reason so operators can see
+   * which gate held.
    */
-  budgetCheck(sourceId: string, config: BudgetConfig, at?: string): BudgetDenial | null {
+  budgetCheck(
+    sourceId: string,
+    workspace: WorkspaceScope,
+    config: BudgetConfig,
+    at?: string,
+  ): BudgetDenial | null {
     const point = at ?? this.clock().toISOString();
     const windowStart = Date.parse(point) - config.window_seconds * 1000;
     const inWindow = (stamp: string): boolean => Date.parse(stamp) > windowStart;
+    const key = workspaceKey(workspace);
 
     const sourceUsed = (this.budget.source_creations.get(sourceId) ?? []).filter(inWindow).length;
     if (sourceUsed >= config.source_max_new_issues) {
       return { reason: "source_window_exhausted", source_id: sourceId };
     }
-    const workspaceUsed = this.budget.workspace_creations.filter(inWindow).length;
+    const workspaceUsed = (this.budget.workspace_creations.get(key) ?? []).filter(inWindow).length;
     if (workspaceUsed >= config.workspace_max_new_issues) {
       return { reason: "workspace_window_exhausted", source_id: sourceId };
     }
@@ -334,32 +363,38 @@ export class IntakeStore {
     ) {
       return { reason: "source_cooldown", source_id: sourceId };
     }
+    const lastWorkspace = this.budget.last_workspace_creation.get(key);
     if (
       config.workspace_cooldown_seconds > 0 &&
-      this.budget.last_workspace_creation !== null &&
-      Date.parse(point) - Date.parse(this.budget.last_workspace_creation) <
-        config.workspace_cooldown_seconds * 1000
+      lastWorkspace !== undefined &&
+      Date.parse(point) - Date.parse(lastWorkspace) < config.workspace_cooldown_seconds * 1000
     ) {
       return { reason: "workspace_cooldown", source_id: sourceId };
     }
     return null;
   }
 
-  budgetStatus(sourceId: string, config: BudgetConfig, at?: string): BudgetStatusView {
+  budgetStatus(
+    sourceId: string,
+    workspace: WorkspaceScope,
+    config: BudgetConfig,
+    at?: string,
+  ): BudgetStatusView {
     const point = at ?? this.clock().toISOString();
     const windowStart = Date.parse(point) - config.window_seconds * 1000;
     const inWindow = (stamp: string): boolean => Date.parse(stamp) > windowStart;
+    const key = workspaceKey(workspace);
     return {
       source_id: sourceId,
       window_seconds: config.window_seconds,
       source_used: (this.budget.source_creations.get(sourceId) ?? []).filter(inWindow).length,
       source_limit: config.source_max_new_issues,
-      workspace_used: this.budget.workspace_creations.filter(inWindow).length,
+      workspace_used: (this.budget.workspace_creations.get(key) ?? []).filter(inWindow).length,
       workspace_limit: config.workspace_max_new_issues,
       source_cooldown_seconds: config.source_cooldown_seconds,
       workspace_cooldown_seconds: config.workspace_cooldown_seconds,
       last_source_creation: this.budget.last_source_creation.get(sourceId) ?? null,
-      last_workspace_creation: this.budget.last_workspace_creation,
+      last_workspace_creation: this.budget.last_workspace_creation.get(key) ?? null,
       deferred_count: this.deferredQueue.length,
     };
   }
@@ -408,9 +443,12 @@ export class IntakeStore {
           key,
           [...stamps],
         ]),
-        workspace_creations: [...this.budget.workspace_creations],
+        workspace_creations: [...this.budget.workspace_creations.entries()].map(([key, stamps]) => [
+          key,
+          [...stamps],
+        ]),
         last_source_creation: [...this.budget.last_source_creation.entries()],
-        last_workspace_creation: this.budget.last_workspace_creation,
+        last_workspace_creation: [...this.budget.last_workspace_creation.entries()],
       },
     };
     fs.mkdirSync(path.dirname(this.persistencePath), { recursive: true, mode: 0o700 });
@@ -435,7 +473,7 @@ export class IntakeStore {
       this.sources.set(source.source_id, source);
     }
     for (const event of (value["events"] as EventRecord[]) ?? []) {
-      this.events.set(eventIdentity(event.source_id, event.provider_event_id), event);
+      this.events.set(eventIdentity(event, event.source_id, event.provider_event_id), event);
     }
     for (const signal of (value["signals"] as SignalRecord[]) ?? []) {
       this.signals.set(signal.signal_key, signal);
@@ -451,11 +489,15 @@ export class IntakeStore {
       for (const [key, stamps] of budget.source_creations) {
         this.budget.source_creations.set(key, [...stamps]);
       }
-      this.budget.workspace_creations = [...budget.workspace_creations];
+      for (const [key, stamps] of budget.workspace_creations) {
+        this.budget.workspace_creations.set(key, [...stamps]);
+      }
       for (const [key, stamp] of budget.last_source_creation) {
         this.budget.last_source_creation.set(key, stamp);
       }
-      this.budget.last_workspace_creation = budget.last_workspace_creation;
+      for (const [key, stamp] of budget.last_workspace_creation) {
+        this.budget.last_workspace_creation.set(key, stamp);
+      }
     }
   }
 }

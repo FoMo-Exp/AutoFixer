@@ -14,6 +14,8 @@ import type { CanonicalSeverity } from "./rules.js";
 
 export const BRIEFING_MESSAGE_MAX = 160;
 export const BRIEFING_STACK_MAX = 3;
+/** Bound for every other raw-derived briefing field. */
+export const BRIEFING_FIELD_MAX = 200;
 
 /** The complete set of fields a model may ever see about one signal. */
 export interface ModelSignalBriefing {
@@ -44,22 +46,31 @@ export interface MinimizeInput {
 
 /**
  * Project one signal down to its model briefing. Only the allowlisted fields
- * are copied; the message is secret-scrubbed first, then normalized and
- * truncated, and stack locations lose their host paths.
+ * are copied. Every field derived from raw provider input — service,
+ * environment, error class, error signature, message excerpt, and stack
+ * frames — is uniformly secret-scrubbed, normalized where a canonical form
+ * exists, and length-bounded before it enters the briefing, so credential
+ * material can never ride out through a signature or a frame name.
  */
 export function minimizeSignal(input: MinimizeInput): ModelSignalBriefing {
-  const excerpt = normalizeMessage(scrubSecrets(input.message));
   return {
     signal_key: input.signal_key,
     severity: input.severity,
-    service: input.service,
-    environment: input.environment,
-    error_class: input.error_class,
-    error_signature: input.error_signature,
-    message_excerpt:
-      excerpt.length > BRIEFING_MESSAGE_MAX ? excerpt.slice(0, BRIEFING_MESSAGE_MAX) : excerpt,
-    stack_locations: normalizeStackLocations(input.stack_locations).slice(0, BRIEFING_STACK_MAX),
+    service: safe(input.service),
+    environment: safe(input.environment),
+    error_class: safe(input.error_class),
+    error_signature: safe(input.error_signature),
+    message_excerpt: safe(normalizeMessage(scrubSecrets(input.message)), BRIEFING_MESSAGE_MAX),
+    stack_locations: normalizeStackLocations(input.stack_locations)
+      .map((frame) => safe(frame))
+      .slice(0, BRIEFING_STACK_MAX),
     occurrences: input.occurrences,
     rate: { count: input.rate.count, window_seconds: input.rate.window_seconds },
   };
+}
+
+/** Scrub credential-shaped material and bound the field's length. */
+function safe(value: string, max: number = BRIEFING_FIELD_MAX): string {
+  const scrubbed = scrubSecrets(value);
+  return scrubbed.length > max ? scrubbed.slice(0, max) : scrubbed;
 }

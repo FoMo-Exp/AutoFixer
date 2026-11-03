@@ -36,9 +36,14 @@ export interface ErrorShape {
  * Canonical identity fields of one incident signal. Deliberately excludes
  * per-arrival noise (raw message, severity, timestamps, counts): two alerts
  * about the same incident at the same service in the same environment carry
- * the same identity, so they collapse onto one issue.
+ * the same identity, so they collapse onto one issue. The enterprise and
+ * workspace scope are part of the identity: incidents never cross tenant
+ * boundaries, so two workspaces seeing the same error map to different
+ * signals and never share evidence or issues.
  */
 export interface SignalIdentity {
+  enterprise_id: string;
+  workspace_id: string;
   service: string;
   environment: string;
   error_signature: string;
@@ -128,11 +133,18 @@ export function errorSignature(error: ErrorShape): string {
 }
 
 /** Versioned fingerprint over the canonical identity fields. */
+/**
+ * Versioned fingerprint over the canonical identity fields, scoped to the
+ * owning enterprise/workspace. The workspace scope is hashed in, so dedup
+ * keys and signal storage are workspace-scoped by construction.
+ */
 export function signalFingerprint(identity: SignalIdentity): string {
   const canonical = JSON.stringify({
+    enterprise_id: identity.enterprise_id,
     error_signature: identity.error_signature,
     environment: identity.environment,
     service: identity.service,
+    workspace_id: identity.workspace_id,
   });
   return `fp${SIGNAL_FINGERPRINT_VERSION}:${createHash("sha256").update(canonical).digest("hex")}`;
 }

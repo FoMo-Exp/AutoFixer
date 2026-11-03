@@ -7,6 +7,7 @@ import type {
 } from "@mariozechner/pi-ai";
 
 import type { GatewayBindingIdentity, ModelGateway } from "../gateway/index.js";
+import { scrubSecrets } from "../gateway/redact.js";
 import type { ModelSignalBriefing } from "./minimize.js";
 
 /**
@@ -15,7 +16,9 @@ import type { ModelSignalBriefing } from "./minimize.js";
  * Model analysis of a signal has exactly one egress path: the ADR-0005 model
  * gateway. The context is composed here from the minimized briefing — there
  * is no function in this module (or its callers) that opens a provider
- * connection directly, and a gateway denial fails the call closed.
+ * connection directly, and a gateway denial fails the call closed. As the
+ * last egress-side defense, the composed text is secret-scrubbed again even
+ * though `minimizeSignal` already scrubs its fields.
  */
 
 /** Compose the analysis context from briefing fields only. */
@@ -33,7 +36,9 @@ export function buildAnalysisContext(briefing: ModelSignalBriefing): Context {
     `occurrences: ${briefing.occurrences}`,
     `rate: ${briefing.rate.count} in ${briefing.rate.window_seconds}s`,
   ];
-  return { messages: [{ role: "user", content: lines.join("\n"), timestamp: Date.now() }] };
+  return {
+    messages: [{ role: "user", content: scrubSecrets(lines.join("\n")), timestamp: Date.now() }],
+  };
 }
 
 export interface BriefingDispatch {
