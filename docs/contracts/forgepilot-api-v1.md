@@ -556,11 +556,14 @@ Stable codes and their default envelope semantics:
 | `DSH_UNAVAILABLE` | 503 | execution | retry | yes | `retry` |
 | `PROVIDER_ROSTER_INCOMPLETE` | 503 | reconciliation | retry | yes | `retry` |
 
-Node maps dsh policy outcomes without exposing sensitive dsh internals:
+Node maps dsh policy outcomes without exposing dsh internals:
 `403 DSH_SCOPE_DENIED|DSH_POLICY_DENIED` (stage `policy`, category `denial`),
 `410 DSH_GRANT_EXPIRED`, `422 DSH_RISK_PROHIBITED`, and
-`428 DSH_APPROVAL_REQUIRED`; the originating dsh code is preserved in
-`details.dsh_code` for audit correlation.
+`428 DSH_APPROVAL_REQUIRED`. A dsh failure's own message and details can
+carry internal diagnostics, so they never cross the API boundary: these
+errors serve one fixed safe message each, and `details` carries only the
+allowlisted origin code in `dsh_code` (plus the rejected `task_id` on `422`)
+— never raw dsh messages, Go error strings, or response fragments.
 
 The implementation MUST generate an OpenAPI document and TypeScript client
 from this contract. UI work is blocked until that generated contract is merged

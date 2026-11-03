@@ -157,6 +157,12 @@ const ERROR_SEMANTICS: Record<string, ErrorSemantics> = {
     retryable: false,
     next_action: null,
   },
+  MEMBERSHIP_CONFLICT: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: null,
+  },
   TEAM_LEADER_NOT_MEMBER: {
     stage: "validation",
     category: "stop",
@@ -355,38 +361,75 @@ export function apiErrorFromControlPlane(error: ControlPlaneError): ApiError {
 }
 
 /**
+ * Fixed safe client-visible messages for dsh-mapped failures. A dsh error's
+ * own message and details can carry internal diagnostics — Go error strings,
+ * raw non-contract response fragments, downstream paths — so the HTTP
+ * envelope never echoes them (ADR-0008: no raw provider or downstream error
+ * text in messages or details).
+ */
+export const DSH_SAFE_MESSAGES = {
+  INVALID_REQUEST: "The request was rejected by the execution control plane.",
+  POLICY_DENIED: "The action was denied by execution policy.",
+  FORBIDDEN: "The action was refused by the execution control plane.",
+  TASK_NOT_FOUND: "The task was not found in your visible scope.",
+  TASK_STATE_CONFLICT: "The task is not in a state that allows this action.",
+  DSH_GRANT_EXPIRED: "The execution grant expired before the action could run.",
+  DSH_RISK_PROHIBITED: "The work was rejected by risk policy.",
+  DSH_APPROVAL_REQUIRED: "The action requires human approval before it can run.",
+  RATE_LIMITED: "Too many requests. Try again later.",
+  DSH_UNAVAILABLE: "The execution control plane is temporarily unavailable.",
+  INTERNAL_ERROR: "The execution control plane reported an unexpected failure.",
+} as const;
+
+/**
  * Translate a dsh-control/v1 failure into the product API's error vocabulary.
  *
- * Node maps dsh policy outcomes without exposing dsh internals: the contract
- * codes the v1 error model allows, with the originating dsh code preserved in
- * `details.dsh_code` for audit correlation. The code registry supplies the
- * stage, category, retryability, and next action.
+ * Node maps dsh policy outcomes without exposing dsh internals. Only the
+ * stable origin code crosses into the client-visible envelope (in
+ * `details.dsh_code` for audit correlation); the message is the fixed safe
+ * text above and dsh's own message/details never leave this function. The
+ * code registry supplies the stage, category, retryability, and next action.
  */
 export function apiErrorFromDsh(error: DshError): ApiError {
-  const details = { ...error.details, dsh_code: error.code };
+  const details = { dsh_code: error.code };
   switch (error.status) {
     case 400:
-      return new ApiError(400, "INVALID_REQUEST", error.message, details);
+      return new ApiError(400, "INVALID_REQUEST", DSH_SAFE_MESSAGES.INVALID_REQUEST, details);
     case 403:
       if (error.code === "DSH_SCOPE_DENIED" || error.code === "DSH_POLICY_DENIED") {
-        return new ApiError(403, error.code, error.message, details);
+        return new ApiError(403, error.code, DSH_SAFE_MESSAGES.POLICY_DENIED, details);
       }
-      return new ApiError(403, "FORBIDDEN", error.message, details);
+      return new ApiError(403, "FORBIDDEN", DSH_SAFE_MESSAGES.FORBIDDEN, details);
     case 404:
-      return new ApiError(404, "TASK_NOT_FOUND", error.message, details);
+      return new ApiError(404, "TASK_NOT_FOUND", DSH_SAFE_MESSAGES.TASK_NOT_FOUND, details);
     case 409:
-      return new ApiError(409, "TASK_STATE_CONFLICT", error.message, details);
+      return new ApiError(
+        409,
+        "TASK_STATE_CONFLICT",
+        DSH_SAFE_MESSAGES.TASK_STATE_CONFLICT,
+        details,
+      );
     case 410:
-      return new ApiError(410, "DSH_GRANT_EXPIRED", error.message, details);
+      return new ApiError(410, "DSH_GRANT_EXPIRED", DSH_SAFE_MESSAGES.DSH_GRANT_EXPIRED, details);
     case 422:
-      return new ApiError(422, "DSH_RISK_PROHIBITED", error.message, details);
+      return new ApiError(
+        422,
+        "DSH_RISK_PROHIBITED",
+        DSH_SAFE_MESSAGES.DSH_RISK_PROHIBITED,
+        details,
+      );
     case 428:
-      return new ApiError(428, "DSH_APPROVAL_REQUIRED", error.message, details);
+      return new ApiError(
+        428,
+        "DSH_APPROVAL_REQUIRED",
+        DSH_SAFE_MESSAGES.DSH_APPROVAL_REQUIRED,
+        details,
+      );
     case 429:
-      return new ApiError(429, "RATE_LIMITED", error.message, details);
+      return new ApiError(429, "RATE_LIMITED", DSH_SAFE_MESSAGES.RATE_LIMITED, details);
     case 503:
-      return new ApiError(503, "DSH_UNAVAILABLE", error.message, details);
+      return new ApiError(503, "DSH_UNAVAILABLE", DSH_SAFE_MESSAGES.DSH_UNAVAILABLE, details);
     default:
-      return new ApiError(500, "INTERNAL_ERROR", error.message, details);
+      return new ApiError(500, "INTERNAL_ERROR", DSH_SAFE_MESSAGES.INTERNAL_ERROR, details);
   }
 }

@@ -19,7 +19,7 @@ import { createTurnSummaryReportTool } from "../pi/turn-report-tool.js";
 import { piSystemPrompt, taskPrompt } from "../pi/prompts.js";
 import type { PiSessionOptions } from "../pi/session.js";
 import { PiSession } from "../pi/session.js";
-import { ApiError, apiErrorFromDsh } from "./errors.js";
+import { ApiError, apiErrorFromDsh, DSH_SAFE_MESSAGES } from "./errors.js";
 import { PiSummaryTracker } from "./pi-summary.js";
 import type { PiSummary } from "./pi-summary.js";
 import type {
@@ -452,8 +452,8 @@ export class TaskService {
           acceptanceCriteria,
           error,
         );
-        throw new ApiError(422, "DSH_RISK_PROHIBITED", error.message, {
-          ...error.details,
+        throw new ApiError(422, "DSH_RISK_PROHIBITED", DSH_SAFE_MESSAGES.DSH_RISK_PROHIBITED, {
+          dsh_code: error.code,
           task_id: record.id,
         });
       }
