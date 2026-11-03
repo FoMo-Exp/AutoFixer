@@ -27,6 +27,7 @@ import {
   createPatternSecretScanner,
   createStaticCredentialStore,
   createStaticPolicyResolver,
+  staticDutyDirectory,
 } from "../src/index.js";
 import { TEST_MODEL } from "./helpers/scripted-stream.js";
 import {
@@ -145,6 +146,11 @@ function realIntake(): {
     quarantine,
     referenceSecret: Buffer.alloc(32, 1),
     onIncident: () => undefined,
+    duties: staticDutyDirectory({
+      handlers: ["human_handler"],
+      reviewers: ["human_reviewer"],
+      admins: ["human_admin"],
+    }),
   });
   return { intake: service, service, caseStore };
 }

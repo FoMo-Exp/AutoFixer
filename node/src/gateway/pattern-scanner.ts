@@ -10,6 +10,8 @@
 
 import type { SecretFinding, SecretScanner, SecretScanReport, SecretScanRequest } from "./scan.js";
 import { joinClassification, shannonEntropy } from "./scan.js";
+import type { ActiveRuleCorrection } from "../security/rules.js";
+import { constrainDetector } from "../security/rules.js";
 import type { SecretClassification } from "./types.js";
 
 export interface SecretDetector {
@@ -24,6 +26,12 @@ export interface SecretDetector {
   skipBinary?: boolean;
   /** Shannon entropy (bits/char) the matched material must reach to count. */
   minShannonEntropy?: number;
+  /** Minimum length the matched material must reach to count. */
+  minLength?: number;
+  /** The matched material must start with this fixed marker to count. */
+  requiredPrefix?: string;
+  /** The matched material must end with this fixed marker to count. */
+  requiredSuffix?: string;
 }
 
 /** Rule version of the built-in detector set. */
@@ -111,11 +119,38 @@ function globalCopy(pattern: RegExp): RegExp {
 }
 
 /**
+ * Fold the live corrections that target one detector into that detector.
+ * Narrowing only (`constrainDetector`); the effective rule version tags every
+ * finding with the correction revision that shaped it, so audit evidence
+ * always shows which policy version produced a detection.
+ */
+function narrowedDetector(
+  detector: SecretDetector,
+  applied: readonly ActiveRuleCorrection[],
+): SecretDetector {
+  if (applied.length === 0) return detector;
+  let effective: SecretDetector = detector;
+  let tag = detector.version;
+  for (const correction of applied) {
+    effective = { ...effective, ...constrainDetector(effective, correction.constraints) };
+    // Findings record the correction revision that shaped their detector.
+    tag = `${detector.version}.rc${correction.version}`;
+  }
+  return { ...effective, version: tag };
+}
+
+/**
  * Deterministic pattern scanner. Synchronous and local: it either answers or
  * the gateway treats it as unavailable — never as clean.
  */
 export function createPatternSecretScanner(options?: {
   detectors?: SecretDetector[];
+  /**
+   * Live active rule corrections (DAT-211), evaluated per scan so an
+   * activation takes effect without re-composing the gateway. Corrections
+   * only narrow detectors; the complete-request checks all still apply.
+   */
+  corrections?: () => readonly ActiveRuleCorrection[];
 }): SecretScanner {
   const detectors = options?.detectors ?? defaultSecretDetectors();
   return {
@@ -123,8 +158,15 @@ export function createPatternSecretScanner(options?: {
     ruleVersion: PATTERN_SCANNER_RULE_VERSION,
     scan(request: SecretScanRequest): SecretScanReport {
       const findings: SecretFinding[] = [];
+      const corrections = options?.corrections?.() ?? [];
+      const effectiveDetectors = detectors.map((detector) =>
+        narrowedDetector(
+          detector,
+          corrections.filter((correction) => correction.detectorId === detector.id),
+        ),
+      );
       for (const segment of request.segments) {
-        for (const detector of detectors) {
+        for (const detector of effectiveDetectors) {
           if (segment.binary && detector.skipBinary) continue;
           for (const match of segment.text.matchAll(globalCopy(detector.pattern))) {
             const material =
@@ -133,6 +175,21 @@ export function createPatternSecretScanner(options?: {
             if (
               detector.minShannonEntropy !== undefined &&
               shannonEntropy(material) < detector.minShannonEntropy
+            ) {
+              continue;
+            }
+            if (detector.minLength !== undefined && material.length < detector.minLength) {
+              continue;
+            }
+            if (
+              detector.requiredPrefix !== undefined &&
+              !material.startsWith(detector.requiredPrefix)
+            ) {
+              continue;
+            }
+            if (
+              detector.requiredSuffix !== undefined &&
+              !material.endsWith(detector.requiredSuffix)
             ) {
               continue;
             }

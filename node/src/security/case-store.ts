@@ -173,6 +173,16 @@ export class SecurityCaseStore {
    * Append one case-state transition. Valid edges only (a failed review goes
    * back to `handling`), human/service actors only — a run never dispositions
    * its own case — and the history keeps every step.
+   *
+   * Separation of duties (DAT-211): the edges leaving `awaiting_review` are
+   * review decisions, so the acting principal is the reviewer. The store
+   * rejects — before any state change — a review by the handler who submitted
+   * the case (`SOD_SELF_REVIEW_FORBIDDEN`), a review by any other handling
+   * principal of the case (`SOD_SAME_PRINCIPAL_FORBIDDEN`), a non-human
+   * reviewer (`SOD_HUMAN_PRINCIPAL_REQUIRED`), and a case with no handling
+   * principal of record (`SOD_INDEPENDENT_REVIEWER_REQUIRED`). Every review
+   * decision appends its own event carrying the independent-review
+   * relationship.
    */
   transition(caseId: string, to: CaseState, actor: SecurityActor): SecurityCase {
     const record = this.requireCase(caseId);
@@ -185,10 +195,68 @@ export class SecurityCaseStore {
       );
     }
     const from = record.state;
+    // Review decisions are exactly the two review edges out of
+    // `awaiting_review`; terminating a case is disposition work, not review.
+    const reviewEdge = from === "awaiting_review" && (to === "resolved" || to === "handling");
+    const subjects = reviewEdge ? this.handlingPrincipals(caseId) : [];
+    const submitter = reviewEdge ? this.submittedBy(caseId) : undefined;
+    if (reviewEdge) {
+      try {
+        this.assertIndependentReviewer(caseId, actor, subjects, submitter);
+      } catch (error) {
+        // A denied review attempt is part of the audit trail: the rejection
+        // is a review result, and the history records it before it throws.
+        this.appendEvent(caseId, "case.review_denied", actor, {
+          code: error instanceof SecurityError ? error.code : "SOD_REVIEW_DENIED",
+          subjects: subjects.join(","),
+        });
+        throw error;
+      }
+    }
     record.state = to;
     record.updatedAt = this.timestamp();
     this.appendEvent(caseId, "case.state_changed", actor, { from, to });
+    if (reviewEdge) {
+      this.appendEvent(
+        caseId,
+        to === "resolved" ? "case.review_approved" : "case.review_rejected",
+        actor,
+        { reviewer: actor.actorId, subjects: subjects.join(",") },
+      );
+    }
     return record;
+  }
+
+  /**
+   * Every principal that handled or submitted the case, derived from the
+   * append-only history. A failed review (`awaiting_review → handling`) is a
+   * reviewer action, not handling: the reviewer never joins the set they must
+   * stay independent of.
+   */
+  handlingPrincipals(caseId: string): string[] {
+    const subjects: string[] = [];
+    for (const event of this.events(caseId)) {
+      if (event.type !== "case.state_changed" || !event.actor) continue;
+      const to = event.detail["to"];
+      const from = event.detail["from"];
+      const handling =
+        to === "awaiting_review" || (to === "handling" && from !== "awaiting_review");
+      if (handling && !subjects.includes(event.actor.actorId)) {
+        subjects.push(event.actor.actorId);
+      }
+    }
+    return subjects;
+  }
+
+  /** The handler of record for the current review round (last submitter). */
+  submittedBy(caseId: string): string | undefined {
+    let submitter: string | undefined;
+    for (const event of this.events(caseId)) {
+      if (event.type === "case.state_changed" && event.detail["to"] === "awaiting_review") {
+        submitter = event.actor?.actorId;
+      }
+    }
+    return submitter;
   }
 
   /** Link a quarantine record to its case (idempotent by quarantine id). */
@@ -279,6 +347,43 @@ export class SecurityCaseStore {
         "CASE_ACTOR_FORBIDDEN",
         "the affected run never handles or resumes its own security case",
         { runId: scope.runId },
+      );
+    }
+  }
+
+  /** Structural separation of duties on the review edges (DAT-211). */
+  private assertIndependentReviewer(
+    caseId: string,
+    actor: SecurityActor,
+    subjects: readonly string[],
+    submitter: string | undefined,
+  ): void {
+    if (actor.actorKind !== "human") {
+      throw new SecurityError(
+        "SOD_HUMAN_PRINCIPAL_REQUIRED",
+        "an independent reviewer must be a different human principal",
+        { caseId },
+      );
+    }
+    if (subjects.length === 0 || submitter === undefined) {
+      throw new SecurityError(
+        "SOD_INDEPENDENT_REVIEWER_REQUIRED",
+        "a case without a handling principal of record cannot be reviewed",
+        { caseId },
+      );
+    }
+    if (actor.actorId === submitter) {
+      throw new SecurityError(
+        "SOD_SELF_REVIEW_FORBIDDEN",
+        "the handler who submitted a case never approves their own disposition",
+        { caseId },
+      );
+    }
+    if (subjects.includes(actor.actorId)) {
+      throw new SecurityError(
+        "SOD_SAME_PRINCIPAL_FORBIDDEN",
+        "a review must come from a principal outside the case's handling principals",
+        { caseId },
       );
     }
   }
