@@ -13,6 +13,7 @@ import { DshClient } from "./dsh/client.js";
 import {
   createFileEventSink,
   createModelGateway,
+  createPatternSecretScanner,
   createStaticCredentialStore,
   denyAllPolicyResolver,
   loadGatewayPolicyFile,
@@ -77,6 +78,10 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
       ? readCredentialFile(config.gatewayCredentialsFile)
       : createStaticCredentialStore({}),
     adapter: piAiProviderAdapter,
+    // Complete-request secret scanning is part of the egress boundary: the
+    // deployment always scans with the built-in deterministic detector set
+    // (DAT-209); a deployment may swap in another SecretScanner backend.
+    scanner: createPatternSecretScanner(),
     ...(config.gatewayAuditFile ? { sink: createFileEventSink(config.gatewayAuditFile) } : {}),
   });
 }

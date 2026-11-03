@@ -1,0 +1,810 @@
+/**
+ * Complete-request secret detection, classification, minimization, and the
+ * fail-closed scan gate (DAT-209, ADR-0005 §1 and §5).
+ *
+ * The gate runs before every dispatch attempt — retries, model switches, and
+ * fallbacks included — over the entire request: system prompt, tool
+ * definitions, user input, history, code, logs, diffs, tool results, and
+ * derived summaries. Uncertain secret removal sends zero request bytes:
+ * suspected or confirmed secret material blocks the invocation unless a
+ * separately authorized deterministic minimization policy removes exactly the
+ * detected material and a full re-scan of the minimized request comes back
+ * clean. Scanner failure, unknown classification, missing authorization, and a
+ * missing or failing required audit sink block just the same.
+ */
+
+import type { Context } from "@mariozechner/pi-ai";
+
+import type { DataClass, RequestScanEvidence, SecretClassification } from "./types.js";
+
+const REDACTED = "[redacted]";
+
+const SEVERITY: Record<SecretClassification, number> = {
+  clean: 0,
+  secret_suspected: 1,
+  secret_confirmed: 2,
+  unknown: 3,
+};
+
+/** Join classifications by worst case; `unknown` is the fail-closed maximum. */
+export function joinClassification(
+  left: SecretClassification,
+  right: SecretClassification,
+): SecretClassification {
+  return SEVERITY[left] >= SEVERITY[right] ? left : right;
+}
+
+function joinAll(classifications: Iterable<SecretClassification>): SecretClassification {
+  let joined: SecretClassification = "clean";
+  for (const classification of classifications) {
+    joined = joinClassification(joined, classification);
+  }
+  return joined;
+}
+
+/** Stable, content-free identity for one request text leaf. */
+export function segmentId(path: readonly (string | number)[]): string {
+  let id = "";
+  for (const key of path) {
+    if (typeof key === "number") {
+      id += `[${key}]`;
+    } else {
+      id += id.length === 0 ? key : `.${key}`;
+    }
+  }
+  return id.length > 0 ? id : "(root)";
+}
+
+/** A deterministic policy reference as declared by a derivation producer. */
+export interface DeterministicPolicyRef {
+  id: string;
+  version: string;
+}
+
+/**
+ * Declared provenance of a derived request segment (e.g. a context
+ * compaction summary). The producer is service-side derivation code; the gate
+ * joins the declared source classifications so a derived summary can never be
+ * cleaner than the content it was derived from, unless a separately
+ * authorized deterministic policy changed the classification.
+ */
+export interface DerivedProvenance {
+  /**
+   * Classification of the derivation sources as recorded by the derivation
+   * pipeline. Missing or empty means the classification cannot be
+   * established and the segment classifies as `unknown`.
+   */
+  sourceClassifications: SecretClassification[];
+  /** Source references for audit correlation; ids only, never content. */
+  sourceRefs?: string[];
+  /** The deterministic policy that derived this text. */
+  classificationPolicy?: DeterministicPolicyRef;
+}
+
+/**
+ * Service-side authorization for one deterministic minimization (secret
+ * removal) policy. `authorized` is a deployment decision, never something a
+ * request can assert about itself; `appliesTo` bounds what it may touch.
+ */
+export interface MinimizationPolicy {
+  id: string;
+  version: string;
+  authorized: boolean;
+  appliesTo: {
+    /** Detectors whose findings this policy may remove. */
+    detectors: string[];
+    /** Data classes this policy may touch; unset means none. */
+    dataClasses?: DataClass[];
+  };
+}
+
+/**
+ * Service-side authorization for one deterministic derived-classification
+ * policy. A derived summary keeps its source classification unless the
+ * declared derivation policy matches this record and it is authorized.
+ */
+export interface DerivedClassificationPolicy {
+  id: string;
+  version: string;
+  authorized: boolean;
+}
+
+/** Separately authorized deterministic policies governing the scan gate. */
+export interface SecretScanPolicy {
+  minimization?: MinimizationPolicy;
+  derivedClassification?: DerivedClassificationPolicy;
+}
+
+/** One text leaf of the complete model request. */
+export interface ScannableSegment {
+  id: string;
+  /** Location of the leaf inside the request; structure only, no content. */
+  path: (string | number)[];
+  text: string;
+  /** Structural and content-derived data classes this leaf carries. */
+  dataClasses: DataClass[];
+  /** True for binary leaves (e.g. image data); entropy rules do not apply. */
+  binary?: boolean;
+  /** Declared provenance when this leaf is derived from other content. */
+  derived?: DerivedProvenance;
+}
+
+export interface SecretScanRequest {
+  segments: ScannableSegment[];
+}
+
+export interface SecretFinding {
+  classification: "secret_suspected" | "secret_confirmed" | "unknown";
+  /** Detector identity (audit); never the matched value. */
+  detector: string;
+  ruleVersion: string;
+  segmentId: string;
+  /**
+   * Exact matched material, required for deterministic removal. Internal to
+   * the gate: it never reaches audit events, errors, logs, or analytics.
+   */
+  match?: string;
+}
+
+export interface SecretScanReport {
+  scanner: string;
+  ruleVersion: string;
+  classification: SecretClassification;
+  findings: SecretFinding[];
+}
+
+/**
+ * Scanner adapter seam. A deployment wires its detector backend here; the
+ * gateway fails closed when `scan` throws, hangs, or returns anything the
+ * gate cannot validate. Reports must cover every segment of the request.
+ */
+export interface SecretScanner {
+  readonly id: string;
+  readonly ruleVersion: string;
+  scan(request: SecretScanRequest): SecretScanReport | Promise<SecretScanReport>;
+}
+
+/** A collected request: the exact dispatch copy plus its scanned segments. */
+export interface CollectedRequest {
+  /**
+   * Deep copy of the request context. The gate may minimize it in place; the
+   * adapter receives this copy and never adds unchecked content after scan.
+   */
+  context: Context;
+  segments: ScannableSegment[];
+}
+
+export type ScanDenyReason =
+  | "SCANNER_UNAVAILABLE"
+  | "SENSITIVE_DATA_UNCERTAIN"
+  | "CLASSIFICATION_UNKNOWN"
+  | "AUTHORIZATION_MISSING";
+
+export interface ScanGateDeps {
+  scanner?: SecretScanner;
+  scanPolicy?: SecretScanPolicy;
+  scanTimeoutMs?: number;
+}
+
+export type ScanGateResult =
+  | { ok: true; context: Context; evidence: RequestScanEvidence }
+  | { ok: false; reason: ScanDenyReason; detail: string; evidence: RequestScanEvidence };
+
+const DEFAULT_SCAN_TIMEOUT_MS = 10_000;
+
+/**
+ * Attach derivation provenance to a message produced by service-side
+ * derivation (context compaction, summarization). The provenance travels with
+ * the request so the gate can enforce classification inheritance on it.
+ */
+export function tagDerivedSummary<M extends object>(
+  message: M,
+  provenance: DerivedProvenance,
+): M & { derived: DerivedProvenance } {
+  return { ...message, derived: provenance };
+}
+
+function isDerivedProvenance(value: unknown): value is DerivedProvenance {
+  return typeof value === "object" && value !== null;
+}
+
+const DIFF_PATTERN =
+  /(?:^|\n)(?:diff --git |index [0-9a-f]+\.\.[0-9a-f]+ |@@ -\d|--- (?:a\/|\/dev\/null)|\+\+\+ (?:b\/|\/dev\/null))/;
+const CODE_PATTERN =
+  /```|(?:^|\n)\s*(?:import\s|export\s|from\s|function\s|class\s|def\s|const\s|let\s|var\s|package\s|public\s|private\s|static\s|return\s|if\s*\(|for\s*\(|while\s*\(|#include|<\?php)/;
+const LOG_PATTERN =
+  /(?:^|\n)\s*(?:\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}|\[\d{2}:\d{2}:\d{2}\]|\b(?:DEBUG|TRACE|INFO|WARN|WARNING|ERROR|FATAL)\b\s*[:-])/;
+
+/**
+ * Deterministic content classification. Only ever adds classes (the direction
+ * that makes authorization stricter): a tool result embedding a diff needs
+ * both `tool_results` and `diffs` authorized at the destination.
+ */
+function sniffContentClasses(text: string): DataClass[] {
+  const found: DataClass[] = [];
+  if (DIFF_PATTERN.test(text)) found.push("diffs");
+  if (CODE_PATTERN.test(text)) found.push("code");
+  if (LOG_PATTERN.test(text)) found.push("logs");
+  return found;
+}
+
+/**
+ * Deep copy of the request data for scanning and dispatch. `structuredClone`
+ * is not usable here: `context.tools` carries agent-tool `execute` functions
+ * that must not cross the egress boundary anyway. The copy keeps every data
+ * leaf — anything the provider would see — and drops functions and symbols.
+ */
+function copyRequestData(value: unknown): unknown {
+  if (typeof value === "function" || typeof value === "symbol") return undefined;
+  if (value === null || typeof value !== "object") return value;
+  if (value instanceof Date) return new Date(value.getTime());
+  if (value instanceof RegExp) return new RegExp(value.source, value.flags);
+  if (value instanceof Map) {
+    return new Map(
+      [...value.entries()].map(([key, item]) => [copyRequestData(key), copyRequestData(item)]),
+    );
+  }
+  if (value instanceof Set) {
+    return new Set([...value.values()].map((item) => copyRequestData(item)));
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => copyRequestData(item)).filter((item: unknown) => item !== undefined);
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    const copied = copyRequestData(child);
+    if (copied !== undefined) out[key] = copied;
+  }
+  return out;
+}
+
+function segmentFor(
+  text: string,
+  path: (string | number)[],
+  baseClasses: readonly DataClass[],
+  derived: DerivedProvenance | undefined,
+  binary: boolean,
+): ScannableSegment {
+  const classes = new Set<DataClass>(baseClasses);
+  if (!binary) {
+    for (const extra of sniffContentClasses(text)) classes.add(extra);
+  }
+  if (derived) classes.add("derived_summaries");
+  return {
+    id: segmentId(path),
+    path,
+    text,
+    dataClasses: [...classes],
+    ...(binary ? { binary: true } : {}),
+    ...(derived ? { derived } : {}),
+  };
+}
+
+function collectValue(
+  value: unknown,
+  path: (string | number)[],
+  baseClasses: readonly DataClass[],
+  derived: DerivedProvenance | undefined,
+  out: ScannableSegment[],
+): void {
+  if (typeof value === "string") {
+    out.push(segmentFor(value, path, baseClasses, derived, false));
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      collectValue(item, [...path, index], baseClasses, derived, out);
+    });
+    return;
+  }
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    const isImage = record["type"] === "image" && typeof record["data"] === "string";
+    for (const [key, child] of Object.entries(record)) {
+      // Provenance metadata is not request content; it is interpreted, not
+      // scanned. Image bytes are scanned but exempt from entropy heuristics.
+      if (key === "derived") continue;
+      if (isImage && key === "data") {
+        out.push(segmentFor(child as string, [...path, key], baseClasses, derived, true));
+        continue;
+      }
+      collectValue(child, [...path, key], baseClasses, derived, out);
+    }
+    return;
+  }
+  // Numbers, booleans, null: no text leaves to scan.
+}
+
+const ROLE_CLASSES: Record<string, DataClass> = {
+  user: "user_input",
+  assistant: "history",
+  toolResult: "tool_results",
+};
+
+/**
+ * Flatten the complete request — system prompt, tools, every message kind
+ * including history and tool results — into scanned segments, on a deep copy
+ * the gate can minimize and dispatch. Nothing that reaches the provider is
+ * left out: every string leaf of the request appears here.
+ */
+export function collectRequestSegments(context: Context): CollectedRequest {
+  const copy = copyRequestData(context) as Context;
+  const segments: ScannableSegment[] = [];
+  if (typeof copy.systemPrompt === "string") {
+    segments.push(segmentFor(copy.systemPrompt, ["systemPrompt"], ["system"], undefined, false));
+  }
+  collectValue(copy.tools, ["tools"], ["system"], undefined, segments);
+  (copy.messages ?? []).forEach((message, index) => {
+    const record = message as unknown as Record<string, unknown>;
+    const role = typeof record["role"] === "string" ? record["role"] : "history";
+    const base = ROLE_CLASSES[role] ?? "history";
+    // A message carrying a `derived` marker is a derived summary; a malformed
+    // marker still derives — with unestablishable source classification.
+    let derived: DerivedProvenance | undefined;
+    if ("derived" in record) {
+      const raw = record["derived"];
+      derived =
+        isDerivedProvenance(raw) && Array.isArray((raw as DerivedProvenance).sourceClassifications)
+          ? (raw as DerivedProvenance)
+          : { sourceClassifications: [] };
+    }
+    collectValue(message, ["messages", index], [base], derived, segments);
+  });
+  return { context: copy, segments };
+}
+
+function writeLeaf(root: unknown, path: readonly (string | number)[], text: string): void {
+  let node = root as Record<string | number, unknown>;
+  for (const key of path.slice(0, -1)) {
+    node = node[key] as Record<string | number, unknown>;
+  }
+  const last = path[path.length - 1];
+  if (last === undefined) return;
+  node[last] = text;
+}
+
+function isValidReport(
+  report: unknown,
+  segments: readonly ScannableSegment[],
+): report is SecretScanReport {
+  if (typeof report !== "object" || report === null) return false;
+  const entry = report as Record<string, unknown>;
+  const classification = entry["classification"];
+  if (typeof classification !== "string" || !(classification in SEVERITY)) return false;
+  const findings = entry["findings"];
+  if (!Array.isArray(findings)) return false;
+  const ids = new Set(segments.map((segment) => segment.id));
+  for (const finding of findings) {
+    if (typeof finding !== "object" || finding === null) return false;
+    const item = finding as Record<string, unknown>;
+    const found = item["classification"];
+    if (found !== "secret_suspected" && found !== "secret_confirmed" && found !== "unknown") {
+      return false;
+    }
+    if (typeof item["detector"] !== "string" || item["detector"].length === 0) return false;
+    if (typeof item["ruleVersion"] !== "string" || item["ruleVersion"].length === 0) return false;
+    if (typeof item["segmentId"] !== "string" || !ids.has(item["segmentId"])) return false;
+    if (
+      item["match"] !== undefined &&
+      (typeof item["match"] !== "string" || item["match"] === "")
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("secret scan timed out")), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
+/**
+ * Fail-closed scanner invocation. A missing scanner, a throw, a hang, or an
+ * invalid report is "scanner unavailable": the gate never treats any of them
+ * as clean. Scanner error text is never propagated — it may echo request
+ * content, and errors and logs must not contain secrets.
+ */
+async function scanSegments(
+  scanner: SecretScanner | undefined,
+  segments: ScannableSegment[],
+  timeoutMs: number,
+): Promise<{ report: SecretScanReport } | { unavailable: string }> {
+  if (!scanner || typeof scanner.scan !== "function") {
+    return { unavailable: "no secret scanner is configured" };
+  }
+  let report: SecretScanReport;
+  try {
+    report = await withTimeout(Promise.resolve(scanner.scan({ segments })), timeoutMs);
+  } catch {
+    return { unavailable: `the secret scanner failed or timed out (${scanner.id})` };
+  }
+  if (!isValidReport(report, segments)) {
+    return { unavailable: `the secret scanner returned an invalid report (${scanner.id})` };
+  }
+  return {
+    report: {
+      scanner: report.scanner || scanner.id,
+      ruleVersion: report.ruleVersion || scanner.ruleVersion,
+      classification: report.classification,
+      findings: report.findings,
+    },
+  };
+}
+
+interface Evaluation {
+  overall: SecretClassification;
+  blocked?: { reason: ScanDenyReason; detail: string };
+  /** Suspected findings a separately authorized policy may deterministically remove. */
+  removals: SecretFinding[];
+  derivedSegments: number;
+  changes: { policyId: string; policyVersion: string; segments: number }[];
+}
+
+function removalEligible(
+  finding: SecretFinding,
+  segment: ScannableSegment,
+  policy: SecretScanPolicy | undefined,
+): boolean {
+  const minimization = policy?.minimization;
+  if (!minimization || !minimization.authorized) return false;
+  if (finding.classification !== "secret_suspected") return false;
+  if (typeof finding.match !== "string" || finding.match.length === 0) return false;
+  if (!minimization.appliesTo.detectors.includes(finding.detector)) return false;
+  const bounds = minimization.appliesTo.dataClasses;
+  if (bounds && !segment.dataClasses.some((dataClass) => bounds.includes(dataClass))) return false;
+  return true;
+}
+
+/**
+ * Classify the complete request from one scan report. Effective content
+ * classification is the worst of the scanner's own results and, for derived
+ * segments, the inherited source classification — a derived summary is never
+ * cleaner than its sources unless a separately authorized deterministic
+ * policy changed it.
+ */
+function evaluateReport(
+  report: SecretScanReport,
+  segments: readonly ScannableSegment[],
+  policy: SecretScanPolicy | undefined,
+  allowMinimization: boolean,
+): Evaluation {
+  const bySegment = new Map<string, SecretFinding[]>();
+  for (const finding of report.findings) {
+    const list = bySegment.get(finding.segmentId) ?? [];
+    list.push(finding);
+    bySegment.set(finding.segmentId, list);
+  }
+  let overall: SecretClassification = report.classification;
+  const changes: { policyId: string; policyVersion: string; segments: number }[] = [];
+  let derivedSegments = 0;
+  let blocked: Evaluation["blocked"];
+  const blockOnce = (reason: ScanDenyReason, detail: string): void => {
+    if (!blocked) blocked = { reason, detail };
+  };
+
+  for (const segment of segments) {
+    const own = joinAll((bySegment.get(segment.id) ?? []).map((finding) => finding.classification));
+    let effective = own;
+    if (segment.derived) {
+      derivedSegments += 1;
+      // Missing or empty source classification cannot be established: unknown.
+      const inherited =
+        segment.derived.sourceClassifications.length > 0
+          ? joinAll(segment.derived.sourceClassifications)
+          : "unknown";
+      const declared = segment.derived.classificationPolicy;
+      const authorized = policy?.derivedClassification;
+      const policyAuthorized =
+        declared !== undefined &&
+        authorized !== undefined &&
+        authorized.authorized &&
+        authorized.id === declared.id &&
+        authorized.version === declared.version;
+      if (SEVERITY[inherited] > SEVERITY.clean && own === "clean" && policyAuthorized && declared) {
+        // The one exception to inheritance: a separately authorized
+        // deterministic policy changed the classification, and the derived
+        // text itself scans clean.
+        const existing = changes.find(
+          (change) => change.policyId === declared.id && change.policyVersion === declared.version,
+        );
+        if (existing) {
+          existing.segments += 1;
+        } else {
+          changes.push({ policyId: declared.id, policyVersion: declared.version, segments: 1 });
+        }
+        effective = "clean";
+      } else if (SEVERITY[inherited] > SEVERITY.clean) {
+        effective = joinClassification(own, inherited);
+        if (inherited === "unknown") {
+          blockOnce(
+            "CLASSIFICATION_UNKNOWN",
+            "a derived summary has unestablished source classification",
+          );
+        } else if (declared && authorized && !authorized.authorized) {
+          blockOnce(
+            "AUTHORIZATION_MISSING",
+            `derived summary policy ${declared.id} is not authorized; source classification is inherited`,
+          );
+        } else {
+          blockOnce(
+            "SENSITIVE_DATA_UNCERTAIN",
+            "a derived summary inherits a non-clean source classification",
+          );
+        }
+      } else {
+        effective = joinClassification(own, inherited);
+      }
+    }
+    overall = joinClassification(overall, effective);
+  }
+
+  const detectors = [...new Set(report.findings.map((finding) => finding.detector))].sort();
+  const removals: SecretFinding[] = [];
+  for (const finding of report.findings) {
+    const segment = segments.find((candidate) => candidate.id === finding.segmentId);
+    if (finding.classification === "unknown") {
+      blockOnce(
+        "CLASSIFICATION_UNKNOWN",
+        `detector ${finding.detector} returned an unknown classification`,
+      );
+      continue;
+    }
+    if (finding.classification === "secret_confirmed") {
+      blockOnce(
+        "SENSITIVE_DATA_UNCERTAIN",
+        `detected secret material (detectors: ${detectors.join(", ")}); removal is not established`,
+      );
+      continue;
+    }
+    if (!segment || !removalEligible(finding, segment, policy)) {
+      blockOnce(
+        "SENSITIVE_DATA_UNCERTAIN",
+        `suspected secret material (detectors: ${detectors.join(", ")}); removal cannot be confirmed`,
+      );
+      continue;
+    }
+    if (allowMinimization) {
+      removals.push(finding);
+    } else {
+      blockOnce(
+        "SENSITIVE_DATA_UNCERTAIN",
+        `suspected secret material (detectors: ${detectors.join(", ")}); removal cannot be confirmed`,
+      );
+    }
+  }
+
+  if (overall === "unknown") {
+    blockOnce("CLASSIFICATION_UNKNOWN", "the request contains content with unknown classification");
+  } else if (overall !== "clean" && removals.length === 0) {
+    // The scanner flagged the request without any removable finding (e.g. a
+    // heuristic overall classification): fail closed on the join, never on
+    // the absence of detail. When removals are pending, the full re-scan
+    // after minimization is what must come back clean.
+    blockOnce(
+      "SENSITIVE_DATA_UNCERTAIN",
+      `the request scans ${overall}; removal cannot be confirmed`,
+    );
+  }
+
+  return { overall, blocked, removals, derivedSegments, changes };
+}
+
+function evidenceOf(
+  scanner: string,
+  ruleVersion: string,
+  classification: SecretClassification,
+  segments: readonly ScannableSegment[],
+  report: SecretScanReport | undefined,
+  evaluation: Evaluation | undefined,
+  minimization?: RequestScanEvidence["minimization"],
+): RequestScanEvidence {
+  const findings = report?.findings ?? [];
+  return {
+    scanner,
+    ruleVersion,
+    classification,
+    segments: segments.length,
+    dataClasses: [...new Set(segments.flatMap((segment) => segment.dataClasses))].sort(),
+    findingCounts: {
+      suspected: findings.filter((finding) => finding.classification === "secret_suspected").length,
+      confirmed: findings.filter((finding) => finding.classification === "secret_confirmed").length,
+      unknown: findings.filter((finding) => finding.classification === "unknown").length,
+    },
+    detectors: [...new Set(findings.map((finding) => finding.detector))].sort(),
+    derivedSegments: evaluation?.derivedSegments ?? 0,
+    classificationChanges: evaluation?.changes ?? [],
+    ...(minimization ? { minimization } : {}),
+  };
+}
+
+/**
+ * The complete-request scan gate. Returns the exact request copy the adapter
+ * may dispatch (possibly minimized) together with non-secret audit evidence,
+ * or a fail-closed denial. Every dispatch attempt runs this gate in full.
+ */
+export async function runRequestScanGate(
+  context: Context,
+  deps: ScanGateDeps,
+): Promise<ScanGateResult> {
+  const timeoutMs = deps.scanTimeoutMs ?? DEFAULT_SCAN_TIMEOUT_MS;
+  const scannerId = deps.scanner?.id ?? "none";
+  const scannerRuleVersion = deps.scanner?.ruleVersion ?? "n/a";
+
+  // Collecting the complete request must never fail open: a request the gate
+  // cannot flatten is a request it cannot clear.
+  let collected: CollectedRequest;
+  try {
+    collected = collectRequestSegments(context);
+  } catch {
+    return {
+      ok: false,
+      reason: "SENSITIVE_DATA_UNCERTAIN",
+      detail: "the complete request could not be collected for scanning",
+      evidence: evidenceOf(scannerId, scannerRuleVersion, "unknown", [], undefined, undefined),
+    };
+  }
+
+  const scan = await scanSegments(deps.scanner, collected.segments, timeoutMs);
+  if ("unavailable" in scan) {
+    return {
+      ok: false,
+      reason: "SCANNER_UNAVAILABLE",
+      detail: scan.unavailable,
+      evidence: evidenceOf(
+        scannerId,
+        scannerRuleVersion,
+        "unknown",
+        collected.segments,
+        undefined,
+        undefined,
+      ),
+    };
+  }
+
+  const evaluation = evaluateReport(scan.report, collected.segments, deps.scanPolicy, true);
+  const firstEvidence = (classification: SecretClassification): RequestScanEvidence =>
+    evidenceOf(
+      scan.report.scanner,
+      scan.report.ruleVersion,
+      classification,
+      collected.segments,
+      scan.report,
+      evaluation,
+    );
+
+  if (evaluation.blocked) {
+    return {
+      ok: false,
+      reason: evaluation.blocked.reason,
+      detail: evaluation.blocked.detail,
+      evidence: firstEvidence(evaluation.overall),
+    };
+  }
+
+  if (evaluation.removals.length === 0) {
+    return {
+      ok: true,
+      context: collected.context,
+      evidence: firstEvidence("clean"),
+    };
+  }
+
+  // Deterministic minimization: remove exactly the detected material, then
+  // prove removal with a fresh scan of the complete minimized request. Any
+  // residual finding, any leftover match, or any scanner failure keeps the
+  // request blocked — removal that cannot be confirmed sends zero bytes.
+  const minimizationPolicy = deps.scanPolicy?.minimization;
+  for (const finding of evaluation.removals) {
+    const segment = collected.segments.find((candidate) => candidate.id === finding.segmentId);
+    if (!segment || typeof finding.match !== "string") continue;
+    writeLeaf(collected.context, segment.path, segment.text.split(finding.match).join(REDACTED));
+  }
+  const minimized = collectRequestSegments(collected.context);
+  const rescan = await scanSegments(deps.scanner, minimized.segments, timeoutMs);
+  const removal = {
+    policyId: minimizationPolicy?.id ?? "unknown",
+    policyVersion: minimizationPolicy?.version ?? "unknown",
+    removedFindings: evaluation.removals.length,
+    verified: false,
+  };
+  if ("unavailable" in rescan) {
+    return {
+      ok: false,
+      reason: "SCANNER_UNAVAILABLE",
+      detail: rescan.unavailable,
+      evidence: evidenceOf(
+        scan.report.scanner,
+        scan.report.ruleVersion,
+        "unknown",
+        minimized.segments,
+        undefined,
+        undefined,
+        removal,
+      ),
+    };
+  }
+  const revaluation = evaluateReport(rescan.report, minimized.segments, deps.scanPolicy, false);
+  const leftover = evaluation.removals.some((finding) =>
+    typeof finding.match === "string"
+      ? minimized.segments.some((segment) => segment.text.includes(finding.match as string))
+      : true,
+  );
+  if (revaluation.blocked || leftover || revaluation.overall !== "clean") {
+    return {
+      ok: false,
+      reason: revaluation.blocked?.reason ?? "SENSITIVE_DATA_UNCERTAIN",
+      detail:
+        revaluation.blocked?.detail ??
+        "removal of suspected secret material could not be confirmed; the request stays blocked",
+      evidence: evidenceOf(
+        rescan.report.scanner,
+        rescan.report.ruleVersion,
+        revaluation.overall,
+        minimized.segments,
+        rescan.report,
+        revaluation,
+        removal,
+      ),
+    };
+  }
+  removal.verified = true;
+  return {
+    ok: true,
+    context: minimized.context,
+    evidence: evidenceOf(
+      rescan.report.scanner,
+      rescan.report.ruleVersion,
+      "clean",
+      minimized.segments,
+      rescan.report,
+      revaluation,
+      removal,
+    ),
+  };
+}
+
+/**
+ * Destination data-class authorization (ADR-0005 §1: a destination is
+ * enabled together with its permitted data classes). Missing authorization
+ * fails closed; a class the destination is not authorized for denies the
+ * request before any byte is sent.
+ */
+export function authorizeRequestDataClasses(
+  dataClasses: readonly DataClass[],
+  endpoint: { permittedDataClasses?: DataClass[] },
+):
+  | { ok: true }
+  | { ok: false; reason: "AUTHORIZATION_MISSING" | "DATA_CLASS_NOT_AUTHORIZED"; detail: string } {
+  const permitted = endpoint.permittedDataClasses;
+  if (!permitted || permitted.length === 0) {
+    return {
+      ok: false,
+      reason: "AUTHORIZATION_MISSING",
+      detail:
+        "the approved endpoint has no permitted data classes; this request cannot be authorized",
+    };
+  }
+  const missing = [
+    ...new Set(dataClasses.filter((dataClass) => !permitted.includes(dataClass))),
+  ].sort();
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      reason: "DATA_CLASS_NOT_AUTHORIZED",
+      detail: `data classes not authorized for this destination: ${missing.join(", ")}`,
+    };
+  }
+  return { ok: true };
+}

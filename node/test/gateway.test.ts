@@ -34,6 +34,7 @@ import type {
   GatewayPolicy,
   ProviderAdapter,
 } from "../src/index.js";
+import { DATA_CLASSES, createPatternSecretScanner } from "../src/index.js";
 import { TEST_MODEL } from "./helpers/scripted-stream.js";
 import {
   TEST_BINDING,
@@ -41,6 +42,7 @@ import {
   TEST_CREDENTIAL_REF,
   TEST_ENDPOINT_BASE_URL,
   TEST_SCOPE,
+  memorySink,
   testPolicyFor,
 } from "./helpers/test-gateway.js";
 
@@ -169,7 +171,11 @@ function gatewayWith(
       extras.credentials ?? { [TEST_CREDENTIAL_REF]: TEST_CREDENTIAL },
     ),
     adapter,
-    ...(extras.sink ? { sink: extras.sink } : {}),
+    // The real deterministic detector set; test contexts are clean unless a
+    // test plants a secret on purpose.
+    scanner: createPatternSecretScanner(),
+    // Dispatch needs its required audit sink; default an in-memory one.
+    sink: extras.sink ?? memorySink().sink,
     ...(extras.onIncident ? { onIncident: extras.onIncident } : {}),
     newInvocationId: counterIds(),
     now: () => new Date("2026-11-03T00:00:00Z"),
@@ -398,6 +404,8 @@ describe("gateway denials", () => {
       },
       credentials: createStaticCredentialStore({ [TEST_CREDENTIAL_REF]: TEST_CREDENTIAL }),
       adapter,
+      scanner: createPatternSecretScanner(),
+      sink: memorySink().sink,
       newInvocationId: counterIds(),
     });
     let reads = 0;
@@ -555,6 +563,7 @@ describe("gateway retry, fallback, and model switching", () => {
           internal: false,
           credentialRef: "cred_a",
           models: ["m-a"],
+          permittedDataClasses: [...DATA_CLASSES],
         },
         {
           endpointId: "ep_b",
@@ -564,6 +573,7 @@ describe("gateway retry, fallback, and model switching", () => {
           internal: false,
           credentialRef: "cred_b",
           models: ["m-b"],
+          permittedDataClasses: [...DATA_CLASSES],
         },
       ],
       retry: { maxAttempts: 2 },
@@ -621,6 +631,7 @@ describe("gateway retry, fallback, and model switching", () => {
           internal: false,
           credentialRef: "cred_1",
           models: ["m-1"],
+          permittedDataClasses: [...DATA_CLASSES],
         },
         {
           endpointId: "ep_2",
@@ -630,6 +641,7 @@ describe("gateway retry, fallback, and model switching", () => {
           internal: false,
           credentialRef: "cred_2",
           models: ["m-2"],
+          permittedDataClasses: [...DATA_CLASSES],
         },
       ],
       retry: { maxAttempts: 1 },

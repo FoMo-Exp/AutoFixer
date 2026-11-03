@@ -1,6 +1,63 @@
 import type { Api } from "@mariozechner/pi-ai";
 
 /**
+ * Data classes a request segment may carry (DAT-209, ADR-0005 §1). Every text
+ * leaf of a model request belongs to at least one class; a destination may
+ * only receive classes an authorized administrator explicitly permitted.
+ */
+export type DataClass =
+  | "system"
+  | "user_input"
+  | "history"
+  | "code"
+  | "logs"
+  | "diffs"
+  | "tool_results"
+  | "derived_summaries";
+
+export const DATA_CLASSES: readonly DataClass[] = [
+  "system",
+  "user_input",
+  "history",
+  "code",
+  "logs",
+  "diffs",
+  "tool_results",
+  "derived_summaries",
+];
+
+/**
+ * Secret classification of request content (DAT-209). Unknown is the worst
+ * classification: content the scanner cannot classify fails closed.
+ */
+export type SecretClassification = "clean" | "secret_suspected" | "secret_confirmed" | "unknown";
+
+/**
+ * Non-secret scan evidence recorded on the pre-dispatch audit record and on
+ * detection denials. Detector identities, rule versions, counts, and classes
+ * only — never matched material, never content hashes.
+ */
+export interface RequestScanEvidence {
+  scanner: string;
+  ruleVersion: string;
+  classification: SecretClassification;
+  /** Number of request text segments scanned — the complete request. */
+  segments: number;
+  dataClasses: DataClass[];
+  findingCounts: { suspected: number; confirmed: number; unknown: number };
+  /** Detector identities that fired, sorted; never their matched values. */
+  detectors: string[];
+  derivedSegments: number;
+  classificationChanges: { policyId: string; policyVersion: string; segments: number }[];
+  minimization?: {
+    policyId: string;
+    policyVersion: string;
+    removedFindings: number;
+    verified: boolean;
+  };
+}
+
+/**
  * Enterprise/workspace scope a gateway policy is resolved for.
  *
  * This is the ADR-0006 seam: the gateway asks a {@link GatewayPolicyResolver}
@@ -46,6 +103,12 @@ export interface ApprovedEndpoint {
   credentialRef: string;
   /** Model ids approved at this endpoint. Wildcards are not accepted. */
   models: string[];
+  /**
+   * Data classes explicitly permitted at this destination (DAT-209, ADR-0005
+   * §1). Absent or empty means no class is authorized and every request is
+   * denied — missing authorization fails closed, never open.
+   */
+  permittedDataClasses?: DataClass[];
 }
 
 /** A policy-declared fallback destination; checked exactly like the primary. */
@@ -77,22 +140,39 @@ export type GatewayDenyReason =
   | "CREDENTIAL_MISSING"
   /** The caller tried to supply its own credential through the stream options. */
   | "CALLER_CREDENTIAL_SUPPLIED"
-  /** The required audit evidence could not be persisted. */
-  | "AUDIT_UNAVAILABLE";
+  /** The required audit evidence could not be persisted (or no sink exists). */
+  | "AUDIT_UNAVAILABLE"
+  /** The secret scanner failed, timed out, or returned an invalid report. */
+  | "SCANNER_UNAVAILABLE"
+  /** A suspected or confirmed secret remains and removal cannot be confirmed. */
+  | "SENSITIVE_DATA_UNCERTAIN"
+  /** The scanner returned an unknown classification; content fails closed. */
+  | "CLASSIFICATION_UNKNOWN"
+  /** A deterministic policy change was claimed without its authorization. */
+  | "AUTHORIZATION_MISSING"
+  /** The request carries a data class the destination is not authorized for. */
+  | "DATA_CLASS_NOT_AUTHORIZED";
 
 /** Stable redacted error contract (ADR-0005): all gateway denials share it. */
 export const MODEL_EGRESS_DENIED = "MODEL_EGRESS_DENIED";
 
-/** A policy or configuration denial. Never retried, never bypassable. */
+/**
+ * Stable redacted error contract (ADR-0005): the request-scan gate's denial
+ * code when secret removal cannot be established by the configured checks.
+ */
+export const SENSITIVE_DATA_UNCERTAIN = "SENSITIVE_DATA_UNCERTAIN";
+
+/** A policy, scan, or configuration denial. Never retried, never bypassable. */
 export class ModelEgressDeniedError extends Error {
-  readonly code = MODEL_EGRESS_DENIED;
+  readonly code: string;
   readonly retryable = false;
   readonly reason: GatewayDenyReason;
 
-  constructor(reason: GatewayDenyReason, message: string) {
+  constructor(reason: GatewayDenyReason, message: string, code: string = MODEL_EGRESS_DENIED) {
     super(message);
     this.name = "ModelEgressDeniedError";
     this.reason = reason;
+    this.code = code;
   }
 }
 
@@ -130,6 +210,8 @@ export type GatewayAttemptEvent =
       attempt: number;
       policyRevision: string;
       destination: GatewayAttemptDestination;
+      /** Non-secret evidence of the complete-request scan that cleared this dispatch. */
+      scan: RequestScanEvidence;
       timestamp: string;
     }
   | {
@@ -149,6 +231,8 @@ export type GatewayAttemptEvent =
        */
       outcome: "dispatched" | "failed" | "denied";
       denyReason?: GatewayDenyReason;
+      /** Non-secret scan evidence when the attempt was denied by the scan gate. */
+      scan?: RequestScanEvidence;
       /** Redacted failure detail; never contains provider credentials. */
       detail?: string;
       timestamp: string;

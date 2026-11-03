@@ -3,7 +3,14 @@ import fs from "node:fs";
 import type { Api } from "@mariozechner/pi-ai";
 
 import { validateModelBaseUrl } from "../config.js";
-import type { ApprovedEndpoint, GatewayFallback, GatewayPolicy, GatewayScope } from "./types.js";
+import type {
+  ApprovedEndpoint,
+  DataClass,
+  GatewayFallback,
+  GatewayPolicy,
+  GatewayScope,
+} from "./types.js";
+import { DATA_CLASSES } from "./types.js";
 
 /**
  * ADR-0006 seam: resolves the enterprise/workspace policy that governs model
@@ -92,6 +99,26 @@ function validateEndpoint(raw: unknown, index: number): ApprovedEndpoint {
   if (!Array.isArray(models) || models.length === 0) {
     throw new Error(`${label}.models must be a non-empty array of model ids`);
   }
+  // Permitted data classes are validated when present (DAT-209). A missing
+  // list is not "everything is allowed": the scan gate denies every request
+  // to an endpoint without explicit data-class authorization.
+  const permittedRaw = entry["permittedDataClasses"];
+  let permittedDataClasses: DataClass[] | undefined;
+  if (permittedRaw !== undefined) {
+    if (!Array.isArray(permittedRaw) || permittedRaw.length === 0) {
+      throw new Error(
+        `${label}.permittedDataClasses must be a non-empty array of data classes when set`,
+      );
+    }
+    permittedDataClasses = permittedRaw.map((dataClass, classIndex) => {
+      if (typeof dataClass !== "string" || !DATA_CLASSES.includes(dataClass as DataClass)) {
+        throw new Error(
+          `${label}.permittedDataClasses[${classIndex}] must be one of: ${DATA_CLASSES.join(", ")}`,
+        );
+      }
+      return dataClass as DataClass;
+    });
+  }
   return {
     endpointId: requireString(entry["endpointId"], `${label}.endpointId`),
     provider: requireString(entry["provider"], `${label}.provider`),
@@ -102,6 +129,7 @@ function validateEndpoint(raw: unknown, index: number): ApprovedEndpoint {
     models: models.map((model, modelIndex) =>
       requireString(model, `${label}.models[${modelIndex}]`),
     ),
+    ...(permittedDataClasses ? { permittedDataClasses } : {}),
   };
 }
 
