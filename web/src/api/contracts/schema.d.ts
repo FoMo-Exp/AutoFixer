@@ -1478,7 +1478,7 @@ export interface paths {
         put?: never;
         /**
          * Start the 10% canary for an eligible proposal
-         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. Requires a passing offline replay over both datasets, the required human approvals, remaining weekly change budget, and an inactive kill switch. The candidate policy stays unpublished: only runs pinned into the canary receive it.
+         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. Requires a passing offline replay over both datasets, the required human approvals, remaining weekly change budget, and an inactive kill switch. Rollouts are serialized per workspace: a second start is refused while one canary is active, and the stored baseline must still be the policy version the proposal was evaluated against. The candidate policy stays unpublished: only runs pinned into the canary receive it.
          */
         post: operations["startRsiCanary"];
         delete?: never;
@@ -1498,7 +1498,7 @@ export interface paths {
         put?: never;
         /**
          * Record a canary stage observation and advance or roll back
-         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. The sample is derived server-side from the runs this rollout pinned and their terminal task outcomes; pending runs are excluded and any request body is refused. The stage advances 10% → 50% → 100% only after its minimum sample passes. Any security event, negative delta, a confidence interval establishing a regression beyond the margin, or a rework/cost breach triggers an automatic rollback. A pass at 100% promotes and publishes exactly one policy version (or activates the candidate memory item).
+         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. The sample is derived server-side from the runs this rollout pinned and their terminal task outcomes; the control arm includes only baseline pins at the rollout's baseline policy version. Pending runs are excluded and any request body is refused. The stage advances 10% → 50% → 100% only after its minimum sample passes. Any security event, negative delta, a confidence interval establishing a regression beyond the margin, or a rework/cost breach triggers an automatic rollback. A pass at 100% promotes and publishes exactly one policy version (or activates the candidate memory item).
          */
         post: operations["recordRsiCanaryObservation"];
         delete?: never;

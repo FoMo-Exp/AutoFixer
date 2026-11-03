@@ -14,7 +14,7 @@
 
 import type { ControlPlaneDb } from "../../control-plane/db.js";
 import { newId, nowIso } from "../../control-plane/db.js";
-import { NotFoundError, ValidationError } from "../../control-plane/errors.js";
+import { ConflictError, NotFoundError, ValidationError } from "../../control-plane/errors.js";
 import type { UserId, WorkspaceRole, WorkspaceScope } from "../../control-plane/types.js";
 import type { RetrievalPolicy } from "../retrieval/index.js";
 import { validateRetrievalPolicy } from "../retrieval/index.js";
@@ -220,6 +220,8 @@ export interface RsiStore {
   listApprovals(scope: WorkspaceScope, proposalId: string): RsiApproval[];
   addRollout(scope: WorkspaceScope, input: RsiRolloutRowInput): RsiRollout;
   getRollout(scope: WorkspaceScope, proposalId: string): RsiRollout | undefined;
+  /** The workspace's single active canary, if any (serialized by DB index). */
+  getActiveRollout(scope: WorkspaceScope): RsiRollout | undefined;
   getRolloutById(scope: WorkspaceScope, rolloutId: string): RsiRollout | undefined;
   /** The unpublished canary policy of a rollout; null for memory-item targets. */
   getRolloutPolicy(scope: WorkspaceScope, rolloutId: string): RetrievalPolicy | null;
@@ -250,8 +252,16 @@ export interface RsiStore {
   getPin(scope: WorkspaceScope, runId: string): RsiRunPin | undefined;
   /** Pins assigned to one rollout (the canary arm). */
   listRolloutPins(scope: WorkspaceScope, rolloutId: string): RsiRunPin[];
-  /** Baseline pins created in the canary window (the control arm). */
-  listBaselinePinsSince(scope: WorkspaceScope, startedAt: string): RsiRunPin[];
+  /**
+   * Baseline pins created in the canary window and pinned to the rollout's
+   * baseline policy (the control arm). A mid-canary policy change must not
+   * silently mix a second baseline into the comparison.
+   */
+  listBaselinePinsSince(
+    scope: WorkspaceScope,
+    startedAt: string,
+    baselinePolicyVersion: number,
+  ): RsiRunPin[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1029,27 +1039,33 @@ class SqliteRsiStore implements RsiStore {
     }
     const id = newId("rsirollout");
     const at = nowIso();
-    this.db
-      .prepare(
-        `INSERT INTO rsi_rollouts (
-           id, enterprise_id, workspace_id, proposal_id, stage, status,
-           baseline_policy_version, candidate_policy, candidate_policy_hash,
-           started_at, ended_at, updated_at, created_by
-         ) VALUES (?, ?, ?, ?, ?, 'canary', ?, ?, ?, ?, NULL, ?, ?)`,
-      )
-      .run(
-        id,
-        scope.enterprise_id,
-        scope.workspace_id,
-        input.proposal_id,
-        input.stage,
-        input.baseline_policy_version,
-        input.candidate_policy === null ? null : JSON.stringify(input.candidate_policy),
-        input.candidate_policy_hash,
-        at,
-        at,
-        input.created_by,
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO rsi_rollouts (
+             id, enterprise_id, workspace_id, proposal_id, stage, status,
+             baseline_policy_version, candidate_policy, candidate_policy_hash,
+             started_at, ended_at, updated_at, created_by
+           ) VALUES (?, ?, ?, ?, ?, 'canary', ?, ?, ?, ?, NULL, ?, ?)`,
+        )
+        .run(
+          id,
+          scope.enterprise_id,
+          scope.workspace_id,
+          input.proposal_id,
+          input.stage,
+          input.baseline_policy_version,
+          input.candidate_policy === null ? null : JSON.stringify(input.candidate_policy),
+          input.candidate_policy_hash,
+          at,
+          at,
+          input.created_by,
+        );
+    } catch {
+      throw new ConflictError(
+        "the workspace already has an active canary; rollouts are serialized per workspace",
       );
+    }
     return this.requireRollout(scope, input.proposal_id);
   }
 
@@ -1061,6 +1077,18 @@ class SqliteRsiStore implements RsiStore {
          WHERE workspace_id = ? AND enterprise_id = ? AND proposal_id = ?`,
       )
       .get(scope.workspace_id, scope.enterprise_id, proposalId) as RolloutRow | undefined;
+    return row === undefined ? undefined : toRollout(row);
+  }
+
+  getActiveRollout(scope: WorkspaceScope): RsiRollout | undefined {
+    requireScope(scope);
+    const row = this.db
+      .prepare(
+        `SELECT * FROM rsi_rollouts
+         WHERE workspace_id = ? AND enterprise_id = ? AND status = 'canary'
+         ORDER BY started_at ASC LIMIT 1`,
+      )
+      .get(scope.workspace_id, scope.enterprise_id) as RolloutRow | undefined;
     return row === undefined ? undefined : toRollout(row);
   }
 
@@ -1346,15 +1374,25 @@ class SqliteRsiStore implements RsiStore {
     return rows.map(toPin);
   }
 
-  listBaselinePinsSince(scope: WorkspaceScope, startedAt: string): RsiRunPin[] {
+  listBaselinePinsSince(
+    scope: WorkspaceScope,
+    startedAt: string,
+    baselinePolicyVersion: number,
+  ): RsiRunPin[] {
     requireScope(scope);
     const rows = this.db
       .prepare(
         `SELECT * FROM rsi_run_pins
-         WHERE workspace_id = ? AND enterprise_id = ? AND canary = 0 AND created_at >= ?
+         WHERE workspace_id = ? AND enterprise_id = ? AND canary = 0
+           AND created_at >= ? AND policy_version = ?
          ORDER BY created_at, run_id LIMIT 5000`,
       )
-      .all(scope.workspace_id, scope.enterprise_id, startedAt) as unknown as PinRow[];
+      .all(
+        scope.workspace_id,
+        scope.enterprise_id,
+        startedAt,
+        baselinePolicyVersion,
+      ) as unknown as PinRow[];
     return rows.map(toPin);
   }
 

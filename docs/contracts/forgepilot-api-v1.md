@@ -379,7 +379,9 @@ request that carries a verifier claim or metrics is refused. Promotion requires 
 non-negative success delta, a Newcombe confidence interval that does not
 establish a regression beyond the fixed margin, zero forbidden-item injection,
 and no rework or cost breach. A passing candidate enters a 10% → 50% → 100%
-canary whose stages each require their own minimum sample. A canary observation
+canary whose stages each require their own minimum sample; rollouts are
+serialized per workspace and a canary refuses a baseline that moved since
+evaluation. A canary observation
 is computed server-side from the runs the rollout pinned and their terminal task
 outcomes (pending runs excluded); any request body is refused, so an owner
 cannot submit a passing sample. Any security event, regression, or breach rolls

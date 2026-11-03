@@ -91,10 +91,20 @@ never raise these.
 
 - A canary starts only when the offline gate passes, approvals are complete,
   budget remains, and the kill switch is inactive.
+- Rollouts are **serialized per workspace**: at most one canary is active
+  (enforced by a partial unique index). A second start is refused, so two
+  candidates never compete for the same run cohort or promote against a
+  baseline the other changed.
+- The stored baseline must still be the version the proposal was evaluated
+  against. If the workspace policy moved, the start is refused and the proposal
+  must be re-evaluated; if it moves during a canary, the canary is rolled back
+  instead of promoting a stale comparison.
 - An observation is computed server-side from the runs pinned into the rollout
   (candidate arm) and baseline pins created since it started (control arm),
-  joined with their terminal task outcomes. Pending runs are excluded, and any
-  request body is refused — an owner cannot submit a passing sample. The
+  joined with their terminal task outcomes; the control arm counts only
+  baseline pins at the rollout's baseline policy version. Pending runs are
+  excluded, and any request body is refused — an owner cannot submit a passing
+  sample. The
   evidence reference is the server-generated pin set.
 - A fail verdict rolls back automatically with the reason; an inconclusive
   verdict (including either arm below its minimum sample) does not advance.

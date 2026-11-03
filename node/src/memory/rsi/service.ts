@@ -20,7 +20,6 @@ import { ConflictError, NotFoundError, ValidationError } from "../../control-pla
 import type { MemoryItemRecord, MemoryRepositories } from "../index.js";
 import type {
   MemoryRetrievalService,
-  RetrievalPolicy,
   RetrievalPolicyRecord,
   RetrievalStore,
 } from "../retrieval/index.js";
@@ -466,6 +465,19 @@ class RsiGovernanceService implements RsiService {
     if (proposal.status === "canary" || proposal.status === "promoted") {
       throw new ConflictError(`proposal ${proposalId} is already ${proposal.status}`);
     }
+    // One canary per workspace: concurrent rollouts would compete for the same
+    // run cohort and could compare against a baseline another rollout changed.
+    if (this.store.getActiveRollout(scope) !== undefined) {
+      throw new ConflictError(
+        "another canary is active in this workspace; rollouts are serialized",
+      );
+    }
+    const currentPolicy = this.deps.retrievalStore.getPolicy(scope);
+    if (currentPolicy === undefined || currentPolicy.version !== proposal.baseline_policy_version) {
+      throw new ConflictError(
+        `the baseline policy moved from version ${proposal.baseline_policy_version} to ${currentPolicy?.version ?? "unknown"}; re-evaluate the proposal against the current baseline`,
+      );
+    }
     const gate = this.gate(scope, proposal);
     if (!gate.canary_eligible) {
       throw new ConflictError(`canary is not eligible: ${gate.reasons.join("; ")}`);
@@ -662,18 +674,13 @@ class RsiGovernanceService implements RsiService {
       this.deps.retrievalStore.corpusEntries(scope),
       baseline.version,
     );
-    let selected: { rollout: RsiRollout; policy: RetrievalPolicy | null } | undefined;
-    if (!controls.kill_switch) {
-      for (const rollout of this.store.listActiveRollouts(scope)) {
-        if (canaryBucket(scope.workspace_id, id) < rollout.stage * 100) {
-          selected = {
-            rollout,
-            policy: this.store.getRolloutPolicy(scope, rollout.rollout_id),
-          };
-          break;
-        }
-      }
-    }
+    // At most one rollout can be active (DB-enforced), so a run is claimed by
+    // exactly one canary or by none.
+    const active = controls.kill_switch ? undefined : this.store.getActiveRollout(scope);
+    const selected =
+      active !== undefined && canaryBucket(scope.workspace_id, id) < active.stage * 100
+        ? { rollout: active, policy: this.store.getRolloutPolicy(scope, active.rollout_id) }
+        : undefined;
     const pin = this.store.pinRun(scope, {
       run_id: id,
       policy_version: baseline.version,
@@ -816,7 +823,9 @@ class RsiGovernanceService implements RsiService {
         return outcome !== null && outcome.terminal ? [outcome] : [];
       });
     const candidate = collect(this.store.listRolloutPins(scope, rollout.rollout_id));
-    const baseline = collect(this.store.listBaselinePinsSince(scope, rollout.started_at));
+    const baseline = collect(
+      this.store.listBaselinePinsSince(scope, rollout.started_at, rollout.baseline_policy_version),
+    );
     if (candidate.length === 0 && baseline.length === 0) {
       throw new ConflictError(
         "no terminal runs are pinned to this canary or its baseline window yet",
@@ -928,6 +937,15 @@ class RsiGovernanceService implements RsiService {
     const usage = this.store.budgetUsage(scope, week);
     if (usage.changes_promoted >= this.store.controls(scope).weekly_change_budget) {
       return this.finishRollback(scope, proposalId, "weekly change budget exhausted", actor);
+    }
+    const currentPolicy = this.deps.retrievalStore.getPolicy(scope);
+    if (currentPolicy === undefined || currentPolicy.version !== proposal.baseline_policy_version) {
+      return this.finishRollback(
+        scope,
+        proposalId,
+        "baseline policy changed during the canary; the evaluated comparison is stale",
+        actor,
+      );
     }
     if (proposal.artifact_kind === "retrieval_policy") {
       if (proposal.candidate_policy === null) {

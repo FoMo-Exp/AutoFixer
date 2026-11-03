@@ -538,6 +538,61 @@ describe("canary, promotion, rollback", () => {
     expect(reverted?.version).toBeGreaterThan(baseline.version);
   });
 
+  test("a workspace serializes canaries: a second rollout is refused", () => {
+    const fixture = seedFixture();
+    const first = rsi.createProposal(scope, proposalInput(fixture));
+    const second = rsi.createProposal(scope, proposalInput(fixture));
+    evaluate(first);
+    approveAsOwner(first);
+    evaluate(second);
+    approveAsOwner(second);
+
+    rsi.startCanary(scope, first.proposal_id, ACTOR);
+    expect(store.listActiveRollouts(scope)).toHaveLength(1);
+    expect(() => rsi.startCanary(scope, second.proposal_id, ACTOR)).toThrow(/serialized/);
+    expect(store.getRollout(scope, first.proposal_id)?.status).toBe("canary");
+    expect(store.getRollout(scope, second.proposal_id)).toBeUndefined();
+  });
+
+  test("a proposal cannot canary against a baseline that moved since evaluation", () => {
+    const fixture = seedFixture();
+    const promoted = rsi.createProposal(scope, proposalInput(fixture));
+    const stale = rsi.createProposal(scope, proposalInput(fixture));
+    evaluate(promoted);
+    approveAsOwner(promoted);
+    evaluate(stale);
+    approveAsOwner(stale);
+
+    completeCanary(promoted);
+    expect(retrievalStore.getPolicy(scope)?.version).toBe(promoted.baseline_policy_version + 1);
+    expect(() => rsi.startCanary(scope, stale.proposal_id, ACTOR)).toThrow(/baseline policy moved/);
+
+    // A proposal opened after the promotion carries the new baseline and can run.
+    const fresh = rsi.createProposal(scope, proposalInput(fixture));
+    expect(fresh.baseline_policy_version).toBe(promoted.baseline_policy_version + 1);
+    evaluate(fresh);
+    approveAsOwner(fresh);
+    expect(rsi.startCanary(scope, fresh.proposal_id, ACTOR).rollout?.stage).toBe(10);
+  });
+
+  test("a baseline change during the canary blocks promotion with a rollback", () => {
+    const fixture = seedFixture();
+    const proposal = rsi.createProposal(scope, proposalInput(fixture));
+    evaluate(proposal);
+    approveAsOwner(proposal);
+    rsi.startCanary(scope, proposal.proposal_id, ACTOR);
+    seedArms(50, 10);
+
+    // Simulate an administrative policy change while the canary is running.
+    retrievalStore.createPolicyVersion(scope, policyWith());
+    const first = observe(proposal);
+    const second = observe(first);
+    const final = observe(second);
+    expect(final.status).toBe("rolled_back");
+    expect(final.rollout?.reason).toMatch(/baseline policy changed during the canary/);
+    expect(retrievalStore.getPolicy(scope)?.version).toBe(proposal.baseline_policy_version + 1);
+  });
+
   test("the weekly change budget blocks a second promotion", () => {
     const fixture = seedFixture();
     rsi.updateControls(scope, { weekly_change_budget: 1 }, ACTOR);

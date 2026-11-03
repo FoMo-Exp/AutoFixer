@@ -1184,6 +1184,12 @@ const MIGRATIONS: Migration[] = [
       )`,
       `CREATE INDEX IF NOT EXISTS idx_rsi_rollouts_scope
         ON rsi_rollouts(enterprise_id, workspace_id, status)`,
+      // Rollouts are serialized per workspace: at most one canary may be
+      // active. Without this, a second canary would compete for the same run
+      // cohort and could promote a candidate against a changed baseline.
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_rsi_one_active_rollout
+        ON rsi_rollouts(workspace_id)
+        WHERE status = 'canary'`,
       `CREATE TABLE IF NOT EXISTS rsi_canary_observations (
         id TEXT PRIMARY KEY,
         enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
