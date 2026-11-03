@@ -32,6 +32,15 @@ export const CURRENT_SCHEMA_VERSION = 2;
 export interface NormalizedState {
   sources: SourceState[];
   events: EventRecord[];
+  /**
+   * Schema-1 events that no workspace attribution exists for. They are kept
+   * for audit only: quarantined out of the dedup index entirely, never
+   * queried at runtime. Replaying one is processed as a new submission — at
+   * most one extra issue — and never reuses the original workspace's signal,
+   * issue or triage (workspace isolation outranks replay idempotency; the
+   * Architect ruling on DAT-216 records the trade-off).
+   */
+  legacy_quarantined_events: EventRecord[];
   signals: SignalRecord[];
   triage: TriageRecord[];
   suppressions: SuppressionRecord[];
@@ -89,9 +98,27 @@ export function normalizePersistedState(raw: unknown, version: number): Normaliz
 
 function readSchema2(value: Record<string, unknown>): NormalizedState {
   const budget = asRecord(value["budget"]);
+  // Strict load, with one defensive normalization: schema 2 is revised in
+  // place (it never shipped), and an earlier build mixed unscoped legacy
+  // events into `events`. They belong in the quarantine set — an unscoped
+  // record inside the dedup index is exactly how a cross-workspace fallback
+  // gets resurrected.
+  const events: EventRecord[] = [];
+  const legacy_quarantined_events: EventRecord[] = [];
+  for (const record of [
+    ...(asArray(value["events"]) as EventRecord[]),
+    ...(asArray(value["legacy_quarantined_events"]) as EventRecord[]),
+  ]) {
+    if (record.enterprise_id === "" && record.workspace_id === "") {
+      legacy_quarantined_events.push(record);
+    } else {
+      events.push(record);
+    }
+  }
   return {
     sources: asArray(value["sources"]) as SourceState[],
-    events: asArray(value["events"]) as EventRecord[],
+    events,
+    legacy_quarantined_events,
     signals: asArray(value["signals"]) as SignalRecord[],
     triage: asArray(value["triage"]) as TriageRecord[],
     suppressions: asArray(value["suppressions"]) as SuppressionRecord[],
@@ -150,29 +177,14 @@ function migrateSchema1(value: Record<string, unknown>): NormalizedState {
     }
   }
 
-  // Events: fill scope from the source binding where the record predates
-  // scoped keys; the rest keeps its legacy identity (empty scope).
-  const events: EventRecord[] = asArray(value["events"]).map((raw) => {
-    const record = asRecord(raw);
-    const scoped = scopeOf(record);
-    const workspace = scoped ?? sourceWorkspace.get(String(record["source_id"] ?? "")) ?? null;
-    return {
-      enterprise_id: workspace?.enterprise_id ?? "",
-      workspace_id: workspace?.workspace_id ?? "",
-      source_id: String(record["source_id"] ?? ""),
-      provider_event_id: String(record["provider_event_id"] ?? ""),
-      event_time: String(record["event_time"] ?? ""),
-      signal_key: (record["signal_key"] as string | null) ?? null,
-      outcome: record["outcome"] as EventRecord["outcome"],
-    };
-  });
-
-  // Signals: attribute a workspace (own scope, source binding, triage or
-  // deferred linkage) and rekey to the workspace-scoped fingerprint so
+  // Signals first: attribute a workspace (own scope, source binding, triage
+  // or deferred linkage) and rekey to the workspace-scoped fingerprint so
   // post-upgrade repeats keep updating this signal instead of opening a
-  // duplicate issue. Unattributable signals stay under their legacy key with
-  // empty scope, readable exactly as before.
+  // duplicate issue. The attribution result is kept per legacy key so event
+  // records can inherit it below. Unattributable signals stay under their
+  // legacy key with empty scope, readable exactly as before.
   const rekey = new Map<string, string>();
+  const signalAttribution = new Map<string, WorkspaceScope>();
   const signals: SignalRecord[] = asArray(value["signals"]).map((raw) => {
     const record = asRecord(raw);
     const identity = asRecord(record["identity"]);
@@ -195,6 +207,7 @@ function migrateSchema1(value: Record<string, unknown>): NormalizedState {
         identity: { enterprise_id: "", workspace_id: "", ...base },
       };
     }
+    signalAttribution.set(legacyKey, workspace);
     const full = {
       enterprise_id: workspace.enterprise_id,
       workspace_id: workspace.workspace_id,
@@ -206,6 +219,37 @@ function migrateSchema1(value: Record<string, unknown>): NormalizedState {
     }
     return { ...(record as unknown as SignalRecord), signal_key: key, identity: full };
   });
+
+  // Events: attribute scope from the record itself, its source binding, or
+  // its signal's attribution (computed above). Events that stay unattributed
+  // — the historical manual submissions with no linkage chain — are moved
+  // into the quarantine set instead of the dedup index: workspace isolation
+  // outranks their replay idempotency (see NormalizedState.legacy_quarantined_events).
+  const events: EventRecord[] = [];
+  const legacy_quarantined_events: EventRecord[] = [];
+  for (const raw of asArray(value["events"])) {
+    const record = asRecord(raw);
+    const legacyKey = (record["signal_key"] as string | null) ?? null;
+    const workspace =
+      scopeOf(record) ??
+      sourceWorkspace.get(String(record["source_id"] ?? "")) ??
+      (legacyKey !== null ? signalAttribution.get(legacyKey) : undefined) ??
+      null;
+    const event: EventRecord = {
+      enterprise_id: workspace?.enterprise_id ?? "",
+      workspace_id: workspace?.workspace_id ?? "",
+      source_id: String(record["source_id"] ?? ""),
+      provider_event_id: String(record["provider_event_id"] ?? ""),
+      event_time: String(record["event_time"] ?? ""),
+      signal_key: legacyKey === null ? null : (rekey.get(legacyKey) ?? legacyKey),
+      outcome: record["outcome"] as EventRecord["outcome"],
+    };
+    if (workspace === null) {
+      legacy_quarantined_events.push(event);
+    } else {
+      events.push(event);
+    }
+  }
   const mapSignalKey = (key: string): string => rekey.get(key) ?? key;
   const remappedTriage = triage.map((record) => ({
     ...record,
@@ -222,9 +266,6 @@ function migrateSchema1(value: Record<string, unknown>): NormalizedState {
       error_signature: entry.identity.error_signature,
     },
   }));
-  const remappedEvents = events.map((event) =>
-    event.signal_key === null ? event : { ...event, signal_key: mapSignalKey(event.signal_key) },
-  );
   const suppressions = (asArray(value["suppressions"]) as SuppressionRecord[]).map((record) => ({
     ...record,
     signal_key: mapSignalKey(record.signal_key),
@@ -266,7 +307,8 @@ function migrateSchema1(value: Record<string, unknown>): NormalizedState {
 
   return {
     sources,
-    events: remappedEvents,
+    events,
+    legacy_quarantined_events,
     signals,
     triage: remappedTriage,
     suppressions,

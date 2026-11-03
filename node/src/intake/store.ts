@@ -80,6 +80,7 @@ interface PersistedState {
   schema_version: number;
   sources: SourceState[];
   events: EventRecord[];
+  legacy_quarantined_events: EventRecord[];
   signals: SignalRecord[];
   triage: TriageRecord[];
   suppressions: SuppressionRecord[];
@@ -115,21 +116,10 @@ function eventIdentity(
   ]);
 }
 
-/** Legacy (pre-scoped) dedup key kept reachable for migrated schema-1 events. */
-function legacyEventIdentity(sourceId: string, providerEventId: string): string {
-  return JSON.stringify([sourceId, providerEventId]);
-}
-
-/** Migrated events with empty scope keep their legacy key; the rest are scoped. */
-function eventKeyFor(record: EventRecord): string {
-  return record.enterprise_id === "" && record.workspace_id === ""
-    ? legacyEventIdentity(record.source_id, record.provider_event_id)
-    : eventIdentity(record, record.source_id, record.provider_event_id);
-}
-
 export class IntakeStore {
   private readonly sources = new Map<string, SourceState>();
   private readonly events = new Map<string, EventRecord>();
+  private readonly legacyQuarantinedEvents: EventRecord[] = [];
   private readonly signals = new Map<string, SignalRecord>();
   private readonly triage = new Map<string, TriageRecord>();
   private readonly suppressions: SuppressionRecord[] = [];
@@ -240,23 +230,35 @@ export class IntakeStore {
 
   // ------------------------------------------------------------------ events
 
+  /**
+   * Scoped dedup lookup, and nothing else. A workspace can only ever hit its
+   * own dedup keys: there is deliberately no legacy or cross-workspace
+   * fallback here (Architect ruling on DAT-216 — workspace isolation outranks
+   * replay idempotency for unattributable historical events, which live in
+   * the quarantine set and are never consulted at runtime).
+   */
   findEvent(
     workspace: WorkspaceScope,
     sourceId: string,
     providerEventId: string,
   ): EventRecord | undefined {
-    return (
-      this.events.get(eventIdentity(workspace, sourceId, providerEventId)) ??
-      // Migrated schema-1 events without workspace attribution stay reachable
-      // under their legacy key so replayed deliveries still deduplicate. A
-      // legacy hit only ever skips processing; it never links signals across
-      // workspaces.
-      this.events.get(legacyEventIdentity(sourceId, providerEventId))
-    );
+    return this.events.get(eventIdentity(workspace, sourceId, providerEventId));
   }
 
   recordEvent(record: EventRecord): void {
-    this.events.set(eventKeyFor(record), record);
+    this.events.set(eventIdentity(record, record.source_id, record.provider_event_id), record);
+  }
+
+  /**
+   * Audit-only records of migrated schema-1 events no workspace attribution
+   * exists for. Kept out of the dedup index entirely and never queried by any
+   * runtime path; replaying one is processed as a new submission (at most one
+   * extra issue) and never reuses the original workspace's signal, issue or
+   * triage. Re-attributing them later is a separate historical-data
+   * governance concern, not this pipeline's.
+   */
+  quarantinedLegacyEvents(): EventRecord[] {
+    return structuredClone(this.legacyQuarantinedEvents);
   }
 
   // ----------------------------------------------------------------- signals
@@ -473,6 +475,7 @@ export class IntakeStore {
       schema_version: CURRENT_SCHEMA_VERSION,
       sources: [...this.sources.values()].map((source) => structuredClone(source)),
       events: [...this.events.values()].map((event) => structuredClone(event)),
+      legacy_quarantined_events: structuredClone(this.legacyQuarantinedEvents),
       signals: [...this.signals.values()].map((signal) => structuredClone(signal)),
       triage: [...this.triage.values()].map((record) => structuredClone(record)),
       suppressions: structuredClone(this.suppressions),
@@ -521,8 +524,9 @@ export class IntakeStore {
       this.sources.set(source.source_id, source);
     }
     for (const event of state.events) {
-      this.events.set(eventKeyFor(event), event);
+      this.events.set(eventIdentity(event, event.source_id, event.provider_event_id), event);
     }
+    this.legacyQuarantinedEvents.push(...state.legacy_quarantined_events);
     for (const signal of state.signals) {
       this.signals.set(signal.signal_key, signal);
     }

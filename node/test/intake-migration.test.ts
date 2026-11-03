@@ -33,6 +33,14 @@ function writeTempState(state: unknown): string {
 }
 
 const WS = { enterprise_id: "ent", workspace_id: "ws" };
+const WS_B = { enterprise_id: "ent-b", workspace_id: "ws-b" };
+
+const REPO = {
+  repository_id: "repo_a",
+  url: "https://example.com/a.git",
+  base_ref: "main",
+  base_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+};
 
 const limits: BudgetConfig = {
   source_max_new_issues: 100,
@@ -71,7 +79,12 @@ function makeIntake(store: IntakeStore): { machine: CollabMachine; intake: LogIn
   const intake = new LogIntake({
     machine,
     store,
-    rules: { version: "rules-1", rules: [] },
+    // New signals map to a repository so acceptance outcomes are issues, not
+    // triage records.
+    rules: {
+      version: "rules-1",
+      rules: [{ rule_id: "map", match: {}, decision: { repositories: [REPO] } }],
+    },
     budgets: limits,
     now: fixedClock(),
   });
@@ -153,12 +166,35 @@ describe("preserved budget and cooldown semantics", () => {
 });
 
 describe("preserved dedup semantics", () => {
-  test("pre-upgrade source and manual events still hit the dedup registry", () => {
+  test("attributable pre-upgrade events hit the dedup registry within their workspace", () => {
     const store = new IntakeStore({ persistencePath: writeTempState(v1State()) });
 
+    // evt-1 attributes through its source binding; m-2 attributes through its
+    // signal's triage linkage. Both stay idempotent in their own workspace.
     expect(store.findEvent(WS, "src", "evt-1")).toBeDefined();
-    expect(store.findEvent(WS, "manual", "m-1")).toBeDefined();
+    expect(store.findEvent(WS, "manual", "m-2")).toBeDefined();
     expect(store.findEvent(WS, "src", "evt-unknown")).toBeUndefined();
+  });
+
+  test("an unattributable pre-upgrade manual event is quarantined, not globally deduplicating", () => {
+    const store = new IntakeStore({ persistencePath: writeTempState(v1State()) });
+
+    // m-1's signal has no source binding, triage or deferred linkage, so the
+    // event is quarantined instead of staying in the dedup index. No workspace
+    // — its own included — may ever hit another record's dedup key through it.
+    expect(store.findEvent(WS, "manual", "m-1")).toBeUndefined();
+    expect(store.findEvent(WS_B, "manual", "m-1")).toBeUndefined();
+    const quarantined = store.quarantinedLegacyEvents();
+    expect(quarantined.map((event) => event.provider_event_id)).toEqual(["m-1"]);
+  });
+
+  test("dedup keys never cross workspaces", () => {
+    const store = new IntakeStore({ persistencePath: writeTempState(v1State()) });
+
+    // The same provider event id in another workspace is never a duplicate of
+    // this workspace's history.
+    expect(store.findEvent(WS_B, "src", "evt-1")).toBeUndefined();
+    expect(store.findEvent(WS_B, "manual", "m-2")).toBeUndefined();
   });
 
   test("a replayed pre-upgrade event is a duplicate and creates nothing", () => {
@@ -229,6 +265,88 @@ describe("preserved dedup semantics", () => {
       "fp1:04526c2ceebc5c4995b2b6554d6ced38d5d711a9e87112d6680aae7fcb301fe6",
     );
     expect(legacy?.issue_id).toBe("iss_2");
+  });
+});
+
+/**
+ * Architect ruling (DAT-216): workspace isolation outranks unconditional
+ * legacy dedup. A workspace must never hit another workspace's dedup key;
+ * unattributable legacy manual events are replayed as new submissions (at
+ * most one extra issue) and never reuse the original records.
+ */
+describe("cross-workspace idempotency isolation", () => {
+  function manual(submission_id: string, workspace = WS) {
+    return {
+      actor: "human",
+      workspace,
+      submission_id,
+      provider_severity: "error",
+      provider_service: "billing-api",
+      provider_environment: "prod-1",
+      message: "refund 55 failed",
+      error: { class: "RefundError" },
+    };
+  }
+
+  test("a quarantined pre-upgrade manual id reused in another workspace is a new submission", () => {
+    const store = new IntakeStore({ persistencePath: writeTempState(v1State()) });
+    const { machine, intake } = makeIntake(store);
+
+    const result = intake.submitManual(manual("m-1", WS_B));
+
+    expect(result.kind).toBe("issue_created");
+    expect(result.issue_id).not.toBe("iss_2");
+    expect(result.triage_id).toBeNull();
+    const issues = machine.listIssues();
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.workspace).toEqual(WS_B);
+    // The quarantined record is untouched and nothing references the original
+    // workspace's issue.
+    expect(store.quarantinedLegacyEvents().map((event) => event.provider_event_id)).toEqual([
+      "m-1",
+    ]);
+    expect(store.getSignal(result.signal_key ?? "")?.issue_id).not.toBe("iss_2");
+  });
+
+  test("an attributed pre-upgrade manual id reused in another workspace is also a new submission", () => {
+    const store = new IntakeStore({ persistencePath: writeTempState(v1State()) });
+    const { machine, intake } = makeIntake(store);
+
+    const result = intake.submitManual(manual("m-2", WS_B));
+
+    expect(result.kind).toBe("issue_created");
+    expect(result.issue_id).not.toBe("iss_2");
+    expect(machine.listIssues()).toHaveLength(1);
+  });
+
+  test("an attributed pre-upgrade manual id replayed in its own workspace stays idempotent", () => {
+    const store = new IntakeStore({ persistencePath: writeTempState(v1State()) });
+    const { machine, intake } = makeIntake(store);
+
+    const result = intake.submitManual(manual("m-2"));
+
+    expect(result.kind).toBe("duplicate_event");
+    expect(machine.listIssues()).toHaveLength(0);
+  });
+
+  test("a quarantined pre-upgrade manual id replayed anywhere is processed as a new submission", () => {
+    const store = new IntakeStore({ persistencePath: writeTempState(v1State()) });
+    const { machine, intake } = makeIntake(store);
+
+    // Accepted cost of isolation: at most one extra issue, never a reuse of
+    // the original workspace's signal, issue or triage.
+    const result = intake.submitManual(manual("m-1"));
+
+    expect(result.kind).toBe("issue_created");
+    expect(result.issue_id).not.toBe("iss_2");
+    expect(machine.listIssues()).toHaveLength(1);
+    expect(result.signal_key).not.toBe(
+      "fp1:04526c2ceebc5c4995b2b6554d6ced38d5d711a9e87112d6680aae7fcb301fe6",
+    );
+    expect(
+      store.getSignal("fp1:04526c2ceebc5c4995b2b6554d6ced38d5d711a9e87112d6680aae7fcb301fe6")
+        ?.issue_id,
+    ).toBe("iss_2");
   });
 });
 
@@ -321,9 +439,10 @@ describe("the intermediate revision's state shape", () => {
 });
 
 describe("re-persisting after migration", () => {
-  test("writes the current schema and reloads cleanly", () => {
+  test("writes the current schema, keeps the quarantine observable and reloads cleanly", () => {
     const file = writeTempState(v1State());
     const store = new IntakeStore({ persistencePath: file, now: fixedClock() });
+    expect(store.quarantinedLegacyEvents()).toHaveLength(1);
     store.flushSync();
 
     const raw = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
@@ -332,5 +451,8 @@ describe("re-persisting after migration", () => {
     const reloaded = new IntakeStore({ persistencePath: file });
     expect(reloaded.checkpoint("src")?.value).toBe("c-9");
     expect(reloaded.findEvent(WS, "src", "evt-1")).toBeDefined();
+    expect(reloaded.quarantinedLegacyEvents().map((event) => event.provider_event_id)).toEqual([
+      "m-1",
+    ]);
   });
 });
