@@ -488,10 +488,21 @@ const STATUS_TRANSITIONS: Readonly<Record<MemoryStatus, readonly MemoryStatus[]>
  * (ISO 8601 via `toISOString`), where lexicographic order equals instant
  * order. Comparisons go through epoch milliseconds so ordering can never
  * depend on the input's offset.
+ *
+ * Precision is limited to milliseconds: the canonical form and the epoch
+ * comparisons operate at millisecond resolution, so a finer input would be
+ * silently merged with neighbouring instants (`.0001Z` and `.0009Z` would both
+ * collapse to `.000Z`). Fractions finer than milliseconds are rejected, never
+ * rounded.
  */
+const SUB_MILLISECOND_FRACTION = /\.\d{4,}(?=(?:Z|[+-]\d{2}:\d{2})$)/;
+
 function normalizeTimestamp(value: string, field: string): string {
   if (!isTimestamp(value)) {
     throw new ValidationError(`memory ${field} must be an RFC 3339 timestamp`);
+  }
+  if (SUB_MILLISECOND_FRACTION.test(value)) {
+    throw new ValidationError(`memory ${field} must not carry more than millisecond precision`);
   }
   return new Date(value).toISOString();
 }
@@ -949,12 +960,8 @@ class SqliteMemoryItemRepository implements MemoryItemRepository {
     at: string,
   ): MemoryItemVersion | undefined {
     requireWorkspaceScope(scope);
-    if (!isTimestamp(at)) {
-      throw new ValidationError("getEffectiveVersion requires an RFC 3339 timestamp");
-    }
-    // Temporal columns are stored in canonical UTC, so byte order equals
-    // instant order; normalize the query instant to the same form.
-    const atIso = new Date(at).toISOString();
+    // Same canonicalization and precision policy as the stored windows.
+    const atIso = normalizeTimestamp(at, "at");
     const row = this.db
       .prepare(
         `SELECT v.* FROM memory_item_versions v

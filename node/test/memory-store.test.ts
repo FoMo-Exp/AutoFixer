@@ -417,6 +417,72 @@ describe("Timestamps are compared as instants, not strings", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Timestamp precision
+// ---------------------------------------------------------------------------
+
+describe("Timestamp precision is limited to milliseconds", () => {
+  test("sub-millisecond fractions are rejected, never silently merged", () => {
+    // .0001Z and .0009Z are distinct instants; collapsing them to .000Z would
+    // merge them and could squeeze a valid window to zero length.
+    expect(() =>
+      createItem({
+        valid_from: "2026-11-01T00:00:00.0001Z",
+        valid_to: "2026-11-01T00:00:00.0009Z",
+      }),
+    ).toThrow(ValidationError);
+    expect(() =>
+      createItem({
+        valid_from: "2026-11-01T00:00:00.001Z",
+        valid_to: "2026-11-01T00:00:00.0021Z",
+      }),
+    ).toThrow(ValidationError);
+    expect(() =>
+      createItem({
+        valid_from: "2026-11-01T00:00:00.000001-05:00",
+      }),
+    ).toThrow(ValidationError);
+    const record = createItem();
+    expect(() =>
+      memory.items.addVersion(
+        scope,
+        record.item.id,
+        versionContent({ valid_from: "2026-11-01T00:00:00.0009Z" }),
+        1,
+      ),
+    ).toThrow(ValidationError);
+    expect(() =>
+      memory.items.getEffectiveVersion(scope, record.item.id, "2026-11-01T00:00:00.0005Z"),
+    ).toThrow(ValidationError);
+  });
+
+  test("millisecond instants round-trip exactly and stay distinct", () => {
+    const record = createItem({ valid_from: "2026-11-01T00:00:00.001Z" });
+    expect(record.current.valid_from).toBe("2026-11-01T00:00:00.001Z");
+    memory.items.addVersion(
+      scope,
+      record.item.id,
+      versionContent({ valid_from: "2026-11-01T00:00:00.002Z" }),
+      1,
+    );
+    const versions = memory.items.listVersions(scope, record.item.id);
+    expect(versions[0]?.valid_to).toBe("2026-11-01T00:00:00.002Z");
+    // Instants one millisecond apart must never collapse: each boundary
+    // resolves to exactly one version.
+    expect(
+      memory.items.getEffectiveVersion(scope, record.item.id, "2026-11-01T00:00:00.001Z")?.version,
+    ).toBe(1);
+    expect(
+      memory.items.getEffectiveVersion(scope, record.item.id, "2026-11-01T00:00:00.002Z")?.version,
+    ).toBe(2);
+  });
+
+  test("coarse fractions canonicalize to milliseconds without changing the instant", () => {
+    const record = createItem({ valid_from: "2026-11-01T00:00:00.5Z" });
+    expect(record.current.valid_from).toBe("2026-11-01T00:00:00.500Z");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Review
 // ---------------------------------------------------------------------------
 

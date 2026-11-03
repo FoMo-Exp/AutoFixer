@@ -48,6 +48,9 @@ historical run's memory can be rebuilt exactly from the version table:
   canonical UTC (ISO 8601 via `toISOString`); all ordering — window checks and
   effective-version queries — compares instants (epoch), never raw strings, so
   `2026-11-01T02:00:00+02:00` correctly sorts before `2026-11-01T00:30:00Z`.
+  Fractional seconds are limited to millisecond precision: finer input is
+  rejected with `VALIDATION_ERROR`, never rounded or merged with neighbouring
+  instants.
 - `content_hash`: SHA-256 over the canonical form of
   `{kind, scope, statement, preconditions, sensitivity}` (sorted keys,
   sorted preconditions). A write whose hash matches an existing version of the
