@@ -1031,6 +1031,221 @@ const MIGRATIONS: Migration[] = [
         ON enterprise_template_events(enterprise_id, workspace_id)`,
       `CREATE INDEX IF NOT EXISTS idx_enterprise_template_events_template
         ON enterprise_template_events(enterprise_id, template_id)`,
+
+  {
+    // Bounded recursive self-improvement (DAT-238). This slice takes v11,
+    // directly after DAT-237's v10; v1-v10 are merged and remain untouched.
+    //
+    // Proposals are immutable records of a candidate artifact; evaluations,
+    // approvals, rollout observations, and run pins are append-only. The
+    // golden and holdout case tables are the *only* evaluation-case storage,
+    // and they are deliberately separate: nothing in the retrieval, feedback,
+    // or evaluation-record surface can read a holdout case. Every table is
+    // workspace-scoped with the same composite predicates as the memory store,
+    // so a foreign workspace's row is indistinguishable from a missing one.
+    version: 11,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS rsi_controls (
+        workspace_id TEXT PRIMARY KEY REFERENCES workspace(id) ON DELETE CASCADE,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        kill_switch INTEGER NOT NULL DEFAULT 0 CHECK (kill_switch IN (0, 1)),
+        kill_switch_reason TEXT,
+        kill_switch_changed_at TEXT,
+        kill_switch_changed_by TEXT,
+        auto_promote_low_risk INTEGER NOT NULL DEFAULT 0
+          CHECK (auto_promote_low_risk IN (0, 1)),
+        weekly_change_budget INTEGER NOT NULL DEFAULT 3
+          CHECK (weekly_change_budget >= 0),
+        weekly_reflection_token_budget INTEGER NOT NULL DEFAULT 200000
+          CHECK (weekly_reflection_token_budget >= 0),
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS rsi_control_events (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        action TEXT NOT NULL CHECK (action IN ('kill_switch', 'controls_updated')),
+        enabled INTEGER,
+        reason TEXT,
+        detail TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_control_events_scope
+        ON rsi_control_events(workspace_id, created_at)`,
+      `CREATE TABLE IF NOT EXISTS rsi_budget_usage (
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        week_start TEXT NOT NULL,
+        changes_promoted INTEGER NOT NULL DEFAULT 0 CHECK (changes_promoted >= 0),
+        reflection_tokens INTEGER NOT NULL DEFAULT 0 CHECK (reflection_tokens >= 0),
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, week_start)
+      )`,
+      `CREATE TABLE IF NOT EXISTS rsi_proposals (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        diff TEXT NOT NULL,
+        target TEXT NOT NULL,
+        risk TEXT NOT NULL CHECK (risk IN ('A', 'B', 'C', 'D')),
+        artifact_kind TEXT NOT NULL CHECK (artifact_kind IN ('retrieval_policy', 'memory_item')),
+        baseline_policy_version INTEGER NOT NULL,
+        baseline_memory_version TEXT NOT NULL,
+        candidate_policy TEXT,
+        candidate_policy_hash TEXT,
+        candidate_item_id TEXT,
+        candidate_item_version INTEGER,
+        proposer_id TEXT NOT NULL,
+        proposer_kind TEXT NOT NULL CHECK (proposer_kind IN ('agent', 'human')),
+        proposer_model TEXT,
+        status TEXT NOT NULL CHECK (
+          status IN ('proposed', 'awaiting_approval', 'ready', 'canary', 'promoted', 'rolled_back', 'blocked')
+        ),
+        status_reason TEXT,
+        applied_policy_version INTEGER,
+        version INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_proposals_scope
+        ON rsi_proposals(enterprise_id, workspace_id, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_proposals_status
+        ON rsi_proposals(workspace_id, status)`,
+      `CREATE TABLE IF NOT EXISTS rsi_evaluations (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        proposal_id TEXT NOT NULL REFERENCES rsi_proposals(id) ON DELETE CASCADE,
+        proposal_version INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('offline_replay', 'canary')),
+        dataset TEXT NOT NULL CHECK (dataset IN ('golden', 'holdout')),
+        holdout_used INTEGER NOT NULL CHECK (holdout_used IN (0, 1)),
+        sample_size INTEGER NOT NULL CHECK (sample_size >= 0),
+        baseline_successes INTEGER NOT NULL CHECK (baseline_successes >= 0),
+        candidate_successes INTEGER NOT NULL CHECK (candidate_successes >= 0),
+        baseline_rework INTEGER NOT NULL CHECK (baseline_rework >= 0),
+        candidate_rework INTEGER NOT NULL CHECK (candidate_rework >= 0),
+        baseline_cost REAL NOT NULL CHECK (baseline_cost >= 0),
+        candidate_cost REAL NOT NULL CHECK (candidate_cost >= 0),
+        safety_events INTEGER NOT NULL CHECK (safety_events >= 0),
+        success_delta REAL NOT NULL,
+        delta_ci_low REAL NOT NULL,
+        delta_ci_high REAL NOT NULL,
+        verdict TEXT NOT NULL CHECK (verdict IN ('pass', 'fail', 'inconclusive')),
+        verifier_kind TEXT NOT NULL,
+        verifier_id TEXT NOT NULL,
+        verifier_reference TEXT NOT NULL,
+        policy_version INTEGER NOT NULL,
+        policy_hash TEXT NOT NULL,
+        memory_version TEXT NOT NULL,
+        reflection_tokens INTEGER NOT NULL CHECK (reflection_tokens >= 0),
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_evaluations_proposal
+        ON rsi_evaluations(workspace_id, proposal_id, created_at)`,
+      `CREATE TABLE IF NOT EXISTS rsi_approvals (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        proposal_id TEXT NOT NULL REFERENCES rsi_proposals(id) ON DELETE CASCADE,
+        proposal_version INTEGER NOT NULL,
+        approval_key TEXT NOT NULL CHECK (approval_key IN ('single', 'owner', 'reviewer')),
+        approver_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        note TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE (proposal_id, approver_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_approvals_proposal
+        ON rsi_approvals(workspace_id, proposal_id)`,
+      `CREATE TABLE IF NOT EXISTS rsi_rollouts (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        proposal_id TEXT NOT NULL UNIQUE REFERENCES rsi_proposals(id) ON DELETE CASCADE,
+        stage INTEGER NOT NULL CHECK (stage IN (10, 50, 100)),
+        status TEXT NOT NULL CHECK (status IN ('canary', 'promoted', 'rolled_back')),
+        baseline_policy_version INTEGER NOT NULL,
+        candidate_policy TEXT,
+        candidate_policy_hash TEXT NOT NULL,
+        reason TEXT,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_rollouts_scope
+        ON rsi_rollouts(enterprise_id, workspace_id, status)`,
+      `CREATE TABLE IF NOT EXISTS rsi_canary_observations (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        rollout_id TEXT NOT NULL REFERENCES rsi_rollouts(id) ON DELETE CASCADE,
+        stage INTEGER NOT NULL,
+        sample_size INTEGER NOT NULL CHECK (sample_size >= 0),
+        baseline_successes INTEGER NOT NULL CHECK (baseline_successes >= 0),
+        candidate_successes INTEGER NOT NULL CHECK (candidate_successes >= 0),
+        baseline_rework INTEGER NOT NULL CHECK (baseline_rework >= 0),
+        candidate_rework INTEGER NOT NULL CHECK (candidate_rework >= 0),
+        baseline_cost REAL NOT NULL CHECK (baseline_cost >= 0),
+        candidate_cost REAL NOT NULL CHECK (candidate_cost >= 0),
+        safety_events INTEGER NOT NULL CHECK (safety_events >= 0),
+        success_delta REAL NOT NULL,
+        delta_ci_low REAL NOT NULL,
+        delta_ci_high REAL NOT NULL,
+        verdict TEXT NOT NULL CHECK (verdict IN ('pass', 'fail', 'inconclusive')),
+        evidence_reference TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_canary_observations_rollout
+        ON rsi_canary_observations(workspace_id, rollout_id, created_at)`,
+      `CREATE TABLE IF NOT EXISTS rsi_golden_cases (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        case_key TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        UNIQUE (workspace_id, case_key)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_golden_cases_scope
+        ON rsi_golden_cases(workspace_id)`,
+      `CREATE TABLE IF NOT EXISTS rsi_holdout_cases (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        case_key TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        UNIQUE (workspace_id, case_key)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_holdout_cases_scope
+        ON rsi_holdout_cases(workspace_id)`,
+      `CREATE TABLE IF NOT EXISTS rsi_run_pins (
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        run_id TEXT NOT NULL,
+        policy_version INTEGER NOT NULL,
+        policy_hash TEXT NOT NULL,
+        memory_version TEXT NOT NULL,
+        canary INTEGER NOT NULL CHECK (canary IN (0, 1)),
+        proposal_id TEXT,
+        rollout_id TEXT,
+        stage INTEGER,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, run_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_run_pins_scope
+        ON rsi_run_pins(enterprise_id, workspace_id, created_at)`,
     ],
   },
 ];

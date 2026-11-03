@@ -253,6 +253,17 @@ run summaries for that task; terminal grants are never reused.
 | `GET /api/v1/workspaces/{workspace_id}/memory/items?kind=&status=&tier=&limit=&cursor=` | none | `200 {items: MemoryItemView[], next_cursor}` |
 | `GET /api/v1/workspaces/{workspace_id}/memory/versions` | none | `200 MemoryVersions` |
 | `POST /api/v1/workspaces/{workspace_id}/memory/eval-runs` | `{kind, dataset, policy_version, memory_version, metrics, verdict, notes?}` | `201 MemoryEvalRunRecord` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/proposals?status=&risk=&limit=` | none | `200 {proposals: RsiProposal[]}` |
+| `POST /api/v1/workspaces/{workspace_id}/memory/proposals` | `{title, summary, diff, target, candidate_policy?, memory_item?}` | `201 RsiProposal` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}` | none | `200 RsiProposal` |
+| `POST /api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/evaluations` | `{verifier: {kind, id, reference}, datasets?[]}` | `201 RsiProposal` (replay executed server-side) |
+| `POST /api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/approvals` | `{note?}` | `201 RsiProposal` |
+| `POST /api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/canary` | none | `201 RsiProposal` (canary at 10%) |
+| `POST /api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/canary/observations` | `{sample_size, baseline_successes, candidate_successes, evidence_reference, ...}` | `201 RsiProposal` |
+| `POST /api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/rollback` | `{reason}` | `200 RsiProposal` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/rsi/status` | none | `200 RsiStatus` |
+| `POST /api/v1/workspaces/{workspace_id}/memory/rsi/kill-switch` | `{enabled, reason?}` | `200 {controls: RsiControls}` |
+| `PATCH /api/v1/workspaces/{workspace_id}/memory/rsi/controls` | `{auto_promote_low_risk?, weekly_change_budget?, weekly_reflection_token_budget?}` | `200 {controls: RsiControls}` |
 | `POST /api/v1/invitations/preview` | `{token}` | `200 InvitationPreview` |
 | `POST /api/v1/invitations/redeem` | `{token}` | `200 InvitationRedemption` |
 
@@ -344,6 +355,39 @@ change, or authorize a tool action, and `dsh` remains the sole execution gate.
 Promotion, deprecation, quarantine, and retrieval-policy writes are deliberately
 **not** reachable from this surface; those belong to the memory lifecycle and
 bounded-RSI slices.
+
+
+### Bounded RSI (DAT-238)
+
+The RSI surface is a governance layer over memory artifacts and retrieval
+policy; it is detailed by `docs/contracts/memory-rsi-v1.md`. It is
+session-authenticated and workspace-scoped. The risk ladder is derived from the
+target, never supplied by the caller: retrieval weights and ranking
+tie-breakers are class A, lessons/playbooks/prompt hints are class B, retrieval
+bounds/scope taxonomy/consolidation thresholds are class C, and class D
+(capability grants, approval rules, evidence schema, evaluation definitions,
+safety policy, merge/deploy) is rejected. Class B needs one named human
+approval; class C needs two distinct humans (owner and reviewer keys); class A
+skips human approval only when the workspace has enabled automatic promotion.
+
+The server — not the caller — runs the offline replay over the stored corpus
+against the workspace golden set **and** a hidden holdout the proposer cannot
+read. No operation accepts a score, an evaluation case, or holdout content: the
+holdout contributes an aggregate sample count only, and an agent self-report is
+not a representable verifier. Promotion requires a minimum sample per arm, a
+non-negative success delta, a Newcombe confidence interval that does not
+establish a regression beyond the fixed margin, zero forbidden-item injection,
+and no rework or cost breach. A passing candidate enters a 10% → 50% → 100%
+canary whose stages each require their own minimum sample; any security event,
+regression, or breach rolls it back automatically. The workspace kill switch
+takes effect in the same call: active canaries roll back, new runs pin the
+baseline policy, and RSI actions are refused. Promotions consume a weekly change
+budget, and replay consumes a weekly reflection-token budget.
+
+Every run pins the exact memory version and policy identity it used, so a bad
+promotion is reproducible after rollback. Memory remains untrusted data, and
+`dsh` remains the only tool gate: nothing on this surface can grant a
+capability, approve a change, or alter an approval rule.
 
 SSE events contain `event_id`, `sequence`, `occurred_at`, `task_id`,
 `task_version`, `type`, and redacted `data`. Types are `task.status_changed`,

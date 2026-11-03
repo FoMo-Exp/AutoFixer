@@ -51,11 +51,16 @@ import {
   createMemoryRepositories,
   createMemoryRetrievalService,
   createRetrievalStore,
+  createRsiService,
+  createRsiStore,
 } from "./memory/index.js";
 import type {
   MemoryConsolidationRunner,
   MemoryRepositories,
   MemoryRetrievalService,
+  RsiService,
+  RsiStore,
+} from "./memory/index.js";
 } from "./memory/index.js";
 import { resolveConfiguredModel } from "./pi/model.js";
 import {
@@ -132,6 +137,10 @@ export interface OrchestratorHandle {
   memory: MemoryRetrievalService | undefined;
   /** Scoped memory repositories, for memory lifecycle wiring and tests. */
   memoryRepositories: MemoryRepositories | undefined;
+  /** Bounded RSI governance service; set when the control plane is on. */
+  rsi: RsiService | undefined;
+  /** Scoped RSI store, for dataset provisioning and tests. */
+  rsiStore: RsiStore | undefined;
   /** Per-process bearer token callers must present on every API request. */
   apiToken: string;
   /** Start listening; resolves with the bound loopback address. */
@@ -362,6 +371,8 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let memoryConsolidation: MemoryConsolidationRunner | undefined;
   let memory: MemoryRetrievalService | undefined;
   let memoryRepositories: MemoryRepositories | undefined;
+  let rsi: RsiService | undefined;
+  let rsiStore: RsiStore | undefined;
   if (config.oauthClientsFile !== undefined) {
     controlPlane = openControlPlaneDb({ path: config.controlPlaneFile ?? ":memory:" });
     const repos = createRepositories(controlPlane);
@@ -398,9 +409,20 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     // service is read-only over memory: it assembles bounded, cited bundles and
     // records audit rows; it cannot promote, edit, or grant anything.
     memoryRepositories = createMemoryRepositories(controlPlane);
+    const retrievalStore = createRetrievalStore(controlPlane);
     memory = createMemoryRetrievalService({
       memory: memoryRepositories,
-      store: createRetrievalStore(controlPlane),
+      store: retrievalStore,
+    });
+    // Bounded RSI (DAT-238) shares the same store. Offline replay uses the
+    // retrieval preview path, so an evaluated candidate policy is never
+    // stored or retrievable before promotion; promotion publishes a version.
+    rsiStore = createRsiStore(controlPlane);
+    rsi = createRsiService({
+      store: rsiStore,
+      memory: memoryRepositories,
+      retrieval: memory,
+      retrievalStore,
     });
     providerAuthority = createRequestAuthority({
       access: providerAccess,
@@ -505,6 +527,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
             auth,
             service: memory,
             ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
+            ...(rsi !== undefined ? { rsi } : {}),
           },
         }
       : {}),
@@ -524,6 +547,8 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     memoryConsolidation,
     memory,
     memoryRepositories,
+    rsi,
+    rsiStore,
     apiToken,
     start: () => {
       const { promise, resolve, reject } = Promise.withResolvers<{ host: string; port: number }>();

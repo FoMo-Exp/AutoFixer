@@ -312,6 +312,34 @@ export interface MemoryBundle {
   created_at: string;
 }
 
+/**
+ * One ranked item in a preview assembled under an unpublished policy.
+ *
+ * A preview exists for offline replay (DAT-238): the learning loop must be
+ * able to measure a candidate policy against the stored corpus without making
+ * that policy retrievable by any run. It is never recorded as a retrieval run
+ * and never carries a version reference.
+ */
+export interface MemoryPreviewItem {
+  item_id: string;
+  item_version: number;
+  kind: MemoryKind;
+  tier: MemoryTier;
+  candidate: boolean;
+  approved: boolean;
+  token_estimate: number;
+  score: MemoryScoreBreakdown;
+}
+
+export interface MemoryPreview {
+  /** Canonical hash of the policy used; never a stored policy version. */
+  policy_hash: string;
+  items: MemoryPreviewItem[];
+  used_items: number;
+  used_tokens: number;
+  omitted_count: number;
+}
+
 // ---------------------------------------------------------------------------
 // Feedback
 // ---------------------------------------------------------------------------

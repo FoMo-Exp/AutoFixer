@@ -25,12 +25,35 @@ import type {
   MemoryRetrievalService,
   MemorySearchRequest,
 } from "../memory/retrieval/index.js";
+import type {
+  CreateRsiProposalInput,
+  RsiActor,
+  RsiCanaryObservationInput,
+  RsiDataset,
+  RsiEvaluationRequest,
+  RsiProposalFilter,
+  RsiProposalStatus,
+  RsiRisk,
+  RsiService,
+  RsiTarget,
+} from "../memory/rsi/index.js";
+import {
+  RSI_DATASETS,
+  RSI_PROPOSAL_STATUSES,
+  RSI_RISKS,
+  RSI_TARGETS,
+} from "../memory/rsi/index.js";
 
 export interface MemoryHttpDeps {
   auth: AuthService;
   service: MemoryRetrievalService;
   /** Provider-authority request boundary (DAT-203), when configured. */
   authority?: RequestAuthority;
+  /**
+   * Bounded RSI governance (DAT-238). Unset keeps the proposal, canary,
+   * budget, and kill-switch routes nonexistent.
+   */
+  rsi?: RsiService;
 }
 
 export interface MemoryRouteContext {
@@ -257,6 +280,165 @@ function itemsFilter(url: URL): MemoryItemsFilter {
   return filter;
 }
 
+// ---------------------------------------------------------------------------
+// Bounded RSI request bodies (DAT-238)
+// ---------------------------------------------------------------------------
+
+function rsiService(deps: MemoryHttpDeps): RsiService {
+  if (deps.rsi === undefined) {
+    throw new ApiError(404, "NOT_FOUND", "the RSI surface is not configured");
+  }
+  return deps.rsi;
+}
+
+function actor(memory: MemoryScope): RsiActor {
+  return { id: memory.ctx.user.id, role: memory.role };
+}
+
+function memberList(body: Record<string, unknown>, field: string): string[] | undefined {
+  const value = body[field];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+    throw new ApiError(400, "INVALID_REQUEST", `${field} must be an array of strings`);
+  }
+  return value as string[];
+}
+
+/**
+ * Proposal creation derives the proposer from the session and the risk from
+ * the target: neither is a client claim.
+ */
+function proposalInput(memory: MemoryScope, body: Record<string, unknown>): CreateRsiProposalInput {
+  rejectScopeClaims(body);
+  if ("proposer" in body) {
+    throw new ApiError(
+      400,
+      "INVALID_REQUEST",
+      "proposer is derived from the authenticated session and must not be sent",
+    );
+  }
+  if ("risk" in body) {
+    throw new ApiError(
+      400,
+      "INVALID_REQUEST",
+      "risk is derived from the target and must not be sent",
+    );
+  }
+  const target = body["target"];
+  if (typeof target !== "string" || !(RSI_TARGETS as readonly string[]).includes(target)) {
+    throw new ApiError(400, "INVALID_REQUEST", `target must be one of ${RSI_TARGETS.join(", ")}`);
+  }
+  const item = body["memory_item"];
+  if (item !== undefined && (item === null || typeof item !== "object" || Array.isArray(item))) {
+    throw new ApiError(400, "INVALID_REQUEST", "memory_item must be an object");
+  }
+  const itemInput = item as Record<string, unknown> | undefined;
+  return {
+    title: optionalString(body, "title") ?? "",
+    summary: optionalString(body, "summary") ?? "",
+    diff: optionalString(body, "diff") ?? "",
+    target: target as RsiTarget,
+    proposer: { id: memory.ctx.user.id, kind: "human" },
+    ...(body["candidate_policy"] !== undefined
+      ? { candidate_policy: body["candidate_policy"] }
+      : {}),
+    ...(itemInput !== undefined
+      ? {
+          memory_item: {
+            item_id: String(itemInput["item_id"] ?? ""),
+            item_version: Number(itemInput["item_version"] ?? 0),
+          },
+        }
+      : {}),
+  };
+}
+
+function evaluationInput(body: Record<string, unknown>): RsiEvaluationRequest {
+  rejectScopeClaims(body);
+  const verifierBody = body["verifier"];
+  if (verifierBody === null || typeof verifierBody !== "object" || Array.isArray(verifierBody)) {
+    throw new ApiError(400, "INVALID_REQUEST", "verifier is required");
+  }
+  const verifierRecord = verifierBody as Record<string, unknown>;
+  const datasets = memberList(body, "datasets");
+  if (
+    datasets !== undefined &&
+    datasets.some((entry) => !(RSI_DATASETS as readonly string[]).includes(entry))
+  ) {
+    throw new ApiError(
+      400,
+      "INVALID_REQUEST",
+      `datasets entries must be ${RSI_DATASETS.join(", ")}`,
+    );
+  }
+  return {
+    verifier: {
+      kind: String(verifierRecord["kind"] ?? "") as RsiEvaluationRequest["verifier"]["kind"],
+      id: String(verifierRecord["id"] ?? ""),
+      reference: String(verifierRecord["reference"] ?? ""),
+    },
+    ...(datasets !== undefined ? { datasets: datasets as RsiDataset[] } : {}),
+  };
+}
+
+function observationInput(body: Record<string, unknown>): RsiCanaryObservationInput {
+  rejectScopeClaims(body);
+  const evidence = optionalString(body, "evidence_reference");
+  if (evidence === undefined || evidence.length === 0) {
+    throw new ApiError(400, "INVALID_REQUEST", "evidence_reference is required");
+  }
+  return {
+    sample_size: optionalNumber(body, "sample_size") ?? 0,
+    baseline_successes: optionalNumber(body, "baseline_successes") ?? 0,
+    candidate_successes: optionalNumber(body, "candidate_successes") ?? 0,
+    ...(optionalNumber(body, "baseline_rework") !== undefined
+      ? { baseline_rework: optionalNumber(body, "baseline_rework") }
+      : {}),
+    ...(optionalNumber(body, "candidate_rework") !== undefined
+      ? { candidate_rework: optionalNumber(body, "candidate_rework") }
+      : {}),
+    ...(optionalNumber(body, "baseline_cost") !== undefined
+      ? { baseline_cost: optionalNumber(body, "baseline_cost") }
+      : {}),
+    ...(optionalNumber(body, "candidate_cost") !== undefined
+      ? { candidate_cost: optionalNumber(body, "candidate_cost") }
+      : {}),
+    ...(optionalNumber(body, "safety_events") !== undefined
+      ? { safety_events: optionalNumber(body, "safety_events") }
+      : {}),
+    evidence_reference: evidence,
+  };
+}
+
+function proposalFilter(url: URL): RsiProposalFilter {
+  const filter: RsiProposalFilter = {};
+  const status = url.searchParams.get("status");
+  const risk = url.searchParams.get("risk");
+  const limit = url.searchParams.get("limit");
+  if (status !== null && status.length > 0) {
+    if (!(RSI_PROPOSAL_STATUSES as readonly string[]).includes(status)) {
+      throw new ApiError(400, "INVALID_REQUEST", "unknown proposal status filter");
+    }
+    filter.status = status as RsiProposalStatus;
+  }
+  if (risk !== null && risk.length > 0) {
+    if (!(RSI_RISKS as readonly string[]).includes(risk)) {
+      throw new ApiError(400, "INVALID_REQUEST", "risk must be A, B, C, or D");
+    }
+    filter.risk = risk as RsiRisk;
+  }
+  if (limit !== null && limit.length > 0) {
+    const parsed = Number(limit);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      throw new ApiError(400, "INVALID_REQUEST", "limit must be a positive integer");
+    }
+    filter.limit = parsed;
+  }
+  return filter;
+}
+
 /**
  * Handle `/api/v1/workspaces/{workspace_id}/memory/*`. Always handles the
  * request or throws the shared error envelope's mapped error.
@@ -310,6 +492,210 @@ export async function handleMemoryRequest(
     requireAuthority(deps, memory, "write");
     const body = await readJsonBody(req);
     writeJson(res, 201, deps.service.recordEvalRun(memory.scope, evalRunInput(body)));
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // Bounded RSI (DAT-238)
+  // -------------------------------------------------------------------------
+
+  // POST/GET /memory/proposals
+  if (resource === "proposals" && segments.length === 6) {
+    requireRole(memory, "member");
+    const rsi = rsiService(deps);
+    if (method === "POST") {
+      requireAuthority(deps, memory, "write");
+      const body = await readJsonBody(req);
+      writeJson(res, 201, rsi.createProposal(memory.scope, proposalInput(memory, body)));
+      return;
+    }
+    if (method === "GET") {
+      requireAuthority(deps, memory, "read");
+      writeJson(res, 200, {
+        proposals: rsi.listProposals(memory.scope, proposalFilter(url)),
+      });
+      return;
+    }
+  }
+
+  // GET /memory/proposals/{proposal_id}
+  if (method === "GET" && resource === "proposals" && segments.length === 7) {
+    requireAuthority(deps, memory, "read");
+    writeJson(res, 200, rsiService(deps).getProposal(memory.scope, segments[6] as string));
+    return;
+  }
+
+  // POST /memory/proposals/{proposal_id}/evaluations
+  if (
+    method === "POST" &&
+    resource === "proposals" &&
+    segments.length === 8 &&
+    segments[7] === "evaluations"
+  ) {
+    requireRole(memory, "owner");
+    requireAuthority(deps, memory, "write");
+    const body = await readJsonBody(req);
+    writeJson(
+      res,
+      201,
+      rsiService(deps).evaluate(memory.scope, segments[6] as string, evaluationInput(body)),
+    );
+    return;
+  }
+
+  // POST /memory/proposals/{proposal_id}/approvals
+  if (
+    method === "POST" &&
+    resource === "proposals" &&
+    segments.length === 8 &&
+    segments[7] === "approvals"
+  ) {
+    requireRole(memory, "admin");
+    requireAuthority(deps, memory, "write");
+    const body = await readJsonBody(req);
+    writeJson(
+      res,
+      201,
+      rsiService(deps).approve(
+        memory.scope,
+        segments[6] as string,
+        actor(memory),
+        optionalString(body, "note"),
+      ),
+    );
+    return;
+  }
+
+  // POST /memory/proposals/{proposal_id}/canary
+  if (
+    method === "POST" &&
+    resource === "proposals" &&
+    segments.length === 8 &&
+    segments[7] === "canary"
+  ) {
+    requireRole(memory, "owner");
+    requireAuthority(deps, memory, "write");
+    writeJson(
+      res,
+      201,
+      rsiService(deps).startCanary(memory.scope, segments[6] as string, actor(memory)),
+    );
+    return;
+  }
+
+  // POST /memory/proposals/{proposal_id}/canary/observations
+  if (
+    method === "POST" &&
+    resource === "proposals" &&
+    segments.length === 9 &&
+    segments[7] === "canary" &&
+    segments[8] === "observations"
+  ) {
+    requireRole(memory, "owner");
+    requireAuthority(deps, memory, "write");
+    const body = await readJsonBody(req);
+    writeJson(
+      res,
+      201,
+      rsiService(deps).recordCanaryObservation(
+        memory.scope,
+        segments[6] as string,
+        observationInput(body),
+        actor(memory),
+      ),
+    );
+    return;
+  }
+
+  // POST /memory/proposals/{proposal_id}/rollback
+  if (
+    method === "POST" &&
+    resource === "proposals" &&
+    segments.length === 8 &&
+    segments[7] === "rollback"
+  ) {
+    requireRole(memory, "owner");
+    requireAuthority(deps, memory, "write");
+    const body = await readJsonBody(req);
+    const reason = optionalString(body, "reason");
+    if (reason === undefined || reason.trim().length === 0) {
+      throw new ApiError(400, "INVALID_REQUEST", "reason is required");
+    }
+    writeJson(
+      res,
+      200,
+      rsiService(deps).rollback(memory.scope, segments[6] as string, reason, actor(memory)),
+    );
+    return;
+  }
+
+  // GET /memory/rsi/status
+  if (method === "GET" && resource === "rsi" && segments.length === 7 && segments[6] === "status") {
+    requireRole(memory, "member");
+    requireAuthority(deps, memory, "read");
+    writeJson(res, 200, rsiService(deps).status(memory.scope));
+    return;
+  }
+
+  // POST /memory/rsi/kill-switch
+  if (
+    method === "POST" &&
+    resource === "rsi" &&
+    segments.length === 7 &&
+    segments[6] === "kill-switch"
+  ) {
+    requireRole(memory, "owner");
+    requireAuthority(deps, memory, "write");
+    const body = await readJsonBody(req);
+    const enabled = body["enabled"];
+    if (typeof enabled !== "boolean") {
+      throw new ApiError(400, "INVALID_REQUEST", "enabled must be a boolean");
+    }
+    writeJson(res, 200, {
+      controls: rsiService(deps).setKillSwitch(
+        memory.scope,
+        enabled,
+        optionalString(body, "reason") ?? null,
+        actor(memory),
+      ),
+    });
+    return;
+  }
+
+  // PATCH /memory/rsi/controls
+  if (
+    method === "PATCH" &&
+    resource === "rsi" &&
+    segments.length === 7 &&
+    segments[6] === "controls"
+  ) {
+    requireRole(memory, "owner");
+    requireAuthority(deps, memory, "write");
+    const body = await readJsonBody(req);
+    const auto = body["auto_promote_low_risk"];
+    if (auto !== undefined && typeof auto !== "boolean") {
+      throw new ApiError(400, "INVALID_REQUEST", "auto_promote_low_risk must be a boolean");
+    }
+    writeJson(res, 200, {
+      controls: rsiService(deps).updateControls(
+        memory.scope,
+        {
+          ...(auto !== undefined ? { auto_promote_low_risk: auto } : {}),
+          ...(optionalNumber(body, "weekly_change_budget") !== undefined
+            ? { weekly_change_budget: optionalNumber(body, "weekly_change_budget") }
+            : {}),
+          ...(optionalNumber(body, "weekly_reflection_token_budget") !== undefined
+            ? {
+                weekly_reflection_token_budget: optionalNumber(
+                  body,
+                  "weekly_reflection_token_budget",
+                ),
+              }
+            : {}),
+        },
+        actor(memory),
+      ),
+    });
     return;
   }
 

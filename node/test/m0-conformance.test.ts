@@ -278,9 +278,10 @@ describe("independent conformance to the normative contract", () => {
         }
       }
     }
-    // 70 identity/workspace/collaboration operations on main plus the five
-    // memory v1 operations (DAT-236).
-    expect(checked).toBe(75);
+    // 70 identity/workspace/collaboration operations on main, the five
+    // memory v1 operations (DAT-236), and the eleven bounded RSI operations
+    // (DAT-238).
+    expect(checked).toBe(86);
   });
 
   test("the committed openapi.json also carries the auth scheme", () => {

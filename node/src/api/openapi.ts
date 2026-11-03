@@ -28,6 +28,7 @@ import {
   ERROR_STAGES,
 } from "./errors.js";
 import { MEMORY_OPENAPI_SCHEMAS, memoryOpenApiPaths } from "./openapi-memory.js";
+import { RSI_OPENAPI_SCHEMAS, rsiOpenApiPaths } from "./openapi-rsi.js";
 import type { JsonObject } from "./openapi-types.js";
 
 /** Loosely-typed OpenAPI 3.1 document; schemas stay plain JSON objects. */
@@ -4493,6 +4494,10 @@ export function buildOpenApiDocument(): OpenApiDocument {
   // browse, versions, and evaluation records.
   Object.assign(paths, memoryOpenApiPaths());
 
+  // Bounded RSI (DAT-238): proposals, replay evaluation, approvals, canary,
+  // rollback, budgets, kill switch. Mounted under the same memory surface.
+  Object.assign(paths, rsiOpenApiPaths());
+
   // Stamp the security requirement and 401 response onto every operation so
   // auth coverage cannot silently miss an endpoint.
   stampAuth(paths);
@@ -4596,6 +4601,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
         DesktopFlow: desktopFlowSchema,
         AuthAuditRecord: authAuditRecordSchema,
         ...MEMORY_OPENAPI_SCHEMAS,
+        ...RSI_OPENAPI_SCHEMAS,
         Error: errorSchema,
       },
       securitySchemes: {

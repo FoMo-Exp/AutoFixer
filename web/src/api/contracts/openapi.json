@@ -8595,6 +8595,1157 @@
           }
         ]
       }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/proposals": {
+      "get": {
+        "operationId": "listRsiProposals",
+        "summary": "List bounded RSI proposals",
+        "description": "Requires a web/desktop session and derives enterprise/workspace scope from membership. RSI is a governed feedback loop over memory artifacts and retrieval policy. Only class A and C retrieval-policy changes and class B memory-item changes may be proposed; class D targets (capability grants, approval rules, evidence schema, evaluation definitions, safety policy, merge/deploy) are rejected. Evaluation runs the offline replay itself and computes the confidence interval: the caller cannot submit a score. The hidden holdout contributes only aggregate sample counts. The workspace kill switch stops all RSI actions immediately and rolls back an active canary. Bounded list, newest first.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "proposed",
+                "awaiting_approval",
+                "ready",
+                "canary",
+                "promoted",
+                "rolled_back",
+                "blocked"
+              ]
+            }
+          },
+          {
+            "name": "risk",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "A",
+                "B",
+                "C",
+                "D"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bounded proposal list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RsiProposalList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createRsiProposal",
+        "summary": "Open a governed RSI proposal",
+        "description": "Requires a web/desktop session and derives enterprise/workspace scope from membership. RSI is a governed feedback loop over memory artifacts and retrieval policy. Only class A and C retrieval-policy changes and class B memory-item changes may be proposed; class D targets (capability grants, approval rules, evidence schema, evaluation definitions, safety policy, merge/deploy) are rejected. Evaluation runs the offline replay itself and computes the confidence interval: the caller cannot submit a score. The hidden holdout contributes only aggregate sample counts. The workspace kill switch stops all RSI actions immediately and rolls back an active canary. A class D target is rejected; the proposer is the authenticated user and is recorded as such.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RsiCreateProposalRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Proposal created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RsiProposal"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST — including a class D target or a scope claim",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CONFLICT — the RSI kill switch is active",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}": {
+      "get": {
+        "operationId": "getRsiProposal",
+        "summary": "Proposal detail with evaluations, approvals, rollout, and gate",
+        "description": "Requires a web/desktop session and derives enterprise/workspace scope from membership. RSI is a governed feedback loop over memory artifacts and retrieval policy. Only class A and C retrieval-policy changes and class B memory-item changes may be proposed; class D targets (capability grants, approval rules, evidence schema, evaluation definitions, safety policy, merge/deploy) are rejected. Evaluation runs the offline replay itself and computes the confidence interval: the caller cannot submit a score. The hidden holdout contributes only aggregate sample counts. The workspace kill switch stops all RSI actions immediately and rolls back an active canary. The holdout contributes an aggregate counter only; its case content is not part of this payload.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Proposal detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RsiProposal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/evaluations": {
+      "post": {
+        "operationId": "evaluateRsiProposal",
+        "summary": "Run the offline replay over the golden set and hidden holdout",
+        "description": "Requires a web/desktop session and derives enterprise/workspace scope from membership. Workspace owner only. The server executes the replay over the stored corpus and both datasets, computes the paired delta and its Newcombe confidence interval, and records one evaluation per dataset. Metrics are never accepted from the caller. A verifier identity that matches the proposer, or an agent self-report, is refused. Reaching the weekly reflection-token budget blocks the run before anything is recorded.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RsiEvaluationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Evaluation recorded; the returned gate is recomputed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RsiProposal"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST — including self-verification",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — owner role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CONFLICT — kill switch active, budget exhausted, or already live",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/approvals": {
+      "post": {
+        "operationId": "approveRsiProposal",
+        "summary": "Record a named human approval for the exact proposal version",
+        "description": "Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner or admin. Class B needs one named human; class C needs two distinct humans with the owner and reviewer keys; class A needs none only when the workspace enabled automatic promotion. The proposer can never approve its own proposal.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "note": {
+                    "type": "string",
+                    "maxLength": 1000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Approval recorded; the gate is recomputed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RsiProposal"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — owner or admin required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CONFLICT — evaluation has not passed or the proposal is final",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/canary": {
+      "post": {
+        "operationId": "startRsiCanary",
+        "summary": "Start the 10% canary for an eligible proposal",
+        "description": "Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. Requires a passing offline replay over both datasets, the required human approvals, remaining weekly change budget, and an inactive kill switch. The candidate policy stays unpublished: only runs pinned into the canary receive it.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Canary started at 10%",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RsiProposal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CONFLICT — gate not satisfied or kill switch active",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/canary/observations": {
+      "post": {
+        "operationId": "recordRsiCanaryObservation",
+        "summary": "Record a canary stage observation and advance or roll back",
+        "description": "Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. The stage advances 10% → 50% → 100% only after its minimum sample passes. Any security event, negative delta, a confidence interval establishing a regression beyond the margin, or a rework/cost breach triggers an automatic rollback. A pass at 100% promotes and publishes exactly one policy version (or activates the candidate memory item).",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RsiCanaryObservationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Observation recorded; the rollout state reflects the decision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RsiProposal"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CONFLICT — no active canary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/rollback": {
+      "post": {
+        "operationId": "rollbackRsiProposal",
+        "summary": "Roll back a canary or revert a promoted change",
+        "description": "Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. A canary is stopped; a promoted retrieval change is reverted by publishing the baseline policy as a new immutable version, and a promoted memory item is deprecated. Historical run pins are not rewritten.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 1000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Rolled back",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RsiProposal"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "CONFLICT — nothing to roll back",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/rsi/status": {
+      "get": {
+        "operationId": "getRsiStatus",
+        "summary": "Workspace RSI controls, budgets, holdout counter, and active rollout",
+        "description": "Requires a web/desktop session and derives enterprise/workspace scope from membership. RSI is a governed feedback loop over memory artifacts and retrieval policy. Only class A and C retrieval-policy changes and class B memory-item changes may be proposed; class D targets (capability grants, approval rules, evidence schema, evaluation definitions, safety policy, merge/deploy) are rejected. Evaluation runs the offline replay itself and computes the confidence interval: the caller cannot submit a score. The hidden holdout contributes only aggregate sample counts. The workspace kill switch stops all RSI actions immediately and rolls back an active canary. The holdout block is an aggregate count and last-evaluation timestamp only.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "RSI status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RsiStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/rsi/kill-switch": {
+      "post": {
+        "operationId": "setRsiKillSwitch",
+        "summary": "Engage or release the per-workspace RSI kill switch",
+        "description": "Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. Engaging requires a reason and takes effect in the same call: every active canary is rolled back, new runs resolve to the baseline policy, and proposals, evaluations, approvals, and canaries are refused until it is released.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "enabled"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 1000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated controls",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RsiControlsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST — engaging without a reason",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/rsi/controls": {
+      "patch": {
+        "operationId": "updateRsiControls",
+        "summary": "Tighten automatic promotion or the weekly budgets",
+        "description": "Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. A workspace can disable automatic promotion and lower its weekly change and reflection-token budgets. Sample sizes, regression ceilings, and approval requirements are code constants and cannot be raised here.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RsiControlsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated controls",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RsiControlsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -12497,6 +13648,958 @@
           },
           "created_by": {
             "type": "string"
+          }
+        }
+      },
+      "RsiArtifact": {
+        "type": "object",
+        "required": [
+          "kind",
+          "baseline_policy_version",
+          "candidate_policy_hash",
+          "item_id",
+          "item_version"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "retrieval_policy",
+              "memory_item"
+            ]
+          },
+          "baseline_policy_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "candidate_policy_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "item_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "item_version": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        }
+      },
+      "RsiProposer": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "human"
+            ]
+          },
+          "model": {
+            "type": "string"
+          }
+        }
+      },
+      "RsiEvaluation": {
+        "type": "object",
+        "required": [
+          "evaluation_id",
+          "proposal_id",
+          "proposal_version",
+          "dataset",
+          "holdout_used",
+          "sample_size",
+          "baseline_successes",
+          "candidate_successes",
+          "baseline_rework",
+          "candidate_rework",
+          "baseline_cost",
+          "candidate_cost",
+          "safety_events",
+          "success_delta",
+          "delta_ci_low",
+          "delta_ci_high",
+          "verdict",
+          "verifier",
+          "policy_version",
+          "policy_hash",
+          "memory_version",
+          "reflection_tokens",
+          "created_at",
+          "created_by"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "evaluation_id": {
+            "type": "string"
+          },
+          "proposal_id": {
+            "type": "string"
+          },
+          "proposal_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "dataset": {
+            "type": "string",
+            "enum": [
+              "golden",
+              "holdout"
+            ]
+          },
+          "holdout_used": {
+            "type": "boolean"
+          },
+          "sample_size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "baseline_successes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "candidate_successes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "baseline_rework": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "candidate_rework": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "baseline_cost": {
+            "type": "number",
+            "minimum": 0
+          },
+          "candidate_cost": {
+            "type": "number",
+            "minimum": 0
+          },
+          "safety_events": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "success_delta": {
+            "type": "number"
+          },
+          "delta_ci_low": {
+            "type": "number"
+          },
+          "delta_ci_high": {
+            "type": "number"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "fail",
+              "inconclusive"
+            ]
+          },
+          "verifier": {
+            "type": "object",
+            "required": [
+              "kind",
+              "id",
+              "reference"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "test",
+                  "qa_disposition",
+                  "reviewer_acceptance"
+                ],
+                "description": "Agent self-report is not a verifier kind."
+              },
+              "id": {
+                "type": "string"
+              },
+              "reference": {
+                "type": "string"
+              }
+            }
+          },
+          "policy_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "policy_hash": {
+            "type": "string"
+          },
+          "memory_version": {
+            "type": "string"
+          },
+          "reflection_tokens": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string"
+          }
+        }
+      },
+      "RsiApproval": {
+        "type": "object",
+        "required": [
+          "approval_id",
+          "proposal_id",
+          "proposal_version",
+          "approval_key",
+          "approver_id",
+          "role",
+          "note",
+          "created_at"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "approval_id": {
+            "type": "string"
+          },
+          "proposal_id": {
+            "type": "string"
+          },
+          "proposal_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "approval_key": {
+            "type": "string",
+            "enum": [
+              "single",
+              "owner",
+              "reviewer"
+            ]
+          },
+          "approver_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "admin",
+              "member",
+              "viewer"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RsiRollout": {
+        "type": "object",
+        "required": [
+          "rollout_id",
+          "proposal_id",
+          "stage",
+          "status",
+          "baseline_policy_version",
+          "candidate_hash",
+          "reason",
+          "started_at",
+          "ended_at",
+          "updated_at"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "rollout_id": {
+            "type": "string"
+          },
+          "proposal_id": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "integer",
+            "enum": [
+              10,
+              50,
+              100
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "canary",
+              "promoted",
+              "rolled_back"
+            ]
+          },
+          "baseline_policy_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "candidate_hash": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ended_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RsiGate": {
+        "type": "object",
+        "required": [
+          "offline_evaluation",
+          "holdout_required",
+          "approvals_required",
+          "approvals_satisfied",
+          "approval_keys",
+          "budget_ok",
+          "kill_switch",
+          "canary_eligible",
+          "reasons"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "offline_evaluation": {
+            "type": "string",
+            "enum": [
+              "missing",
+              "pass",
+              "fail"
+            ]
+          },
+          "holdout_required": {
+            "type": "boolean"
+          },
+          "approvals_required": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "approvals_satisfied": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "approval_keys": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "single",
+                "owner",
+                "reviewer"
+              ]
+            }
+          },
+          "budget_ok": {
+            "type": "boolean"
+          },
+          "kill_switch": {
+            "type": "boolean"
+          },
+          "canary_eligible": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "RsiProposal": {
+        "type": "object",
+        "required": [
+          "proposal_id",
+          "title",
+          "summary",
+          "diff",
+          "target",
+          "risk",
+          "status",
+          "status_reason",
+          "artifact",
+          "proposer",
+          "baseline_policy_version",
+          "baseline_memory_version",
+          "applied_policy_version",
+          "version",
+          "created_at",
+          "created_by",
+          "evaluations",
+          "approvals",
+          "rollout",
+          "gate"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "proposal_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "diff": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string",
+            "enum": [
+              "retrieval_weights",
+              "ranking_tiebreakers",
+              "lesson",
+              "playbook",
+              "prompt_hint",
+              "retrieval_bounds",
+              "scope_taxonomy",
+              "consolidation_thresholds",
+              "capability_grant",
+              "approval_rules",
+              "evidence_schema",
+              "evaluation_definition",
+              "safety_policy",
+              "merge_deploy"
+            ]
+          },
+          "risk": {
+            "type": "string",
+            "enum": [
+              "A",
+              "B",
+              "C",
+              "D"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "proposed",
+              "awaiting_approval",
+              "ready",
+              "canary",
+              "promoted",
+              "rolled_back",
+              "blocked"
+            ]
+          },
+          "status_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "artifact": {
+            "$ref": "#/components/schemas/RsiArtifact"
+          },
+          "proposer": {
+            "$ref": "#/components/schemas/RsiProposer"
+          },
+          "baseline_policy_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "baseline_memory_version": {
+            "type": "string"
+          },
+          "applied_policy_version": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "evaluations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RsiEvaluation"
+            }
+          },
+          "approvals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RsiApproval"
+            }
+          },
+          "rollout": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RsiRollout"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "gate": {
+            "$ref": "#/components/schemas/RsiGate"
+          }
+        }
+      },
+      "RsiProposalList": {
+        "type": "object",
+        "required": [
+          "proposals"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "proposals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RsiProposal"
+            }
+          }
+        }
+      },
+      "RsiControls": {
+        "type": "object",
+        "required": [
+          "kill_switch",
+          "kill_switch_reason",
+          "kill_switch_changed_at",
+          "kill_switch_changed_by",
+          "auto_promote_low_risk",
+          "weekly_change_budget",
+          "weekly_reflection_token_budget",
+          "updated_at",
+          "updated_by"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kill_switch": {
+            "type": "boolean"
+          },
+          "kill_switch_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kill_switch_changed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "kill_switch_changed_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "auto_promote_low_risk": {
+            "type": "boolean"
+          },
+          "weekly_change_budget": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "weekly_reflection_token_budget": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "updated_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "RsiBudget": {
+        "type": "object",
+        "required": [
+          "week_start",
+          "weekly_change_budget",
+          "changes_promoted",
+          "changes_remaining",
+          "weekly_reflection_token_budget",
+          "reflection_tokens_used",
+          "reflection_tokens_remaining"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "week_start": {
+            "type": "string",
+            "description": "Monday of the ISO week (YYYY-MM-DD, UTC)."
+          },
+          "weekly_change_budget": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "changes_promoted": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "changes_remaining": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "weekly_reflection_token_budget": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reflection_tokens_used": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reflection_tokens_remaining": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "RsiHoldoutStatus": {
+        "type": "object",
+        "required": [
+          "cases",
+          "last_evaluated_at"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "cases": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Aggregate count only; holdout case content is never exposed."
+          },
+          "last_evaluated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "RsiStatus": {
+        "type": "object",
+        "required": [
+          "contract_version",
+          "controls",
+          "budget",
+          "holdout",
+          "active_rollout",
+          "proposals"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "contract_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "controls": {
+            "$ref": "#/components/schemas/RsiControls"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/RsiBudget"
+          },
+          "holdout": {
+            "$ref": "#/components/schemas/RsiHoldoutStatus"
+          },
+          "active_rollout": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RsiRollout"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "proposals": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "proposed",
+              "awaiting_approval",
+              "ready",
+              "canary",
+              "promoted",
+              "rolled_back",
+              "blocked"
+            ],
+            "properties": {
+              "proposed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "awaiting_approval": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "ready": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "canary": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "promoted": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "rolled_back": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "blocked": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      },
+      "RsiCreateProposalRequest": {
+        "type": "object",
+        "required": [
+          "title",
+          "summary",
+          "diff",
+          "target"
+        ],
+        "additionalProperties": false,
+        "description": "The proposer is the session user and the risk is derived from the target; neither may be sent. A retrieval-policy target carries `candidate_policy`; a memory-item target carries `memory_item` referencing a candidate version.",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 160
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "diff": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "target": {
+            "type": "string",
+            "enum": [
+              "retrieval_weights",
+              "ranking_tiebreakers",
+              "lesson",
+              "playbook",
+              "prompt_hint",
+              "retrieval_bounds",
+              "scope_taxonomy",
+              "consolidation_thresholds",
+              "capability_grant",
+              "approval_rules",
+              "evidence_schema",
+              "evaluation_definition",
+              "safety_policy",
+              "merge_deploy"
+            ]
+          },
+          "candidate_policy": {
+            "type": "object",
+            "description": "Complete candidate retrieval policy. Validated against the same hard ceilings as a stored policy and unpublished until promotion."
+          },
+          "memory_item": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "item_id",
+              "item_version"
+            ],
+            "properties": {
+              "item_id": {
+                "type": "string"
+              },
+              "item_version": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      },
+      "RsiEvaluationRequest": {
+        "type": "object",
+        "required": [
+          "verifier"
+        ],
+        "additionalProperties": false,
+        "description": "Runs the offline replay over the golden set and, unless narrowed, the hidden holdout. No metrics are accepted: the server computes the delta and its confidence interval.",
+        "properties": {
+          "verifier": {
+            "type": "object",
+            "required": [
+              "kind",
+              "id",
+              "reference"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "test",
+                  "qa_disposition",
+                  "reviewer_acceptance"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "reference": {
+                "type": "string",
+                "maxLength": 300
+              }
+            }
+          },
+          "datasets": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "golden",
+                "holdout"
+              ]
+            },
+            "description": "Defaults to both datasets; the canary gate requires both."
+          }
+        }
+      },
+      "RsiCanaryObservationRequest": {
+        "type": "object",
+        "required": [
+          "sample_size",
+          "baseline_successes",
+          "candidate_successes",
+          "evidence_reference"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "sample_size": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "baseline_successes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "candidate_successes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "baseline_rework": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "candidate_rework": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "baseline_cost": {
+            "type": "number",
+            "minimum": 0
+          },
+          "candidate_cost": {
+            "type": "number",
+            "minimum": 0
+          },
+          "safety_events": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "evidence_reference": {
+            "type": "string",
+            "maxLength": 300
+          }
+        }
+      },
+      "RsiControlsRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "auto_promote_low_risk": {
+            "type": "boolean"
+          },
+          "weekly_change_budget": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "weekly_reflection_token_budget": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "RsiControlsResponse": {
+        "type": "object",
+        "required": [
+          "controls"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "controls": {
+            "$ref": "#/components/schemas/RsiControls"
           }
         }
       },
