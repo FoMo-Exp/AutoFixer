@@ -17,6 +17,7 @@ import { startDshServer } from "./helpers/dsh-server.js";
 import { getJson, postJson, readSse, setAuthToken, waitUntil } from "./helpers/http.js";
 import type { ScriptedTurn } from "./helpers/scripted-stream.js";
 import { scriptedStream, TEST_MODEL } from "./helpers/scripted-stream.js";
+import { scriptedGateway } from "./helpers/test-gateway.js";
 
 /**
  * DAT-194 end to end: verifiable provenance for `pi_summary` against the
@@ -88,6 +89,8 @@ function baseConfig(stateFile: string): OrchestratorConfig {
     actorId: "usr_test_operator",
     actorDisplayName: "Test Operator",
     approverIdentity: APPROVER,
+    enterpriseId: "ent_test",
+    workspaceId: "ws_test",
     pathHints: ["node"],
     toolCapabilities: ["echo"],
     maxWallClockSeconds: 60,
@@ -103,7 +106,7 @@ async function startApp(stateFile: string, turns: ScriptedTurn[] = []) {
   const orchestrator = createOrchestrator({
     config: baseConfig(stateFile),
     model: TEST_MODEL,
-    streamFn: scripted.streamFn,
+    gateway: scriptedGateway(TEST_MODEL, scripted.streamFn),
   });
   apps.push(orchestrator);
   setAuthToken(orchestrator.apiToken);

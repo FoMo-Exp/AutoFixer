@@ -14,6 +14,7 @@ import { startDshServer } from "./helpers/dsh-server.js";
 import { getJson, postJson, setAuthToken, waitUntil } from "./helpers/http.js";
 import { scriptedStream, TEST_MODEL } from "./helpers/scripted-stream.js";
 import type { ScriptedTurn } from "./helpers/scripted-stream.js";
+import { scriptedGateway } from "./helpers/test-gateway.js";
 
 /**
  * Real-response golden fixtures for the safe Pi summary contract (DAT-191,
@@ -69,6 +70,8 @@ function testConfig(): OrchestratorConfig {
     actorId: "usr_test_operator",
     actorDisplayName: "Test Operator",
     approverIdentity: APPROVER,
+    enterpriseId: "ent_test",
+    workspaceId: "ws_test",
     pathHints: ["node"],
     toolCapabilities: ["echo"],
     maxWallClockSeconds: 60,
@@ -80,7 +83,7 @@ async function startApp(turns: ScriptedTurn[]): Promise<string> {
   const orchestrator = createOrchestrator({
     config: testConfig(),
     model: TEST_MODEL,
-    streamFn: scripted.streamFn,
+    gateway: scriptedGateway(TEST_MODEL, scripted.streamFn),
   });
   apps.push(orchestrator);
   setAuthToken(orchestrator.apiToken);

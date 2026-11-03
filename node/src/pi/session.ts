@@ -27,15 +27,11 @@ export interface PiSessionOptions {
   tools: AgentTool[];
   listener: PiSessionEventListener;
   /**
-   * Injectable stream function. Defaults to pi-ai's live `streamSimple`;
-   * tests inject a deterministic script instead of a model.
+   * The run-bound model gateway stream function. Required: there is no live
+   * model path that bypasses the gateway, and no credential seam for the
+   * agent loop to resolve provider keys with.
    */
-  streamFn?: StreamFn;
-  /**
-   * Resolves the provider API key at call time (pi-ai's `getEnvApiKey` in
-   * production). Unset means no key: live streaming will fail closed.
-   */
-  getApiKey?: (provider: string) => string | undefined;
+  streamFn: StreamFn;
 }
 
 function userMessage(content: string): UserMessage {
@@ -66,8 +62,7 @@ export class PiSession {
         model: options.model,
         tools: options.tools,
       },
-      ...(options.streamFn ? { streamFn: options.streamFn } : {}),
-      ...(options.getApiKey ? { getApiKey: options.getApiKey } : {}),
+      streamFn: options.streamFn,
     });
     this.agent.subscribe((event) => {
       switch (event.type) {

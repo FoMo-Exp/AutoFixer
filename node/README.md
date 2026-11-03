@@ -38,7 +38,8 @@ npm test              # vitest: unit + integration against the real Go dsh
 
 The integration tests build the Go `autofixer` binary and start a private
 `dsh serve` on a temporary UDS, so the Go toolchain must be on `PATH`. Only
-the model stream is scripted; the Pi agent loop, tool validation, dsh
+the model stream is scripted (behind the real model gateway's policy,
+credential, and identity checks); the Pi agent loop, tool validation, dsh
 control plane, allow-list, grants, sandbox execution, stop conditions, and
 timeouts are the real implementations.
 
@@ -55,28 +56,75 @@ npm run build && npm start
 
 Configuration (environment):
 
-| Variable                                                | Default                                    | Meaning                                                                   |
-| ------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------- |
-| `FORGEPILOT_DSH_SOCKET`                                 | `$TMPDIR/dsh-<uid>/dsh-control.sock`       | dsh control socket (or pipe name)                                         |
-| `FORGEPILOT_DSH_TOKEN_FILE`                             | `<socket>.token`                           | dsh boot-token file                                                       |
-| `FORGEPILOT_API_HOST` / `FORGEPILOT_API_PORT`           | `127.0.0.1` / `0`                          | loopback bind                                                             |
-| `FORGEPILOT_REPOSITORY_ID`                              | `github:Luthiel/AutoFixer`                 | only the pilot repository is accepted                                     |
-| `FORGEPILOT_BASE_REF` / `FORGEPILOT_BASE_SHA`           | `main` / required                          | pinned base revision                                                      |
-| `FORGEPILOT_ACTOR_ID` / `FORGEPILOT_ACTOR_DISPLAY_NAME` | local operator                             | identity recorded on runs                                                 |
-| `FORGEPILOT_APPROVER_IDENTITY`                          | `github:local-operator`                    | must match a dsh `--approver`                                             |
-| `FORGEPILOT_PATH_HINTS`                                 | `node`                                     | comma-separated granted path roots                                        |
-| `FORGEPILOT_TOOL_CAPABILITIES`                          | `echo,sleep`                               | dsh tools tasks may request                                               |
-| `FORGEPILOT_MAX_WALL_CLOCK_SECONDS`                     | `120`                                      | per-run wall clock                                                        |
-| `FORGEPILOT_API_TOKEN_FILE`                             | `$TMPDIR/forgepilot-<uid>/api-token`       | per-process API bearer-token file (0600)                                  |
-| `FORGEPILOT_TASK_STATE_FILE`                            | `$TMPDIR/forgepilot-<uid>/task-state.json` | durable task projection (0600); restart re-associates tasks with dsh runs |
-| `FORGEPILOT_PI_PROVIDER` / `FORGEPILOT_PI_MODEL`        | unset                                      | Pi provider/model; unset means approvals report `PI_UNAVAILABLE`          |
-| `FORGEPILOT_PI_BASE_URL`                               | provider default                           | optional API base URL override; required for `openai-compatible`          |
+| Variable                                                | Default                                        | Meaning                                                                   |
+| ------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------- |
+| `FORGEPILOT_DSH_SOCKET`                                 | `$TMPDIR/dsh-<uid>/dsh-control.sock`           | dsh control socket (or pipe name)                                         |
+| `FORGEPILOT_DSH_TOKEN_FILE`                             | `<socket>.token`                               | dsh boot-token file                                                       |
+| `FORGEPILOT_API_HOST` / `FORGEPILOT_API_PORT`           | `127.0.0.1` / `0`                              | loopback bind                                                             |
+| `FORGEPILOT_REPOSITORY_ID`                              | `github:Luthiel/AutoFixer`                     | only the pilot repository is accepted                                     |
+| `FORGEPILOT_BASE_REF` / `FORGEPILOT_BASE_SHA`           | `main` / required                              | pinned base revision                                                      |
+| `FORGEPILOT_ACTOR_ID` / `FORGEPILOT_ACTOR_DISPLAY_NAME` | local operator                                 | identity recorded on runs                                                 |
+| `FORGEPILOT_APPROVER_IDENTITY`                          | `github:local-operator`                        | must match a dsh `--approver`                                             |
+| `FORGEPILOT_PATH_HINTS`                                 | `node`                                         | comma-separated granted path roots                                        |
+| `FORGEPILOT_TOOL_CAPABILITIES`                          | `echo,sleep`                                   | dsh tools tasks may request                                               |
+| `FORGEPILOT_MAX_WALL_CLOCK_SECONDS`                     | `120`                                          | per-run wall clock                                                        |
+| `FORGEPILOT_API_TOKEN_FILE`                             | `$TMPDIR/forgepilot-<uid>/api-token`           | per-process API bearer-token file (0600)                                  |
+| `FORGEPILOT_TASK_STATE_FILE`                            | `$TMPDIR/forgepilot-<uid>/task-state.json`     | durable task projection (0600); restart re-associates tasks with dsh runs |
+| `FORGEPILOT_PI_PROVIDER` / `FORGEPILOT_PI_MODEL`        | unset                                          | Pi provider/model; unset means approvals report `PI_UNAVAILABLE`          |
+| `FORGEPILOT_PI_BASE_URL`                                | unset                                          | requested model endpoint; must match a registered gateway endpoint        |
+| `FORGEPILOT_ENTERPRISE_ID` / `FORGEPILOT_WORKSPACE_ID`  | `ent_forgepilot_local` / `ws_autofixer`        | scope whose enterprise/workspace policy governs model egress              |
+| `FORGEPILOT_GATEWAY_POLICY_FILE`                        | unset                                          | model gateway policy JSON (endpoint allow-list, retry, fallbacks)         |
+| `FORGEPILOT_GATEWAY_CREDENTIALS_FILE`                   | unset                                          | provider credentials JSON (0600), `credentialRef -> secret`               |
+| `FORGEPILOT_GATEWAY_AUDIT_FILE`                         | `$TMPDIR/forgepilot-<uid>/gateway-audit.jsonl` | durable gateway attempt records (audit/metering seam)                     |
 
-Provider API keys are resolved by pi-ai from the usual environment variables
-(for example `ANTHROPIC_API_KEY`). The Electron Settings dialog stores a key
-using OS-backed secure storage and passes it only to the local orchestrator
-process. The `openai-compatible` provider uses `openai-completions` against the
-configured base URL and accepts any model ID supported by that endpoint.
+## Model gateway (ADR-0005)
+
+Every Pi model call goes through `node/src/gateway/`, the single fail-closed
+egress path:
+
+- The requested model is matched against the policy's explicitly registered
+  endpoints; unknown models, unapproved endpoints, unregistered internal
+  endpoints, and missing credentials are all denied with the stable redacted
+  `MODEL_EGRESS_DENIED` error. The SDK default endpoint is unreachable because
+  the gateway pins the registered `baseUrl` on every dispatch.
+- Pi and the execution environment never hold provider credentials and have no
+  credential or endpoint seam to bypass the gateway. Provider credential
+  environment variables (for example `ANTHROPIC_API_KEY`) are refused at
+  startup: configure the gateway credentials file and unset them. This is the
+  deployment-layer block on env-based bypasses.
+- Missing or partial gateway configuration fails closed — every dispatch is
+  denied. Policy and credentials come only from the protected gateway files
+  (`FORGEPILOT_GATEWAY_POLICY_FILE`, `FORGEPILOT_GATEWAY_CREDENTIALS_FILE`,
+  owner-only 0600).
+- Each dispatch attempt carries the enterprise/workspace/issue/run/invocation/
+  trace identity into the gateway audit/metering event stream; the required
+  pre-dispatch record must be durably written or the dispatch is blocked.
+  Retries, fallbacks, and model switches are separate, fully re-checked
+  invocations.
+
+Policy file shape (credentials are referenced, never inlined):
+
+```json
+{
+  "revision": "2026-11-03.1",
+  "endpoints": [
+    {
+      "endpointId": "ep_xiaomi_main",
+      "provider": "xiaomi",
+      "api": "anthropic-messages",
+      "baseUrl": "https://api.xiaomimimo.com/anthropic",
+      "internal": false,
+      "credentialRef": "cred_xiaomi",
+      "models": ["mimo-v2.5"]
+    }
+  ],
+  "retry": { "maxAttempts": 2 },
+  "fallbacks": []
+}
+```
+
+The `openai-compatible` provider uses `openai-completions` against the
+registered base URL and accepts any model ID approved for that endpoint.
 
 ## Durability and restart recovery (M3)
 
