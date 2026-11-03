@@ -16,7 +16,10 @@
  * The durable sink is tamper-*evident*: every line is hash-chained to its
  * predecessor and the head is anchored in a separate owner-only file, so an
  * ordinary edit, reordering, deletion of an anchored record, or a clean
- * truncation is detected when the log is opened or verified — and a detected
+ * truncation is detected when the log is opened or verified. Appends are
+ * serialized across processes by an exclusive lock and derive their sequence
+ * number from the log as it is on disk inside that lock, so concurrent writers
+ * extend one chain instead of forking it — and a detected
  * log refuses to accept new records, which blocks the dispatch that depended
  * on it. Protection against an attacker who runs as the same OS identity and
  * rewrites both files is out of scope for any in-repo file sink: deployments
@@ -27,6 +30,7 @@
 
 import { createHash, createHmac } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { scrubSecrets } from "../gateway/redact.js";
@@ -135,6 +139,10 @@ export interface RecoveryAuditSinkOptions {
    * can only edit the log (an unkeyed chain can be re-forged by anyone).
    */
   key?: Buffer;
+  /** How long to wait for another writer's lock before failing closed. */
+  lockTimeoutMs?: number;
+  /** Age after which a lock whose owner is gone may be broken. */
+  lockStaleMs?: number;
 }
 
 function chainHash(
@@ -311,44 +319,174 @@ export function verifyRecoveryAuditLog(
   return { records, seq, hash, tornBytes };
 }
 
+const DEFAULT_LOCK_TIMEOUT_MS = 2_000;
+const DEFAULT_LOCK_STALE_MS = 30_000;
+const LOCK_RETRY_MS = 5;
+
+/** Synchronous sleep: append order must not interleave with other writers. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as { code?: unknown } | null)?.code !== "ESRCH";
+  }
+}
+
+/**
+ * A lock older than `staleMs` whose owning process is gone (same host) is
+ * abandoned by a crashed writer and may be broken; a live or remote writer's
+ * lock is never broken.
+ */
+function isStaleLock(lockFile: string, staleMs: number): boolean {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(lockFile);
+  } catch {
+    return false;
+  }
+  if (Date.now() - stat.mtimeMs < staleMs) return false;
+  let owner: { pid?: unknown; host?: unknown } = {};
+  try {
+    owner = JSON.parse(fs.readFileSync(lockFile, "utf8")) as { pid?: unknown; host?: unknown };
+  } catch {
+    owner = {};
+  }
+  const host = typeof owner.host === "string" ? owner.host : undefined;
+  const pid = typeof owner.pid === "number" ? owner.pid : undefined;
+  // Never break another host's lock: its process liveness is unknowable here.
+  if (host !== undefined && host !== os.hostname()) return false;
+  if (pid === undefined) return true;
+  return !isProcessAlive(pid);
+}
+
+/**
+ * Serialize every mutation of one audit log across processes with an
+ * exclusive-create lock file, then release it. Waiting is bounded: a writer
+ * that cannot get the lock raises instead of appending on a stale head, which
+ * blocks the dispatch that depends on this record.
+ */
+function withLogLock<T>(file: string, options: RecoveryAuditSinkOptions, fn: () => T): T {
+  const lockFile = `${file}.lock`;
+  const timeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
+  const staleMs = options.lockStaleMs ?? DEFAULT_LOCK_STALE_MS;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(lockFile, "wx", 0o600);
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code !== "EEXIST") throw error;
+      fd = undefined;
+    }
+    if (fd !== undefined) {
+      try {
+        fs.writeSync(
+          fd,
+          JSON.stringify({ pid: process.pid, host: os.hostname(), at: new Date().toISOString() }),
+        );
+        fs.fsyncSync(fd);
+      } catch (error) {
+        // Never leak a half-created lock: it would block every later writer.
+        try {
+          fs.unlinkSync(lockFile);
+        } catch {
+          // Already gone.
+        }
+        throw error;
+      } finally {
+        fs.closeSync(fd);
+      }
+      try {
+        return fn();
+      } finally {
+        try {
+          fs.unlinkSync(lockFile);
+        } catch {
+          // Already released by a stale-lock sweep; the append itself stands.
+        }
+      }
+    }
+    if (isStaleLock(lockFile, staleMs)) {
+      try {
+        fs.unlinkSync(lockFile);
+      } catch {
+        // Somebody else broke it first; retry the acquisition.
+      }
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      throw new SecurityError(
+        "RECOVERY_AUDIT_LOCK_TIMEOUT",
+        "another writer holds the recovery audit log; refusing to append unaudited or forked evidence",
+        { file, lockFile },
+      );
+    }
+    sleepSync(LOCK_RETRY_MS);
+  }
+}
+
+/**
+ * Verify the log and drop a torn trailing append (a crash mid-write, no final
+ * newline). Complete lines that fail verification still raise: a corrupted
+ * chain is never silently repaired.
+ */
+function normalizeLog(file: string, options: RecoveryAuditSinkOptions): VerifiedLog {
+  const verified = verifyRecoveryAuditLog(file, options);
+  if (verified.tornBytes > 0) {
+    const size = fs.statSync(file).size;
+    fs.truncateSync(file, Math.max(0, size - verified.tornBytes));
+  }
+  return verified;
+}
+
 /**
  * Durable, tamper-evident audit sink: one hash-chained JSONL line per record,
- * owner-only permissions, fsynced appends, and an anchored head. Opening a
- * log that fails verification throws, so the recovery service cannot dispatch
- * on top of a corrupted audit trail.
+ * owner-only permissions, fsynced appends, and an anchored head. Every append
+ * takes an exclusive lock, re-reads and re-verifies the log, and derives its
+ * sequence number and previous hash from what is on disk *inside* that lock —
+ * so two workers appending to the same log produce one chain, not two forks
+ * that both look locally valid.
+ *
+ * Opening a log that fails verification throws, as does an append that cannot
+ * get the lock: the recovery service then refuses to dispatch instead of
+ * sending on top of unproven audit evidence.
  */
 export function createFileRecoveryAuditSink(
   file: string,
   options: RecoveryAuditSinkOptions = {},
 ): RecoveryAuditSink {
   assertProtectedLogFile(file);
-  const verified = verifyRecoveryAuditLog(file, options);
-  if (verified.tornBytes > 0) {
-    // A crash left a partial line: drop exactly those bytes. The complete
-    // chain before it has already been verified, so nothing anchored is lost.
-    const size = fs.statSync(file).size;
-    fs.truncateSync(file, Math.max(0, size - verified.tornBytes));
-  }
-  let seq = verified.seq;
-  let hash = verified.hash;
-  if (seq > 0) writeAnchor(file, { seq, hash });
+  withLogLock(file, options, () => {
+    normalizeLog(file, options);
+  });
   return {
     durability: "durable",
     record(record: RecoveryAuditRecord): void {
-      const nextSeq = seq + 1;
       const scrubbed = scrubAuditRecord(record);
-      const nextHash = chainHash(options.key, hash, nextSeq, scrubbed);
-      const line: AuditLine = { seq: nextSeq, prev: hash, record: scrubbed, hash: nextHash };
-      const fd = fs.openSync(file, "a", 0o600);
-      try {
-        fs.writeSync(fd, `${JSON.stringify(line)}\n`);
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
-      seq = nextSeq;
-      hash = nextHash;
-      writeAnchor(file, { seq, hash });
+      withLogLock(file, options, () => {
+        const verified = normalizeLog(file, options);
+        const nextSeq = verified.seq + 1;
+        const nextHash = chainHash(options.key, verified.hash, nextSeq, scrubbed);
+        const line: AuditLine = {
+          seq: nextSeq,
+          prev: verified.hash,
+          record: scrubbed,
+          hash: nextHash,
+        };
+        const fd = fs.openSync(file, "a", 0o600);
+        try {
+          fs.writeSync(fd, `${JSON.stringify(line)}\n`);
+          fs.fsyncSync(fd);
+        } finally {
+          fs.closeSync(fd);
+        }
+        writeAnchor(file, { seq: nextSeq, hash: nextHash });
+      });
     },
   };
 }

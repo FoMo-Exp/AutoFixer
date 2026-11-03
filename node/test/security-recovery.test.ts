@@ -9,7 +9,10 @@
  * audit distinguishes an approval from an actual send; the scan is bound to an
  * immutable final request so the adapter cannot add unchecked content.
  */
+import { spawn } from "node:child_process";
+import * as fs from "node:fs";
 import { chmodSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import * as os from "node:os";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -1548,5 +1551,178 @@ describe("durable audit sink integrity (DAT-212)", () => {
     expect(() =>
       harness.makeService(harness.authorizations, { allowTestAuditSink: false }),
     ).toThrow(/durable audit sink/);
+  });
+});
+
+describe("audit log concurrent append (DAT-212 QA round 2)", () => {
+  function recordFor(index: number): RecoveryAuditRecord {
+    return {
+      event: "recovery.approval_recorded",
+      at: "2026-11-03T12:00:00.000Z",
+      authorizationId: `auth_${index}`,
+      caseId: "case_1",
+      invocationId: null,
+      traceId: null,
+      scope: CASE_SCOPE,
+      actor: REVIEWER,
+      approval: {
+        contextRevision: "k1.request-context.x",
+        policyRevision: "policy-1",
+        rulesRevision: "k1.rule-revisions.y",
+        scanPolicyRevision: "k1.scan-policy.z",
+        approvedBy: REVIEWER.actorId,
+        approvedAt: "2026-11-03T12:00:00.000Z",
+        expiresAt: "2026-11-03T12:15:00.000Z",
+      },
+      destination: {
+        endpointId: "ep_test",
+        provider: "openai",
+        api: "openai-completions",
+        modelId: TEST_MODEL.id,
+        internal: false,
+      },
+      requestDigest: null,
+      scan: null,
+      outcome: "approved",
+      reason: "approved",
+      detail: {},
+    };
+  }
+
+  test("two independent sink instances cannot fork the chain", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-audit-race-"));
+    const file = path.join(directory, "audit.jsonl");
+    const workerA = createFileRecoveryAuditSink(file);
+    const workerB = createFileRecoveryAuditSink(file);
+
+    // Each instance was opened on the same empty log; a staler in-memory head
+    // would make B repeat seq 1 and break the chain.
+    workerA.record(recordFor(1));
+    workerB.record(recordFor(2));
+    workerA.record(recordFor(3));
+    workerB.record(recordFor(4));
+
+    const verified = verifyRecoveryAuditLog(file);
+    expect(verified.seq).toBe(4);
+    expect(verified.records.map((record) => record.authorizationId)).toEqual([
+      "auth_1",
+      "auth_2",
+      "auth_3",
+      "auth_4",
+    ]);
+    // The chain is one line of descent, so a second instance can keep appending.
+    workerA.record(recordFor(5));
+    expect(verifyRecoveryAuditLog(file).seq).toBe(5);
+  });
+
+  test("two OS processes appending concurrently produce one verifiable chain", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-audit-proc-"));
+    const file = path.join(directory, "audit.jsonl");
+    const script = path.join(directory, "append.ts");
+    const sinkModule = path.resolve(import.meta.dirname, "../src/security/recovery-audit.ts");
+    const viteNode = path.resolve(import.meta.dirname, "../node_modules/.bin/vite-node");
+    writeFileSync(
+      script,
+      `import { createFileRecoveryAuditSink } from ${JSON.stringify(sinkModule)};\n` +
+        `const [file, worker, countRaw] = process.argv.slice(2);\n` +
+        `const sink = createFileRecoveryAuditSink(file);\n` +
+        `const base = ${JSON.stringify(recordFor(0))};\n` +
+        `for (let index = 0; index < Number(countRaw); index += 1) {\n` +
+        `  sink.record({ ...base, authorizationId: worker + "-" + index });\n` +
+        `}\n`,
+      "utf8",
+    );
+    const run = (worker: string): Promise<{ code: number | null; stderr: string }> =>
+      new Promise((resolve, reject) => {
+        const child = spawn(viteNode, [script, file, worker, "4"], {
+          stdio: ["ignore", "ignore", "pipe"],
+        });
+        let stderr = "";
+        child.stderr?.on("data", (chunk: Buffer) => {
+          stderr += chunk.toString("utf8");
+        });
+        child.on("error", reject);
+        child.on("exit", (code) => resolve({ code, stderr }));
+      });
+    const results = await Promise.all([run("worker_a"), run("worker_b")]);
+    for (const result of results) {
+      expect(result.code, result.stderr).toBe(0);
+    }
+    const verified = verifyRecoveryAuditLog(file);
+    expect(verified.seq).toBe(8);
+    const ids = verified.records.map((record) => record.authorizationId);
+    expect(new Set(ids).size).toBe(8);
+    expect(ids.filter((id) => id.startsWith("worker_a-"))).toHaveLength(4);
+    expect(ids.filter((id) => id.startsWith("worker_b-"))).toHaveLength(4);
+  });
+
+  test("a held lock fails closed: no record, and no dispatch", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-audit-lock-"));
+    const file = path.join(directory, "audit.jsonl");
+    const sink = createFileRecoveryAuditSink(file, { lockTimeoutMs: 30, lockStaleMs: 60_000 });
+    const harness = buildHarness({ scanner: cleanScanner(), audit: sink });
+    const authorization = await harness.service.approve({
+      caseId: harness.caseId,
+      reviewer: REVIEWER,
+      destination: DESTINATION,
+    });
+    // A live writer holds the log open: the required pre-dispatch record can
+    // never be appended, so the dispatch must not happen.
+    writeFileSync(
+      `${file}.lock`,
+      JSON.stringify({ pid: process.pid, host: os.hostname(), at: new Date().toISOString() }),
+      { mode: 0o600 },
+    );
+    expect(() => sink.record({ ...recordFor(99) })).toThrow(/another writer holds/);
+    await expect(
+      harness.service.recover({
+        authorizationId: authorization.authorizationId,
+        identity: REQUEST_IDENTITY,
+        workerId: "worker-1",
+        model: TEST_MODEL,
+      }),
+    ).rejects.toMatchObject({ code: "MODEL_EGRESS_DENIED", reason: "AUDIT_UNAVAILABLE" });
+    expect(harness.calls).toHaveLength(0);
+    // Nothing was sent, so the approval was not spent on a broken audit.
+    expect(harness.authorizations.statusAt(authorization.authorizationId)).toBe("approved");
+    fs.unlinkSync(`${file}.lock`);
+  });
+
+  test("a tampered log blocks pre-dispatch instead of sending", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-audit-tamper-"));
+    const file = path.join(directory, "audit.jsonl");
+    const fileSink = createFileRecoveryAuditSink(file);
+    let tampered = false;
+    const audit: RecoveryAuditSink = {
+      durability: "durable",
+      record(record) {
+        fileSink.record(record);
+        if (record.event === "recovery.approval_recorded" && !tampered) {
+          tampered = true;
+          const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
+          const first = JSON.parse(lines[0] as string);
+          first.record.outcome = "unknown";
+          lines[0] = JSON.stringify(first);
+          writeFileSync(file, `${lines.join("\n")}\n`, { mode: 0o600 });
+        }
+      },
+    };
+    const harness = buildHarness({ scanner: cleanScanner(), audit });
+    const authorization = await harness.service.approve({
+      caseId: harness.caseId,
+      reviewer: REVIEWER,
+      destination: DESTINATION,
+    });
+    expect(tampered).toBe(true);
+    await expect(
+      harness.service.recover({
+        authorizationId: authorization.authorizationId,
+        identity: REQUEST_IDENTITY,
+        workerId: "worker-1",
+        model: TEST_MODEL,
+      }),
+    ).rejects.toMatchObject({ code: "MODEL_EGRESS_DENIED", reason: "AUDIT_UNAVAILABLE" });
+    expect(harness.calls).toHaveLength(0);
+    expect(harness.authorizations.statusAt(authorization.authorizationId)).toBe("approved");
   });
 });
