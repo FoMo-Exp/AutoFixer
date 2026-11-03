@@ -62,9 +62,9 @@ export type RetryDecision =
   | {
       retry: true;
       case_id: string;
-      /** Attempt number within this case, counting this authorization. */
+      /** Attempts already consumed for this case (the failure this decision follows). */
       attempt: number;
-      /** Earliest time this retry may actually run. */
+      /** Earliest time the authorized retry may actually run. */
       authorized_at_ms: number;
       /** Always true: hints are recorded as ignored, never applied. */
       hint_ignored: true;
@@ -78,16 +78,23 @@ export type RetryDecision =
     };
 
 export interface RetryGovernorOptions {
-  /** Total attempts per case, including the first. */
+  /** Total dispatch attempts per case, including the first. */
   maxAttempts?: number;
   /** Injectable clock (ms epoch). */
   clock?: () => number;
 }
 
 /**
- * Per-case retry accounting. `decide` is synchronous, so concurrent callers
- * inside one process cannot lose an attempt increment; the concurrency tests
- * hammer it from interleaved async callers to hold that line.
+ * Per-case retry accounting.
+ *
+ * The dispatch budget is enforced where dispatch happens: `reserveAttempt`
+ * is called — synchronously, so it is atomic within the process — before
+ * every dispatch, including the first, and refuses once the case has spent
+ * its `maxAttempts` total dispatches. `decide` adjudicates retry eligibility
+ * after a failure without consuming budget: a retry is only ever authorized
+ * while an unreserved attempt remains, so the number of dispatches can never
+ * exceed the agreed limit, and the envelope's `retryable` never advertises a
+ * retry the gate would refuse.
  */
 export class RetryGovernor {
   private readonly maxAttempts: number;
@@ -113,11 +120,31 @@ export class RetryGovernor {
     return this.clock();
   }
 
-  /** Forget a case's accounting (e.g. after reconciliation). */
+  /** Forget a case's accounting (e.g. after reconciliation or success). */
   release(caseId: string): void {
     this.attempts.delete(caseId);
   }
 
+  /**
+   * Atomically reserve one dispatch attempt for a case. Returns the 1-based
+   * attempt number, or `null` when the case has already spent its total
+   * dispatch budget. A caller that gets `null` must not dispatch.
+   */
+  reserveAttempt(caseId: string): number | null {
+    const consumed = this.attempts.get(caseId) ?? 0;
+    if (consumed >= this.maxAttempts) {
+      return null;
+    }
+    this.attempts.set(caseId, consumed + 1);
+    return consumed + 1;
+  }
+
+  /**
+   * Adjudicate whether the service authorizes a retry after the current
+   * failure. Consumes nothing: the dispatch budget is reserved at dispatch
+   * time via {@link reserveAttempt}, so `attempt` is the number of the
+   * attempt that just failed.
+   */
   decide(input: RetryDecisionInput): RetryDecision {
     const caseId = input.caseId;
     const attempt = this.attempts.get(caseId) ?? 0;
@@ -147,18 +174,19 @@ export class RetryGovernor {
     if (input.deadlineMs !== undefined && now >= input.deadlineMs) {
       return this.refuse(caseId, attempt, "deadline");
     }
-    if (attempt + 1 > this.maxAttempts) {
+    // A retry needs one more dispatch attempt than the case has consumed;
+    // without one left, the budget is exhausted and the gate will refuse.
+    if (attempt >= this.maxAttempts) {
       return this.refuse(caseId, attempt, "exhausted");
     }
     const authorizedAtMs = Math.max(now, input.notBeforeMs ?? now);
     if (input.deadlineMs !== undefined && authorizedAtMs >= input.deadlineMs) {
       return this.refuse(caseId, attempt, "deadline");
     }
-    this.attempts.set(caseId, attempt + 1);
     return {
       retry: true,
       case_id: caseId,
-      attempt: attempt + 1,
+      attempt,
       authorized_at_ms: authorizedAtMs,
       hint_ignored: true,
     };

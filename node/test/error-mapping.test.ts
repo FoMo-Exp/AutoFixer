@@ -314,18 +314,33 @@ describe("agent-facing tool errors use the shared envelope (DAT-226)", () => {
 });
 
 describe("the tool is a controlled retry entry (DAT-226)", () => {
-  test("retryability reflects the governor's decision and counts attempts", async () => {
+  test("the total dispatch count per case never exceeds maxAttempts", async () => {
+    for (const maxAttempts of [1, 2, 3]) {
+      const harness = failingTool(dshError(503, "DSH_UNAVAILABLE", "unreachable", true), {
+        maxAttempts,
+      });
+      let last: Error | undefined;
+      for (let round = 0; round < 6; round += 1) {
+        last = await failing(harness, `tc_cap_${maxAttempts}_${round}`);
+      }
+      // The agreed cap bounds total dispatches — first included — and every
+      // further re-issue is refused before it reaches dsh.
+      expect(harness.calls()).toBe(maxAttempts);
+      expect(last?.message).toContain("Next action: report_error.");
+      expect(envelopeOf(harness.seen, harness.seen.length - 1).retryable).toBe(false);
+    }
+  });
+
+  test("the envelope stops claiming retryable once the budget is spent", async () => {
     const harness = failingTool(dshError(503, "DSH_UNAVAILABLE", "unreachable", true), {
-      maxAttempts: 1,
+      maxAttempts: 2,
     });
     const first = await failing(harness, "tc_a");
     expect(first.message).toContain("Next action: retry_bounded.");
     expect(envelopeOf(harness.seen, 0).retryable).toBe(true);
-    // The authorized retry is due immediately (no service-imposed delay).
-    expect(harness.calls()).toBe(1);
     await failing(harness, "tc_b");
     expect(harness.calls()).toBe(2);
-    // The second failure exhausted the attempt budget: the envelope now
+    // The second failure spent the last dispatch attempt: the envelope now
     // reflects the service's refusal instead of claiming retryable.
     expect(envelopeOf(harness.seen, 1).retryable).toBe(false);
     expect(envelopeOf(harness.seen, 1).next_action).toBe("report_error");
@@ -370,12 +385,11 @@ describe("the tool is a controlled retry entry (DAT-226)", () => {
   });
 
   test("a different intent is a different case and still dispatches", async () => {
-    const harness = failingTool(dshError(503, "DSH_UNAVAILABLE", "unreachable", true), {
-      maxAttempts: 1,
-    });
+    const harness = failingTool(dshError(503, "DSH_UNAVAILABLE", "unreachable", true));
     await failing(harness, "tc_i");
     await failing(harness, "tc_j");
     expect(harness.calls()).toBe(2);
+    // A different intent is a different case: its own dispatch budget.
     await failing(harness, "tc_k", { ...toolParams, arguments: { message: "different" } });
     expect(harness.calls()).toBe(3);
   });
@@ -391,5 +405,61 @@ describe("the tool is a controlled retry entry (DAT-226)", () => {
     expect(harness.calls()).toBe(1);
     expect(envelopeOf(harness.seen, 1).retryable).toBe(false);
     expect(blocked.message).toContain("Next action: report_error.");
+  });
+
+  test("concurrent duplicate calls cannot double-dispatch the same intent", async () => {
+    const seen: ActionObservation[] = [];
+    const dispatches: Array<(error: unknown) => void> = [];
+    let calls = 0;
+    const client = {
+      submitAction: () => {
+        calls += 1;
+        return new Promise((_resolve, reject) => {
+          dispatches.push(reject);
+        });
+      },
+    } as unknown as DshClient;
+    const tool = createDshRequestActionTool({
+      client,
+      runId: "run_1",
+      sessionId: "pis_1",
+      getTurnId: () => "turn_1",
+      observe: (observation) => seen.push(observation),
+      retryGovernor: new RetryGovernor({ clock: () => 10_000 }),
+    });
+    // Both calls enter before the first dispatch returns.
+    const first = tool.execute("tc_dup_1", toolParams).catch((error: Error) => error);
+    const second = tool.execute("tc_dup_2", toolParams).catch((error: Error) => error);
+    expect(calls).toBe(1);
+    // The duplicate is refused up front — no second dispatch can race the
+    // first one into dsh — and the refusal is an envelope, not raw text.
+    const duplicate = (await second) as Error;
+    expect(calls).toBe(1);
+    expect(duplicate.message).toContain("[ACTION_IN_FLIGHT]");
+    const duplicateEnvelope = seen.find((entry) => entry.toolCallId === "tc_dup_2")
+      ?.errorEnvelope as ErrorEnvelope;
+    expect(duplicateEnvelope.code).toBe("ACTION_IN_FLIGHT");
+    expect(duplicateEnvelope.retryable).toBe(false);
+    expect(duplicate.message).not.toContain("unreachable");
+    // The first dispatch is unaffected and flows through the normal path.
+    dispatches[0]?.(dshError(503, "DSH_UNAVAILABLE", "unreachable", true));
+    const failure = (await first) as Error;
+    expect(calls).toBe(1);
+    expect(failure.message).toContain("[TRANSPORT_ERROR]");
+  });
+
+  test("an interrupted dispatch still spends its attempt", async () => {
+    const harness = failingTool(dshError(503, "DSH_UNAVAILABLE", "unreachable", true), {
+      maxAttempts: 1,
+    });
+    const controller = new AbortController();
+    controller.abort();
+    // The aborted dispatch consumed the case's only attempt without recording
+    // a failure, so a later identical call is refused as out of budget.
+    await expect(harness.tool.execute("tc_abort", toolParams, controller.signal)).rejects.toThrow();
+    expect(harness.calls()).toBe(1);
+    const blocked = await failing(harness, "tc_after_abort");
+    expect(harness.calls()).toBe(1);
+    expect(blocked.message).toContain("[STATE_CONFLICT]");
   });
 });

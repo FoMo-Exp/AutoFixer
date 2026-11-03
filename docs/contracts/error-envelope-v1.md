@@ -58,9 +58,9 @@ Supporting codes distinguish the rest of the execution vocabulary:
 different code and a different category from `HARNESS_STOP_CONDITION` (category
 `stop`); `MODEL_EGRESS_DENIED` keeps gateway policy denials as denials;
 `MODEL_DISPATCH_FAILED` covers dispatch failures; `RISK_PROHIBITED`,
-`APPROVAL_REQUIRED`, `INVALID_REQUEST`, `FORBIDDEN`, `STATE_CONFLICT`,
-`RATE_LIMITED`, and `INTERNAL_ERROR` cover the request and policy refusals
-surfaces actually map into.
+`APPROVAL_REQUIRED`, `INVALID_REQUEST`, `ACTION_IN_FLIGHT`, `FORBIDDEN`,
+`STATE_CONFLICT`, `RATE_LIMITED`, and `INTERNAL_ERROR` cover the request,
+duplicate-submission, and policy refusals surfaces actually map into.
 
 Category semantics:
 
@@ -144,12 +144,19 @@ path where an agent can re-issue a failed intent:
   service-imposed delay; once it refuses (exhausted, deadline, guard,
   denial), `retryable` drops and `next_action` falls back to the code's
   exhausted action.
+- The dispatch budget is enforced where dispatch happens: every dispatch —
+  the first included — reserves one of the case's `maxAttempts` total
+  dispatch attempts **before** it goes out, so the number of dispatches per
+  case can never exceed the agreed limit, and a refusal at the gate and the
+  envelope's `retryable` can never disagree about a remaining retry.
 - A re-invocation of an identical failed intent (same tool, arguments and
   scope — one case) is gated **before dispatch**: it runs only if the
   service authorized that retry, its `retry_after_ms` delay has passed, and
-  the run deadline has not. Anything else is refused without a dsh call, so
-  attempt counting, the deadline, and `retry_after_ms` are enforced at the
-  entry, not merely described.
+  the run deadline has not. Anything else is refused without a dsh call.
+- The gate is atomic per case: a duplicate of an identical action that is
+  still in flight is refused (`ACTION_IN_FLIGHT`) instead of dispatching a
+  second mutation alongside the first. The claim lasts exactly as long as
+  the dispatch.
 - A denied intent is final: an identical re-issue is blocked. A different
   intent is a different case and dispatches normally. A success closes the
   case and refunds its attempt budget.

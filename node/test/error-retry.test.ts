@@ -49,12 +49,13 @@ describe("service-side retry authority (DAT-226)", () => {
 
   test("recoverable transport errors retry while stop conditions do not", () => {
     const governor = new RetryGovernor();
+    // The dispatch budget is consumed at dispatch time; `decide` only
+    // adjudicates what happens after the failure.
+    expect(governor.reserveAttempt("t-1")).toBe(1);
     const transport = retriesOnly(governor.decide({ caseId: "t-1", code: "TRANSPORT_ERROR" }));
     expect(transport.attempt).toBe(1);
     const stop = governor.decide({ caseId: "t-2", code: "HARNESS_STOP_CONDITION" });
     expect(stop).toMatchObject({ retry: false, reason: "stop_condition" });
-    // The distinction is outcome-driven, not caller-driven: the transport
-    // error consumed an attempt, the stop condition consumed nothing.
     expect(governor.attemptsFor("t-1")).toBe(1);
     expect(governor.attemptsFor("t-2")).toBe(0);
   });
@@ -67,15 +68,15 @@ describe("service-side retry authority (DAT-226)", () => {
     expect(
       governor.decide({ caseId: "s-2", code: "SANDBOX_UNAVAILABLE", uncertainMutation: true }),
     ).toMatchObject({ retry: false, reason: "guard_unsatisfied" });
+    governor.reserveAttempt("s-3");
     const allowed = retriesOnly(
       governor.decide({ caseId: "s-3", code: "SANDBOX_UNAVAILABLE", uncertainMutation: false }),
     );
     expect(allowed.attempt).toBe(1);
-    // A guarded retry is still bounded like any other retry.
+    // A guarded retry is still bounded like any other retry: with the only
+    // dispatch attempt spent, no retry is left to authorize.
     const single = new RetryGovernor({ maxAttempts: 1 });
-    retriesOnly(
-      single.decide({ caseId: "s-4", code: "SANDBOX_UNAVAILABLE", uncertainMutation: false }),
-    );
+    expect(single.reserveAttempt("s-4")).toBe(1);
     expect(
       single.decide({ caseId: "s-4", code: "SANDBOX_UNAVAILABLE", uncertainMutation: false }),
     ).toMatchObject({ retry: false, reason: "exhausted" });
@@ -100,22 +101,54 @@ describe("service-side retry authority (DAT-226)", () => {
   });
 });
 
-describe("attempt and time limits (DAT-226)", () => {
-  test("the attempt limit is enforced per case", () => {
-    const governor = new RetryGovernor({ maxAttempts: 3 });
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      expect(
-        retriesOnly(governor.decide({ caseId: "inv-9", code: "TRANSPORT_ERROR" })).attempt,
-      ).toBe(attempt);
-    }
-    expect(governor.decide({ caseId: "inv-9", code: "TRANSPORT_ERROR" })).toMatchObject({
+describe("attempt budget at the dispatch boundary (DAT-226)", () => {
+  test("the budget caps total dispatches, including the first", () => {
+    const governor = new RetryGovernor({ maxAttempts: 2 });
+    // First dispatch: allowed, and its failure may be retried.
+    expect(governor.reserveAttempt("inv-1")).toBe(1);
+    expect(retriesOnly(governor.decide({ caseId: "inv-1", code: "TRANSPORT_ERROR" })).retry).toBe(
+      true,
+    );
+    // Second (retry) dispatch: allowed — that is the last one.
+    expect(governor.reserveAttempt("inv-1")).toBe(2);
+    expect(governor.decide({ caseId: "inv-1", code: "TRANSPORT_ERROR" })).toMatchObject({
       retry: false,
       reason: "exhausted",
     });
+    // A third dispatch does not exist in this case's budget.
+    expect(governor.reserveAttempt("inv-1")).toBeNull();
+  });
+
+  test("dispatch totals match the agreed limit for every limit", () => {
+    for (const maxAttempts of [1, 2, 3, 5]) {
+      const governor = new RetryGovernor({ maxAttempts });
+      let dispatched = 0;
+      for (;;) {
+        const attempt = governor.reserveAttempt(`inv-${maxAttempts}`);
+        if (attempt === null) {
+          break;
+        }
+        dispatched += 1;
+        expect(attempt).toBe(dispatched);
+        // After the last allowed dispatch the decision must refuse, so an
+        // envelope built from it never claims a retry the gate would block.
+        const decision = governor.decide({
+          caseId: `inv-${maxAttempts}`,
+          code: "TRANSPORT_ERROR",
+        });
+        if (dispatched === maxAttempts) {
+          expect(decision).toMatchObject({ retry: false, reason: "exhausted" });
+        } else {
+          expect(decision).toMatchObject({ retry: true, attempt: dispatched });
+        }
+      }
+      expect(dispatched).toBe(maxAttempts);
+    }
   });
 
   test("retry-after is honored and never compressed by the caller", () => {
     const governor = new RetryGovernor({ clock: () => 1_000 });
+    governor.reserveAttempt("inv-r");
     const decision = retriesOnly(
       governor.decide({ caseId: "inv-r", code: "MODEL_RATE_LIMITED", notBeforeMs: 4_000 }),
     );
@@ -124,6 +157,7 @@ describe("attempt and time limits (DAT-226)", () => {
 
   test("a timeout closes the retry window", () => {
     const governor = new RetryGovernor({ clock: () => 5_000 });
+    governor.reserveAttempt("inv-t");
     expect(
       governor.decide({
         caseId: "inv-t",
@@ -135,6 +169,7 @@ describe("attempt and time limits (DAT-226)", () => {
 
   test("a retry-after that falls past the deadline is refused as a timeout", () => {
     const governor = new RetryGovernor({ clock: () => 1_000 });
+    governor.reserveAttempt("inv-t2");
     expect(
       governor.decide({
         caseId: "inv-t2",
@@ -147,45 +182,42 @@ describe("attempt and time limits (DAT-226)", () => {
 
   test("releasing a case resets its accounting", () => {
     const governor = new RetryGovernor({ maxAttempts: 1 });
-    retriesOnly(governor.decide({ caseId: "inv-x", code: "TRANSPORT_ERROR" }));
+    expect(governor.reserveAttempt("inv-x")).toBe(1);
     governor.release("inv-x");
     expect(governor.attemptsFor("inv-x")).toBe(0);
-    expect(governor.decide({ caseId: "inv-x", code: "TRANSPORT_ERROR" }).retry).toBe(true);
+    expect(governor.reserveAttempt("inv-x")).toBe(1);
   });
 });
 
-describe("concurrent decisions (DAT-226)", () => {
-  test("interleaved callers never exceed the attempt budget", async () => {
+describe("concurrent reservations (DAT-226)", () => {
+  test("interleaved callers never exceed the dispatch budget", async () => {
     const governor = new RetryGovernor({ maxAttempts: 3 });
-    const decisions = await Promise.all(
+    const results = await Promise.all(
       Array.from({ length: 12 }, async (_unused, index) => {
         // Interleave the callers through the microtask queue so a lost
-        // increment would show up as more than three authorized retries.
+        // reservation would show up as more than three dispatches.
         await Promise.resolve();
         await Promise.resolve();
-        return { index, decision: governor.decide({ caseId: "inv-c", code: "TRANSPORT_ERROR" }) };
+        return { index, attempt: governor.reserveAttempt("inv-c") };
       }),
     );
-    const authorized = decisions.filter((entry) => entry.decision.retry);
-    const refused = decisions.filter((entry) => !entry.decision.retry);
-    expect(authorized).toHaveLength(3);
+    const dispatched = results.filter((entry) => entry.attempt !== null);
+    const refused = results.filter((entry) => entry.attempt === null);
+    expect(dispatched).toHaveLength(3);
     expect(refused).toHaveLength(9);
-    expect(authorized.map((entry) => entry.decision.attempt).sort()).toEqual([1, 2, 3]);
-    for (const entry of refused) {
-      expect(entry.decision).toMatchObject({ reason: "exhausted" });
-    }
+    expect(dispatched.map((entry) => entry.attempt).sort()).toEqual([1, 2, 3]);
     expect(governor.attemptsFor("inv-c")).toBe(3);
   });
 
-  test("concurrent cases do not share an attempt budget", async () => {
+  test("concurrent cases do not share a dispatch budget", async () => {
     const governor = new RetryGovernor({ maxAttempts: 2 });
-    const decisions = await Promise.all(
+    const results = await Promise.all(
       Array.from({ length: 10 }, async (_unused, index) => {
         await Promise.resolve();
-        return governor.decide({ caseId: `inv-${index % 5}`, code: "MODEL_DISPATCH_FAILED" });
+        return governor.reserveAttempt(`inv-${index % 5}`);
       }),
     );
-    expect(decisions.filter((decision) => decision.retry)).toHaveLength(10);
+    expect(results.every((attempt) => attempt !== null)).toBe(true);
     for (let caseIndex = 0; caseIndex < 5; caseIndex += 1) {
       expect(governor.attemptsFor(`inv-${caseIndex}`)).toBe(2);
     }

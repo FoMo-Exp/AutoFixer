@@ -300,6 +300,16 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCodeSpec>> = Object.fre
         "The request shape or vocabulary was refused; correct it and resubmit.",
       ),
       spec(
+        "ACTION_IN_FLIGHT",
+        "tool",
+        "stop",
+        "never",
+        "refresh_state",
+        "An identical action is already in flight.",
+        "Stop. An identical action is already running; await its outcome instead of submitting a duplicate.",
+        "A duplicate submission was refused while the identical action is still running; its outcome appears in the run timeline.",
+      ),
+      spec(
         "FORBIDDEN",
         "policy",
         "denial",

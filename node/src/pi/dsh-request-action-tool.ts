@@ -158,9 +158,12 @@ interface FailedCase {
  *
  * This tool is also the controlled retry entry for failed intents (DAT-226):
  * the {@link RetryGovernor} decides retry eligibility and enforces attempt
- * counting, the deadline, and `retry_after_ms` here. A re-invocation of an
- * identical failed intent is blocked before dispatch unless the service
- * authorized that retry and its time has come; every envelope the model sees
+ * counting, the deadline, and `retry_after_ms` here. The gate is atomic per
+ * case: a duplicate of an in-flight identical action is refused, a
+ * re-invocation of an identical failed intent is blocked before dispatch
+ * unless the service authorized that retry and its time has come, and every
+ * dispatch (the first included) reserves one of the case's `maxAttempts`
+ * total dispatch attempts before it goes out. Every envelope the model sees
  * reflects the actual service decision (`retryable` and `next_action`
  * included), never a model claim.
  */
@@ -169,6 +172,32 @@ export function createDshRequestActionTool(
 ): AgentTool<typeof dshRequestActionSchema, DshRequestActionDetails> {
   const governor = options.retryGovernor ?? new RetryGovernor();
   const failedCases = new Map<string, FailedCase>();
+  /** Cases with one dispatch currently in the air. Claimed and released
+   * synchronously, so concurrent duplicates cannot double-dispatch. */
+  const inFlight = new Set<string>();
+
+  function blockedError(
+    envelope: ErrorEnvelope,
+    originCode: string | null,
+    caseId: string,
+    detail: string,
+    toolCallId: string,
+    params: DshRequestActionParams,
+    actionId: string,
+  ): Error {
+    options.diagnostics?.record(sealDiagnostics({ caseRef: actionId, originCode, detail }));
+    options.observe({
+      toolCallId,
+      toolId: params.tool_id,
+      pathScope: params.path_scope,
+      outcome: "denied",
+      actionId,
+      errorCode: originCode ?? envelope.code,
+      errorMessage: envelope.message,
+      errorEnvelope: envelope,
+    });
+    return new Error(renderAgentError(envelope, originCode));
+  }
 
   function blockedByService(
     prior: FailedCase,
@@ -197,24 +226,66 @@ export function createDshRequestActionTool(
           : { uncertainMutation: prior.uncertainMutation }),
       },
     });
-    options.diagnostics?.record(
-      sealDiagnostics({
-        caseRef: actionId,
-        originCode: prior.originCode,
-        detail: `retry of ${caseId} blocked before dispatch by the retry authority`,
-      }),
-    );
-    options.observe({
+    return blockedError(
+      envelope,
+      prior.originCode,
+      caseId,
+      `retry of ${caseId} blocked before dispatch by the retry authority`,
       toolCallId,
-      toolId: params.tool_id,
-      pathScope: params.path_scope,
-      outcome: "denied",
+      params,
       actionId,
-      errorCode: prior.originCode ?? envelope.code,
-      errorMessage: envelope.message,
-      errorEnvelope: envelope,
+    );
+  }
+
+  /** The case spent its total dispatch budget: nothing is retryable any more. */
+  function blockedExhausted(
+    prior: FailedCase | null,
+    caseId: string,
+    toolCallId: string,
+    params: DshRequestActionParams,
+    actionId: string,
+  ): Error {
+    const envelope = buildErrorEnvelope({
+      // Without a recorded failure the budget was spent by an interrupted
+      // dispatch; the state conflict guidance is the honest fallback.
+      code: prior?.code ?? "STATE_CONFLICT",
+      caseRef: actionId,
+      deniedCapability: prior?.deniedCapability ?? "run_state",
+      facts: {
+        serviceRetryAllowed: false,
+        ...(prior?.uncertainMutation === undefined
+          ? {}
+          : { uncertainMutation: prior.uncertainMutation }),
+      },
     });
-    return new Error(renderAgentError(envelope, prior.originCode));
+    return blockedError(
+      envelope,
+      prior?.originCode ?? null,
+      caseId,
+      `dispatch of ${caseId} refused: the case's dispatch budget is exhausted`,
+      toolCallId,
+      params,
+      actionId,
+    );
+  }
+
+  /** A duplicate of an identical action that is still in the air. */
+  function blockedDuplicate(
+    caseId: string,
+    toolCallId: string,
+    params: DshRequestActionParams,
+    actionId: string,
+  ): Error {
+    const envelope = buildErrorEnvelope({ code: "ACTION_IN_FLIGHT", caseRef: actionId });
+    return blockedError(
+      envelope,
+      null,
+      caseId,
+      `duplicate dispatch of ${caseId} refused while the identical action is in flight`,
+      toolCallId,
+      params,
+      actionId,
+    );
   }
 
   return {
@@ -227,7 +298,8 @@ export function createDshRequestActionTool(
       "capability grant, then executes the action in an isolated sandbox. A denied " +
       "request is final for that intent; adapt and continue or stop. Retries of a " +
       "failed intent are authorized by the service, not by you: an unauthorized or " +
-      "early re-issue is refused without dispatch.",
+      "early re-issue is refused without dispatch, and a duplicate of an action " +
+      "that is still running is refused outright.",
     parameters: dshRequestActionSchema,
     execute: async (
       toolCallId: string,
@@ -238,9 +310,17 @@ export function createDshRequestActionTool(
       const caseId = intentCaseId(options.runId, params);
       const networkDestinations = params.network_destinations ?? [];
 
-      // Controlled retry entry: an identical intent that already failed is
-      // only re-dispatched when the service authorized that retry and its
-      // time has come. The model cannot talk its way past this gate.
+      // Controlled retry entry (DAT-226). The gate is synchronous — claim
+      // and reservation are atomic within the process — so no interleaving
+      // of callers can slip past it:
+      // 1. an identical action still in the air is refused as a duplicate;
+      // 2. an identical failed intent is only re-dispatched when the service
+      //    authorized that retry and its time has come;
+      // 3. every dispatch (the first included) reserves one of the case's
+      //    maxAttempts total dispatch attempts before it goes out.
+      if (inFlight.has(caseId)) {
+        throw blockedDuplicate(caseId, toolCallId, params, actionId);
+      }
       const prior = failedCases.get(caseId);
       if (prior !== undefined) {
         const nowMs = governor.now();
@@ -250,8 +330,12 @@ export function createDshRequestActionTool(
         if (!authorizedNow) {
           throw blockedByService(prior, caseId, toolCallId, params, actionId);
         }
-        // Authorized and due: this dispatch consumes that authorized retry.
       }
+      const reservedAttempt = governor.reserveAttempt(caseId);
+      if (reservedAttempt === null) {
+        throw blockedExhausted(prior ?? null, caseId, toolCallId, params, actionId);
+      }
+      inFlight.add(caseId);
 
       try {
         const response = await options.client.submitAction(
@@ -381,6 +465,10 @@ export function createDshRequestActionTool(
           renderAgentError(envelope, originCode),
           error instanceof Error ? { cause: error } : undefined,
         );
+      } finally {
+        // The in-flight claim lasts exactly as long as the dispatch: a
+        // duplicate arriving before this line never reaches dsh.
+        inFlight.delete(caseId);
       }
     },
   };
