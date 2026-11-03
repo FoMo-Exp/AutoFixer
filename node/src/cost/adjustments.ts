@@ -197,7 +197,8 @@ export function netPosting(
         components[index] as CostComponent,
         correction,
         revisions,
-        adjustment.adjustment_id,
+        entry.posting,
+        adjustment,
       );
     }
   }
@@ -210,11 +211,62 @@ export function netPosting(
   };
 }
 
+/**
+ * Resolve and vet a rebind target — used at BOTH the record boundary (the
+ * store refuses to persist a correction naming it) and the replay boundary
+ * (the net view refuses to apply one). The revision must be recorded and must
+ * actually price this correction: same enterprise/workspace scope, the
+ * posting's deployment target, the corrected category, and the corrected
+ * line's unit. A missing or mismatched revision is refused loudly — never
+ * guessed around and never recomputed under a wrong rate.
+ */
+export function resolveRebindRevision(
+  correction: AdjustmentComponent,
+  component: CostComponent,
+  posting: CostPosting,
+  adjustment: AdjustmentEntry,
+  revisions: readonly RateCardRevision[],
+): RateCardRevision {
+  const revision = revisions.find(
+    (candidate) => candidate.revision_id === correction.corrected_rate_revision_id,
+  );
+  if (!revision) {
+    throw new CostValidationError(
+      `adjustment ${adjustment.adjustment_id} rebinds to rate revision ` +
+        `${String(correction.corrected_rate_revision_id)}, which is not recorded`,
+    );
+  }
+  const mismatches: string[] = [];
+  if (
+    revision.enterprise_id !== adjustment.enterprise_id ||
+    revision.workspace_id !== adjustment.workspace_id
+  ) {
+    mismatches.push("the adjustment's enterprise/workspace scope");
+  }
+  if (revision.target !== posting.target) {
+    mismatches.push(`deployment target ${posting.target}`);
+  }
+  if (revision.category !== correction.category) {
+    mismatches.push(`category ${correction.category}`);
+  }
+  if (revision.unit !== component.unit) {
+    mismatches.push(`unit ${component.unit}`);
+  }
+  if (mismatches.length > 0) {
+    throw new CostValidationError(
+      `adjustment ${adjustment.adjustment_id} rebinds to rate revision ${revision.revision_id}, ` +
+        `which does not price ${mismatches.join(", ")} of the corrected line`,
+    );
+  }
+  return revision;
+}
+
 function applyCorrection(
   original: CostComponent,
   correction: AdjustmentComponent,
   revisions: readonly RateCardRevision[],
-  adjustmentId: string,
+  posting: CostPosting,
+  adjustment: AdjustmentEntry,
 ): CostComponent {
   if (correction.completeness === "unknown") {
     // A voided figure is unknown again — never a zeroed charge.
@@ -228,15 +280,7 @@ function applyCorrection(
   }
   let base = original;
   if (correction.corrected_rate_revision_id !== null) {
-    const revision = revisions.find(
-      (candidate) => candidate.revision_id === correction.corrected_rate_revision_id,
-    );
-    if (!revision) {
-      throw new CostValidationError(
-        `adjustment ${adjustmentId} rebinds to rate revision ` +
-          `${correction.corrected_rate_revision_id}, which is not recorded`,
-      );
-    }
+    const revision = resolveRebindRevision(correction, original, posting, adjustment, revisions);
     base = {
       ...base,
       currency: revision.currency,

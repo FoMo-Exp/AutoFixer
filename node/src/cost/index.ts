@@ -75,6 +75,7 @@ export {
 export {
   buildAdjustment,
   netPosting,
+  resolveRebindRevision,
   summarizeCosts,
   validateAdjustmentEntry,
 } from "./adjustments.js";

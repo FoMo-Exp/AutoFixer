@@ -271,6 +271,49 @@ describe("the net view replays corrections over an untouched original", () => {
     );
   });
 
+  test("the replay boundary re-vets rebinds even when the revision is recorded", () => {
+    const posting = priced();
+    // An output rate must never reprice the input line, even if recorded.
+    const wrongCategory = recorded({
+      components: [
+        {
+          category: "input",
+          completeness: "known",
+          corrected_units: 1000,
+          corrected_rate_revision_id: "rev-out",
+          corrected_cost: null,
+          corrected_currency: null,
+          note: null,
+        },
+      ],
+    });
+    expect(() => netPosting({ posting, adjustments: [wrongCategory] }, RATES)).toThrow(
+      CostValidationError,
+    );
+    // A foreign-workspace revision is out of scope for this correction.
+    const foreignScope = built({
+      revision_id: "rev-elsewhere",
+      category: "input",
+      workspace_id: "ws-2",
+    });
+    const wrongScope = recorded({
+      components: [
+        {
+          category: "input",
+          completeness: "known",
+          corrected_units: 1000,
+          corrected_rate_revision_id: "rev-elsewhere",
+          corrected_cost: null,
+          corrected_currency: null,
+          note: null,
+        },
+      ],
+    });
+    expect(() =>
+      netPosting({ posting, adjustments: [wrongScope] }, [...RATES, foreignScope]),
+    ).toThrow(CostValidationError);
+  });
+
   test("an unpriced category can be corrected; a category the posting lacks is refused", () => {
     const posting = computeInvocationCost(
       invocationInput({ usage: { cache_read: figure(null), completeness: "unknown" } }),

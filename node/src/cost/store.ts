@@ -22,7 +22,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { buildAdjustment, validateAdjustmentEntry } from "./adjustments.js";
+import { buildAdjustment, resolveRebindRevision, validateAdjustmentEntry } from "./adjustments.js";
 import {
   CostAccessError,
   CostConflictError,
@@ -139,9 +139,11 @@ export class CostStore {
   }
 
   /**
-   * Record one immutable rate revision. Two revisions with the same binding
-   * key and the same effective start would make rate binding ambiguous, so
-   * the second is refused — revisions are never rewritten or merged.
+   * Record one immutable rate revision. An identical redelivery of the same
+   * revision id returns the recorded revision; a changed redelivery is
+   * refused. Two DIFFERENT revisions with the same binding key and the same
+   * effective start would make rate binding ambiguous, so the second is
+   * refused — revisions are never rewritten or merged.
    */
   addRateRevision(input: RateCardRevisionInput): RateCardRevision {
     const revision = buildRateCardRevision(input, this.now().toISOString());
@@ -151,18 +153,24 @@ export class CostStore {
         continue;
       }
       const existing = record.payload as RateCardRevision;
+      if (existing.revision_id === revision.revision_id) {
+        // Identity semantics belong to the write path: identical redelivery
+        // deduplicates and returns the recorded revision, changed content
+        // conflicts there.
+        continue;
+      }
       if (
         rateRevisionKey(existing) === key &&
         Date.parse(existing.effective_from) === Date.parse(revision.effective_from)
       ) {
         throw new CostConflictError(
           `rate revision for the same scope and effective start ${revision.effective_from} ` +
-            "is already recorded; overlapping identical starts would make binding ambiguous",
+            "is already recorded under another revision id; overlapping identical starts " +
+            "would make binding ambiguous",
         );
       }
     }
-    this.commit("rate_revision", revision, revision.revision_id);
-    return revision;
+    return this.commit("rate_revision", revision, revision.revision_id);
   }
 
   /**
@@ -174,16 +182,14 @@ export class CostStore {
   recordInvocationCost(invocation: CostableInvocation): CostPosting {
     const revisions = this.revisionsFor(invocation.enterprise_id, invocation.workspace_id);
     const posting = computeInvocationCost(invocation, revisions, this.now().toISOString());
-    this.commit("posting", posting, posting.posting_id);
-    return posting;
+    return this.commit("posting", posting, posting.posting_id);
   }
 
   /** Price and record one measured self-hosted infrastructure charge. */
   recordInfrastructureCost(input: InfrastructureCostInput): CostPosting {
     const revisions = this.revisionsFor(input.enterprise_id, input.workspace_id);
     const posting = computeInfrastructureCost(input, revisions, this.now().toISOString());
-    this.commit("posting", posting, posting.posting_id);
-    return posting;
+    return this.commit("posting", posting, posting.posting_id);
   }
 
   /**
@@ -223,16 +229,25 @@ export class CostStore {
             "which the posting records as included and never charges",
         );
       }
+      if (correction.corrected_rate_revision_id !== null) {
+        // Persist only corrections whose rebind names a recorded, compatible
+        // rate revision — a stored adjustment must always be replayable.
+        resolveRebindRevision(
+          correction,
+          component,
+          target,
+          adjustment,
+          this.revisionsFor(adjustment.enterprise_id, adjustment.workspace_id),
+        );
+      }
     }
-    this.commit("adjustment", adjustment, adjustment.adjustment_id);
-    return adjustment;
+    return this.commit("adjustment", adjustment, adjustment.adjustment_id);
   }
 
   /** Record one immutable FX quote; quote ids are unique, quotes are never rewritten. */
   addFxQuote(input: FxQuoteInput): FxQuote {
     const quote = buildFxQuote(input, this.now().toISOString());
-    this.commit("fx_quote", quote, quote.quote_id);
-    return quote;
+    return this.commit("fx_quote", quote, quote.quote_id);
   }
 
   /** Recorded revisions of the scope, in recording order. */
@@ -363,10 +378,14 @@ export class CostStore {
   /**
    * The one write path: durable append first (its failure means the record is
    * recorded nowhere), then the in-memory index. A redelivery of identical
-   * content deduplicates; different content under the same identity is
-   * refused.
+   * content deduplicates and returns the recorded record; different content
+   * under the same identity is refused.
    */
-  private commit(recordType: CostRecordType, payload: StoredRecord["payload"], id: string): void {
+  private commit<T extends StoredRecord["payload"]>(
+    recordType: CostRecordType,
+    payload: T,
+    id: string,
+  ): T {
     const identity = `${recordType}:${id}`;
     const fingerprint = fingerprintOf(recordType, payload);
     const existing = this.records.get(identity);
@@ -377,7 +396,7 @@ export class CostStore {
             "financial evidence is immutable",
         );
       }
-      return;
+      return existing.payload as T;
     }
     if (this.persistencePath) {
       try {
@@ -389,6 +408,7 @@ export class CostStore {
       }
     }
     this.records.set(identity, { record_type: recordType, payload, fingerprint });
+    return payload;
   }
 
   /** One durable append per record; synchronous, 0600, one JSONL line. */

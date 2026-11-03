@@ -10,15 +10,17 @@ import { describe, expect, test } from "vitest";
 import {
   CostAccessError,
   CostConflictError,
+  CostStore,
   CostValidationError,
   CostWriteError,
-  CostStore,
+  netPosting,
 } from "../src/cost/index.js";
 import {
   SCOPE,
   OTHER_SCOPE,
   adjustmentInput,
   fxQuoteInput,
+  infrastructureInput,
   invocationInput,
   makeStore,
   rateInput,
@@ -72,6 +74,28 @@ describe("immutable writes", () => {
     expect(() => store.addRateRevision(rateInput({ revision_id: "rev-b" }))).toThrow(
       CostConflictError,
     );
+  });
+
+  test("an identical rate-revision redelivery returns the recorded revision unchanged", () => {
+    // An advancing clock proves the returned record is the recorded one, not
+    // a freshly re-stamped rebuild.
+    let tick = 0;
+    const store = new CostStore({
+      now: () => new Date(Date.parse("2026-06-01T00:00:00.000Z") + tick++ * 1000),
+    });
+    const first = store.addRateRevision(rateInput({ revision_id: "rev-a" }));
+    const second = store.addRateRevision(rateInput({ revision_id: "rev-a" }));
+    expect(second).toBe(first);
+    expect(store.rateRevisions(SCOPE)).toHaveLength(1);
+    // Same identity, changed content: still refused.
+    expect(() => store.addRateRevision(rateInput({ revision_id: "rev-a", rate: "0.9" }))).toThrow(
+      CostConflictError,
+    );
+    // Different identity on the same binding key and start: still refused.
+    expect(() => store.addRateRevision(rateInput({ revision_id: "rev-b" }))).toThrow(
+      CostConflictError,
+    );
+    expect(store.rateRevisions(SCOPE)).toHaveLength(1);
   });
 
   test("quote and adjustment identities are immutable too", () => {
@@ -146,6 +170,108 @@ describe("adjustment link integrity", () => {
         }),
       ),
     ).toThrow(CostValidationError);
+  });
+
+  test("adjustment rebinds are vetted at record time and stay replayable", () => {
+    const store = makeStore();
+    store.addRateRevision(rateInput({ revision_id: "rev-in", category: "input" }));
+    store.addRateRevision(rateInput({ revision_id: "rev-out", category: "output", rate: "0.006" }));
+    store.addRateRevision(
+      rateInput({ revision_id: "rev-ws2", category: "input", workspace_id: "ws-2" }),
+    );
+    store.addRateRevision(
+      rateInput({
+        revision_id: "rev-self",
+        category: "input",
+        target: "self_hosted",
+        source: "administrator",
+      }),
+    );
+    store.recordInvocationCost(invocationInput());
+
+    const rebind = (revisionId: string) =>
+      adjustmentInput({
+        components: [
+          {
+            category: "input",
+            completeness: "known",
+            corrected_units: 1000,
+            corrected_rate_revision_id: revisionId,
+            corrected_cost: null,
+            corrected_currency: null,
+            note: null,
+          },
+        ],
+      });
+
+    // Unrecorded revision: refused — a stored adjustment must always replay.
+    expect(() => store.recordAdjustment(rebind("rev-missing"))).toThrow(CostValidationError);
+    // Another category's rate must never reprice this line.
+    expect(() => store.recordAdjustment(rebind("rev-out"))).toThrow(CostValidationError);
+    // Foreign workspace scope.
+    expect(() => store.recordAdjustment(rebind("rev-ws2"))).toThrow(CostValidationError);
+    // Foreign deployment target.
+    expect(() => store.recordAdjustment(rebind("rev-self"))).toThrow(CostValidationError);
+    // A compatible rebind records — and the recorded correction replays.
+    expect(store.recordAdjustment(rebind("rev-in")).components[0]?.corrected_rate_revision_id).toBe(
+      "rev-in",
+    );
+    const entry = store.entries(SCOPE, { invocation_id: "inv-1" })[0];
+    expect(entry).toBeDefined();
+    const net = netPosting(entry!, store.rateRevisions(SCOPE));
+    expect(net.components.find((line) => line.category === "input")).toMatchObject({
+      cost: "0.003000000000",
+      rate_revision_id: "rev-in",
+    });
+  });
+
+  test("an infrastructure rebind must match the corrected line's unit", () => {
+    const store = makeStore();
+    store.addRateRevision(
+      rateInput({
+        revision_id: "rev-gpu",
+        target: "self_hosted",
+        source: "measured",
+        category: "infrastructure",
+        unit: "gpu_seconds",
+        divisor: 1,
+        rate: "0.0001",
+      }),
+    );
+    store.addRateRevision(
+      rateInput({
+        revision_id: "rev-core",
+        target: "self_hosted",
+        source: "measured",
+        category: "infrastructure",
+        unit: "core_seconds",
+        divisor: 1,
+        rate: "0.0001",
+      }),
+    );
+    store.recordInfrastructureCost(
+      infrastructureInput({ entry_key: "infra-1", unit: "gpu_seconds" }),
+    );
+
+    const rebind = (revisionId: string) =>
+      adjustmentInput({
+        target_posting_id: "cost-infra:infra-1",
+        components: [
+          {
+            category: "infrastructure",
+            completeness: "known",
+            corrected_units: 10,
+            corrected_rate_revision_id: revisionId,
+            corrected_cost: null,
+            corrected_currency: null,
+            note: null,
+          },
+        ],
+      });
+
+    // A core-seconds rate must never reprice a gpu-seconds charge.
+    expect(() => store.recordAdjustment(rebind("rev-core"))).toThrow(CostValidationError);
+    expect(store.recordAdjustment(rebind("rev-gpu")).components[0]?.corrected_units).toBe(10);
   });
 });
 
