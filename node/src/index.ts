@@ -7,6 +7,8 @@ import { readOrCreateApiToken } from "./api/auth.js";
 import { AuthService } from "./api/auth-service.js";
 import { ProviderOAuth, readOAuthCredentialsFile } from "./api/oauth.js";
 import { createApiServer } from "./api/server.js";
+import { createRequestAuthority } from "./api/request-authority.js";
+import type { RequestAuthority } from "./api/request-authority.js";
 import { TaskService } from "./api/task-service.js";
 import { TaskStore } from "./api/task-store.js";
 import type { OrchestratorConfig } from "./config.js";
@@ -14,6 +16,7 @@ import { configFromEnv } from "./config.js";
 import type { ControlPlaneDb } from "./control-plane/index.js";
 import {
   createIdentityRepositories,
+  createProviderAccessRepositories,
   createRepositories,
   openControlPlaneDb,
 } from "./control-plane/index.js";
@@ -59,6 +62,12 @@ export interface OrchestratorHandle {
   auth: AuthService | undefined;
   /** Control-plane database behind the identity subsystem. */
   controlPlane: ControlPlaneDb | undefined;
+  /**
+   * Provider-authority request boundary (DAT-203); set with the identity
+   * subsystem. Exposed so revocation paths (provider events, reconcile) share
+   * its authority-change signal.
+   */
+  providerAuthority: RequestAuthority | undefined;
   /** Per-process bearer token callers must present on every API request. */
   apiToken: string;
   /** Start listening; resolves with the bound loopback address. */
@@ -135,11 +144,14 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   // absence keeps the local-operator surface exactly as before.
   let auth: AuthService | undefined;
   let controlPlane: ControlPlaneDb | undefined;
+  let providerAuthority: RequestAuthority | undefined;
   if (config.oauthClientsFile !== undefined) {
     controlPlane = openControlPlaneDb({ path: config.controlPlaneFile ?? ":memory:" });
+    const repos = createRepositories(controlPlane);
+    const identity = createIdentityRepositories(controlPlane);
     auth = new AuthService({
-      repos: createRepositories(controlPlane),
-      identity: createIdentityRepositories(controlPlane),
+      repos,
+      identity,
       config: {
         enterpriseId: config.enterpriseId,
         workspaceId: config.workspaceId,
@@ -155,11 +167,24 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
         : {}),
       ...(options.authDnsLookup !== undefined ? { lookup: options.authDnsLookup } : {}),
     });
+    // Provider authority (DAT-203) shares the control plane with identity:
+    // the request boundary enforces effective access for session requests
+    // whenever a service integration is installed for this workspace.
+    providerAuthority = createRequestAuthority({
+      access: createProviderAccessRepositories(controlPlane),
+      memberships: repos.memberships,
+      workspaces: repos.workspaces,
+      users: identity.users,
+      identities: identity.identities,
+      enterpriseId: config.enterpriseId,
+      workspaceId: config.workspaceId,
+    });
   }
   const server = createApiServer({
     service,
     apiToken,
     ...(auth !== undefined ? { auth } : {}),
+    ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
     ...(config.publicOrigin !== undefined ? { publicOrigin: config.publicOrigin } : {}),
   });
   return {
@@ -171,6 +196,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     model,
     auth,
     controlPlane,
+    providerAuthority,
     apiToken,
     start: () => {
       const { promise, resolve, reject } = Promise.withResolvers<{ host: string; port: number }>();

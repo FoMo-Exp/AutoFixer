@@ -44,20 +44,30 @@ import {
  * A monotonic counter bumped whenever repository authority may have changed
  * (revocation, provider event, reconciliation). The gate itself caches
  * nothing — every decision is recomputed from the store — but the epoch is
- * the shared "authority changed" signal for consumers that do memoize or
- * push invalidations (e.g. SSE subscription teardown), and for tests.
+ * the shared "authority changed" signal: the request boundary subscribes to
+ * cut live streams on revocation, and tests observe it.
  */
 export interface AuthorityEpoch {
   current(): number;
   bump(): void;
+  /** Subscribe to authority changes; returns an unsubscribe function. */
+  subscribe(listener: () => void): () => void;
 }
 
 export function createAuthorityEpoch(): AuthorityEpoch {
   let epoch = 0;
+  const listeners = new Set<() => void>();
   return {
     current: () => epoch,
     bump: () => {
       epoch += 1;
+      for (const listener of [...listeners]) {
+        listener();
+      }
+    },
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
   };
 }
