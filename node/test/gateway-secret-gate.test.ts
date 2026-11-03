@@ -1005,4 +1005,66 @@ describe("untrusted report accessors cannot leak into denials or audit events (Q
     expect(JSON.stringify(events)).not.toContain(second);
     expect(JSON.stringify(events)).not.toContain("stub-detector");
   });
+
+  test("an index accessor on findings cannot smuggle a minimizable finding through", async () => {
+    // QA re-review zero-byte case: if the index getter's finding were
+    // accepted, it would be eligible for authorized minimization, the second
+    // (clean) scan would verify the removal, and the request would be
+    // dispatched. The descriptor pre-check rejects it before the getter ever
+    // runs — the provider sees nothing.
+    let scans = 0;
+    let indexReads = 0;
+    const findings: unknown[] = ["placeholder"];
+    Object.defineProperty(findings, "0", {
+      get() {
+        indexReads += 1;
+        return {
+          classification: "secret_suspected",
+          detector: "high-entropy-token",
+          ruleVersion: "1",
+          segmentId: "messages[0].content",
+          match: "hello",
+        };
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    const { adapter, calls: adapterCalls } = spyAdapter();
+    const { sink, events } = recordingSink();
+    const gateway = gatewayWith(adapter, {
+      sink,
+      scanPolicy: {
+        minimization: {
+          id: "min-1",
+          version: "1",
+          authorized: true,
+          appliesTo: { detectors: ["high-entropy-token"] },
+        },
+      },
+      scanner: {
+        id: "flipper",
+        ruleVersion: "1",
+        scan: () => {
+          scans += 1;
+          return scans === 1
+            ? ({
+                scanner: "flipper",
+                ruleVersion: "1",
+                classification: "secret_suspected",
+                findings,
+              } as unknown as SecretScanReport)
+            : { scanner: "flipper", ruleVersion: "1", classification: "clean", findings: [] };
+        },
+      },
+    });
+    await expectScanDenial(
+      gateway.bind(TEST_BINDING)(TEST_MODEL, CLEAN_CONTEXT, undefined),
+      "SCANNER_UNAVAILABLE",
+      "SENSITIVE_DATA_UNCERTAIN",
+    );
+    expect(indexReads).toBe(0);
+    expect(scans).toBe(1);
+    expect(adapterCalls).toHaveLength(0);
+    expect(JSON.stringify(events)).not.toContain("high-entropy-token");
+  });
 });

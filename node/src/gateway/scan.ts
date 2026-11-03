@@ -512,8 +512,17 @@ function readSnapshotFindings(
   let invalid = !descriptor || "get" in descriptor || "set" in descriptor || !Array.isArray(value);
   const findings: ReportSnapshot["findings"] = [];
   if (Array.isArray(value)) {
-    const length: unknown = Reflect.get(value, "length");
+    // The length and every index must be own data properties, confirmed
+    // before they are read: an accessor is never invoked, and accessors,
+    // missing indices (holes), and failing reads all fail closed (QA
+    // re-review — index accessors must be rejected like any accessor).
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+    const length: unknown =
+      lengthDescriptor && !("get" in lengthDescriptor) && !("set" in lengthDescriptor)
+        ? lengthDescriptor.value
+        : UNREADABLE;
     if (
+      length === UNREADABLE ||
       typeof length !== "number" ||
       !Number.isInteger(length) ||
       length < 0 ||
@@ -522,7 +531,12 @@ function readSnapshotFindings(
       invalid = true;
     } else {
       for (let index = 0; index < length; index += 1) {
-        const element: unknown = Reflect.get(value, index);
+        const indexDescriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (!indexDescriptor || "get" in indexDescriptor || "set" in indexDescriptor) {
+          invalid = true;
+          continue;
+        }
+        const element: unknown = indexDescriptor.value;
         if (!isPlainRecord(element)) {
           invalid = true;
           continue;

@@ -927,4 +927,94 @@ describe("untrusted scanner reports are snapshotted exactly once (QA round-3)", 
       expect(gate).toMatchObject({ ok: false, reason: "SCANNER_UNAVAILABLE" });
     }
   });
+
+  test("an index accessor on findings is rejected before it is ever invoked", async () => {
+    // QA re-review: an array index defined as a getter must fail closed like
+    // any accessor — confirmed by descriptor before the read, so the getter
+    // never executes and its finding is never accepted.
+    const findings: unknown[] = ["placeholder"];
+    let indexReads = 0;
+    Object.defineProperty(findings, "0", {
+      get() {
+        indexReads += 1;
+        return {
+          classification: "secret_suspected",
+          detector: "stub-detector",
+          ruleVersion: "1",
+          segmentId: "messages[0].content",
+          match: "hello",
+        };
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    const gate = await runRequestScanGate(context, {
+      scanner: stubScanner(
+        () =>
+          ({
+            scanner: "stub",
+            ruleVersion: "1",
+            classification: "secret_suspected",
+            findings,
+          }) as unknown as SecretScanReport,
+      ),
+    });
+    expect(indexReads).toBe(0);
+    expect(gate).toMatchObject({ ok: false, reason: "SCANNER_UNAVAILABLE" });
+    if (gate.ok) return;
+    expect(JSON.stringify(gate.evidence)).not.toContain("stub-detector");
+    expect(JSON.stringify(gate.evidence)).not.toContain("hello");
+  });
+
+  test("a missing index (array hole) fails closed", async () => {
+    const sparse: unknown[] = [];
+    sparse.length = 2;
+    const gate = await runRequestScanGate(context, {
+      scanner: stubScanner(
+        () =>
+          ({
+            scanner: "stub",
+            ruleVersion: "1",
+            classification: "clean",
+            findings: sparse,
+          }) as unknown as SecretScanReport,
+      ),
+    });
+    expect(gate).toMatchObject({ ok: false, reason: "SCANNER_UNAVAILABLE" });
+  });
+
+  test("a failing index descriptor read fails closed into a static denial", async () => {
+    const leak = "proxy trap echoed plaintext-secret-888";
+    const backing: unknown[] = [
+      {
+        classification: "secret_suspected",
+        detector: "stub-detector",
+        ruleVersion: "1",
+        segmentId: "messages[0].content",
+      },
+    ];
+    const hostile = new Proxy(backing, {
+      get(target, key, receiver) {
+        return Reflect.get(target, key, receiver);
+      },
+      getOwnPropertyDescriptor() {
+        throw new Error(leak);
+      },
+    });
+    const gate = await runRequestScanGate(context, {
+      scanner: stubScanner(
+        () =>
+          ({
+            scanner: "stub",
+            ruleVersion: "1",
+            classification: "clean",
+            findings: hostile,
+          }) as unknown as SecretScanReport,
+      ),
+    });
+    expect(gate).toMatchObject({ ok: false, reason: "SCANNER_UNAVAILABLE" });
+    if (gate.ok) return;
+    expect(gate.detail).not.toContain(leak);
+    expect(JSON.stringify(gate.evidence)).not.toContain(leak);
+  });
 });
