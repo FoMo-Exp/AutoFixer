@@ -16,7 +16,7 @@ import {
   createModelGateway,
   createPatternSecretScanner,
   createStaticCredentialStore,
-  createStaticPolicyResolver,
+  createScopeBackedPolicyResolver,
 } from "../src/index.js";
 import type { GatewayPolicy, ProviderAdapter } from "../src/index.js";
 import { TEST_MODEL } from "./helpers/scripted-stream.js";
@@ -27,6 +27,7 @@ import {
   TEST_ENDPOINT_BASE_URL,
   TEST_SCOPE,
   memorySink,
+  securityStubs,
   testPolicyFor,
 } from "./helpers/test-gateway.js";
 import { BUDGET_ACCESS, BUDGET_SCOPE, testBudgetPolicy } from "./helpers/budget-fixtures.js";
@@ -78,6 +79,50 @@ function providerErrorStream(detail: string): AssistantMessageEventStream {
   return stream;
 }
 
+function emptyStream(): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream();
+  queueMicrotask(() => {
+    stream.end();
+  });
+  return stream;
+}
+
+function contentThenEndStream(text: string): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream();
+  const message = assistantMessage(text, 10);
+  queueMicrotask(() => {
+    stream.push({ type: "start", partial: { ...message, content: [] } });
+    stream.push({ type: "text_start", contentIndex: 0, partial: message });
+    stream.push({
+      type: "text_delta",
+      contentIndex: 0,
+      delta: text,
+      partial: message,
+    });
+    stream.end();
+  });
+  return stream;
+}
+
+function abortedStream(text?: string): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream();
+  const aborted: AssistantMessage = {
+    ...assistantMessage(text ?? ""),
+    content: [],
+    stopReason: "aborted",
+    errorMessage: "aborted by caller",
+  };
+  queueMicrotask(() => {
+    if (text !== undefined) {
+      const message = assistantMessage(text, 10);
+      stream.push({ type: "start", partial: { ...message, content: [] } });
+      stream.push({ type: "text_start", contentIndex: 0, partial: message });
+    }
+    stream.push({ type: "error", reason: "aborted", error: aborted });
+  });
+  return stream;
+}
+
 function transportError(code: string): Error {
   return Object.assign(new Error(`socket ${code}`), { code });
 }
@@ -115,29 +160,31 @@ function buildGateway(options: {
   gatewayPolicy?: GatewayPolicy;
   adapter: ProviderAdapter;
   budget?: BudgetAuthority | undefined;
+  withoutBudget?: boolean;
   onIncident?: (message: string) => void;
 }) {
   const store = new BudgetStore();
-  const budget =
-    options.budget ??
-    createBudgetAuthority({
-      store,
-      policyResolver: createStaticBudgetPolicyResolver(
-        options.policy ?? testBudgetPolicy(),
-        BUDGET_SCOPE,
-      ),
-    });
+  const budget = options.withoutBudget
+    ? undefined
+    : (options.budget ??
+      createBudgetAuthority({
+        store,
+        policyResolver: createStaticBudgetPolicyResolver(
+          options.policy ?? testBudgetPolicy(),
+          BUDGET_SCOPE,
+        ),
+      }));
   const gateway = createModelGateway({
-    policyResolver: createStaticPolicyResolver(
-      options.gatewayPolicy ?? testPolicyFor(TEST_MODEL),
-      TEST_SCOPE,
-    ),
+    policyResolver: createScopeBackedPolicyResolver([
+      { scope: TEST_SCOPE, policy: options.gatewayPolicy ?? testPolicyFor(TEST_MODEL) },
+    ]),
     credentials: createStaticCredentialStore({ [TEST_CREDENTIAL_REF]: TEST_CREDENTIAL }),
     adapter: options.adapter,
     scanner: createPatternSecretScanner(),
     sink: memorySink().sink,
     newInvocationId: counterIds(),
     now: () => new Date("2026-11-03T00:00:00Z"),
+    ...securityStubs(),
     ...(budget ? { budget } : {}),
     ...(options.onIncident ? { onIncident: options.onIncident } : {}),
   });
@@ -299,14 +346,90 @@ describe("gateway budget enforcement", () => {
     expect(store.scopeUsage(BUDGET_ACCESS, "workspace").tokens).toBe(208_192);
   });
 
+  test("a stream that ends without a terminal event fails with MODEL_USAGE_UNKNOWN", async () => {
+    const { adapter, calls } = spyAdapter(() => emptyStream());
+    const { gateway, store } = buildGateway({
+      adapter,
+      gatewayPolicy: testPolicyFor(TEST_MODEL, { retry: { maxAttempts: 3 } }),
+    });
+    await expect(dispatch(gateway)).rejects.toMatchObject({
+      name: "ModelBudgetReconciliationError",
+      code: "MODEL_USAGE_UNKNOWN",
+      retryable: false,
+    });
+    expect(calls()).toBe(1);
+    const reservation = store.list(BUDGET_ACCESS)[0];
+    expect(reservation?.status).toBe("reconciling");
+    expect(store.scopeUsage(BUDGET_ACCESS, "workspace").tokens).toBe(208_192);
+  });
+
+  test("a handed-off stream that ends without a terminal event ends in MODEL_USAGE_UNKNOWN", async () => {
+    const { adapter } = spyAdapter(() => contentThenEndStream("partial"));
+    const { gateway, store } = buildGateway({ adapter });
+    const stream = await dispatch(gateway);
+    const events = [];
+    for await (const event of stream) {
+      events.push(event);
+    }
+    const last = events.at(-1);
+    expect(last?.type).toBe("error");
+    if (last?.type === "error") {
+      expect(last.reason).toBe("error");
+      expect(last.error.errorMessage).toContain("MODEL_USAGE_UNKNOWN");
+    }
+    expect(store.list(BUDGET_ACCESS)[0]?.status).toBe("reconciling");
+  });
+
+  test("a caller abort is surfaced as MODEL_USAGE_UNKNOWN and never retried", async () => {
+    const { adapter, calls } = spyAdapter(() => abortedStream());
+    const { gateway, store } = buildGateway({
+      adapter,
+      gatewayPolicy: testPolicyFor(TEST_MODEL, { retry: { maxAttempts: 3 } }),
+    });
+    await expect(dispatch(gateway)).rejects.toMatchObject({
+      name: "ModelBudgetReconciliationError",
+      code: "MODEL_USAGE_UNKNOWN",
+    });
+    expect(calls()).toBe(1);
+    expect(store.list(BUDGET_ACCESS)[0]?.status).toBe("reconciling");
+  });
+
+  test("a caller abort after content ends the handed-off stream in MODEL_USAGE_UNKNOWN", async () => {
+    const { adapter } = spyAdapter(() => abortedStream("partial"));
+    const { gateway } = buildGateway({ adapter });
+    const stream = await dispatch(gateway);
+    const events = [];
+    for await (const event of stream) {
+      events.push(event);
+    }
+    const last = events.at(-1);
+    expect(last?.type).toBe("error");
+    if (last?.type === "error") {
+      expect(last.reason).toBe("error");
+      expect(last.error.errorMessage).toContain("MODEL_USAGE_UNKNOWN");
+    }
+  });
+
+  test("the unknown-outcome contract also holds without a budget authority", async () => {
+    const { adapter } = spyAdapter(() => emptyStream());
+    const { gateway } = buildGateway({ adapter, withoutBudget: true });
+    await expect(dispatch(gateway)).rejects.toMatchObject({
+      code: "MODEL_USAGE_UNKNOWN",
+      retryable: false,
+    });
+  });
+
   test("denies an invalid policy as a budget configuration refusal", async () => {
     const store = new BudgetStore();
     const gateway = createModelGateway({
-      policyResolver: createStaticPolicyResolver(testPolicyFor(TEST_MODEL), TEST_SCOPE),
+      policyResolver: createScopeBackedPolicyResolver([
+        { scope: TEST_SCOPE, policy: testPolicyFor(TEST_MODEL) },
+      ]),
       credentials: createStaticCredentialStore({ [TEST_CREDENTIAL_REF]: TEST_CREDENTIAL }),
       adapter: spyAdapter(() => okStream()).adapter,
       scanner: createPatternSecretScanner(),
       sink: memorySink().sink,
+      ...securityStubs(),
       budget: createBudgetAuthority({
         store,
         policyResolver: {

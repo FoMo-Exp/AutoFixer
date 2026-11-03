@@ -172,6 +172,13 @@ type AttemptResult =
       finish: LedgerFinishStatus;
       terminal?: AssistantMessage;
       providerOutcome?: ProviderOutcome;
+      /**
+       * The provider outcome is unknown and cannot be surfaced as a normal
+       * stream completion or retried, whatever the budget configuration.
+       */
+      fatalUnknown?: boolean;
+      /** Exact outcome to audit/settle for this failure, when not the default. */
+      terminalOutcome?: TerminalOutcome;
     };
 
 const CONTENT_EVENTS = new Set<AssistantMessageEvent["type"]>([
@@ -221,6 +228,20 @@ function mapBudgetDenial(reason: BudgetDenyReason): {
 function tokenBoundOf(model: Model<Api>, options: SimpleStreamOptions | undefined): number {
   const output = options?.maxTokens ?? model.maxTokens;
   return model.contextWindow + output;
+}
+
+/**
+ * The stable error message for an attempt whose provider outcome is unknown.
+ * Callers read the code from the message, the attempt is never retried, and
+ * any budget reservation stays retained for reconciliation.
+ */
+function usageUnknownDetail(detail: string): string {
+  return `${MODEL_USAGE_UNKNOWN}: ${detail}`;
+}
+
+/** An error terminal message carrying the stable unknown-outcome code. */
+function usageUnknownMessage(model: Model<Api>, detail: string): AssistantMessage {
+  return syntheticErrorMessage(model, usageUnknownDetail(detail));
 }
 
 /** Provider-reported usage, or undefined when nothing usable was reported. */
@@ -454,11 +475,16 @@ export class ModelGateway {
         if (result.status === "handed_off") {
           return result.stream;
         }
-        if (this.deps.budget && result.providerOutcome === "unknown") {
+        if (
+          result.fatalUnknown === true ||
+          (this.deps.budget && result.providerOutcome === "unknown")
+        ) {
           // The provider may have served this attempt and its reservation is
           // retained; re-sending would consume budget twice. Reconcile first.
           throw new ModelBudgetReconciliationError(
-            "model dispatch outcome is unknown; its budget reservation is retained for reconciliation",
+            usageUnknownDetail(
+              "the provider outcome is unknown; reconcile the existing invocation before any retry",
+            ),
             prepared.budgetReservation?.reservationId ?? null,
           );
         }
@@ -719,7 +745,6 @@ export class ModelGateway {
       await this.recordUsage(prepared, startedAt, close);
       await this.closeBudget(prepared.budgetReservation, close.outcome);
     };
-    };
     try {
       const inner = await this.deps.adapter.stream(
         prepared.pinnedModel,
@@ -732,7 +757,7 @@ export class ModelGateway {
         // failure must not rewrite its retryability (it surfaces as an
         // incident), so the failure close is best-effort here.
         await record({
-          outcome: {
+          outcome: head.terminalOutcome ?? {
             outcome: "failed",
             detail: scrubSecrets(head.detail, [credential]),
             // The provider answered with an explicit failure: the outcome is
@@ -808,15 +833,20 @@ export class ModelGateway {
     for (;;) {
       const next = await iterator.next();
       if (next.done) {
-        for (const event of buffered) out.push(event);
         // The stream ended without a terminal signal: no provider outcome and
-        // no usage were read, so this is unknown rather than a free success.
-        await record({
-          outcome: { outcome: "dispatched", providerOutcome: "unknown" },
+        // no usage were read. This is unknown, never a normal completion, so
+        // the dispatch fails with the stable MODEL_USAGE_UNKNOWN contract and
+        // the attempt is not retried. Nothing was handed to the caller yet.
+        const detail = "provider stream ended without a terminal outcome";
+        return {
+          status: "failed",
+          detail: usageUnknownDetail(detail),
+          retryable: false,
           finish: "unknown",
-        });
-        out.end();
-        return { status: "handed_off", stream: out };
+          providerOutcome: "unknown",
+          fatalUnknown: true,
+          terminalOutcome: { outcome: "dispatched", detail, providerOutcome: "unknown" },
+        };
       }
       const event = next.value;
       if (isTerminalEvent(event)) {
@@ -829,9 +859,28 @@ export class ModelGateway {
             terminal: event.error,
           };
         }
+        const outcome = outcomeFromTerminal(event);
+        if (outcome.providerOutcome === "unknown") {
+          // A caller abort leaves the provider side unknown. The caller gets
+          // the stable unknown-outcome failure, not the raw abort event, and
+          // the attempt is never retried.
+          const detail = scrubSecrets(
+            outcome.detail ?? "provider stream ended without a terminal outcome",
+          );
+          return {
+            status: "failed",
+            detail: usageUnknownDetail(detail),
+            retryable: false,
+            finish: finishFromEvent(event),
+            ...(messageOf(event) ? { terminal: messageOf(event) } : {}),
+            providerOutcome: "unknown",
+            fatalUnknown: true,
+            terminalOutcome: { ...outcome, detail },
+          };
+        }
         for (const bufferedEvent of buffered) out.push(bufferedEvent);
         await record({
-          outcome: outcomeFromTerminal(event),
+          outcome,
           finish: finishFromEvent(event),
           ...(messageOf(event) ? { terminal: messageOf(event) } : {}),
         });
@@ -875,20 +924,43 @@ export class ModelGateway {
         for (;;) {
           const next = await iterator.next();
           if (next.done) {
+            // Content may already be with the caller, so the stream cannot be
+            // retracted; it ends with the stable unknown-outcome error instead
+            // of a normal completion, and the reservation stays retained.
+            const detail = "provider stream ended without a terminal outcome";
             await close({
-              outcome: { outcome: "dispatched", providerOutcome: "unknown" },
+              outcome: { outcome: "dispatched", detail, providerOutcome: "unknown" },
               finish: "unknown",
+            });
+            out.push({
+              type: "error",
+              reason: "error",
+              error: usageUnknownMessage(model, detail),
             });
             out.end();
             return;
           }
           if (isTerminalEvent(next.value)) {
+            const outcome = outcomeFromTerminal(next.value);
             await close({
-              outcome: outcomeFromTerminal(next.value),
+              outcome,
               finish: finishFromEvent(next.value),
               ...(messageOf(next.value) ? { terminal: messageOf(next.value) } : {}),
             });
-            out.push(next.value);
+            if (outcome.providerOutcome === "unknown") {
+              out.push({
+                type: "error",
+                reason: "error",
+                error: usageUnknownMessage(
+                  model,
+                  scrubSecrets(
+                    outcome.detail ?? "provider stream ended without a terminal outcome",
+                  ),
+                ),
+              });
+            } else {
+              out.push(next.value);
+            }
             out.end();
             return;
           }
@@ -903,7 +975,11 @@ export class ModelGateway {
           outcome: { outcome: "failed", detail, providerOutcome: "unknown" },
           finish: "transport_failed",
         });
-        out.push({ type: "error", reason: "error", error: syntheticErrorMessage(model, detail) });
+        out.push({
+          type: "error",
+          reason: "error",
+          error: usageUnknownMessage(model, detail),
+        });
         out.end();
       }
     })();

@@ -232,12 +232,15 @@ Lifecycle:
   `estimated` (`source: bound_ceiling`). Missing usage settles as `unknown`
   and keeps the whole bound committed — it is never recorded as zero or a free
   call.
-- **Unknown provider outcome** — a transport reset/timeout or an aborted
-  stream may have reached the provider. The reservation is retained
-  (`reconciling`), the gateway refuses to retry that invocation, and the
-  `MODEL_USAGE_UNKNOWN` error asks for reconciliation. Only failures that
-  prove nothing was sent (`ENOTFOUND`, `EAI_AGAIN`, `ECONNREFUSED`,
-  connect timeout) refund the reservation.
+- **Unknown provider outcome** — a transport reset/timeout, a stream that
+  ends without a terminal event, or a caller abort may have reached the
+  provider. The reservation is retained (`reconciling`), the gateway refuses
+  to retry that invocation, and the caller always receives the stable
+  `MODEL_USAGE_UNKNOWN` contract: the dispatch rejects with that code before
+  handoff, and a handed-off stream ends in an error event carrying it instead
+  of a normal completion. Only failures that prove nothing was sent
+  (`ENOTFOUND`, `EAI_AGAIN`, `ECONNREFUSED`, connect timeout) refund the
+  reservation.
 - **Reconcile** — exact provider cost can later correct the estimated monetary
   settlement (`reconcileCost`) without rewriting the journal; every entry keeps
   its identity, reason and sequence.
