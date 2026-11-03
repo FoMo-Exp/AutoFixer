@@ -11,6 +11,12 @@ import {
   TURN_REPORT_MAX_ITEMS,
   TURN_REPORT_OUTCOMES,
 } from "../pi/turn-report.js";
+import {
+  ERROR_CATEGORIES,
+  ERROR_ENVELOPE_VERSION,
+  ERROR_NEXT_ACTIONS,
+  ERROR_STAGES,
+} from "./errors.js";
 import { DSH_STATES } from "../dsh/types.js";
 
 type JsonObject = Record<string, unknown>;
@@ -35,13 +41,92 @@ const errorSchema: JsonObject = {
   properties: {
     error: {
       type: "object",
-      required: ["code", "message", "request_id", "retryable", "details"],
+      description:
+        "The shared versioned error envelope (ADR-0008, DAT-226 alignment): " +
+        "a stable machine code, the processing stage, the outcome category, a " +
+        "safe localizable user message, service-decided retryability, " +
+        "retry-after where applicable, the request_id trace/case reference, " +
+        "safe-only structured details, and the authorized next action. No " +
+        "field ever carries secrets, credentials, invitation tokens, or " +
+        "sensitive diagnostics; those stay behind separate access checks.",
+      required: [
+        "envelope_version",
+        "code",
+        "stage",
+        "category",
+        "message",
+        "retryable",
+        "retry_after_seconds",
+        "request_id",
+        "details",
+        "next_action",
+      ],
       properties: {
-        code: { type: "string" },
-        message: { type: "string" },
-        request_id: { type: "string" },
+        envelope_version: {
+          type: "integer",
+          enum: [ERROR_ENVELOPE_VERSION],
+          description:
+            "Envelope format version. Evolution within a version is additive " +
+            "only; a new version signals a breaking envelope change.",
+        },
+        code: {
+          type: "string",
+          description:
+            "Stable machine code. Never localized and never re-mapped to a " +
+            "different meaning; display text lives in `message`. Unknown codes " +
+            "render from `message` plus `next_action`.",
+        },
+        stage: {
+          type: "string",
+          enum: [...ERROR_STAGES],
+          description: "The processing stage that rejected the request.",
+        },
+        category: {
+          type: "string",
+          enum: [...ERROR_CATEGORIES],
+          description:
+            "Outcome semantics: denial (refused by authority/policy; do not " +
+            "retry), stop (fix the request or state; do not retry), retry (a " +
+            "retry may succeed within limits), unknown (reconcile before " +
+            "further writes). The service, never a model or a client, decides " +
+            "retry eligibility; a policy denial is never rewritten as a " +
+            "generic server error.",
+        },
+        message: {
+          type: "string",
+          description:
+            "Safe user-facing guidance. Localizable without changing `code`; " +
+            "a trace ID alone is never the only guidance.",
+        },
         retryable: { type: "boolean" },
-        details: { type: "object", additionalProperties: true },
+        retry_after_seconds: {
+          type: ["integer", "null"],
+          minimum: 0,
+          description:
+            "Seconds to wait before a retry; non-null when applicable " +
+            "(typically 429 and retryable 503), matching the Retry-After " +
+            "header where the server sends one.",
+        },
+        request_id: {
+          type: "string",
+          description: "Trace/case reference to quote in support and security cases.",
+        },
+        details: {
+          type: "object",
+          additionalProperties: true,
+          description:
+            "Safe structured context only (e.g. a conflicting version, a " +
+            "denied capability category). Never secrets, raw provider errors, " +
+            "invitation tokens, or sensitive diagnostics.",
+        },
+        next_action: {
+          type: ["string", "null"],
+          enum: [...ERROR_NEXT_ACTIONS, null],
+          description:
+            "The authorized next action, as a machine code. Additive " +
+            "vocabulary: a client renders an unknown action as generic " +
+            "guidance from `message`. Null when no action applies.",
+        },
       },
     },
   },
@@ -411,6 +496,425 @@ const turnReportSchema: JsonObject = {
   },
 };
 
+/**
+ * Workspace roles (ADR-0006), assigned only within the actor's authority.
+ * Enterprise administration never grants repository data access by itself.
+ */
+export const WORKSPACE_ROLES = ["owner", "admin", "member", "viewer"] as const;
+
+/**
+ * Normalized provider-role provenance (ADR-0006): organization owners, groups,
+ * inherited roles, and direct collaborators are named explicitly and an
+ * authority that belongs to an organization is never invented as a repository
+ * "owner" user. `unknown` fails closed.
+ */
+export const MEMBER_PROVENANCES = [
+  "organization_owner",
+  "group",
+  "inherited_role",
+  "direct_collaborator",
+  "unknown",
+] as const;
+
+const userIdentitySchema: JsonObject = {
+  type: "object",
+  description:
+    "A linked provider identity. Identity is bound by provider instance and " +
+    "stable subject ID — never by email address or blame author name (ADR-0006).",
+  required: ["provider_instance_id", "provider_type", "subject_id"],
+  properties: {
+    provider_instance_id: { type: "string" },
+    provider_type: { type: "string", enum: ["github", "gitlab"] },
+    subject_id: {
+      type: "string",
+      description: "Stable provider subject ID (e.g. the numeric GitHub account ID).",
+    },
+  },
+};
+
+const userSchema: JsonObject = {
+  type: "object",
+  required: ["id", "display_name", "identities"],
+  properties: {
+    id: { type: "string" },
+    display_name: { type: "string" },
+    identities: { type: "array", items: { $ref: "#/components/schemas/UserIdentity" } },
+  },
+};
+
+const userRefSchema: JsonObject = {
+  type: "object",
+  required: ["id", "display_name"],
+  properties: { id: { type: "string" }, display_name: { type: "string" } },
+};
+
+const enterpriseRefSchema: JsonObject = {
+  type: "object",
+  description:
+    "The enterprise that owns the surrounding scope. Enterprises are " +
+    "represented explicitly even when a deployment serves exactly one.",
+  required: ["id", "name", "slug"],
+  properties: {
+    id: { type: "string" },
+    name: { type: "string" },
+    slug: { type: "string" },
+  },
+};
+
+const workspaceRepositorySchema: JsonObject = {
+  type: "object",
+  description:
+    "The workspace's provider repository binding: the provider instance and " +
+    "the immutable provider-assigned repository ID — never a mutable URL. " +
+    "Renames change metadata only; a transfer replaces this binding through " +
+    "the dedicated, authority-revalidated transfer operation.",
+  required: ["repository_id", "provider_instance_id", "provider_type"],
+  properties: {
+    repository_id: { type: "string", examples: ["123456789"] },
+    provider_instance_id: { type: "string" },
+    provider_type: { type: "string", enum: ["github", "gitlab"] },
+  },
+};
+
+const workspaceSchema: JsonObject = {
+  type: "object",
+  description:
+    "One workspace binds exactly one provider repository within one " +
+    "enterprise (ADR-0006). Within an enterprise an active workspace per " +
+    "repository is enforced transactionally.",
+  required: [
+    "id",
+    "enterprise_id",
+    "name",
+    "status",
+    "repository",
+    "role",
+    "version",
+    "created_at",
+    "updated_at",
+  ],
+  properties: {
+    id: { type: "string" },
+    enterprise_id: { type: "string" },
+    name: { type: "string" },
+    status: { type: "string", enum: ["active", "archived"] },
+    repository: { $ref: "#/components/schemas/WorkspaceRepository" },
+    role: {
+      type: "string",
+      enum: [...WORKSPACE_ROLES],
+      description:
+        "The caller's effective workspace role, computed server-side from " +
+        "authenticated membership. A projection for display only — never an " +
+        "input, never authoritative from the client.",
+    },
+    version: {
+      type: "integer",
+      description: "Optimistic-concurrency token for state-changing operations.",
+    },
+    created_at: { type: "string", format: "date-time" },
+    updated_at: { type: "string", format: "date-time" },
+  },
+};
+
+const workspaceRefSchema: JsonObject = {
+  type: "object",
+  required: ["id", "name"],
+  properties: { id: { type: "string" }, name: { type: "string" } },
+};
+
+const memberAuthoritySchema: JsonObject = {
+  type: "object",
+  description:
+    "Provenance of the member's effective provider role (ADR-0006): how the " +
+    "provider conferred authority, when it was last verified, and whether it " +
+    "is stale. Missing or unverifiable provenance is `unknown`, never " +
+    "invented; stale or unknown authority blocks sensitive actions pending " +
+    "reconciliation (DAT-203).",
+  required: ["provider_role", "provenance", "verified_at", "stale"],
+  properties: {
+    provider_role: {
+      type: ["string", "null"],
+      description:
+        "Normalized effective provider role label as reported by the " +
+        "provider adapter; null until verified.",
+    },
+    provenance: { type: "string", enum: [...MEMBER_PROVENANCES] },
+    verified_at: { type: ["string", "null"], format: "date-time" },
+    stale: {
+      type: "boolean",
+      description:
+        "True when provider authority changed or went unverified and " +
+        "reconciliation has not confirmed it.",
+    },
+  },
+};
+
+const membershipSchema: JsonObject = {
+  type: "object",
+  description:
+    "A workspace membership. Effective access intersects enterprise " +
+    "membership, workspace role, current repository access, and action " +
+    "policy (ADR-0006); a role here is never sufficient authority on its own.",
+  required: [
+    "id",
+    "workspace_id",
+    "user_id",
+    "user",
+    "role",
+    "authority",
+    "version",
+    "created_at",
+    "updated_at",
+  ],
+  properties: {
+    id: { type: "string" },
+    workspace_id: { type: "string" },
+    user_id: { type: "string" },
+    user: { $ref: "#/components/schemas/UserRef" },
+    role: { type: "string", enum: [...WORKSPACE_ROLES] },
+    authority: { $ref: "#/components/schemas/MemberAuthority" },
+    version: { type: "integer" },
+    created_at: { type: "string", format: "date-time" },
+    updated_at: { type: "string", format: "date-time" },
+  },
+};
+
+const memberCandidateSchema: JsonObject = {
+  type: "object",
+  description:
+    "A provider-roster candidate for workspace membership (DAT-203): the " +
+    "eligibility view an owner/admin selects joins from. Roster completeness " +
+    "is fail-closed — incomplete rosters are an error, never an empty list.",
+  required: [
+    "user",
+    "provider_role",
+    "provenance",
+    "already_member",
+    "eligible",
+    "ineligible_reason",
+  ],
+  properties: {
+    user: {
+      type: "object",
+      required: ["display_name", "identities"],
+      properties: {
+        display_name: { type: "string" },
+        identities: { type: "array", items: { $ref: "#/components/schemas/UserIdentity" } },
+      },
+    },
+    provider_role: { type: ["string", "null"] },
+    provenance: { type: "string", enum: [...MEMBER_PROVENANCES] },
+    already_member: { type: "boolean" },
+    eligible: { type: "boolean" },
+    ineligible_reason: {
+      type: ["string", "null"],
+      description:
+        "Machine code naming why the candidate cannot be imported (e.g. " +
+        "`stale_authority`, `no_repository_access`); null when eligible. " +
+        "Additive vocabulary.",
+    },
+  },
+};
+
+const teamSchema: JsonObject = {
+  type: "object",
+  description:
+    "A workspace team (ADR-0006). Teams are a routing signal, never an " +
+    "authorization source: team leadership or membership grants no " +
+    "repository access, security privilege, or delivery approval. Leaders " +
+    "must be active workspace members.",
+  required: [
+    "id",
+    "workspace_id",
+    "name",
+    "leader_user_id",
+    "leader",
+    "responsibility",
+    "version",
+    "created_at",
+    "updated_at",
+  ],
+  properties: {
+    id: { type: "string" },
+    workspace_id: { type: "string" },
+    name: { type: "string" },
+    leader_user_id: { type: "string" },
+    leader: { $ref: "#/components/schemas/UserRef" },
+    responsibility: {
+      type: ["string", "null"],
+      description: "Responsibility description or path mapping; null when unset.",
+    },
+    version: { type: "integer" },
+    created_at: { type: "string", format: "date-time" },
+    updated_at: { type: "string", format: "date-time" },
+  },
+};
+
+const invitationSchema: JsonObject = {
+  type: "object",
+  description:
+    "An owner-created invitation (ADR-0006). The bearer token is returned " +
+    "exactly once, by the create response only; every other view is " +
+    "token-free. An invitation grants nothing by itself: redemption adds a " +
+    "member-role membership only after login, explicit join confirmation, " +
+    "and live eligibility checks.",
+  required: [
+    "id",
+    "workspace_id",
+    "role",
+    "expires_at",
+    "bound_provider_subject",
+    "status",
+    "created_by",
+    "created_at",
+    "revoked_at",
+    "redeemed_at",
+    "version",
+  ],
+  properties: {
+    id: { type: "string" },
+    workspace_id: { type: "string" },
+    role: {
+      type: "string",
+      enum: ["member"],
+      description:
+        "Invitations grant `member` only; administrative role elevation is a " +
+        "separate audited action after joining (ADR-0006).",
+    },
+    expires_at: { type: "string", format: "date-time" },
+    bound_provider_subject: {
+      type: ["string", "null"],
+      description:
+        "When set, only this verified provider subject may redeem the " +
+        "invitation; forwarded or wrong-subject use stays denied.",
+    },
+    status: {
+      type: "string",
+      enum: ["active", "consumed", "revoked", "expired"],
+      description: "Server-computed state of this one-time invitation.",
+    },
+    created_by: { $ref: "#/components/schemas/UserRef" },
+    created_at: { type: "string", format: "date-time" },
+    revoked_at: { type: ["string", "null"], format: "date-time" },
+    redeemed_at: { type: ["string", "null"], format: "date-time" },
+    version: { type: "integer" },
+  },
+};
+
+const createdInvitationSchema: JsonObject = {
+  type: "object",
+  description: "The create response is the only place the bearer token ever appears.",
+  required: ["invitation", "token", "invite_url"],
+  properties: {
+    invitation: { $ref: "#/components/schemas/Invitation" },
+    token: {
+      type: "string",
+      description:
+        "The opaque bearer invitation: at least 128 bits of random entropy, " +
+        "URL-safe, stored server-side only as a keyed digest. Shown exactly " +
+        "once, in this response only — never in any later read, telemetry, " +
+        "referrer, error message, log, analytics export, or third-party " +
+        "asset. Both presentations convey this same value: the grouped " +
+        "copyable code is only a display formatting of it, and the QR encodes " +
+        "`invite_url`.",
+    },
+    invite_url: {
+      type: "string",
+      description:
+        "Trusted-service invitation landing URL carrying the bearer in the " +
+        "URL fragment (`…#<token>`), never in the query. The landing page " +
+        "never consumes the token on GET — link previews and security " +
+        "scanners learn nothing — clears the fragment from browser history " +
+        "after capture, and submits the token only in an authenticated " +
+        "confirmation POST body (ADR-0006).",
+    },
+  },
+};
+
+const invitationPreviewSchema: JsonObject = {
+  type: "object",
+  description:
+    "What the join-confirmation screen renders before the explicit join. " +
+    "Every non-consumable state fails exactly like redemption: one " +
+    "non-enumerating INVITATION_NOT_ACCEPTED.",
+  required: ["workspace", "enterprise", "role", "expires_at", "inviter", "already_joined"],
+  properties: {
+    workspace: { $ref: "#/components/schemas/WorkspaceRef" },
+    enterprise: { $ref: "#/components/schemas/EnterpriseRef" },
+    role: { type: "string", enum: ["member"] },
+    expires_at: { type: "string", format: "date-time" },
+    inviter: { $ref: "#/components/schemas/UserRef" },
+    already_joined: {
+      type: "boolean",
+      description:
+        "True when the caller already redeemed this invitation; redemption " +
+        "is then an idempotent replay of their own join, never a second join.",
+    },
+  },
+};
+
+const invitationRedemptionSchema: JsonObject = {
+  type: "object",
+  required: ["workspace", "membership"],
+  properties: {
+    workspace: { $ref: "#/components/schemas/Workspace" },
+    membership: { $ref: "#/components/schemas/Membership" },
+  },
+};
+
+const sessionSchema: JsonObject = {
+  type: "object",
+  description:
+    "The authenticated principal's server-side session. Sessions are " +
+    "established by provider sign-in and invalidated by logout, suspension, " +
+    "membership revocation, and expiry; see the contract's Session " +
+    "invalidation section for stream semantics.",
+  required: ["session_id", "created_at", "expires_at", "csrf_token", "user", "enterprise"],
+  properties: {
+    session_id: { type: "string" },
+    created_at: { type: "string", format: "date-time" },
+    expires_at: { type: "string", format: "date-time" },
+    csrf_token: {
+      type: "string",
+      description:
+        "Cookie-authenticated clients MUST echo this value in the " +
+        "`X-CSRF-Token` header on every state-changing request. " +
+        "Bearer-authenticated requests are not ambient and do not send it.",
+    },
+    user: { $ref: "#/components/schemas/User" },
+    enterprise: { $ref: "#/components/schemas/EnterpriseRef" },
+  },
+};
+
+const sessionCredentialSchema: JsonObject = {
+  type: "object",
+  description:
+    "Desktop session credential from the single-use ticket exchange. The " +
+    "access token is held by the desktop main process and never exposed to " +
+    "renderer JavaScript (ADR-0006).",
+  required: ["access_token", "token_type", "session"],
+  properties: {
+    access_token: { type: "string" },
+    token_type: { type: "string", enum: ["Bearer"] },
+    session: { $ref: "#/components/schemas/Session" },
+  },
+};
+
+const loginProviderSchema: JsonObject = {
+  type: "object",
+  description:
+    "An administrator-approved provider instance offered on the login " +
+    "screen. Only approved origins are ever listed: arbitrary self-hosted " +
+    "URLs can never become credential-exfiltration or internal-network " +
+    "endpoints (ADR-0006).",
+  required: ["provider_instance_id", "provider_type", "origin_host"],
+  properties: {
+    provider_instance_id: { type: "string" },
+    provider_type: { type: "string", enum: ["github", "gitlab"] },
+    origin_host: { type: "string", examples: ["github.com"] },
+  },
+};
+
 function errorResponse(description: string): JsonObject {
   return {
     description,
@@ -423,31 +927,107 @@ function jsonRef(ref: string): JsonObject {
 }
 
 /**
- * The single Bearer security requirement applied to every operation. The
- * per-process token (see the M0 Authentication section) is what authorizes a
- * caller — approvals included — so a client generated from this contract
- * knows to send `Authorization: Bearer <token>` on every call.
+ * The credential requirement for every non-public operation. Authenticated
+ * operations accept either credential: the per-process bearer token (local
+ * pilot) or a session access token / the `fp_session` session cookie from the
+ * enterprise sign-in flow. A credential authenticates the principal only —
+ * it never grants scope: every request's enterprise/workspace authority is
+ * resolved server-side from authenticated membership (ADR-0006), never from
+ * client-supplied identifiers.
  */
-const BEARER_SECURITY: Array<Record<string, string[]>> = [{ bearerAuth: [] }];
+const AUTHENTICATED_SECURITY: Array<Record<string, string[]>> = [
+  { bearerAuth: [] },
+  { sessionCookie: [] },
+];
 
-/** The 401 response every operation can return when the token is missing/wrong. */
+/** Operations reachable without a credential: the login bootstrap only. */
+const PUBLIC_OPERATIONS: Record<string, true> = {
+  "get /api/v1/auth/providers": true,
+  "post /api/v1/auth/authorize": true,
+  "get /api/v1/auth/callback/{provider_instance_id}": true,
+  "post /api/v1/auth/sessions/exchange": true,
+};
+
+const MUTATING_METHODS: Record<string, true> = { post: true, patch: true, put: true, delete: true };
+
+/**
+ * The CSRF header every state-changing operation documents. Cookie
+ * (ambient) credentials must echo the session's `csrf_token` here; bearer
+ * credentials are not ambient and do not send it.
+ */
+const CSRF_PARAMETER: JsonObject = {
+  name: "X-CSRF-Token",
+  in: "header",
+  required: false,
+  schema: { type: "string" },
+  description:
+    "Required for cookie-authenticated state-changing requests: echo the " +
+    "session's `csrf_token`. A missing or wrong value is 403 " +
+    "CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it.",
+};
+
+/** The shared pagination parameter: opaque, server-defined cursors. */
+const CURSOR_PARAMETER: JsonObject = {
+  name: "cursor",
+  in: "query",
+  required: false,
+  schema: { type: "string" },
+  description:
+    "Opaque pagination cursor copied from a previous page's `next_cursor`. " +
+    "Clients must not construct, parse, or interpret cursors; an unknown " +
+    "cursor is 400 INVALID_CURSOR.",
+};
+
+function pageSchema(itemRef: string): JsonObject {
+  return {
+    type: "object",
+    required: ["items", "next_cursor"],
+    properties: {
+      items: { type: "array", items: { $ref: itemRef } },
+      next_cursor: {
+        type: ["string", "null"],
+        description: "Opaque cursor for the next page; null at the end of the list.",
+      },
+    },
+  };
+}
+
+/** The 401 response every non-public operation can return. */
 function unauthorizedResponse(): JsonObject {
-  return errorResponse("Missing or invalid Authorization: Bearer <token> header");
+  return errorResponse(
+    "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential " +
+      "(bearer token or session cookie). The response is uniform for every " +
+      "authentication failure; it never names the cause (see the contract's " +
+      "Non-enumeration section).",
+  );
 }
 
 /**
- * Stamp the security requirement and 401 response onto every operation in a
- * paths object, so auth coverage cannot silently miss an endpoint.
+ * Stamp the credential requirement and the 401 response onto every non-public
+ * operation (and the CSRF parameter onto every state-changing one), so auth
+ * coverage cannot silently miss an endpoint. Public login-bootstrap
+ * operations explicitly accept no credential.
  */
 function stampAuth(paths: Record<string, Record<string, unknown>>): void {
-  for (const methods of Object.values(paths)) {
-    for (const operation of Object.values(methods)) {
+  for (const [docPath, methods] of Object.entries(paths)) {
+    for (const [method, operation] of Object.entries(methods)) {
       if (operation === null || typeof operation !== "object") {
         continue;
       }
-      const op = operation as { security?: unknown; responses?: Record<string, unknown> };
-      op.security = BEARER_SECURITY;
+      const op = operation as {
+        security?: unknown;
+        parameters?: Array<JsonObject>;
+        responses?: Record<string, unknown>;
+      };
+      if (PUBLIC_OPERATIONS[`${method} ${docPath}`]) {
+        op.security = [];
+        continue;
+      }
+      op.security = AUTHENTICATED_SECURITY;
       op.responses = { ...op.responses, 401: unauthorizedResponse() };
+      if (MUTATING_METHODS[method]) {
+        op.parameters = [...(op.parameters ?? []), CSRF_PARAMETER];
+      }
     }
   }
 }
@@ -746,7 +1326,10 @@ export function buildOpenApiDocument(): OpenApiDocument {
           "restart resumes exactly where the client stopped without duplicating " +
           "business events. A terminal task's stream always closes after its " +
           "replay, including when Last-Event-ID is already anchored at " +
-          "task.terminal and the replay has nothing left to write.",
+          "task.terminal and the replay has nothing left to write. Any " +
+          "credential invalidation (logout, suspension, membership revocation, " +
+          "expiry) terminates the subscription at invalidation time; see the " +
+          "contract's Session invalidation section.",
         parameters: [
           { name: "task_id", in: "path", required: true, schema: { type: "string" } },
           {
@@ -772,31 +1355,982 @@ export function buildOpenApiDocument(): OpenApiDocument {
         },
       },
     },
+    "/api/v1/auth/providers": {
+      get: {
+        operationId: "listLoginProviders",
+        summary: "List administrator-approved login providers",
+        description:
+          "Public. Lists exactly the provider instances whose origins an " +
+          "enterprise administrator approved; the login screen derives its " +
+          "buttons from this list. Unauthenticated callers learn nothing " +
+          "beyond the offered sign-in options (ADR-0006).",
+        responses: {
+          200: {
+            description: "Approved login providers",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["items"],
+                  properties: {
+                    items: { type: "array", items: { $ref: "#/components/schemas/LoginProvider" } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/api/v1/auth/authorize": {
+      post: {
+        operationId: "startSignIn",
+        summary: "Begin a provider sign-in",
+        description:
+          "Public. Starts a registered provider OAuth authorization flow " +
+          "(state, exact redirect validation, PKCE where supported). The " +
+          "server binds the returned `state` to this request — client kind, " +
+          "redirect target, and for desktop the PKCE challenge — and consumes " +
+          "it single-use at the callback, which blocks login CSRF and callback " +
+          "replay. `client: web` receives a protected session cookie at the " +
+          "callback; `client: desktop` receives a bound, single-use loopback " +
+          "callback and exchanges a ticket afterwards. Signing in " +
+          "establishes identity only — it never grants workspace or " +
+          "repository access (ADR-0006). A provider instance that is unknown " +
+          "or not administrator-approved is the same 404 NOT_FOUND (see " +
+          "Non-enumeration).",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["provider_instance_id", "client"],
+                properties: {
+                  provider_instance_id: { type: "string" },
+                  client: { type: "string", enum: ["web", "desktop"] },
+                  redirect_to: {
+                    type: "string",
+                    description:
+                      "web only. Exact same-origin path to redirect to after " +
+                      "the callback: a single-slash `/…` path. Schemes, hosts, " +
+                      "protocol-relative (`//…`) and backslash forms are " +
+                      "rejected.",
+                  },
+                  desktop_redirect_uri: {
+                    type: "string",
+                    description:
+                      "desktop only. The bound callback target: exactly " +
+                      "`http://127.0.0.1:<port>/callback` or " +
+                      "`http://[::1]:<port>/callback`. Anything else is " +
+                      "rejected.",
+                  },
+                  code_challenge: {
+                    type: "string",
+                    description:
+                      "desktop only (required for desktop). PKCE challenge " +
+                      "binding the later ticket exchange.",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          202: {
+            description: "Authorization URL to open in the system browser",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["authorization_url", "state", "expires_at"],
+                  properties: {
+                    authorization_url: { type: "string" },
+                    state: {
+                      type: "string",
+                      description: "Opaque single-use state bound server-side to this request.",
+                    },
+                    expires_at: { type: "string", format: "date-time" },
+                  },
+                },
+              },
+            },
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          404: errorResponse("NOT_FOUND — unknown or unapproved provider instance"),
+        },
+      },
+    },
+    "/api/v1/auth/callback/{provider_instance_id}": {
+      get: {
+        operationId: "providerOAuthCallback",
+        summary: "OAuth redirect target after provider sign-in",
+        description:
+          "Public; the registered OAuth redirect. Validates the bound " +
+          "single-use state and the exact redirect target, then completes " +
+          "sign-in server-side. web: sets the protected `fp_session` cookie " +
+          "(HttpOnly, SameSite=Lax, Secure) and 302s to the validated " +
+          "`redirect_to`. desktop: 302s to the bound loopback " +
+          "`desktop_redirect_uri` with a single-use `ticket` (URL query) and " +
+          "`state`; the ticket is short-lived, bound to the authorize " +
+          "`code_challenge`, and redeemable exactly once. Every failure — " +
+          "unknown or replayed state, provider error, disallowed redirect — " +
+          "redirects to the client's error target with one opaque " +
+          "`error=signin_failed` value: the callback never enumerates why " +
+          "sign-in failed. GET consumes only the OAuth code and the state " +
+          "binding.",
+        parameters: [
+          { name: "provider_instance_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "code", in: "query", required: true, schema: { type: "string" } },
+          { name: "state", in: "query", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          302: {
+            description:
+              "Redirect to the validated client target; on any failure, " +
+              "redirect to the client error target with `error=signin_failed`.",
+          },
+          400: errorResponse("INVALID_REQUEST — malformed callback parameters"),
+        },
+      },
+    },
+    "/api/v1/auth/sessions/exchange": {
+      post: {
+        operationId: "exchangeDesktopTicket",
+        summary: "Exchange a desktop callback ticket for a session credential",
+        description:
+          "Public — the ticket is the credential. The ticket is single-use, " +
+          "short-lived, and PKCE-bound to the authorize request; any failure " +
+          "(unknown, expired, replayed, or verifier-mismatched) is the same " +
+          "401 UNAUTHENTICATED and never names the cause (see " +
+          "Non-enumeration). The returned access token authenticates " +
+          "subsequent bearer requests; it is held by the desktop main process " +
+          "and never exposed to renderer JavaScript (ADR-0006).",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["ticket", "code_verifier"],
+                properties: {
+                  ticket: { type: "string" },
+                  code_verifier: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: "Session credential",
+            ...jsonRef("#/components/schemas/SessionCredential"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          401: errorResponse("UNAUTHENTICATED — invalid, expired, or replayed ticket"),
+          429: errorResponse("RATE_LIMITED"),
+        },
+      },
+    },
+    "/api/v1/auth/session": {
+      get: {
+        operationId: "getCurrentSession",
+        summary: "Read the current session and principal",
+        description:
+          "Returns the authenticated principal, the enterprise resolved from " +
+          "the sign-in's provider instance, and the session's `csrf_token`. " +
+          "Workspace access is listed by `GET /api/v1/workspaces` and is " +
+          "never implied here: a session with no memberships has no workspace " +
+          "access — login alone grants nothing (ADR-0006).",
+        responses: {
+          200: { description: "Current session", ...jsonRef("#/components/schemas/Session") },
+        },
+      },
+      delete: {
+        operationId: "endSession",
+        summary: "Log out: invalidate the session and its subscriptions",
+        description:
+          "Invalidates this session immediately: every SSE subscription bound " +
+          "to it is terminated at invalidation time and every later request " +
+          "with the same credential fails 401. Cookie clients must send " +
+          "`X-CSRF-Token`.",
+        responses: {
+          204: { description: "Session invalidated" },
+          403: errorResponse("FORBIDDEN or CSRF_TOKEN_INVALID"),
+        },
+      },
+    },
+    "/api/v1/workspaces": {
+      get: {
+        operationId: "listWorkspaces",
+        summary: "List workspaces the caller can access",
+        description:
+          "Exactly the workspaces the caller's authenticated enterprise " +
+          "memberships grant — resolved server-side; substituting an ID " +
+          "anywhere in a request never widens this list (ADR-0006). Pages are " +
+          "`{items, next_cursor}` with opaque cursors, ordered by creation " +
+          "time, throughout this API.",
+        parameters: [CURSOR_PARAMETER],
+        responses: {
+          200: {
+            description: "Workspace page",
+            content: {
+              "application/json": { schema: pageSchema("#/components/schemas/Workspace") },
+            },
+          },
+          400: errorResponse("INVALID_CURSOR"),
+        },
+      },
+      post: {
+        operationId: "createWorkspace",
+        summary: "Create a workspace binding a provider repository",
+        description:
+          "Enterprise owner/admin only. The workspace binds the provider " +
+          "instance and the immutable provider-assigned `repository_id`; " +
+          "within one enterprise one active workspace per repository is " +
+          "enforced transactionally. Creation never expands credentials and " +
+          "never changes enterprise scope.",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["name", "repository_id", "provider_instance_id"],
+                properties: {
+                  name: { type: "string" },
+                  repository_id: { type: "string" },
+                  provider_instance_id: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: "Workspace created",
+            ...jsonRef("#/components/schemas/Workspace"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          403: errorResponse("FORBIDDEN"),
+          409: errorResponse(
+            "WORKSPACE_REPOSITORY_CONFLICT — the repository already has an " +
+              "active workspace in this enterprise",
+          ),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}": {
+      get: {
+        operationId: "getWorkspace",
+        summary: "Read one workspace",
+        description:
+          "404 NOT_FOUND is non-enumerating: identical whether the workspace " +
+          "does not exist, belongs to another enterprise, or the caller's " +
+          "membership was revoked (see Non-enumeration).",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: { description: "Workspace", ...jsonRef("#/components/schemas/Workspace") },
+          404: errorResponse("NOT_FOUND"),
+        },
+      },
+      patch: {
+        operationId: "renameWorkspace",
+        summary: "Rename a workspace (metadata only)",
+        description:
+          "Owner/admin only. Renames update metadata; the repository binding, " +
+          "the enterprise, and credentials are unchanged. `version` is the " +
+          "optimistic-concurrency token from the resource being modified.",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["name", "version"],
+                properties: {
+                  name: { type: "string" },
+                  version: {
+                    type: "integer",
+                    description: "The resource's current version (optimistic concurrency).",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Workspace after rename",
+            ...jsonRef("#/components/schemas/Workspace"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+          409: errorResponse("VERSION_CONFLICT"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/archive": {
+      post: {
+        operationId: "archiveWorkspace",
+        summary: "Archive a workspace",
+        description:
+          "Owner/admin only. Archiving is transactional and reversible via " +
+          "restore; archived workspaces leave the default list. An archived " +
+          "workspace never blocks another workspace from binding the same " +
+          "repository.",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["version"],
+                properties: {
+                  version: {
+                    type: "integer",
+                    description: "The resource's current version (optimistic concurrency).",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Workspace after archiving",
+            ...jsonRef("#/components/schemas/Workspace"),
+          },
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+          409: errorResponse("VERSION_CONFLICT"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/restore": {
+      post: {
+        operationId: "restoreWorkspace",
+        summary: "Restore an archived workspace",
+        description:
+          "Owner/admin only. Restore re-checks the one-active-workspace-per-" +
+          "repository rule transactionally and fails with " +
+          "WORKSPACE_REPOSITORY_CONFLICT rather than creating a second active " +
+          "binding.",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["version"],
+                properties: {
+                  version: {
+                    type: "integer",
+                    description: "The resource's current version (optimistic concurrency).",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Workspace after restore",
+            ...jsonRef("#/components/schemas/Workspace"),
+          },
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+          409: errorResponse("VERSION_CONFLICT or WORKSPACE_REPOSITORY_CONFLICT"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/transfer": {
+      post: {
+        operationId: "transferWorkspace",
+        summary: "Replace the workspace's repository binding",
+        description:
+          "Owner/admin only. A repository transfer replaces the immutable " +
+          "binding and requires authority revalidation against the provider: " +
+          "it never silently changes the enterprise and never expands " +
+          "credentials. When current authority is stale or unknown the " +
+          "transfer is blocked with AUTHORITY_RECHECK_REQUIRED pending " +
+          "reconciliation (ADR-0006, DAT-203).",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["repository_id", "provider_instance_id", "version"],
+                properties: {
+                  repository_id: { type: "string" },
+                  provider_instance_id: { type: "string" },
+                  version: {
+                    type: "integer",
+                    description: "The resource's current version (optimistic concurrency).",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Workspace after transfer",
+            ...jsonRef("#/components/schemas/Workspace"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+          409: errorResponse(
+            "VERSION_CONFLICT, WORKSPACE_REPOSITORY_CONFLICT, or " + "AUTHORITY_RECHECK_REQUIRED",
+          ),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/members": {
+      get: {
+        operationId: "listWorkspaceMembers",
+        summary: "List workspace memberships with provider-role provenance",
+        description:
+          "Owner/admin and members see the roster with the provenance of " +
+          "effective provider roles (MemberAuthority). Provenance is " +
+          "normalized explicitly and fails closed: unverified authority shows " +
+          "`unknown`, and stale authority blocks sensitive actions pending " +
+          "reconciliation (DAT-203).",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          CURSOR_PARAMETER,
+        ],
+        responses: {
+          200: {
+            description: "Membership page",
+            content: {
+              "application/json": { schema: pageSchema("#/components/schemas/Membership") },
+            },
+          },
+          400: errorResponse("INVALID_CURSOR"),
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+        },
+      },
+      post: {
+        operationId: "addWorkspaceMember",
+        summary: "Add a member selected from the provider roster",
+        description:
+          "Owner/admin only; the user must be an eligible discovered " +
+          "candidate (see `GET /api/v1/workspaces/{workspace_id}/" +
+          "member-candidates`). Roles are granted only within the actor's own " +
+          "authority — a grant above it is 403 ROLE_NOT_ASSIGNABLE. Every " +
+          "grant is audited (ADR-0006).",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["user_id", "role"],
+                properties: {
+                  user_id: { type: "string" },
+                  role: { type: "string", enum: [...WORKSPACE_ROLES] },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: "Membership created",
+            ...jsonRef("#/components/schemas/Membership"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          403: errorResponse("FORBIDDEN or ROLE_NOT_ASSIGNABLE"),
+          404: errorResponse("NOT_FOUND — workspace or candidate not visible"),
+          409: errorResponse("MEMBERSHIP_CONFLICT — the user is already a member"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/members/{membership_id}": {
+      patch: {
+        operationId: "updateWorkspaceMember",
+        summary: "Change a member's workspace role",
+        description:
+          "Owner/admin only. Roles are assigned only within the actor's own " +
+          "authority (403 ROLE_NOT_ASSIGNABLE for escalation). Administrative " +
+          "role elevation is this separate audited action — invitations " +
+          "always join as `member` (ADR-0006).",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "membership_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["role", "version"],
+                properties: {
+                  role: { type: "string", enum: [...WORKSPACE_ROLES] },
+                  version: {
+                    type: "integer",
+                    description: "The resource's current version (optimistic concurrency).",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Membership after the role change",
+            ...jsonRef("#/components/schemas/Membership"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          403: errorResponse("FORBIDDEN or ROLE_NOT_ASSIGNABLE"),
+          404: errorResponse("NOT_FOUND"),
+          409: errorResponse("VERSION_CONFLICT"),
+        },
+      },
+      delete: {
+        operationId: "removeWorkspaceMember",
+        summary: "Remove a member (revoke access)",
+        description:
+          "Owner/admin only. Removal is enforced on the same request path " +
+          "from this point: reads, streams, artifacts, approvals, and writes " +
+          "are rejected, and the member's workspace-scoped SSE subscriptions " +
+          "are terminated (see Session invalidation). Capability grants " +
+          "derived from the membership are revoked (ADR-0006, DAT-203).",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "membership_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          204: { description: "Membership removed" },
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/member-candidates": {
+      get: {
+        operationId: "listMemberCandidates",
+        summary: "Provider-roster eligibility view for imports (owner/admin)",
+        description:
+          "The provider member roster, normalized explicitly: organization " +
+          "owners, groups, inherited roles, and direct collaborators are " +
+          "named as such, and authority that belongs to an organization is " +
+          'never invented as a repository "owner" user (ADR-0006). ' +
+          "Completeness is fail-closed: missing provider permissions or " +
+          "incomplete roster pages are the error PROVIDER_ROSTER_INCOMPLETE, " +
+          "never an empty 200 list. Candidates with stale or unknown " +
+          "authority carry `eligible: false` with an `ineligible_reason` " +
+          "code (DAT-203).",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          CURSOR_PARAMETER,
+        ],
+        responses: {
+          200: {
+            description: "Candidate page — served only when the roster is complete",
+            content: {
+              "application/json": { schema: pageSchema("#/components/schemas/MemberCandidate") },
+            },
+          },
+          400: errorResponse("INVALID_CURSOR"),
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+          503: errorResponse(
+            "PROVIDER_ROSTER_INCOMPLETE — missing provider permissions or " +
+              "incomplete roster pages; never an empty list",
+          ),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/teams": {
+      get: {
+        operationId: "listWorkspaceTeams",
+        summary: "List workspace teams",
+        description:
+          "Teams are a routing signal, never an authorization source: team " +
+          "leadership or membership grants no repository access, security " +
+          "privilege, or delivery approval (ADR-0006).",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          CURSOR_PARAMETER,
+        ],
+        responses: {
+          200: {
+            description: "Team page",
+            content: {
+              "application/json": { schema: pageSchema("#/components/schemas/Team") },
+            },
+          },
+          400: errorResponse("INVALID_CURSOR"),
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+        },
+      },
+      post: {
+        operationId: "createWorkspaceTeam",
+        summary: "Create a team (owner/admin)",
+        description:
+          "Owner/admin only. Leaders must be active workspace members — a " +
+          "leader outside the workspace is 422 TEAM_LEADER_NOT_MEMBER.",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["name", "leader_user_id"],
+                properties: {
+                  name: { type: "string" },
+                  leader_user_id: { type: "string" },
+                  responsibility: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: { description: "Team created", ...jsonRef("#/components/schemas/Team") },
+          400: errorResponse("INVALID_REQUEST"),
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+          422: errorResponse("TEAM_LEADER_NOT_MEMBER — the leader is not an active member"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/teams/{team_id}": {
+      get: {
+        operationId: "getWorkspaceTeam",
+        summary: "Read one team",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "team_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: { description: "Team", ...jsonRef("#/components/schemas/Team") },
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+        },
+      },
+      patch: {
+        operationId: "updateWorkspaceTeam",
+        summary: "Update a team (owner/admin)",
+        description:
+          "Owner/admin only. A leader change re-checks that the new leader is " +
+          "an active workspace member (422 TEAM_LEADER_NOT_MEMBER). " +
+          "`responsibility` accepts a string to set and null to clear.",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "team_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["version"],
+                properties: {
+                  name: { type: "string" },
+                  leader_user_id: { type: "string" },
+                  responsibility: {
+                    type: ["string", "null"],
+                    description: "Set a responsibility description/path mapping; null clears it.",
+                  },
+                  version: {
+                    type: "integer",
+                    description: "The resource's current version (optimistic concurrency).",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: "Team after update", ...jsonRef("#/components/schemas/Team") },
+          400: errorResponse("INVALID_REQUEST"),
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+          409: errorResponse("VERSION_CONFLICT"),
+          422: errorResponse("TEAM_LEADER_NOT_MEMBER — the leader is not an active member"),
+        },
+      },
+      delete: {
+        operationId: "deleteWorkspaceTeam",
+        summary: "Delete a team (owner/admin)",
+        description: "Owner/admin only. Deletion never affects memberships or repository access.",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "team_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          204: { description: "Team deleted" },
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/invitations": {
+      get: {
+        operationId: "listInvitations",
+        summary: "List invitations (owner/admin; token-free)",
+        description:
+          "Only the create response ever carries the bearer token; every " +
+          "listed invitation is token-free and cannot be used to derive it. " +
+          "Ordered by creation time, newest first.",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          CURSOR_PARAMETER,
+        ],
+        responses: {
+          200: {
+            description: "Invitation page",
+            content: {
+              "application/json": { schema: pageSchema("#/components/schemas/Invitation") },
+            },
+          },
+          400: errorResponse("INVALID_CURSOR"),
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+        },
+      },
+      post: {
+        operationId: "createInvitation",
+        summary: "Create an owner-created invitation (owner/admin)",
+        description:
+          "Owner/admin only. Creates the opaque bearer invitation (at least " +
+          "128 bits of random entropy, stored server-side only as a keyed " +
+          "digest). Defaults (ADR-0006): 24-hour expiry, one redemption, " +
+          "`member` role only; an owner may only shorten `expires_in_seconds` " +
+          "or bind a verified provider subject. The response is the ONLY " +
+          "place the raw token ever appears. Rate-limited by actor and " +
+          "request origin; the token is never echoed in errors, logs, " +
+          "telemetry, or analytics.",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  expires_in_seconds: {
+                    type: "integer",
+                    minimum: 1,
+                    maximum: 86400,
+                    description:
+                      "Shorten the default 24-hour expiry; values above the " +
+                      "default are rejected.",
+                  },
+                  bound_provider_subject: {
+                    type: "string",
+                    description:
+                      "Bind redemption to this verified provider subject; " +
+                      "forwarded or wrong-subject use then stays denied.",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: "Created invitation — bearer token shown exactly once",
+            ...jsonRef("#/components/schemas/CreatedInvitation"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+          429: errorResponse("RATE_LIMITED"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/invitations/{invitation_id}": {
+      delete: {
+        operationId: "revokeInvitation",
+        summary: "Revoke an invitation (owner/admin)",
+        description:
+          "Owner/admin only. Revocation is immediate and idempotent; an " +
+          "already-revoked or consumed invitation returns 204 without effect. " +
+          "Invitations never outlive the inviter's authority: outstanding " +
+          "invitations become non-redeemable once their creator loses current " +
+          "repository administration authority (ADR-0006).",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          {
+            name: "invitation_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        responses: {
+          204: { description: "Invitation revoked or already inactive" },
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+        },
+      },
+    },
+    "/api/v1/invitations/preview": {
+      post: {
+        operationId: "previewInvitation",
+        summary: "Preview an invitation for the join-confirmation screen",
+        description:
+          "Authenticated. The bearer token is submitted in this POST body " +
+          "only — never in a URL, never on GET: link previews and security " +
+          "scanners hitting the landing page consume and learn nothing " +
+          "(ADR-0006). Shows what the explicit join would grant and runs live " +
+          "eligibility checks WITHOUT consuming the invitation. Every " +
+          "non-consumable state — unknown, expired, revoked, already " +
+          "consumed, wrong-subject for a bound invitation, ineligible or " +
+          "already-member invitee — is the same 403 INVITATION_NOT_ACCEPTED: " +
+          "the caller cannot enumerate which condition failed. Rate-limited " +
+          "by actor and request origin; the token is never echoed in errors, " +
+          "logs, or analytics.",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["token"],
+                properties: {
+                  token: {
+                    type: "string",
+                    description:
+                      "The opaque bearer invitation from the QR URL fragment " +
+                      "or the grouped copyable code (same value).",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Preview of the join",
+            ...jsonRef("#/components/schemas/InvitationPreview"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          401: errorResponse("UNAUTHENTICATED — login is always required"),
+          403: errorResponse("INVITATION_NOT_ACCEPTED"),
+          429: errorResponse("RATE_LIMITED"),
+        },
+      },
+    },
+    "/api/v1/invitations/redeem": {
+      post: {
+        operationId: "redeemInvitation",
+        summary: "Redeem an invitation: the explicit join confirmation",
+        description:
+          "Authenticated. Consumes the invitation in one transaction: " +
+          "expiry, revocation, remaining uses, the intended " +
+          "enterprise/workspace/subject, the inviter's current authority, " +
+          "existing membership, and the invitee's current repository access " +
+          "are checked, then the `member` membership is added and the " +
+          "invitation consumed atomically. Concurrent redeemers cannot both " +
+          "succeed. The same subject retrying their own redemption is an " +
+          "idempotent replay of the join (200, never a second join); every " +
+          "other failure is the same non-enumerating 403 " +
+          "INVITATION_NOT_ACCEPTED — unknown, expired, revoked, consumed, " +
+          "wrong-subject, ineligible, and already-member are " +
+          "indistinguishable. Workspace scope comes from the invitation " +
+          "itself, never from client input. The invitation grants no " +
+          "repository access; the membership does. Login alone or possession " +
+          "of a leaked code never grants access. Rate-limited by actor and " +
+          "request origin; the token is never echoed in errors, logs, or " +
+          "analytics.",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["token"],
+                properties: {
+                  token: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Joined — idempotent for the redeeming subject's retries",
+            ...jsonRef("#/components/schemas/InvitationRedemption"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          401: errorResponse("UNAUTHENTICATED — login is always required"),
+          403: errorResponse("INVITATION_NOT_ACCEPTED"),
+          429: errorResponse("RATE_LIMITED"),
+        },
+      },
+    },
   };
 
-  // Stamp the security requirement and 401 response onto every operation so
-  // auth coverage cannot silently miss an endpoint.
+  // Stamp the credential requirement, the 401 response, and the CSRF header
+  // onto every operation so auth coverage cannot silently miss an endpoint.
   stampAuth(paths);
 
   return {
     openapi: "3.1.0",
     info: {
       title: "ForgePilot orchestrator API",
-      version: "0.6.0",
+      version: "0.7.0",
       description:
-        "forgepilot-api/v1: the Node-to-UI contract of the ForgePilot pilot. " +
-        "The UI calls Node only, at an ephemeral loopback address; it never sees " +
-        "dsh sockets, boot tokens, Pi credentials, raw tool output, or provider " +
-        "credentials. Pi text is displayed only through the fail-closed " +
+        "forgepilot-api/v1: the Node-to-UI contract of the ForgePilot pilot and " +
+        "the enterprise identity surface (ADR-0006). The UI calls Node only; it " +
+        "never sees dsh sockets, boot tokens, Pi credentials, raw tool output, or " +
+        "provider credentials. Pi text is displayed only through the fail-closed " +
         "pi_summary contract (DAT-191), whose classification boundary is " +
         "DAT-192, whose trusted-source display boundary is DAT-193, and whose " +
         "verifiable provenance record and read-side gate are DAT-194. " +
-        "Generated from the orchestrator " +
+        "Auth/session, workspace, team, member, and invitation operations follow " +
+        "docs/contracts/forgepilot-api-v1.md: every response uses the shared " +
+        "versioned error envelope (ADR-0008, DAT-226 alignment); authentication " +
+        "failures and cross-scope reads are non-enumerating; session invalidation " +
+        "terminates SSE subscriptions; and enterprise/workspace scope is always " +
+        "resolved server-side from authenticated membership — client-supplied " +
+        "identifiers never grant access. Generated from the orchestrator " +
         "implementation; shapes are defined by " +
         "docs/contracts/forgepilot-api-v1.md.",
     },
-    servers: [{ url: "http://127.0.0.1", description: "Ephemeral loopback bind" }],
-    security: BEARER_SECURITY,
+    servers: [
+      {
+        url: "http://127.0.0.1",
+        description:
+          "Deployment origin: the ephemeral loopback bind for the local pilot, " +
+          "or the enterprise service's configured origin.",
+      },
+    ],
+    security: AUTHENTICATED_SECURITY,
     paths,
     components: {
       schemas: {
@@ -808,16 +2342,50 @@ export function buildOpenApiDocument(): OpenApiDocument {
         RunSummary: runSummarySchema,
         ArtifactMetadata: artifactMetadataSchema,
         Error: errorSchema,
+        User: userSchema,
+        UserRef: userRefSchema,
+        UserIdentity: userIdentitySchema,
+        EnterpriseRef: enterpriseRefSchema,
+        Workspace: workspaceSchema,
+        WorkspaceRef: workspaceRefSchema,
+        WorkspaceRepository: workspaceRepositorySchema,
+        Membership: membershipSchema,
+        MemberAuthority: memberAuthoritySchema,
+        MemberCandidate: memberCandidateSchema,
+        Team: teamSchema,
+        Invitation: invitationSchema,
+        CreatedInvitation: createdInvitationSchema,
+        InvitationPreview: invitationPreviewSchema,
+        InvitationRedemption: invitationRedemptionSchema,
+        Session: sessionSchema,
+        SessionCredential: sessionCredentialSchema,
+        LoginProvider: loginProviderSchema,
       },
       securitySchemes: {
         bearerAuth: {
           type: "http",
           scheme: "bearer",
           description:
-            "Per-process API bearer token, minted at orchestrator start and written " +
-            "0600 to the API token file. The UI reads that file and sends it as " +
-            "Authorization: Bearer <token> on every request; possession of the token " +
-            "authorizes acting as the local operator, approvals included.",
+            "Authorization: Bearer <token> with one of two credentials. Local " +
+            "pilot: the per-process API bearer token, minted at orchestrator " +
+            "start and written 0600 to the API token file; the UI reads that " +
+            "file and possession of the token authorizes acting as the local " +
+            "operator, approvals included. Enterprise: the session access " +
+            "token returned by the desktop ticket exchange, held by the " +
+            "desktop main process and never exposed to renderer JavaScript. " +
+            "A credential authenticates the principal; it never grants scope.",
+        },
+        sessionCookie: {
+          type: "apiKey",
+          in: "cookie",
+          name: "fp_session",
+          description:
+            "Protected web session cookie (HttpOnly, SameSite=Lax, Secure), set " +
+            "by the OAuth callback. Cookie-authenticated state-changing " +
+            "requests must also echo the session's `csrf_token` in the " +
+            "`X-CSRF-Token` header. Logout, suspension, membership revocation, " +
+            "and expiry invalidate the session and its SSE subscriptions (see " +
+            "the contract's Session invalidation section).",
         },
       },
     },

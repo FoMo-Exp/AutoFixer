@@ -1,0 +1,14 @@
+{
+  "error": {
+    "envelope_version": 1,
+    "code": "RATE_LIMITED",
+    "stage": "auth",
+    "category": "retry",
+    "message": "Too many attempts. Try again later.",
+    "retryable": true,
+    "retry_after_seconds": 30,
+    "request_id": "req_01J8Z0J1K2L3",
+    "details": {},
+    "next_action": "retry"
+  }
+}

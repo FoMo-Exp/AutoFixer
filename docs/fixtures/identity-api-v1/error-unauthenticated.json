@@ -1,0 +1,14 @@
+{
+  "error": {
+    "envelope_version": 1,
+    "code": "UNAUTHENTICATED",
+    "stage": "auth",
+    "category": "denial",
+    "message": "Sign in to continue.",
+    "retryable": false,
+    "retry_after_seconds": null,
+    "request_id": "req_01J8Z0A1B2C3",
+    "details": {},
+    "next_action": "reauthenticate"
+  }
+}

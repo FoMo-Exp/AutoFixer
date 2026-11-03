@@ -39,7 +39,7 @@ function parseEndpoints(markdown: string): Array<[method: string, path: string]>
   if (!table) {
     throw new Error("could not locate the endpoints table in the M0 contract");
   }
-  const rows = [...table.matchAll(/^\|\s*`(GET|POST) ([^`?`]+)[^`]*`\s*\|/gm)];
+  const rows = [...table.matchAll(/^\|\s*`(GET|POST|PATCH|DELETE) ([^`?`]+)[^`]*`\s*\|/gm)];
   return rows.flatMap((m) =>
     m[1] && m[2] ? [[m[1].toLowerCase(), m[2].trim()] as [string, string]] : [],
   );
@@ -55,7 +55,7 @@ function parseUiStatuses(markdown: string): string[] {
   return [...sentence.matchAll(/`([a-z_]+)`/g)].flatMap((m) => (m[1] ? [m[1]] : []));
 }
 
-describe("independent conformance to the normative M0 contract", () => {
+describe("independent conformance to the normative contract", () => {
   const markdown = fs.readFileSync(contractPath, "utf8");
   const document = buildOpenApiDocument();
 
@@ -171,8 +171,15 @@ describe("independent conformance to the normative M0 contract", () => {
     expect(scheme.scheme).toBe("bearer");
   });
 
-  test("every operation requires the bearer scheme and documents a 401", () => {
+  test("every non-public operation requires a credential and documents a 401", () => {
     expect(document.security).toContainEqual({ bearerAuth: [] });
+    expect(document.security).toContainEqual({ sessionCookie: [] });
+    const publicKeys = new Set([
+      "get /api/v1/auth/providers",
+      "post /api/v1/auth/authorize",
+      "get /api/v1/auth/callback/{provider_instance_id}",
+      "post /api/v1/auth/sessions/exchange",
+    ]);
     const operations: string[] = [];
     for (const [docPath, methods] of Object.entries(document.paths)) {
       for (const [method, operation] of Object.entries(methods)) {
@@ -181,22 +188,82 @@ describe("independent conformance to the normative M0 contract", () => {
           security?: Array<Record<string, string[]>>;
           responses?: Record<string, unknown>;
         };
-        expect(op.security, `missing security on ${method} ${docPath}`).toContainEqual({
-          bearerAuth: [],
-        });
+        if (publicKeys.has(`${method} ${docPath}`)) {
+          expect(op.security, `public ${method} ${docPath} must accept no credential`).toEqual([]);
+          continue;
+        }
+        expect(op.security, `missing security on ${method} ${docPath}`).toEqual([
+          { bearerAuth: [] },
+          { sessionCookie: [] },
+        ]);
         expect(op.responses?.["401"], `missing 401 on ${method} ${docPath}`).toBeDefined();
       }
     }
     // Sanity: the full endpoint set is actually being checked.
-    expect(operations).toHaveLength(12);
+    expect(operations).toHaveLength(40);
   });
 
-  test("the committed openapi.json also carries the auth scheme", () => {
+  test("the committed openapi.json also carries the auth schemes", () => {
     const committed = JSON.parse(fs.readFileSync(committedPath, "utf8")) as {
       components: { securitySchemes: Record<string, unknown> };
       security: Array<Record<string, string[]>>;
     };
     expect(committed.components.securitySchemes["bearerAuth"]).toBeDefined();
+    expect(committed.components.securitySchemes["sessionCookie"]).toBeDefined();
     expect(committed.security).toContainEqual({ bearerAuth: [] });
+    expect(committed.security).toContainEqual({ sessionCookie: [] });
+  });
+
+  test("the contract pins the shared error envelope semantics", () => {
+    const match = /## Error model: the shared error envelope([\s\S]*?)\n## /.exec(markdown);
+    const section = match?.[1];
+    expect(section, "missing '## Error model: the shared error envelope' section").toBeDefined();
+    for (const needle of [
+      "envelope_version",
+      "stable machine code",
+      "stage",
+      "category",
+      "retry_after_seconds",
+      "request_id",
+      "next_action",
+      "Retry-After",
+      "never rewritten",
+    ]) {
+      expect(section, `error envelope section must document ${needle}`).toContain(needle);
+    }
+    // Every next_action the OpenAPI enum exposes must be explained by the
+    // contract text.
+    const error = document.components.schemas["Error"] as {
+      properties: { error: { properties: { next_action: { enum: Array<string | null> } } } };
+    };
+    for (const action of error.properties.error.properties.next_action.enum) {
+      if (action !== null) {
+        expect(section, `error envelope section must name ${action}`).toContain(action);
+      }
+    }
+  });
+
+  test("the contract documents sessions, invitations, and non-enumeration", () => {
+    const sections: Array<[string, string[]]> = [
+      ["Sessions and sign-in", ["PKCE", "single-use", "csrf_token", "bootstrap"]],
+      [
+        "Invitations",
+        ["128 bits", "keyed digest", "fragment", "idempotent", "explicit join confirmation"],
+      ],
+      ["Pagination", ["next_cursor", "opaque", "INVALID_CURSOR"]],
+      ["Non-enumeration", ["byte-identical", "401", "404", "suspended", "RATE_LIMITED"]],
+      [
+        "Session invalidation and streams",
+        ["SSE", "terminates", "Logout", "revocation", "Last-Event-ID"],
+      ],
+    ];
+    for (const [heading, needles] of sections) {
+      const match = new RegExp(`## ${heading}([\\s\\S]*?)\\n## `).exec(markdown);
+      const section = match?.[1] ?? markdown.split(`## ${heading}`)[1];
+      expect(section, `missing '## ${heading}' section`).toBeDefined();
+      for (const needle of needles) {
+        expect(section, `section '## ${heading}' must document ${needle}`).toContain(needle);
+      }
+    }
   });
 });

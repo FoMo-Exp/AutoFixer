@@ -306,15 +306,15 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
         writeJson(res, error.status, error.toBody(requestId));
         return;
       }
-      writeJson(res, 500, {
-        error: {
-          code: "INTERNAL_ERROR",
-          message: error instanceof Error ? error.message : String(error),
-          request_id: requestId,
-          retryable: false,
-          details: {},
-        },
-      });
+      writeJson(
+        res,
+        500,
+        new ApiError(
+          500,
+          "INTERNAL_ERROR",
+          error instanceof Error ? error.message : String(error),
+        ).toBody(requestId),
+      );
     }
   };
 

@@ -1,0 +1,33 @@
+{
+  "workspace": {
+    "id": "ws_01J8Z1C3D4",
+    "enterprise_id": "ent_01J8Y0A1B2",
+    "name": "Acme Payments",
+    "status": "active",
+    "repository": {
+      "repository_id": "123456789",
+      "provider_instance_id": "pi_github_main",
+      "provider_type": "github"
+    },
+    "role": "member",
+    "version": 3,
+    "created_at": "2026-11-01T10:00:00Z",
+    "updated_at": "2026-11-02T09:30:00Z"
+  },
+  "membership": {
+    "id": "mem_01J8Z9Q2W4",
+    "workspace_id": "ws_01J8Z1C3D4",
+    "user_id": "usr_01J8Z3T7U1",
+    "user": { "id": "usr_01J8Z3T7U1", "display_name": "Katherine Johnson" },
+    "role": "member",
+    "authority": {
+      "provider_role": null,
+      "provenance": "unknown",
+      "verified_at": null,
+      "stale": true
+    },
+    "version": 1,
+    "created_at": "2026-11-03T13:00:00Z",
+    "updated_at": "2026-11-03T13:00:00Z"
+  }
+}

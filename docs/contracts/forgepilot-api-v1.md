@@ -1,14 +1,19 @@
 # forgepilot-api/v1
 
-**Status:** normative M0 public API contract
+**Status:** normative public API contract (v0.7)
 
-This is the Node-to-Electron/React API. The UI only calls Node at an ephemeral
-loopback address; it never sees dsh sockets, boot tokens, Pi credentials, raw
-tool output, or provider credentials.
+This is the Node-to-UI API: the Node-to-Electron/React workbench surface (M0)
+and the enterprise identity surface (ADR-0006). The UI only calls Node — at an
+ephemeral loopback address in the local pilot, or the enterprise service's
+configured origin — and it never sees dsh sockets, boot tokens, Pi credentials,
+raw tool output, or provider credentials. The OpenAPI document and TypeScript
+client under `web/src/api/contracts/` are generated from the implementation and
+must conform to this contract; the conformance tests compare all three.
 
 ## Authentication
 
-Every `/api/v1` request MUST carry the per-process bearer token:
+Every `/api/v1` request in the local pilot MUST carry the per-process bearer
+token:
 
 ```
 Authorization: Bearer <token>
@@ -28,9 +33,29 @@ endpoint. The server additionally pins browser requests to its own loopback
 ride a simple request; those guards are server-side hardening and do not
 replace the token.
 
-The OpenAPI document declares this as the `bearerAuth` security scheme
-(`type: http`, `scheme: bearer`); every operation requires it and documents the
-`401` response, so a client generated from the contract sends the credential.
+The OpenAPI document declares two security schemes: `bearerAuth`
+(`type: http`, `scheme: bearer`) and `sessionCookie` (`type: apiKey`,
+`in: cookie`, `name: fp_session`). The local pilot authenticates with the
+bearer token on every endpoint. The enterprise identity surface accepts either
+credential for the same server-side session:
+
+- **web** — the protected `fp_session` session cookie (HttpOnly, SameSite=Lax,
+  Secure), set by the OAuth callback. Every state-changing request
+  authenticated by cookie MUST echo the session's `csrf_token` in the
+  `X-CSRF-Token` header; a missing or wrong value is `403 CSRF_TOKEN_INVALID`.
+- **desktop** — the session access token returned by
+  `POST /api/v1/auth/sessions/exchange`, sent as `Authorization: Bearer <token>`
+  and held by the desktop main process; it is never exposed to renderer
+  JavaScript. Bearer requests are not ambient and carry no CSRF header.
+
+`401 UNAUTHENTICATED` is uniform: a missing, malformed, expired, or
+invalidated credential, a suspended account, and an invalid desktop exchange
+ticket all return the same body and never name the cause (see
+Non-enumeration). A credential authenticates the principal only — it never
+grants scope. Every non-public operation documents the `401` response; the
+four login-bootstrap operations (`GET /api/v1/auth/providers`,
+`POST /api/v1/auth/authorize`, `GET /api/v1/auth/callback/{provider_instance_id}`,
+`POST /api/v1/auth/sessions/exchange`) require no credential.
 
 ## Task resource
 
@@ -122,6 +147,34 @@ run summaries for that task; terminal grants are never reused.
 | `GET /api/v1/tasks/{task_id}/timeline` | none | `200 {items: TimelineEvent[]}` |
 | `GET /api/v1/tasks/{task_id}/artifacts/{artifact_id}` | none | `200 redacted artifact` |
 | `GET /api/v1/tasks/{task_id}/stream` | `Last-Event-ID` optional | `200 text/event-stream` |
+| `GET /api/v1/auth/providers` | none | `200 {items: LoginProvider[]}` |
+| `POST /api/v1/auth/authorize` | `{provider_instance_id, client:"web"\|"desktop", redirect_to?, desktop_redirect_uri?, code_challenge?}` | `202 {authorization_url, state, expires_at}` |
+| `GET /api/v1/auth/callback/{provider_instance_id}?code=&state=` | none | `302` redirect |
+| `POST /api/v1/auth/sessions/exchange` | `{ticket, code_verifier}` | `201 SessionCredential` |
+| `GET /api/v1/auth/session` | none | `200 Session` |
+| `DELETE /api/v1/auth/session` | none | `204` |
+| `GET /api/v1/workspaces?cursor=` | none | `200 {items: Workspace[], next_cursor}` |
+| `POST /api/v1/workspaces` | `{name, repository_id, provider_instance_id}` | `201 Workspace` |
+| `GET /api/v1/workspaces/{workspace_id}` | none | `200 Workspace` |
+| `PATCH /api/v1/workspaces/{workspace_id}` | `{name, version}` | `200 Workspace` |
+| `POST /api/v1/workspaces/{workspace_id}/archive` | `{version}` | `200 Workspace` |
+| `POST /api/v1/workspaces/{workspace_id}/restore` | `{version}` | `200 Workspace` |
+| `POST /api/v1/workspaces/{workspace_id}/transfer` | `{repository_id, provider_instance_id, version}` | `200 Workspace` |
+| `GET /api/v1/workspaces/{workspace_id}/members?cursor=` | none | `200 {items: Membership[], next_cursor}` |
+| `POST /api/v1/workspaces/{workspace_id}/members` | `{user_id, role}` | `201 Membership` |
+| `PATCH /api/v1/workspaces/{workspace_id}/members/{membership_id}` | `{role, version}` | `200 Membership` |
+| `DELETE /api/v1/workspaces/{workspace_id}/members/{membership_id}` | none | `204` |
+| `GET /api/v1/workspaces/{workspace_id}/member-candidates?cursor=` | none | `200 {items: MemberCandidate[], next_cursor}` |
+| `GET /api/v1/workspaces/{workspace_id}/teams?cursor=` | none | `200 {items: Team[], next_cursor}` |
+| `POST /api/v1/workspaces/{workspace_id}/teams` | `{name, leader_user_id, responsibility?}` | `201 Team` |
+| `GET /api/v1/workspaces/{workspace_id}/teams/{team_id}` | none | `200 Team` |
+| `PATCH /api/v1/workspaces/{workspace_id}/teams/{team_id}` | `{name?, leader_user_id?, responsibility?, version}` | `200 Team` |
+| `DELETE /api/v1/workspaces/{workspace_id}/teams/{team_id}` | none | `204` |
+| `GET /api/v1/workspaces/{workspace_id}/invitations?cursor=` | none | `200 {items: Invitation[], next_cursor}` |
+| `POST /api/v1/workspaces/{workspace_id}/invitations` | `{expires_in_seconds?, bound_provider_subject?}` | `201 CreatedInvitation` |
+| `DELETE /api/v1/workspaces/{workspace_id}/invitations/{invitation_id}` | none | `204` |
+| `POST /api/v1/invitations/preview` | `{token}` | `200 InvitationPreview` |
+| `POST /api/v1/invitations/redeem` | `{token}` | `200 InvitationRedemption` |
 
 Archive and recover apply only to cancelled tasks and return `409` for other
 statuses. These operations move the existing task between workspace views;
@@ -375,18 +428,76 @@ Contract semantics:
   the terminal frame. Clients that render on a pending summary of a terminal
   task show no summary, gating on the task status instead.
 
-## Error model
+## Error model: the shared error envelope
+
+Every endpoint's errors use one shared, versioned envelope (aligned with the
+ADR-0008 / DAT-226 shared error contract). Display text may be localized
+without changing machine codes; no field ever carries secrets, credentials,
+invitation tokens, or sensitive diagnostics.
 
 ```json
-{"error":{"code":"TASK_STATE_CONFLICT","message":"The task cannot be cancelled in its terminal state.","request_id":"req_...","retryable":false,"details":{}}}
+{"error":{"envelope_version":1,"code":"TASK_STATE_CONFLICT","stage":"execution","category":"stop","message":"The task cannot be cancelled in its terminal state.","retryable":false,"retry_after_seconds":null,"request_id":"req_...","details":{},"next_action":"refresh"}}
 ```
 
-General codes are `400 INVALID_REQUEST|INVALID_CURSOR`, `401 UNAUTHENTICATED`,
-`403 FORBIDDEN`, `404 TASK_NOT_FOUND`, `409 TASK_STATE_CONFLICT|IDEMPOTENCY_CONFLICT`,
-`429 RATE_LIMITED`, `500 INTERNAL_ERROR`, and `503 PI_UNAVAILABLE|DSH_UNAVAILABLE`.
+- `envelope_version` — envelope format version; additive evolution within 1.
+- `code` — stable machine code; never localized, never re-mapped.
+- `stage` — where processing rejected the request: `auth`, `validation`,
+  `authorization`, `policy`, `execution`, `delivery`, `reconciliation`, or
+  `unknown`.
+- `category` — outcome semantics: `denial` (refused; do not retry), `stop`
+  (fix the request or state), `retry` (a retry may succeed within limits),
+  `unknown` (reconcile before further writes). The service, never a model or
+  a client, decides retry eligibility; a policy denial is never rewritten as
+  a generic server error and no grant is ever widened automatically.
+- `message` — safe user-facing guidance; a trace ID alone is never the only
+  guidance.
+- `retryable` — the service's retry judgment for this instance.
+- `retry_after_seconds` — seconds to wait before a retry; non-null when
+  applicable (typically `429` and retryable `503`), matching the
+  `Retry-After` header where the server sends one.
+- `request_id` — trace/case reference to quote in support and security cases.
+- `details` — safe structured context only (e.g. a conflicting version, a
+  denied capability category).
+- `next_action` — the authorized next action as a machine code:
+  `reauthenticate`, `refresh`, `retry`, `resubmit`, `reconcile`,
+  `request_review`, `request_new_invitation`, `contact_admin`, or `null`.
+  Additive vocabulary: unknown actions render as generic guidance from
+  `message`.
+
+Stable codes and their default envelope semantics:
+
+| Code | HTTP | stage | category | retryable | next_action |
+|---|---|---|---|---|---|
+| `INVALID_REQUEST` | 400 | validation | stop | no | `resubmit` |
+| `INVALID_CURSOR` | 400 | validation | stop | no | `resubmit` |
+| `UNAUTHENTICATED` | 401 | auth | denial | no | `reauthenticate` |
+| `FORBIDDEN` | 403 | authorization | denial | no | `contact_admin` |
+| `CSRF_TOKEN_INVALID` | 403 | auth | stop | no | `refresh` |
+| `NOT_FOUND` | 404 | validation | stop | no | — |
+| `TASK_NOT_FOUND` | 404 | validation | stop | no | — |
+| `TASK_STATE_CONFLICT` | 409 | execution | stop | no | `refresh` |
+| `IDEMPOTENCY_CONFLICT` | 409 | validation | stop | no | `resubmit` |
+| `VERSION_CONFLICT` | 409 | validation | stop | no | `refresh` |
+| `WORKSPACE_REPOSITORY_CONFLICT` | 409 | validation | stop | no | — |
+| `MEMBERSHIP_CONFLICT` | 409 | validation | stop | no | — |
+| `AUTHORITY_RECHECK_REQUIRED` | 409 | reconciliation | stop | no | `reconcile` |
+| `DSH_GRANT_EXPIRED` | 410 | policy | stop | no | `request_review` |
+| `DSH_RISK_PROHIBITED` | 422 | policy | denial | no | `request_review` |
+| `TEAM_LEADER_NOT_MEMBER` | 422 | validation | stop | no | `resubmit` |
+| `DSH_APPROVAL_REQUIRED` | 428 | policy | stop | no | `request_review` |
+| `RATE_LIMITED` | 429 | execution | retry | yes | `retry` |
+| `ROLE_NOT_ASSIGNABLE` | 403 | authorization | denial | no | `contact_admin` |
+| `INVITATION_NOT_ACCEPTED` | 403 | authorization | denial | no | `request_new_invitation` |
+| `INTERNAL_ERROR` | 500 | unknown | unknown | no | `contact_admin` |
+| `PI_UNAVAILABLE` | 503 | execution | stop | no | `contact_admin` |
+| `DSH_UNAVAILABLE` | 503 | execution | retry | yes | `retry` |
+| `PROVIDER_ROSTER_INCOMPLETE` | 503 | reconciliation | retry | yes | `retry` |
+
 Node maps dsh policy outcomes without exposing sensitive dsh internals:
-`403 DSH_SCOPE_DENIED|DSH_POLICY_DENIED`, `410 DSH_GRANT_EXPIRED`, `422
-DSH_RISK_PROHIBITED`, and `428 DSH_APPROVAL_REQUIRED`.
+`403 DSH_SCOPE_DENIED|DSH_POLICY_DENIED` (stage `policy`, category `denial`),
+`410 DSH_GRANT_EXPIRED`, `422 DSH_RISK_PROHIBITED`, and
+`428 DSH_APPROVAL_REQUIRED`; the originating dsh code is preserved in
+`details.dsh_code` for audit correlation.
 
 The implementation MUST generate an OpenAPI document and TypeScript client
 from this contract. UI work is blocked until that generated contract is merged
@@ -428,3 +539,147 @@ Consequences a client can rely on:
 - Pi sessions are not resumed across a restart. A task that was mid-run
   keeps its dsh-projected status with a `status_reason` recording that the
   session was not resumed; approvals and cancels remain available.
+
+## Sessions and sign-in
+
+Sign-in uses registered provider OAuth authorization flows with state, exact
+redirect validation, PKCE where supported, and server-side session
+establishment (ADR-0006). `GET /api/v1/auth/providers` lists only
+administrator-approved provider instances; an unknown or unapproved instance
+is `404 NOT_FOUND` — the same response as a nonexistent one.
+
+`POST /api/v1/auth/authorize` binds the returned single-use `state` to the
+request (client kind, redirect target, and for desktop the PKCE
+`code_challenge`); the callback consumes it, so login CSRF and callback replay
+fail. `redirect_to` is an exact same-origin `/…` path; `desktop_redirect_uri`
+is exactly `http://127.0.0.1:<port>/callback` or `http://[::1]:<port>/callback`.
+The desktop callback delivers a single-use, short-lived `ticket`, exchanged
+once at `POST /api/v1/auth/sessions/exchange` for a session access token; any
+ticket failure is the uniform `401 UNAUTHENTICATED`. Desktop collects no Git
+passwords and embeds no login page.
+
+Sessions are server-side. `GET /api/v1/auth/session` returns the principal,
+the enterprise resolved from the sign-in's provider instance, and the
+`csrf_token`; `DELETE /api/v1/auth/session` logs out (see Session
+invalidation). Signing in establishes identity only: it never grants workspace
+or repository access, and the first enterprise administrator is established
+only through the deployment-owned audited bootstrap — never by whichever
+account signs in first. Identity is bound by provider instance and stable
+subject ID; email-based identity matching and blame-name matching are
+rejected, and account linking requires proof of both identities.
+
+## Workspace, team, and member administration
+
+Every workspace-scoped path carries `{workspace_id}`, but the identifier is a
+locator, never authority: each request's enterprise/workspace scope and role
+are resolved server-side from authenticated membership, and a client-supplied
+ID is never sufficient (ADR-0006). The task endpoints above resolve their
+workspace the same way server-side.
+
+A workspace binds one provider instance and one immutable provider-assigned
+`repository_id`, not a mutable URL. Create/archive/restore enforce one active
+workspace per repository per enterprise transactionally
+(`WORKSPACE_REPOSITORY_CONFLICT`). Renames change metadata only. A transfer
+replaces the binding with authority revalidation — it never silently changes
+the enterprise or expands credentials — and is blocked with
+`AUTHORITY_RECHECK_REQUIRED` while authority is stale or unknown.
+
+Workspace roles are `owner`, `admin`, `member`, `viewer`, assigned only
+within the actor's own authority (`ROLE_NOT_ASSIGNABLE` for escalation);
+enterprise administration does not automatically grant repository data
+access. Members carry `MemberAuthority`: normalized provider-role provenance
+(`organization_owner`, `group`, `inherited_role`, `direct_collaborator`, or
+`unknown`), `verified_at`, and `stale`. Authority that belongs to an
+organization is never invented as a repository "owner" user. Stale or unknown
+authority blocks sensitive actions pending reconciliation.
+
+`GET /api/v1/workspaces/{workspace_id}/member-candidates` is the import view:
+missing provider permissions or incomplete roster pages are
+`PROVIDER_ROSTER_INCOMPLETE` — an error, never an empty member list.
+
+Teams are a routing signal, never an authorization source: team leadership or
+membership grants no repository access, security privilege, or delivery
+approval. Leaders MUST be active workspace members
+(`TEAM_LEADER_NOT_MEMBER`).
+
+## Invitations
+
+Owners create invitations; both the QR value and the grouped copyable code
+convey the same opaque bearer token (at least 128 bits of random entropy,
+URL-safe, stored only as a keyed digest). Defaults: 24-hour expiry, one
+redemption, `member` role only; an owner may only shorten the expiry or bind a
+verified provider subject. Administrative role elevation is a separate audited
+action after joining.
+
+The create response is the ONLY place the raw token ever appears — never in
+any later read, telemetry, referrer, error message, log, analytics export, or
+third-party asset. `invite_url` carries the token in the URL fragment
+(`…#<token>`), never the query: the landing page never consumes the token on
+GET (link previews and security scanners learn nothing), clears the fragment
+from browser history after capture, and submits the token only in an
+authenticated confirmation POST body. `POST /api/v1/invitations/preview` is
+that body's non-consuming sibling — it renders the join-confirmation screen
+and runs live eligibility checks without redeeming.
+
+`POST /api/v1/invitations/redeem` is the explicit join confirmation. One
+transaction checks expiry, revocation, remaining uses, the intended
+enterprise/workspace/subject, the inviter's current authority, existing
+membership, and the invitee's current repository access, then adds the
+`member` membership and consumes the invitation atomically. Concurrent
+redeemers cannot both succeed. The same subject retrying their own redemption
+is an idempotent replay of the join. Workspace scope comes from the
+invitation itself, never from client input. Login alone or possession of a
+leaked code never grants repository access. Redemption, preview, and creation
+are rate-limited by actor and request origin
+(`RATE_LIMITED`, `retry_after_seconds` set). Audits record creation,
+revocation, attempted redemption, results, and effective roles — never the
+bearer token.
+
+## Pagination
+
+List endpoints paginate with an opaque cursor: request `?cursor=`, response
+`{items, next_cursor}` with `next_cursor: null` at the end. Cursors are
+server-defined; clients MUST NOT construct, parse, or interpret them, and an
+unknown cursor is `400 INVALID_CURSOR`. Order is documented per endpoint
+(tasks and invitations: creation time, newest first; workspaces: creation
+time; members and teams: stable server order).
+
+## Non-enumeration
+
+`401`, `403`, and `404` never let a caller enumerate resources or account
+state they cannot see:
+
+- `401 UNAUTHENTICATED` is byte-identical for every authentication failure:
+  missing, malformed, expired, or invalidated credential, suspended account,
+  and invalid desktop ticket. Suspension is never visible through a generic
+  401; it is surfaced only after provider-authenticated sign-in and to
+  enterprise administrators.
+- `404 NOT_FOUND` is byte-identical whether the entity does not exist, belongs
+  to another enterprise or workspace, or the caller's membership was revoked.
+  The server MAY record the true cause in audit logs; the response never
+  carries it.
+- `403` appears only when the requested entity is visible to the caller but
+  the action exceeds their authority (`FORBIDDEN`, `ROLE_NOT_ASSIGNABLE`,
+  `CSRF_TOKEN_INVALID`).
+- Invitation preview and redemption collapse every non-consumable state —
+  unknown, expired, revoked, already consumed, wrong-subject for a bound
+  invitation, ineligible or already-member invitee — into the single
+  `403 INVITATION_NOT_ACCEPTED`. The caller cannot learn which condition
+  failed. The one exception is the caller's own idempotent replay, which
+  succeeds.
+- `429 RATE_LIMITED` is intentionally distinguishable so clients back off.
+
+## Session invalidation and streams
+
+Logout, suspension, membership revocation, and session expiry invalidate
+authorization and subscriptions (ADR-0006). On invalidation the server
+terminates every SSE subscription bound to the invalidated credential at
+invalidation time — not at the next event — and each affected stream closes.
+Every later request with that credential fails with the uniform
+`401 UNAUTHENTICATED`; a member whose membership was revoked sees the
+workspace's resources, streams, artifacts, approvals, and writes as
+`404 NOT_FOUND` from the same request path onward. Reconnects follow
+Non-enumeration: the stream resumes only under a still-valid credential, and
+`Last-Event-ID` replay then continues in sequence order from the durable
+projection. Capability grants derived from the revoked membership are
+revoked; execution that depends on the lost authority is stopped.

@@ -567,6 +567,13 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     expect(response.status).toBe(404);
     expect(response.body.error.code).toBe("TASK_NOT_FOUND");
     expect(response.body.error.request_id).toMatch(/^req_/);
+    // The served body carries the full shared versioned envelope (DAT-205).
+    expect(response.body.error.envelope_version).toBe(1);
+    expect(response.body.error.stage).toBe("validation");
+    expect(response.body.error.category).toBe("stop");
+    expect(response.body.error.retryable).toBe(false);
+    expect(response.body.error.retry_after_seconds).toBeNull();
+    expect(response.body.error.next_action).toBeNull();
   });
 });
 
