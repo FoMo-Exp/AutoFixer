@@ -67,6 +67,7 @@ export {
   allowsFactualInjection,
   createMemoryAdmissionRepository,
   emptyEvidenceResolver,
+  evidenceKey,
   evaluateCandidate,
   findContradictions,
   findDuplicate,

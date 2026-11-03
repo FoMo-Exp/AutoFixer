@@ -31,7 +31,12 @@ export {
 
 export { findContradictions, retirementProposalsFor } from "./contradiction.js";
 export { findDuplicate, isDuplicate } from "./dedupe.js";
-export { checkEvidence, emptyEvidenceResolver, ledgerEvidenceResolver } from "./evidence.js";
+export {
+  checkEvidence,
+  emptyEvidenceResolver,
+  evidenceKey,
+  ledgerEvidenceResolver,
+} from "./evidence.js";
 export type { EvidenceCheckResult } from "./evidence.js";
 export { isFloodingShape, scanForInjection } from "./poisoning.js";
 export type { InjectionReason } from "./poisoning.js";

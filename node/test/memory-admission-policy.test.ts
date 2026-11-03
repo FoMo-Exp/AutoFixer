@@ -11,7 +11,9 @@ import { beforeEach, describe, expect, test } from "vitest";
 
 import {
   admitCandidate,
+  emptyEvidenceResolver,
   evaluateCandidate,
+  ledgerEvidenceResolver,
   lintForPolicyInstructions,
   scanForInjection,
 } from "../src/memory/index.js";
@@ -207,6 +209,98 @@ describe("Evidence resolvability", () => {
     const result = verdict({
       evidence: [{ evidence_type: "pr", reference: "pr_never_existed" }],
     });
+    expect(result.disposition).toBe("held");
+    expect(result.reasons).toContain("evidence_unresolved");
+  });
+
+  test("a reference is located by type and reference, never by reference alone", () => {
+    // A fabricated citation must not borrow the identity of a real one that
+    // happens to share its reference string. `pr:42` is captured; `issue:42`
+    // is invented, and the two must not collapse into one lookup.
+    const resolver = ledgerEvidenceResolver([
+      { evidence_type: "pr", reference: "42", known: true, positive: true },
+    ]);
+    const result = evaluateCandidate(
+      candidate({
+        evidence: [
+          { evidence_type: "issue", reference: "42" },
+          { evidence_type: "pr", reference: "42" },
+        ],
+      }),
+      { existing: [], evidence: resolver },
+    );
+    expect(result.disposition).toBe("held");
+    expect(result.reasons).toContain("evidence_unresolved");
+    expect(result.retrieval_eligible).toBe(false);
+  });
+
+  test("the same reference under two types resolves independently", () => {
+    // Positive control for the case above: when both really were captured,
+    // both resolve and the candidate is admitted.
+    const resolver = ledgerEvidenceResolver([
+      { evidence_type: "issue", reference: "42", known: true, positive: true },
+      { evidence_type: "pr", reference: "42", known: true, positive: true },
+    ]);
+    const result = evaluateCandidate(
+      candidate({
+        evidence: [
+          { evidence_type: "issue", reference: "42" },
+          { evidence_type: "pr", reference: "42" },
+        ],
+      }),
+      { existing: [], evidence: resolver },
+    );
+    expect(result.disposition).toBe("admitted");
+  });
+
+  test("the order of colliding citations cannot hide the missing one", () => {
+    // Same shape as the fabricated case, but with the real citation first: the
+    // overwrite ran in the other direction and still must not pass.
+    const resolver = ledgerEvidenceResolver([
+      { evidence_type: "pr", reference: "42", known: true, positive: true },
+    ]);
+    const result = evaluateCandidate(
+      candidate({
+        evidence: [
+          { evidence_type: "pr", reference: "42" },
+          { evidence_type: "issue", reference: "42" },
+        ],
+      }),
+      { existing: [], evidence: resolver },
+    );
+    expect(result.disposition).toBe("held");
+    expect(result.reasons).toContain("evidence_unresolved");
+  });
+
+  test("a resolver returning the wrong type for a citation does not count as resolved", () => {
+    // Defence in depth at the read side: even a misbehaving resolver that
+    // answers with another type's entry must not satisfy the citation.
+    const misbehaving = {
+      resolve: () => ({
+        evidence_type: "pr" as const,
+        reference: "42",
+        known: true,
+        positive: true,
+      }),
+    };
+    const result = evaluateCandidate(
+      candidate({ evidence: [{ evidence_type: "issue", reference: "42" }] }),
+      { existing: [], evidence: misbehaving },
+    );
+    expect(result.disposition).toBe("held");
+    expect(result.reasons).toContain("evidence_unresolved");
+  });
+
+  test("the empty resolver resolves nothing under any reference", () => {
+    const result = evaluateCandidate(
+      candidate({
+        evidence: [
+          { evidence_type: "issue", reference: "42" },
+          { evidence_type: "pr", reference: "42" },
+        ],
+      }),
+      { existing: [], evidence: emptyEvidenceResolver },
+    );
     expect(result.disposition).toBe("held");
     expect(result.reasons).toContain("evidence_unresolved");
   });

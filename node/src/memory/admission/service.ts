@@ -30,6 +30,7 @@ import type { MemoryEvidence, MemoryItemId, MemoryItemRecord, MemoryLink } from 
 import type { MemoryRepositories } from "../repositories.js";
 import type { AdmissionCandidate, AdmissionVerdict, EvidenceResolver } from "./types.js";
 import { retirementProposalsFor } from "./contradiction.js";
+import { evidenceKey } from "./evidence.js";
 import { evaluateCandidate } from "./gate.js";
 import type {
   MemoryAdmissionDecision,
@@ -257,10 +258,10 @@ function mergeIntoExisting(
   const seen = new Set(
     memory.evidence
       .listByItem(scope, targetId)
-      .map((entry) => `${entry.evidence_type} ${entry.reference}`),
+      .map((entry) => evidenceKey(entry.evidence_type, entry.reference)),
   );
   for (const ref of candidate.evidence) {
-    const key = `${ref.evidence_type} ${ref.reference}`;
+    const key = evidenceKey(ref.evidence_type, ref.reference);
     if (seen.has(key)) continue;
     seen.add(key);
     memory.evidence.add(scope, targetId, {

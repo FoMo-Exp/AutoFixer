@@ -14,7 +14,20 @@
  * bundle" true rather than aspirational.
  */
 
+import type { MemoryEvidenceType } from "../types.js";
 import type { CandidateEvidenceRef, EvidenceResolution, EvidenceResolver } from "./types.js";
+
+/**
+ * Canonical identity of one evidence citation.
+ *
+ * A citation is its type **and** its reference, never the reference alone:
+ * `pr:42` and `issue:42` are different pieces of evidence that happen to share
+ * a reference string. Anything that keeps a set or index of citations uses
+ * this one key, so no two call sites can disagree about what identifies what.
+ */
+export function evidenceKey(evidenceType: MemoryEvidenceType, reference: string): string {
+  return `${evidenceType}\u0000${reference}`;
+}
 
 /**
  * Build a resolver from an explicit ledger of captured evidence.
@@ -27,31 +40,19 @@ import type { CandidateEvidenceRef, EvidenceResolution, EvidenceResolver } from 
 export function ledgerEvidenceResolver(entries: readonly EvidenceResolution[]): EvidenceResolver {
   const index = new Map<string, EvidenceResolution>();
   for (const entry of entries) {
-    const key = `${entry.evidence_type} ${entry.reference}`;
+    const key = evidenceKey(entry.evidence_type, entry.reference);
     if (!index.has(key)) {
       index.set(key, entry);
     }
   }
   return {
-    resolve(refs: readonly CandidateEvidenceRef[]) {
-      const resolved = new Map<string, EvidenceResolution | undefined>();
-      for (const ref of refs) {
-        resolved.set(ref.reference, index.get(`${ref.evidence_type} ${ref.reference}`));
-      }
-      return resolved;
-    },
+    resolve: (ref) => index.get(evidenceKey(ref.evidence_type, ref.reference)),
   };
 }
 
 /** A resolver that resolves nothing: the safe default for a caller without a ledger. */
 export const emptyEvidenceResolver: EvidenceResolver = {
-  resolve(refs: readonly CandidateEvidenceRef[]) {
-    const resolved = new Map<string, EvidenceResolution | undefined>();
-    for (const ref of refs) {
-      resolved.set(ref.reference, undefined);
-    }
-    return resolved;
-  },
+  resolve: () => undefined,
 };
 
 export interface EvidenceCheckResult {
@@ -81,10 +82,12 @@ export function checkEvidence(
   }
 
   const resolved: EvidenceResolution[] = [];
-  const lookedUp = resolver.resolve(refs);
   for (const ref of refs) {
-    const entry = lookedUp.get(ref.reference);
-    if (entry === undefined) {
+    const entry = resolver.resolve(ref);
+    // Defence in depth at the read side: an implementation that answers with
+    // a different type's entry has not resolved *this* citation, whatever its
+    // reference says.
+    if (entry === undefined || entry.evidence_type !== ref.evidence_type) {
       reasons.push("evidence_unresolved");
       return { reasons, resolved };
     }

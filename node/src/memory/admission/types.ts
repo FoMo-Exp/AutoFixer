@@ -158,11 +158,14 @@ export interface EvidenceResolution {
  * The gate never trusts a caller's assertion that evidence exists: it asks
  * this resolver, which is backed by what the outcome-capture path actually
  * recorded. An unresolved citation is a validation failure.
+ *
+ * One citation in, one answer out. There is no map to key at this boundary, so
+ * two citations that share a reference string — `issue:42` and `pr:42` — can
+ * never collide and never borrow each other's answer. A citation is identified
+ * by its `(evidence_type, reference)` pair and by nothing else.
  */
 export interface EvidenceResolver {
-  resolve(
-    refs: readonly CandidateEvidenceRef[],
-  ): Map<CandidateEvidenceRef["reference"], EvidenceResolution | undefined>;
+  resolve(ref: CandidateEvidenceRef): EvidenceResolution | undefined;
 }
 
 // ---------------------------------------------------------------------------
