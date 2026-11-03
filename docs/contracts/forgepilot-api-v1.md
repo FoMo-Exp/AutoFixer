@@ -32,6 +32,63 @@ The OpenAPI document declares this as the `bearerAuth` security scheme
 (`type: http`, `scheme: bearer`); every operation requires it and documents the
 `401` response, so a client generated from the contract sends the credential.
 
+## Enterprise identity, sessions, and administration (DAT-202)
+
+When the deployment configures `FORGEPILOT_OAUTH_CLIENTS_FILE`, the API also
+serves the ADR-0006 identity surface and `/api/v1/tasks` requests MAY instead
+authenticate with a server-side session:
+
+- **Web** sessions arrive as the `fp_session` HttpOnly, `SameSite=Lax` cookie
+  (`sessionCookie` scheme). Cookie-authenticated mutating requests MUST echo
+  the session's CSRF token from `GET /api/v1/auth/session` in the
+  `X-CSRF-Token` header. Session tokens are 256-bit random values stored only
+  as SHA-256 digests; the CSRF token is the pairing secret and grants nothing
+  without the cookie.
+- **Desktop** sessions arrive as `Authorization: Bearer <session-token>`
+  (desktop flows skip CSRF: no ambient credential is sent). Desktop sign-in
+  starts in the system browser; the credential is delivered exactly once by
+  `POST /api/v1/auth/desktop/flows/{flow_id}/exchange`, and neither an
+  embedded login page nor Git passwords are involved.
+- Login is OAuth authorization code with a single-use `state`, an S256 PKCE
+  challenge, and one exact pre-registered `redirect_uri`. The flow is bound to
+  the starting browser via the `fp_oauth_binding` HttpOnly cookie, so a
+  login-CSRF callback is refused. Accounts are matched only by (provider
+  instance, stable provider subject); emails never merge identities.
+- Only administrator-approved provider instances accept logins. Registration
+  (`POST …/provider-instances`) refuses arbitrary self-hosted and
+  internal-network origins: HTTPS, no credentials/path/query/fragment, default
+  port, public hostname or IP literal, and public DNS answers are required.
+- The first enterprise administrator is granted only through the
+  deployment-owned bootstrap (`POST …/bootstrap`, `X-Bootstrap-Token`,
+  audited, at most once per enterprise, naming the provider identity
+  explicitly). The first ordinary login never becomes an administrator.
+- Logout, suspension, and membership revocation invalidate sessions
+  immediately: reads, writes, and live SSE subscriptions all fail or close.
+  Session-authenticated task access additionally requires an active workspace
+  membership (`viewer` is read-only).
+- Authentication secrets (OAuth client secrets, session tokens, desktop
+  secrets, states, verifiers) never appear in renderer responses, logs, audit
+  records, callback URLs, or analytics.
+
+Endpoints (details in the OpenAPI document):
+
+| Request | Request body | Response |
+|---|---|---|
+| `GET /api/v1/auth/providers` | none | `200 {items: LoginProvider[]}` |
+| `GET /api/v1/auth/login?provider_instance_id=&return_to=&desktop_flow=` | none | `302` to the provider; `Set-Cookie: fp_oauth_binding` |
+| `GET /api/v1/auth/callback?code=&state=` | none | web `302` + `Set-Cookie: fp_session`; desktop `200` text |
+| `GET /api/v1/auth/session` | none | `200 SessionInfo` (incl. `csrf_token`) |
+| `POST /api/v1/auth/logout` | none | `204` |
+| `POST /api/v1/auth/desktop/flows` | optional `provider_instance_id` | `201 DesktopFlow` |
+| `POST /api/v1/auth/desktop/flows/{flow_id}/exchange` | `{secret}` | `200 {token,…}` once; `428` pending, `410` consumed/expired |
+| `POST /api/v1/admin/enterprises/{enterprise_id}/bootstrap` | `provider_instance_id`, `subject` | `200 {enterprise_id, user_id, role:"admin"}` |
+| `POST /api/v1/admin/enterprises/{enterprise_id}/provider-instances` | `provider_type`, `origin_url` | `201 {provider_instance}` |
+| `GET /api/v1/admin/enterprises/{enterprise_id}/auth-audit?limit=` | none | `200 {items: AuthAuditRecord[]}` |
+| `PUT /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}` | `{role}` | `200 Membership` |
+| `DELETE /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}` | none | `204` |
+| `POST /api/v1/admin/users/{user_id}/suspend` | optional `enterprise_id` | `200 User` |
+| `POST /api/v1/admin/users/{user_id}/activate` | optional `enterprise_id` | `200 User` |
+
 ## Task resource
 
 ```json

@@ -192,6 +192,246 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List administrator-approved provider instances available for login */
+        get: operations["listLoginProviders"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Start a provider OAuth login (authorization code + state + PKCE)
+         * @description Browser navigation: responds 302 to the provider's authorize URL with an exact pre-registered redirect_uri, a single-use state, and an S256 PKCE challenge. Set-Cookie fp_oauth_binding (HttpOnly) binds the flow to this browser so a login-CSRF callback cannot complete. desktop_flow binds the login to a pending desktop flow.
+         */
+        get: operations["startLogin"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * OAuth callback: single-use code/state exchange into a session
+         * @description Validates the single-use state and the browser binding, exchanges the code with PKCE, and matches the account only by (provider instance, stable subject) — never by email. Web flows get the session as an HttpOnly cookie and a 302 to return_to; desktop flows get a plain completion page and deliver the credential through the single-use exchange instead.
+         */
+        get: operations["completeLogin"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Describe the current session, roles, memberships, and CSRF token */
+        get: operations["getSession"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke the current session immediately
+         * @description Revokes the session server-side (reads, writes, and live SSE subscriptions die with it) and expires the cookie. Cookie sessions must echo the session CSRF token in X-CSRF-Token.
+         */
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/desktop/flows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start a desktop system-browser sign-in binding
+         * @description Returns a flow id and a single-use secret held by the desktop only. The desktop opens login_url in the system browser; sign-in completes server-side and one exchange delivers the session.
+         */
+        post: operations["createDesktopFlow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/desktop/flows/{flow_id}/exchange": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Single-use exchange of the desktop secret for a session token */
+        post: operations["exchangeDesktopFlow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/enterprises/{enterprise_id}/bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Deployment-owned, audited grant of the first enterprise administrator
+         * @description Names the administrator by provider instance and stable subject explicitly — whoever signed in first cannot capture the role — and succeeds at most once per enterprise. Requires the deployment bootstrap token (X-Bootstrap-Token); ordinary sessions are refused.
+         */
+        post: operations["bootstrapAdmin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/enterprises/{enterprise_id}/provider-instances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Administrator approval of a provider instance origin
+         * @description The approval gate for OAuth logins. Refuses internal-network or arbitrary self-hosted origins: HTTPS, no credentials/path/query/fragment, default port, public hostname or IP literal, public DNS answers, and a configured OAuth application are all required.
+         */
+        post: operations["registerProviderInstance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/enterprises/{enterprise_id}/auth-audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the secret-free authentication/authorization audit trail */
+        get: operations["listAuthAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Grant or fail on a workspace membership (administrator) */
+        put: operations["grantMembership"];
+        post?: never;
+        /** Revoke a workspace membership; live streams close immediately */
+        delete: operations["revokeMembership"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{user_id}/suspend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Suspend a user: all sessions, SSE streams, and logins die */
+        post: operations["suspendUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{user_id}/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reactivate a suspended user */
+        post: operations["activateUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -336,6 +576,98 @@ export interface components {
             /** @example sha256:… */
             digest: string | null;
             head_sha: string | null;
+        };
+        User: {
+            id: string;
+            display_name: string;
+            /** @enum {string} */
+            status: "active" | "suspended";
+        };
+        Membership: {
+            id: string;
+            enterprise_id: string;
+            workspace_id: string;
+            user_id: string;
+            /** @enum {string} */
+            role: "owner" | "admin" | "member" | "viewer";
+        };
+        SessionInfo: {
+            user: components["schemas"]["User"];
+            /** @enum {string} */
+            kind: "web" | "desktop";
+            /** @description Paired with the HttpOnly session cookie: cookie-authenticated mutating requests must echo it in the X-CSRF-Token header. It is readable by the page on purpose — possession without the cookie grants nothing. */
+            csrf_token: string;
+            /** Format: date-time */
+            expires_at: string;
+            enterprise_roles: {
+                enterprise_id: string;
+                /** @enum {string} */
+                role: "admin";
+            }[];
+            memberships: {
+                enterprise_id: string;
+                workspace_id: string;
+                /** @enum {string} */
+                role: "owner" | "admin" | "member" | "viewer";
+            }[];
+        };
+        LoginProvider: {
+            provider_instance_id: string;
+            /** @enum {string} */
+            provider_type: "github" | "gitlab";
+            /** @example https://github.com */
+            display_origin: string;
+        };
+        ProviderInstance: {
+            id: string;
+            enterprise_id: string;
+            /** @enum {string} */
+            provider_type: "github" | "gitlab";
+            /** @description Administrator-approved provider origin. Registration enforces HTTPS, no credentials/path/query/fragment, the default port, and a public hostname or IP literal that resolves to public addresses only — internal-network origins are refused. */
+            origin_url: string;
+            version: number;
+        };
+        DesktopFlow: {
+            flow_id: string;
+            /** @description Single-use desktop-held secret, returned exactly once at creation and exchanged once for the desktop session. It never appears in a URL, log, or audit record. */
+            secret: string;
+            /** @description Open in the system browser to complete sign-in. */
+            login_url: string;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        AuthAuditRecord: {
+            id: string;
+            /** Format: date-time */
+            at: string;
+            /**
+             * @example login.started
+             * @example login.completed
+             * @example login.rejected
+             * @example session.created
+             * @example session.revoked
+             * @example desktop_flow.created
+             * @example desktop_flow.consumed
+             * @example user.provisioned
+             * @example user.suspended
+             * @example user.activated
+             * @example membership.granted
+             * @example membership.revoked
+             * @example provider_instance.registered
+             * @example admin.bootstrap
+             * @example admin.denied
+             */
+            event: string;
+            enterprise_id?: string | null;
+            /** @enum {string} */
+            actor_kind: "user" | "deployment" | "anonymous";
+            actor_user_id?: string | null;
+            subject_user_id?: string | null;
+            provider_instance_id?: string | null;
+            /** @description Secret-free detail; never carries tokens, codes, or states. */
+            details: {
+                [key: string]: unknown;
+            };
         };
         Error: {
             error: {
@@ -1015,6 +1347,733 @@ export interface operations {
                 };
             };
             /** @description Task not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listLoginProviders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Approved login providers */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["LoginProvider"][];
+                    };
+                };
+            };
+        };
+    };
+    startLogin: {
+        parameters: {
+            query: {
+                /** @description Must name an administrator-approved provider instance. */
+                provider_instance_id: string;
+                /** @description Relative same-deployment path only; absolute URLs fall back to /. */
+                return_to?: string;
+                /** @description Pending desktop auth flow id to bind this login to. */
+                desktop_flow?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to the provider authorize endpoint */
+            302: {
+                headers: {
+                    Location?: string;
+                    /** @description fp_oauth_binding=<secret>; HttpOnly; SameSite=Lax */
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown/unusable provider instance */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description AUTH_FLOW_EXPIRED: desktop flow is not startable */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    completeLogin: {
+        parameters: {
+            query: {
+                code: string;
+                state: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Desktop login complete; return to the application */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Web login complete; redirect to return_to */
+            302: {
+                headers: {
+                    Location?: string;
+                    /** @description fp_session=<token>; HttpOnly; SameSite=Lax; Max-Age */
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description AUTH_FLOW_INVALID: unknown state or malformed callback */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: binding mismatch (login CSRF) or suspended account */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description AUTH_FLOW_CONSUMED (replay) or AUTH_FLOW_EXPIRED */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description PROVIDER_ERROR: provider token/userinfo call failed (retryable) */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current session */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInfo"];
+                };
+            };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Required for cookie sessions; desktop bearer sessions are exempt. */
+                "X-CSRF-Token": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: missing or invalid CSRF token */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createDesktopFlow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description Optional preselection included in login_url. */
+                    provider_instance_id?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Desktop flow created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DesktopFlow"];
+                };
+            };
+        };
+    };
+    exchangeDesktopFlow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                flow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    secret: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Session issued (exactly once per flow) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        status: "ok";
+                        /** @description Desktop session token for Authorization: Bearer. */
+                        token: string;
+                        csrf_token: string;
+                        /** Format: date-time */
+                        expires_at: string;
+                        user: components["schemas"]["User"];
+                    };
+                };
+            };
+            /** @description AUTH_FLOW_INVALID: unknown flow */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED: wrong secret (attempts are counted) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description AUTH_FLOW_CONSUMED (replay) or AUTH_FLOW_EXPIRED */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description AUTH_FLOW_NOT_READY: browser sign-in has not completed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RATE_LIMITED: too many exchange attempts (retryable) */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    bootstrapAdmin: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Bootstrap-Token": string;
+            };
+            path: {
+                enterprise_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    provider_instance_id: string;
+                    /** @description Stable provider subject; the identity must have signed in. */
+                    subject: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Enterprise administrator granted (idempotent for the same identity) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        enterprise_id: string;
+                        user_id: string;
+                        /** @enum {string} */
+                        role: "admin";
+                    };
+                };
+            };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: session callers are never deployment authority */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND: enterprise, provider instance, or signed-in identity */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description BOOTSTRAP_CONFLICT: an administrator already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description BOOTSTRAP_UNAVAILABLE: no deployment token configured (retryable) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    registerProviderInstance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                enterprise_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    provider_type: "github" | "gitlab";
+                    /** @example https://github.com */
+                    origin_url: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Provider instance approved */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        provider_instance: components["schemas"]["ProviderInstance"];
+                    };
+                };
+            };
+            /** @description INVALID_REQUEST: unusable origin or no OAuth application */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description PROVIDER_ORIGIN_REJECTED or missing administrator authority */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listAuthAudit: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                enterprise_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Audit records, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["AuthAuditRecord"][];
+                    };
+                };
+            };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: administrator authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    grantMembership: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                enterprise_id: string;
+                workspace_id: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    role: "owner" | "admin" | "member" | "viewer";
+                };
+            };
+        };
+        responses: {
+            /** @description Membership granted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Membership"];
+                };
+            };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: administrator authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Workspace or user not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CONFLICT: already a member */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    revokeMembership: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                enterprise_id: string;
+                workspace_id: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Membership revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: administrator authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Membership not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    suspendUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description Optional locator for deployment actors. */
+                    enterprise_id?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description User suspended */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["User"];
+                };
+            };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: administrator authority over this user required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description User not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    activateUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    enterprise_id?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description User activated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["User"];
+                };
+            };
+            /** @description Missing or invalid Authorization: Bearer <token> header */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: administrator authority over this user required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description User not found */
             404: {
                 headers: {
                     [name: string]: unknown;
