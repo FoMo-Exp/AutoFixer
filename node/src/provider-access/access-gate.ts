@@ -5,11 +5,14 @@
  * {@link AccessGate.authorize}, which computes the effective-access
  * intersection from authoritative state. Two enforcement properties matter:
  *
- * - **Revocation takes effect in the same request path.** The gate's decision
- *   memo is stamped with an authority epoch; any revocation, event, or
- *   reconciliation bumps the epoch synchronously, so the very next check in
- *   the same request recomputes from the store and denies. A cached "allow"
- *   can never outlive the authority it was computed from.
+ * - **Decisions are never cached.** Every authorize call re-reads user
+ *   status, membership, workspace role, subject authority, and live
+ *   capability grants at call time, so grant expiry, verification-freshness
+ *   deadlines, membership changes, and revocations take effect on the very
+ *   next check — in this process or any other. There is deliberately no
+ *   decision memo: a cached allow could outlive the evidence it was computed
+ *   from (an expired delivery grant, a stale verification window) and would
+ *   need cross-process invalidation it cannot get.
  * - **Revocation stops everything and revokes capability grants.** Removing a
  *   subject stops read/stream/artifact/approval/write at once and revokes
  *   their live checkout/delivery grants in the same operation.
@@ -34,14 +37,15 @@ import {
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// Authority epoch — synchronous cache invalidation
+// Authority epoch — change signal
 // ---------------------------------------------------------------------------
 
 /**
- * A monotonic counter bumped whenever repository authority may have changed.
- * The gate memoizes decisions only for the current epoch; revocation, provider
- * events, and reconciliation all bump it, so no stale allow survives a
- * revocation by even one request step.
+ * A monotonic counter bumped whenever repository authority may have changed
+ * (revocation, provider event, reconciliation). The gate itself caches
+ * nothing — every decision is recomputed from the store — but the epoch is
+ * the shared "authority changed" signal for consumers that do memoize or
+ * push invalidations (e.g. SSE subscription teardown), and for tests.
  */
 export interface AuthorityEpoch {
   current(): number;
@@ -68,7 +72,7 @@ export interface AccessGateDeps {
   workspaces: WorkspaceRepository;
   users: UserRepository;
   identities: IdentityRepository;
-  /** Shared with revocation/reconcile so memoization dies with revocation. */
+  /** Shared with revocation/reconcile as the "authority changed" signal. */
   epoch: AuthorityEpoch;
   clock?: () => Date;
   freshWindowMs?: number;
@@ -113,8 +117,8 @@ export interface AccessGate {
   /** Authorize or throw {@link AccessDeniedError}. */
   assert(request: AccessRequest): AccessDecision;
   /**
-   * Revoke a subject's repository authority: mark it `removed`, revoke live
-   * capability grants, and invalidate the decision memo in the same call.
+   * Revoke a subject's repository authority: mark it `removed` and revoke
+   * live capability grants in the same call.
    */
   revoke(
     scope: WorkspaceScope,
@@ -122,13 +126,8 @@ export interface AccessGate {
     reason: string,
     at: string,
   ): RevocationEffects;
-  /** Current epoch (observability/tests). */
+  /** Current authority-change epoch (observability/tests). */
   epoch(): number;
-}
-
-interface MemoEntry {
-  epoch: number;
-  decision: AccessDecision;
 }
 
 export function createAccessGate(deps: AccessGateDeps): AccessGate {
@@ -144,8 +143,6 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
     staleAfterMs,
     policy = DEFAULT_ACTION_POLICY,
   } = deps;
-
-  const memo = new Map<string, MemoEntry>();
 
   function resolveIntegration(
     scope: WorkspaceScope,
@@ -208,13 +205,10 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
       };
     }
 
-    const cacheKey = `${integration.integration_id}|${request.user_id}|${request.action}`;
-    const currentEpoch = epoch.current();
-    const cached = memo.get(cacheKey);
-    if (cached && cached.epoch === currentEpoch) {
-      return cached.decision;
-    }
-
+    // Every decision is recomputed from authoritative state at call time.
+    // Nothing is memoized: grant expiry, verification freshness, membership
+    // changes, and revocations must all take effect on the next check without
+    // relying on any invalidation path.
     const user = users.getById(request.user_id);
     const workspace = workspaces.getById(scope, scope.workspace_id);
     const membership = memberships.getByUser(scope, request.user_id);
@@ -262,7 +256,6 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
       policy,
     });
 
-    memo.set(cacheKey, { epoch: currentEpoch, decision });
     return decision;
   }
 
@@ -280,9 +273,7 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
     reason: string,
     at: string,
   ): RevocationEffects {
-    const effects = revokeAuthority(access, epoch, scope, target, reason, at);
-    memo.clear();
-    return effects;
+    return revokeAuthority(access, epoch, scope, target, reason, at);
   }
 
   return { authorize, assert, revoke, epoch: () => epoch.current() };
