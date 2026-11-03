@@ -121,6 +121,10 @@ describe("Memory migrations", () => {
     expect(tables).toContain("memory_events");
     expect(tables).toContain("memory_embeddings");
     expect(tables).toContain("memory_tombstones");
+    // DAT-234: admission decisions and the retirement candidates a
+    // contradiction produces.
+    expect(tables).toContain("memory_admission_decisions");
+    expect(tables).toContain("memory_retirement_candidates");
   });
 
   test("is re-runnable and preserves memory rows", () => {
@@ -134,7 +138,7 @@ describe("Memory migrations", () => {
       .prepare("SELECT version FROM schema_migrations ORDER BY version")
       .all()
       .map((row) => (row as { version: number }).version);
-    expect(applied).toEqual([1, 2, 3]);
+    expect(applied).toEqual([1, 2, 3, 4]);
   });
 });
 

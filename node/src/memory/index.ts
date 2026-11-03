@@ -57,3 +57,48 @@ export type {
   PutMemoryEmbeddingInput,
 } from "./types.js";
 export { MEMORY_SCHEMA_VERSION } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Candidate admission (DAT-234)
+// ---------------------------------------------------------------------------
+
+export {
+  admitCandidate,
+  allowsFactualInjection,
+  createMemoryAdmissionRepository,
+  emptyEvidenceResolver,
+  evaluateCandidate,
+  findContradictions,
+  findDuplicate,
+  isDuplicate,
+  isRetrievalEligible,
+  ledgerEvidenceResolver,
+  lintForPolicyInstructions,
+  retirementProposalsFor,
+  scanForInjection,
+  ADMISSION_CHECKS,
+  ADMISSION_REASONS,
+} from "./admission/index.js";
+export type {
+  AdmissionCandidate,
+  AdmissionCheck,
+  AdmissionCheckResult,
+  AdmissionCheckStatus,
+  AdmissionDisposition,
+  AdmissionOutcome,
+  AdmissionReason,
+  AdmissionVerdict,
+  AdmitOptions,
+  CandidateEvidenceRef,
+  ContradictionFinding,
+  DuplicateFinding,
+  EligibilityInput,
+  EvidenceResolution,
+  EvidenceResolver,
+  MemoryAdmissionDecision,
+  MemoryAdmissionRepository,
+  MemoryRetirementCandidate,
+  PolicyReason,
+  RetirementAction,
+  RetirementCandidate,
+} from "./admission/index.js";
