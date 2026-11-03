@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 
 import type { StreamFn } from "@mariozechner/pi-agent-core";
 
@@ -13,7 +13,10 @@ import { ModelDispatchError } from "../src/index.js";
 import type { OrchestratorConfig } from "../src/config.js";
 import { configFromEnv } from "../src/config.js";
 import type { ApiErrorBody } from "../src/api/errors.js";
+import { DSH_SAFE_MESSAGES } from "../src/api/errors.js";
 import type { RunSummary, TaskResource, TimelineItem } from "../src/api/task-store.js";
+import { DshClient } from "../src/dsh/client.js";
+import { DshError } from "../src/dsh/client.js";
 import type { DshServerHandle } from "./helpers/dsh-server.js";
 import { startDshServer } from "./helpers/dsh-server.js";
 import { getJson, postJson, postRaw, readSse, setAuthToken, waitUntil } from "./helpers/http.js";
@@ -618,6 +621,155 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     expect(response.status).toBe(404);
     expect(response.body.error.code).toBe("TASK_NOT_FOUND");
     expect(response.body.error.request_id).toMatch(/^req_/);
+    // The served body carries the full shared versioned envelope (DAT-205).
+    expect(response.body.error.envelope_version).toBe(1);
+    expect(response.body.error.stage).toBe("validation");
+    expect(response.body.error.category).toBe("stop");
+    expect(response.body.error.retryable).toBe(false);
+    expect(response.body.error.retry_after_seconds).toBeNull();
+    expect(response.body.error.next_action).toBeNull();
+  });
+
+  test("unexpected failures serve a fixed safe INTERNAL_ERROR message", async () => {
+    const { base } = await startApp([]);
+    const marker = "SECRET_MARKER_INTERNAL_PATH";
+    // A non-ApiError failure is the unhandled-exception path: its message may
+    // carry internal diagnostics and must never reach the client, while the
+    // cause stays in server-side logs correlated by request_id.
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const spy = vi
+      .spyOn(DshClient.prototype, "createRun")
+      .mockRejectedValue(new Error(`simulated crash reading /srv/private/${marker}`));
+    try {
+      const response = await postJson<ApiErrorBody>(`${base}/api/v1/tasks`, {
+        repository_id: REPOSITORY_ID,
+        base_ref: "main",
+        summary: "Fix the export",
+        acceptance_criteria: ["export works"],
+      });
+      expect(response.status).toBe(500);
+      expect(response.body.error.code).toBe("INTERNAL_ERROR");
+      expect(response.body.error.message).toBe("An unexpected internal error occurred.");
+      expect(response.body.error.details).toEqual({});
+      expect(JSON.stringify(response.body)).not.toContain(marker);
+      // The diagnostic cause is retained server-side: the logged call carries
+      // the original error object.
+      expect(
+        logged.mock.calls.some((args) =>
+          args.some((arg) => arg instanceof Error && arg.message.includes(marker)),
+        ),
+      ).toBe(true);
+    } finally {
+      spy.mockRestore();
+      logged.mockRestore();
+    }
+  });
+
+  test("dsh failures serve fixed safe messages with an allowlisted details set", async () => {
+    const { base } = await startApp([]);
+    const marker = "SECRET_MARKER_DSH_DIAGNOSTIC";
+    // dsh failures can carry internal diagnostics: Go error strings in
+    // details.reason and raw non-contract response fragments in the message.
+    // Only the stable origin code crosses into the HTTP envelope.
+    const cases: Array<{ error: DshError; message: string; detailKeys: string[] }> = [
+      {
+        error: new DshError(
+          503,
+          "DSH_UNAVAILABLE",
+          `dsh returned 503 without a contract error envelope: ${marker}`,
+          { reason: marker },
+          true,
+          "req_dsh",
+        ),
+        message: "The execution control plane is temporarily unavailable.",
+        detailKeys: ["dsh_code"],
+      },
+      {
+        error: new DshError(
+          422,
+          "DSH_RISK_PROHIBITED",
+          `risk rejected: ${marker}`,
+          {
+            reason: marker,
+            decision_code: "risk_high",
+            run_id: null,
+            evidence_bundle_available: true,
+          },
+          false,
+          "req_dsh",
+        ),
+        message: "The work was rejected by risk policy.",
+        detailKeys: ["dsh_code", "task_id"],
+      },
+    ];
+    for (const { error, message, detailKeys } of cases) {
+      const spy = vi.spyOn(DshClient.prototype, "createRun").mockRejectedValueOnce(error);
+      try {
+        const response = await postJson<ApiErrorBody>(`${base}/api/v1/tasks`, {
+          repository_id: REPOSITORY_ID,
+          base_ref: "main",
+          summary: "Fix the export",
+          acceptance_criteria: ["export works"],
+        });
+        expect(response.status).toBe(error.status);
+        expect(response.body.error.code).toBe(error.code);
+        expect(response.body.error.message).toBe(message);
+        expect(response.body.error.details["dsh_code"]).toBe(error.code);
+        expect([...Object.keys(response.body.error.details)].sort()).toEqual(detailKeys);
+        expect(JSON.stringify(response.body)).not.toContain(marker);
+      } finally {
+        spy.mockRestore();
+      }
+    }
+  });
+
+  test("a prohibited create and its idempotent replay serve the identical refusal", async () => {
+    const { base } = await startApp([]);
+    const marker = "SECRET_MARKER_DSH_DIAGNOSTIC";
+    const spy = vi.spyOn(DshClient.prototype, "createRun").mockRejectedValueOnce(
+      new DshError(
+        422,
+        "DSH_RISK_PROHIBITED",
+        `risk rejected: ${marker}`,
+        {
+          reason: marker,
+          decision_code: "risk_high",
+          run_id: null,
+          evidence_bundle_available: true,
+        },
+        false,
+        "req_dsh",
+      ),
+    );
+    try {
+      const body = {
+        repository_id: REPOSITORY_ID,
+        base_ref: "main",
+        summary: "Fix the export",
+        acceptance_criteria: ["export works"],
+      };
+      const headers = { "Idempotency-Key": "prohibited-refusal-key" };
+      const first = await postJson<ApiErrorBody>(`${base}/api/v1/tasks`, body, headers);
+      expect(first.status).toBe(422);
+      const replay = await postJson<ApiErrorBody>(`${base}/api/v1/tasks`, body, headers);
+      expect(replay.status).toBe(422);
+      for (const response of [first, replay]) {
+        expect(response.body.error.code).toBe("DSH_RISK_PROHIBITED");
+        expect(response.body.error.message).toBe(DSH_SAFE_MESSAGES.DSH_RISK_PROHIBITED);
+        expect([...Object.keys(response.body.error.details)].sort()).toEqual([
+          "dsh_code",
+          "task_id",
+        ]);
+        expect(response.body.error.details["dsh_code"]).toBe("DSH_RISK_PROHIBITED");
+        expect(JSON.stringify(response.body)).not.toContain("risk_");
+        expect(JSON.stringify(response.body)).not.toContain(marker);
+      }
+      // request_id may vary per request; code/message/details must be identical.
+      expect(replay.body.error.message).toBe(first.body.error.message);
+      expect(replay.body.error.details).toEqual(first.body.error.details);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

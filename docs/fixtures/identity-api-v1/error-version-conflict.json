@@ -1,0 +1,14 @@
+{
+  "error": {
+    "envelope_version": 1,
+    "code": "VERSION_CONFLICT",
+    "stage": "validation",
+    "category": "stop",
+    "message": "The resource changed while you were editing. Reload and reapply.",
+    "retryable": false,
+    "retry_after_seconds": null,
+    "request_id": "req_01J8Z0M4N5O6",
+    "details": { "expected_version": 2, "current_version": 3 },
+    "next_action": "refresh"
+  }
+}

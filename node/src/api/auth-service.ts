@@ -311,7 +311,13 @@ export class AuthService {
     const credentials =
       provider !== undefined ? this.#credentials.get(provider.origin_url) : undefined;
     if (provider === undefined || credentials === undefined) {
-      throw new ApiError(502, "PROVIDER_ERROR", "login provider is no longer configured", {}, true);
+      throw new ApiError(
+        502,
+        "PROVIDER_ERROR",
+        "login provider is no longer configured",
+        {},
+        { retryable: true },
+      );
     }
     let profile: ProviderProfile;
     try {
@@ -340,7 +346,7 @@ export class AuthService {
           provider_instance_id: provider.id,
           details: { reason: "provider_error" },
         });
-        throw new ApiError(502, "PROVIDER_ERROR", error.message, {}, true);
+        throw new ApiError(502, "PROVIDER_ERROR", error.message, {}, { retryable: true });
       }
       throw error;
     }
@@ -437,7 +443,13 @@ export class AuthService {
       throw new ApiError(400, "AUTH_FLOW_INVALID", "desktop auth flow is not valid");
     }
     if (flow.attempts >= this.#config.desktopMaxAttempts) {
-      throw new ApiError(429, "RATE_LIMITED", "too many exchange attempts", {}, true);
+      throw new ApiError(
+        429,
+        "RATE_LIMITED",
+        "too many exchange attempts",
+        {},
+        { retryable: true },
+      );
     }
     if (!secretEquals(hashToken(input.secret), flow.secret_hash)) {
       this.#identity.desktopFlows.recordFailedAttempt(flow.id);
@@ -583,7 +595,13 @@ export class AuthService {
     // Checked by the HTTP layer from the X-Bootstrap-Token header; a missing
     // configuration disables the endpoint entirely (fail closed).
     if (token === undefined || token.length === 0) {
-      throw new ApiError(503, "BOOTSTRAP_UNAVAILABLE", "bootstrap is not configured", {}, true);
+      throw new ApiError(
+        503,
+        "BOOTSTRAP_UNAVAILABLE",
+        "bootstrap is not configured",
+        {},
+        { retryable: true },
+      );
     }
     const enterprise = this.#repos.enterprises.getById(input.enterprise_id);
     if (enterprise === undefined) {

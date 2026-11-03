@@ -1,0 +1,8 @@
+{
+  "workspace": { "id": "ws_01J8Z1C3D4", "name": "Acme Payments" },
+  "enterprise": { "id": "ent_01J8Y0A1B2", "name": "Acme Corp", "slug": "acme" },
+  "role": "member",
+  "expires_at": "2026-11-04T12:00:00Z",
+  "inviter": { "id": "usr_01J8Z5N4P7", "display_name": "Ada Lovelace" },
+  "already_joined": false
+}

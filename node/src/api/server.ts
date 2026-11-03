@@ -330,15 +330,18 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
         writeJson(res, mapped.status, mapped.toBody(requestId));
         return;
       }
-      writeJson(res, 500, {
-        error: {
-          code: "INTERNAL_ERROR",
-          message: error instanceof Error ? error.message : String(error),
-          request_id: requestId,
-          retryable: false,
-          details: {},
-        },
-      });
+      writeJson(
+        res,
+        500,
+        // Unexpected failures serve one fixed safe message: the cause may
+        // carry internal diagnostics (paths, payloads, provider text) and
+        // stays in server-side logs only — never in the shared envelope
+        // (ADR-0008: messages and details never expose sensitive diagnostics).
+        new ApiError(500, "INTERNAL_ERROR", "An unexpected internal error occurred.").toBody(
+          requestId,
+        ),
+      );
+      console.error(`unhandled API error on request ${requestId}:`, error);
     }
   };
 

@@ -19,7 +19,7 @@ import { createTurnSummaryReportTool } from "../pi/turn-report-tool.js";
 import { piSystemPrompt, taskPrompt } from "../pi/prompts.js";
 import type { PiSessionOptions } from "../pi/session.js";
 import { PiSession } from "../pi/session.js";
-import { ApiError, apiErrorFromDsh } from "./errors.js";
+import { ApiError, apiErrorFromDsh, DSH_SAFE_MESSAGES } from "./errors.js";
 import { PiSummaryTracker } from "./pi-summary.js";
 import type { PiSummary } from "./pi-summary.js";
 import type {
@@ -103,6 +103,19 @@ export interface TaskServiceDeps {
    * permissions — the policy decides.
    */
   diagnosticsPolicy?: DiagnosticAccessPolicy;
+}
+
+/**
+ * The shared prohibited-work refusal (422). The first refusal and the
+ * idempotent replay of a remembered refusal are generated from here, so one
+ * refusal always has one envelope: `DSH_RISK_PROHIBITED`, the fixed safe
+ * message, and `details` exactly `{dsh_code, task_id}` (DAT-205).
+ */
+function prohibitedRefusal(taskId: string, dshCode: string): ApiError {
+  return new ApiError(422, "DSH_RISK_PROHIBITED", DSH_SAFE_MESSAGES.DSH_RISK_PROHIBITED, {
+    dsh_code: dshCode,
+    task_id: taskId,
+  });
 }
 
 /**
@@ -375,17 +388,9 @@ export class TaskService {
   /** Replay a remembered create; prohibited outcomes re-refuse identically. */
   private replayCreatedTask(record: TaskRecord): TaskResource {
     if (record.status === "rejected" && record.risk?.class === "prohibited") {
-      throw new ApiError(
-        422,
-        "DSH_RISK_PROHIBITED",
-        "dsh rejected the requested work as prohibited",
-        {
-          ...Object.fromEntries(
-            Object.entries(record.risk).map(([field, value]) => [`risk_${field}`, value]),
-          ),
-          task_id: record.id,
-        },
-      );
+      // The replay's origin code is the dsh-control/v1 stable code for this
+      // state (the original dsh error is not persisted).
+      throw prohibitedRefusal(record.id, "DSH_RISK_PROHIBITED");
     }
     return toTaskResource(record);
   }
@@ -452,10 +457,7 @@ export class TaskService {
           acceptanceCriteria,
           error,
         );
-        throw new ApiError(422, "DSH_RISK_PROHIBITED", error.message, {
-          ...error.details,
-          task_id: record.id,
-        });
+        throw prohibitedRefusal(record.id, error.code);
       }
       if (error instanceof DshError) {
         throw apiErrorFromDsh(error);

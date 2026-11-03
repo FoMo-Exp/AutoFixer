@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 import { buildOpenApiDocument } from "../src/api/openapi.js";
+import { ApiError } from "../src/api/errors.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const contractPath = path.join(repoRoot, "docs", "contracts", "forgepilot-api-v1.md");
@@ -34,7 +35,7 @@ function parseSseTypes(markdown: string): string[] {
 
 /** Pull the endpoint rows (`METHOD /path`) from one endpoints table. */
 function parseTableEndpoints(table: string): Array<[method: string, path: string]> {
-  const rows = [...table.matchAll(/^\|\s*`(GET|POST|PUT|DELETE) ([^`?`]+)[^`]*`\s*\|/gm)];
+  const rows = [...table.matchAll(/^\|\s*`(GET|POST|PUT|PATCH|DELETE) ([^`?`]+)[^`]*`\s*\|/gm)];
   return rows.flatMap((m) =>
     m[1] && m[2] ? [[m[1].toLowerCase(), m[2].trim()] as [string, string]] : [],
   );
@@ -63,10 +64,43 @@ function parseUiStatuses(markdown: string): string[] {
   return [...sentence.matchAll(/`([a-z_]+)`/g)].flatMap((m) => (m[1] ? [m[1]] : []));
 }
 
-describe("independent conformance to the normative M0 contract", () => {
+/** Pull the shared error-envelope code table (`CODE | HTTP | stage | …`). */
+function parseErrorTable(markdown: string): Array<{
+  code: string;
+  status: number;
+  stage: string;
+  category: string;
+  retryable: boolean;
+  nextAction: string | null;
+}> {
+  const section = /## Error model: the shared error envelope([\s\S]*?)\n## /.exec(markdown)?.[1];
+  if (!section) {
+    throw new Error("could not locate the shared error envelope section");
+  }
+  const rows = [
+    ...section.matchAll(
+      /^\|\s*`([A-Z_]+)`\s*\|\s*(\d{3})\s*\|\s*([a-z_]+)\s*\|\s*([a-z_]+)\s*\|\s*(yes|no)\s*\|\s*(?:`([a-z_]+)`|—)\s*\|/gm,
+    ),
+  ];
+  return rows.flatMap((m) =>
+    m[1] && m[2] && m[3] && m[4] && m[5]
+      ? [
+          {
+            code: m[1],
+            status: Number(m[2]),
+            stage: m[3],
+            category: m[4],
+            retryable: m[5] === "yes",
+            nextAction: m[6] ?? null,
+          },
+        ]
+      : [],
+  );
+}
+
+describe("independent conformance to the normative contract", () => {
   const markdown = fs.readFileSync(contractPath, "utf8");
   const document = buildOpenApiDocument();
-
   test("SSE event types match the contract exactly (all 14)", () => {
     const contractTypes = parseSseTypes(markdown);
     expect(contractTypes).toHaveLength(14);
@@ -123,6 +157,21 @@ describe("independent conformance to the normative M0 contract", () => {
     expect(types).toContain("Task");
     expect(types).toContain("TaskEvent");
     expect(types).toContain("paths");
+  });
+
+  test("every contract error code matches the served envelope semantics", () => {
+    // The shared envelope's code table is the contract's per-code semantics;
+    // every listed code must render exactly those defaults at runtime (a code
+    // falling through to the unknown fallback is a contract/runtime drift).
+    const rows = parseErrorTable(markdown);
+    expect(rows.length, "error code table must list the contract's codes").toBeGreaterThan(20);
+    for (const row of rows) {
+      const body = new ApiError(row.status, row.code, "contract check").toBody("req_check");
+      expect(body.error.stage, `${row.code} stage`).toBe(row.stage);
+      expect(body.error.category, `${row.code} category`).toBe(row.category);
+      expect(body.error.retryable, `${row.code} retryable`).toBe(row.retryable);
+      expect(body.error.next_action, `${row.code} next_action`).toBe(row.nextAction);
+    }
   });
 
   test("the contract's safe-summary section pins the fail-closed semantics", () => {
@@ -223,7 +272,7 @@ describe("independent conformance to the normative M0 contract", () => {
         }
       }
     }
-    expect(checked).toBe(14);
+    expect(checked).toBe(36);
   });
 
   test("the committed openapi.json also carries the auth scheme", () => {

@@ -1,0 +1,17 @@
+{
+  "user": {
+    "display_name": "Grace Hopper",
+    "identities": [
+      {
+        "provider_instance_id": "pi_github_main",
+        "provider_type": "github",
+        "subject_id": "777777"
+      }
+    ]
+  },
+  "provider_role": "admin",
+  "provenance": "organization_owner",
+  "already_member": false,
+  "eligible": true,
+  "ineligible_reason": null
+}
