@@ -32,6 +32,7 @@ import {
   MissingPermissionError,
   NormalizationError,
   ProviderIntegrationError,
+  ProviderUnavailableError,
   type ProviderAdapter,
   type ProviderCallContext,
   type RawProviderRole,
@@ -65,7 +66,11 @@ export interface ReconcileSummary {
 export class ReconcileIncompleteError extends ProviderIntegrationError {
   constructor(
     readonly summary: ReconcileSummary,
-    cause: IncompleteRosterError | MissingPermissionError | NormalizationError,
+    cause:
+      | IncompleteRosterError
+      | MissingPermissionError
+      | NormalizationError
+      | ProviderUnavailableError,
   ) {
     super(cause.code, `reconciliation incomplete: ${cause.message}`);
   }
@@ -169,12 +174,14 @@ export async function reconcileIntegration(
     if (
       error instanceof IncompleteRosterError ||
       error instanceof MissingPermissionError ||
-      error instanceof NormalizationError
+      error instanceof NormalizationError ||
+      error instanceof ProviderUnavailableError
     ) {
       // Nothing is applied. The verification did not complete, so existing
       // authority degrades to `stale`: sensitive actions are blocked pending
       // a successful reconciliation, ordinary reads keep the last verified
-      // state. Never treat a partial fetch as removal.
+      // state. Never treat a partial fetch — or an unreachable provider — as
+      // removal.
       markAllStale(access, scope, integration.id, at);
       const summary = finish({
         status: "incomplete",

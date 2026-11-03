@@ -26,6 +26,7 @@ export {
   MissingPermissionError,
   NormalizationError,
   ProviderIntegrationError,
+  ProviderUnavailableError,
   WORKSPACE_ROLE_RANK,
 } from "./types.js";
 
@@ -64,3 +65,58 @@ export {
   taskWorkspaceEnv,
   withServiceCredential,
 } from "./credentials.js";
+
+// --- Real provider adapters and authority facts (DAT-247) -------------------
+
+export type { CanonicalRepositoryId } from "./canonical-repository.js";
+export {
+  InvalidRepositoryIdError,
+  canonicalRepositoryId,
+  githubRepositoryPath,
+  gitlabProjectPath,
+  parseCanonicalRepositoryId,
+} from "./canonical-repository.js";
+
+export type {
+  FetchHttpClientOptions,
+  ProviderHttpClient,
+  ProviderHttpRequest,
+  ProviderHttpResponse,
+  RateLimitSnapshot,
+} from "./provider-http.js";
+export {
+  assertProviderStatus,
+  assertRateLimitBudget,
+  createFetchHttpClient,
+  linkHasNext,
+  parseJsonArray,
+  parseJsonBody,
+  readRateLimit,
+  retryAfterMs,
+} from "./provider-http.js";
+
+export type {
+  GitHubAdapterOptions,
+  GitLabAdapterOptions,
+  IntegrationAdapterOptions,
+} from "./adapters/index.js";
+export {
+  GITHUB_REQUIRED_TOKEN_SCOPE,
+  GITLAB_REQUIRED_TOKEN_SCOPE,
+  createGitHubAdapter,
+  createGitLabAdapter,
+  createIntegrationAdapter,
+  githubApiBaseUrl,
+  gitlabApiBaseUrl,
+} from "./adapters/index.js";
+
+export type {
+  RepositoryAccessView,
+  SubjectRefreshDeps,
+  SubjectRefreshResult,
+} from "./subject-refresh.js";
+export {
+  refreshSubjectAuthority,
+  repositoryAccessFor,
+  workspaceRepositoryAccessFor,
+} from "./subject-refresh.js";

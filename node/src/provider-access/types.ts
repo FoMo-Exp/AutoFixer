@@ -68,6 +68,24 @@ export class IncompleteRosterError extends ProviderIntegrationError {
 }
 
 /**
+ * The provider could not be observed at all: rate limited (HTTP 429), server
+ * error, network failure, or an unexpected status.
+ *
+ * This is *unavailable*, not *empty*: the last verified fact is retained and
+ * reconciliation marks existing authority `stale` (sensitive actions blocked
+ * pending a successful verification). It never becomes `removed` — an
+ * unreachable provider says nothing about who lost access.
+ */
+export class ProviderUnavailableError extends ProviderIntegrationError {
+  constructor(
+    readonly reason: "rate_limited" | "server_error" | "network" | "unexpected_status",
+    message = `provider unavailable (${reason})`,
+  ) {
+    super("PROVIDER_UNAVAILABLE", message);
+  }
+}
+
+/**
  * A raw provider record cannot be normalized without inventing authority —
  * for example a GitHub repository-level "owner" user, which does not exist.
  */
