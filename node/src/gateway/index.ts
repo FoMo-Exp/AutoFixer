@@ -63,6 +63,7 @@ export type {
   GatewayAttemptDestination,
   GatewayAttemptEvent,
   GatewayBindingIdentity,
+  GatewayCaseIntake,
   GatewayDenyReason,
   GatewayEventSink,
   GatewayFallback,

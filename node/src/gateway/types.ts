@@ -167,12 +167,32 @@ export class ModelEgressDeniedError extends Error {
   readonly code: string;
   readonly retryable = false;
   readonly reason: GatewayDenyReason;
+  /**
+   * Disposal-case correlation id opened for this block (DAT-210). An
+   * identifier like the trace id — never authority and never a credential.
+   */
+  readonly caseId?: string;
+  /**
+   * Audience-bound case reference minted for the blocked run (DAT-210).
+   * Non-transferable: it never verifies for another audience and never grants
+   * quarantine access.
+   */
+  readonly caseReference?: string;
 
-  constructor(reason: GatewayDenyReason, message: string, code: string = MODEL_EGRESS_DENIED) {
+  constructor(
+    reason: GatewayDenyReason,
+    message: string,
+    code: string = MODEL_EGRESS_DENIED,
+    caseRef?: { caseId: string; caseReference: string },
+  ) {
     super(message);
     this.name = "ModelEgressDeniedError";
     this.reason = reason;
     this.code = code;
+    if (caseRef) {
+      this.caseId = caseRef.caseId;
+      this.caseReference = caseRef.caseReference;
+    }
   }
 }
 
@@ -245,4 +265,22 @@ export type GatewayAttemptEvent =
  */
 export interface GatewayEventSink {
   record(event: GatewayAttemptEvent): void | Promise<void>;
+}
+
+/**
+ * Post-block disposal-case seam (DAT-210, ADR-0005 §2), structurally
+ * satisfied by the security module's `SecurityCaseService`. The gateway calls
+ * it for every secret-gate block — uncertain sensitive content always needs
+ * human handling — and only for those: policy and configuration denials
+ * involve no request content to dispose. A failing intake never unblocks the
+ * request; the denial stands and an operational incident is raised.
+ */
+export interface GatewayCaseIntake {
+  recordGatewayBlock(input: {
+    identity: GatewayRequestIdentity;
+    reason: string;
+    safeDetail: string;
+    /** Raw blocked request for encrypted quarantine; never for logs. */
+    rawContent?: string;
+  }): Promise<{ caseId: string; caseReference: string }>;
 }

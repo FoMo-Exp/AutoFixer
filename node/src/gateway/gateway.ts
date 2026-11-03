@@ -30,6 +30,7 @@ import type {
   GatewayAttemptDestination,
   GatewayAttemptEvent,
   GatewayBindingIdentity,
+  GatewayCaseIntake,
   GatewayEventSink,
   GatewayFallback,
   GatewayRequestIdentity,
@@ -72,6 +73,13 @@ export interface ModelGatewayDeps {
    * sent.
    */
   sink?: GatewayEventSink;
+  /**
+   * Disposal-case intake for secret-gate blocks (DAT-210): opening or
+   * associating the scoped human-handling case after the block. Optional —
+   * without it the block still stands and is recorded on the sink — and its
+   * failure never unblocks a request.
+   */
+  caseIntake?: GatewayCaseIntake;
   now?: () => Date;
   newInvocationId?: () => string;
   /** Operational-incident channel for post-outcome audit failures. */
@@ -344,6 +352,11 @@ export class ModelGateway {
       ...(this.deps.scanTimeoutMs !== undefined ? { scanTimeoutMs: this.deps.scanTimeoutMs } : {}),
     });
     if (!gate.ok) {
+      // Every scan-gate denial blocks on uncertain sensitive content (or the
+      // inability to establish its absence) and needs human handling: open or
+      // idempotently associate the disposal case (DAT-210). The denial stands
+      // no matter what the intake does with it.
+      const caseRef = await this.openDisposalCase(identity, gate);
       return this.deny(
         identity,
         attempt,
@@ -352,6 +365,7 @@ export class ModelGateway {
         { policyRevision: policy.revision, destination },
         gate.evidence,
         scanDenyErrorCode(gate.reason),
+        caseRef,
       );
     }
     // Destination data-class authorization: a destination is enabled together
@@ -575,6 +589,39 @@ export class ModelGateway {
     };
   }
 
+  /**
+   * Open the scoped disposal case for one secret-gate block (DAT-210). The
+   * raw blocked request goes to the intake for encrypted quarantine; the
+   * returned case reference is audience-bound to the blocked run. Intake
+   * failures raise an incident and return nothing — they never unblock.
+   */
+  private async openDisposalCase(
+    identity: GatewayRequestIdentity,
+    gate: { reason: GatewayDenyReason; detail: string; context?: Context },
+  ): Promise<{ caseId: string; caseReference: string } | undefined> {
+    if (!this.deps.caseIntake) return undefined;
+    let rawContent: string | undefined;
+    if (gate.context !== undefined) {
+      try {
+        rawContent = JSON.stringify(gate.context);
+      } catch {
+        rawContent = undefined;
+      }
+    }
+    try {
+      return await this.deps.caseIntake.recordGatewayBlock({
+        identity,
+        reason: gate.reason,
+        safeDetail: gate.detail,
+        ...(rawContent !== undefined ? { rawContent } : {}),
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.incident(`security case intake failed after block: ${scrubSecrets(detail)}`);
+      return undefined;
+    }
+  }
+
   private deny(
     identity: GatewayRequestIdentity,
     attempt: number,
@@ -583,6 +630,7 @@ export class ModelGateway {
     resolved?: { policyRevision: string; destination?: GatewayAttemptDestination },
     scan?: RequestScanEvidence,
     code: string = MODEL_EGRESS_DENIED,
+    caseRef?: { caseId: string; caseReference: string },
   ): ModelEgressDeniedError {
     const event: GatewayAttemptEvent = {
       phase: "outcome",
@@ -603,6 +651,7 @@ export class ModelGateway {
       reason,
       `model egress denied (${reason}): ${scrubSecrets(detail)}`,
       code,
+      caseRef,
     );
   }
 

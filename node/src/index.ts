@@ -208,6 +208,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
 
 export { buildOpenApiDocument, configFromEnv };
 export * from "./gateway/index.js";
+export * from "./security/index.js";
 
 async function main(): Promise<void> {
   const config = configFromEnv();
