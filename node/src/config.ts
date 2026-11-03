@@ -144,9 +144,14 @@ function validateModelBaseUrl(value: string): string {
     throw new Error("FORGEPILOT_PI_BASE_URL must be a valid HTTP or HTTPS URL");
   }
   if (!(["http:", "https:"].includes(url.protocol) && !url.username && !url.password)) {
-    throw new Error("FORGEPILOT_PI_BASE_URL must use HTTP or HTTPS and must not contain credentials");
+    throw new Error(
+      "FORGEPILOT_PI_BASE_URL must use HTTP or HTTPS and must not contain credentials",
+    );
   }
-  if (url.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname)) {
+  if (
+    url.protocol === "http:" &&
+    !["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname)
+  ) {
     throw new Error("FORGEPILOT_PI_BASE_URL must use HTTPS for a non-local endpoint");
   }
   if (url.search || url.hash) {
