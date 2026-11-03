@@ -25,6 +25,7 @@ import type { DataClass, SecretClassification } from "../gateway/types.js";
 import { TraceValidationError } from "./errors.js";
 import type { RetentionConfig } from "./retention.js";
 import { parseRetentionConfig } from "./retention.js";
+import type { TraceEvent } from "./schema.js";
 
 /** The material kinds that may only persist through this module. */
 export const MATERIAL_KINDS = ["prompt", "response", "tool", "sdk_error"] as const;
@@ -393,6 +394,26 @@ export function redactContentStrings(value: unknown, options: RedactionOptions =
     return out;
   }
   return value;
+}
+
+/**
+ * Enforce the content policy on one event at the ordinary-persistence
+ * boundary: every free-form text container (`payload` strings, label values)
+ * is scanned and redacted before the event is stored. Identity and
+ * correlation fields are not material and stay intact. The trace store
+ * applies this at `append`; material text itself only persists through
+ * {@link ContentCapture}, under the raw-capture opt-in.
+ */
+export function redactEventContent(event: TraceEvent): TraceEvent {
+  return {
+    ...event,
+    // The walk preserves keys and non-string values; only text is scanned.
+    labels: redactContentStrings(event.labels) as Record<string, string>,
+    payload:
+      event.payload === null
+        ? null
+        : (redactContentStrings(event.payload) as Record<string, unknown>),
+  };
 }
 
 /**

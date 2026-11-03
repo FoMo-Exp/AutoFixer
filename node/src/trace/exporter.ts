@@ -44,17 +44,113 @@ export interface ExportItem {
 }
 
 /**
- * One explicitly registered export destination. Mirrors the gateway's
- * `ApprovedEndpoint` rule: registration with an ADR-0005 approval reference
- * is the only evidence of trust, and missing permitted data classes fail
- * closed at export time.
+ * A deployment-registered, ADR-0005-approved export destination, mirroring
+ * the gateway's `ApprovedEndpoint` rule: registration is the only evidence
+ * of trust, and missing permitted data classes fail closed at export time.
  */
-export interface ExportDestination {
-  destination_id: string;
-  /** ADR-0005 destination approval reference; empty is not approved. */
-  approval_ref: string;
+export interface ApprovedExportDestination {
+  readonly destination_id: string;
+  /** ADR-0005 destination approval reference recorded by the enterprise. */
+  readonly approval_ref: string;
   /** Data classes explicitly permitted at this destination. */
-  permitted_data_classes?: DataClass[];
+  readonly permitted_data_classes?: readonly DataClass[];
+}
+
+/**
+ * Trusted ADR-0005 export-destination authority, injected at service
+ * bootstrap — never supplied per call. Callers assert a destination id and
+ * never their own approval: a non-empty approval string or a caller-built
+ * destination object is not a credential, only this authority is.
+ */
+export interface ExportDestinationAuthority {
+  /** The approved registration for this destination id, or nothing. */
+  approved(destinationId: string): ApprovedExportDestination | undefined;
+}
+
+/**
+ * Fail-closed destination registry. Its contents come from the
+ * deployment-owned export-approval configuration (see
+ * {@link parseApprovedExportDestinations}); an unapproved or unknown id
+ * resolves to nothing and is refused at export.
+ */
+export class ExportApprovalRegistry implements ExportDestinationAuthority {
+  private readonly byId = new Map<string, ApprovedExportDestination>();
+
+  constructor(options: { destinations: readonly ApprovedExportDestination[] }) {
+    for (const destination of options.destinations) {
+      if (
+        typeof destination.destination_id !== "string" ||
+        destination.destination_id.length === 0
+      ) {
+        throw new TraceValidationError("export destination_id must be a non-empty string");
+      }
+      if (typeof destination.approval_ref !== "string" || destination.approval_ref.length === 0) {
+        throw new ExportDestinationNotApprovedError(
+          `export destination ${destination.destination_id} has no ADR-0005 approval reference`,
+        );
+      }
+      if (destination.permitted_data_classes !== undefined) {
+        assertDataClasses(destination.permitted_data_classes, "export destination");
+      }
+      if (this.byId.has(destination.destination_id)) {
+        throw new TraceValidationError(
+          `export destination ${destination.destination_id} is already registered`,
+        );
+      }
+      this.byId.set(
+        destination.destination_id,
+        Object.freeze({
+          ...destination,
+          permitted_data_classes: destination.permitted_data_classes
+            ? Object.freeze([...destination.permitted_data_classes])
+            : undefined,
+        }),
+      );
+    }
+  }
+
+  approved(destinationId: string): ApprovedExportDestination | undefined {
+    return this.byId.get(destinationId);
+  }
+}
+
+/**
+ * Parse the deployment-owned export-approval configuration (a protected
+ * file assembled at bootstrap, like the gateway policy). The parsed records
+ * feed {@link ExportApprovalRegistry}; nothing parsed from a per-call
+ * object can ever approve itself.
+ */
+export function parseApprovedExportDestinations(value: unknown): ApprovedExportDestination[] {
+  if (!Array.isArray(value)) {
+    throw new TraceValidationError("export approval config must be an array");
+  }
+  return value.map((entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new TraceValidationError("export approval config entries must be JSON objects");
+    }
+    const record = entry as Record<string, unknown>;
+    const destinationId = record["destination_id"];
+    const approvalRef = record["approval_ref"];
+    if (typeof destinationId !== "string" || destinationId.length === 0) {
+      throw new TraceValidationError(
+        "export approval entry destination_id must be a non-empty string",
+      );
+    }
+    if (typeof approvalRef !== "string" || approvalRef.length === 0) {
+      throw new ExportDestinationNotApprovedError(
+        `export destination ${destinationId} has no ADR-0005 approval reference`,
+      );
+    }
+    const permitted = record["permitted_data_classes"];
+    if (permitted !== undefined) {
+      return {
+        destination_id: destinationId,
+        approval_ref: approvalRef,
+        permitted_data_classes: assertDataClasses(permitted, "export destination"),
+      };
+    }
+    return { destination_id: destinationId, approval_ref: approvalRef };
+  });
 }
 
 /** The remote exporter. Throwing marks it unavailable; records stay pending. */
@@ -86,6 +182,25 @@ function identityKey(source: string, eventId: string): string {
   return JSON.stringify([source, eventId]);
 }
 
+function totalBytesOf(state: ReadonlyMap<string, { bytes: number }>): number {
+  let bytes = 0;
+  for (const stored of state.values()) {
+    bytes += stored.bytes;
+  }
+  return bytes;
+}
+
+/** Evict the oldest non-mandatory record from a planned state; returns its key. */
+function evictOldestDebug(state: Map<string, StoredCapture>): string | null {
+  for (const [key, stored] of state.entries()) {
+    if (!stored.item.mandatory) {
+      state.delete(key);
+      return key;
+    }
+  }
+  return null;
+}
+
 /** Closed DAT-209 data-class vocabulary; own-property membership only. */
 const DATA_CLASS_VOCABULARY: Record<DataClass, true> = {
   system: true,
@@ -98,17 +213,26 @@ const DATA_CLASS_VOCABULARY: Record<DataClass, true> = {
   derived_summaries: true,
 };
 
-function assertDataClasses(dataClasses: readonly DataClass[], where: string): void {
-  if (!Array.isArray(dataClasses) || dataClasses.length === 0) {
+/** Own-property membership in the closed DAT-209 data-class vocabulary. */
+function isDataClass(value: unknown): value is DataClass {
+  return typeof value === "string" && Object.hasOwn(DATA_CLASS_VOCABULARY, value);
+}
+
+/** Validate the closed DAT-209 data-class vocabulary; returns the classes. */
+function assertDataClasses(value: unknown, where: string): DataClass[] {
+  if (!Array.isArray(value) || value.length === 0) {
     throw new TraceValidationError(`${where} must carry at least one data class`);
   }
-  for (const dataClass of dataClasses) {
-    if (typeof dataClass !== "string" || !Object.hasOwn(DATA_CLASS_VOCABULARY, dataClass)) {
+  const classes: DataClass[] = [];
+  for (const entry of value) {
+    if (!isDataClass(entry)) {
       throw new TraceValidationError(
-        `${where} data class ${JSON.stringify(dataClass)} is not recognized`,
+        `${where} data class ${JSON.stringify(entry)} is not recognized`,
       );
     }
+    classes.push(entry);
   }
+  return classes;
 }
 
 function assertExportItem(item: ExportItem): void {
@@ -171,7 +295,7 @@ interface StoredCapture {
  * (at-least-once; consumers deduplicate by source/event identity).
  */
 export class DurableLocalCapture {
-  private readonly stored = new Map<string, StoredCapture>();
+  private stored = new Map<string, StoredCapture>();
   private readonly deliveredKeys = new Set<string>();
   private readonly filePath: string | undefined;
   private readonly maxRecords: number;
@@ -222,20 +346,33 @@ export class DurableLocalCapture {
       return "duplicate";
     }
     const bytes = Buffer.byteLength(`${JSON.stringify(item)}\n`, "utf8");
-    while (this.stored.size >= this.maxRecords || this.totalBytes() + bytes > this.maxBytes) {
+    // Plan the next state and commit memory only together with durable
+    // state: a failed write leaves nothing in memory, so the retry of a
+    // failed write re-attempts the write instead of being misjudged as an
+    // already-persisted duplicate.
+    const next = new Map(this.stored);
+    const evictedKeys: string[] = [];
+    while (next.size >= this.maxRecords || totalBytesOf(next) + bytes > this.maxBytes) {
       if (!item.mandatory) {
         this.counts.dropped += 1;
         return "dropped";
       }
-      if (!this.evictOneDebug()) {
+      const evicted = evictOldestDebug(next);
+      if (evicted === null) {
         throw new CaptureCapacityExhaustedError(
           `durable capture is at capacity and holds no evictable debug records; ` +
             `mandatory evidence ${item.source}/${item.event_id} cannot be captured`,
         );
       }
+      evictedKeys.push(evicted);
     }
-    this.stored.set(key, { item, fingerprint, bytes });
-    this.writeAll();
+    next.set(key, { item, fingerprint, bytes });
+    this.writeAll(next);
+    this.stored = next;
+    for (const evicted of evictedKeys) {
+      this.deliveredKeys.delete(evicted);
+    }
+    this.counts.evicted += evictedKeys.length;
     this.counts.captured += 1;
     return "captured";
   }
@@ -271,41 +408,28 @@ export class DurableLocalCapture {
     return { ...this.counts };
   }
 
-  private totalBytes(): number {
-    let bytes = 0;
-    for (const stored of this.stored.values()) {
-      bytes += stored.bytes;
-    }
-    return bytes;
-  }
-
-  /** Evict the oldest non-mandatory record to make room for mandatory evidence. */
-  private evictOneDebug(): boolean {
-    for (const [key, stored] of this.stored.entries()) {
-      if (!stored.item.mandatory) {
-        this.stored.delete(key);
-        this.deliveredKeys.delete(key);
-        this.counts.evicted += 1;
-        this.writeAll();
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /** The file holds exactly the live records; writes are atomic. */
-  private writeAll(): void {
+  /** The file holds exactly the live records of the committed state; writes are atomic. */
+  private writeAll(state: ReadonlyMap<string, StoredCapture>): void {
     if (this.filePath === undefined) {
       return;
     }
     fs.mkdirSync(path.dirname(this.filePath), { mode: 0o700, recursive: true });
-    const lines = [...this.stored.values()].map((stored) => JSON.stringify(stored.item)).join("\n");
+    const lines = [...state.values()].map((stored) => JSON.stringify(stored.item)).join("\n");
     const temporary = `${this.filePath}.${process.pid}.tmp`;
-    fs.writeFileSync(temporary, lines.length > 0 ? `${lines}\n` : "", {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-    fs.renameSync(temporary, this.filePath);
+    try {
+      fs.writeFileSync(temporary, lines.length > 0 ? `${lines}\n` : "", {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      fs.renameSync(temporary, this.filePath);
+    } catch (error) {
+      try {
+        fs.rmSync(temporary, { force: true });
+      } catch {
+        // Best-effort cleanup; the original write failure is what matters.
+      }
+      throw error;
+    }
   }
 
   private load(): void {
@@ -440,6 +564,11 @@ export interface TraceExporterOptions {
   capture: DurableLocalCapture;
   buffer: ExportBuffer;
   transport: ExportTransport;
+  /**
+   * Trusted ADR-0005 destination authority, injected at service bootstrap.
+   * It is the only evidence of trust: a caller cannot approve itself.
+   */
+  destinations: ExportDestinationAuthority;
 }
 
 /**
@@ -452,43 +581,14 @@ export class TraceExporter {
   private readonly capture: DurableLocalCapture;
   private readonly buffer: ExportBuffer;
   private readonly transport: ExportTransport;
-  private readonly destinations = new Map<string, ExportDestination>();
+  private readonly destinations: ExportDestinationAuthority;
   private readonly counts = { delivered: 0, refused: 0, failed_flushes: 0 };
 
   constructor(options: TraceExporterOptions) {
     this.capture = options.capture;
     this.buffer = options.buffer;
     this.transport = options.transport;
-  }
-
-  /**
-   * Register one export destination. Registration without an ADR-0005
-   * approval reference is refused — a private-looking host or an internal
-   * service is never its own approval.
-   */
-  register(destination: ExportDestination): void {
-    if (typeof destination.destination_id !== "string" || destination.destination_id.length === 0) {
-      throw new TraceValidationError("export destination_id must be a non-empty string");
-    }
-    if (typeof destination.approval_ref !== "string" || destination.approval_ref.length === 0) {
-      throw new ExportDestinationNotApprovedError(
-        `export destination ${destination.destination_id} has no ADR-0005 approval reference`,
-      );
-    }
-    if (destination.permitted_data_classes !== undefined) {
-      assertDataClasses(destination.permitted_data_classes, "export destination");
-    }
-    if (this.destinations.has(destination.destination_id)) {
-      throw new TraceValidationError(
-        `export destination ${destination.destination_id} is already registered`,
-      );
-    }
-    this.destinations.set(destination.destination_id, {
-      ...destination,
-      permitted_data_classes: destination.permitted_data_classes
-        ? [...destination.permitted_data_classes]
-        : undefined,
-    });
+    this.destinations = options.destinations;
   }
 
   /**
@@ -517,10 +617,11 @@ export class TraceExporter {
    * everything pending.
    */
   flush(destination_id: string): FlushOutcome {
-    const destination = this.destinations.get(destination_id);
+    // Approval comes from the injected authority, never from the caller.
+    const destination = this.destinations.approved(destination_id);
     if (destination === undefined) {
       throw new ExportDestinationNotApprovedError(
-        `export destination ${destination_id} is not registered`,
+        `export destination ${destination_id} is not approved for export`,
       );
     }
     const batch = new Map<string, ExportItem>();
@@ -531,7 +632,9 @@ export class TraceExporter {
     const deliverable: ExportItem[] = [];
     for (const item of batch.values()) {
       const verdict = authorizeRequestDataClasses(item.data_classes, {
-        permittedDataClasses: destination.permitted_data_classes,
+        permittedDataClasses: destination.permitted_data_classes
+          ? [...destination.permitted_data_classes]
+          : undefined,
       });
       if (verdict.ok) {
         deliverable.push(item);

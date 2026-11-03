@@ -12,8 +12,15 @@ import {
 } from "../src/trace/access.js";
 import type { CapturedMaterial } from "../src/trace/content.js";
 import { ContentCapture } from "../src/trace/content.js";
-import { DurableLocalCapture, ExportBuffer, TraceExporter } from "../src/trace/exporter.js";
+import {
+  DurableLocalCapture,
+  ExportApprovalRegistry,
+  ExportBuffer,
+  TraceExporter,
+} from "../src/trace/exporter.js";
 import type { ExportItem, ExportTransport } from "../src/trace/exporter.js";
+import type { NewTraceEvent } from "../src/trace/schema.js";
+import { TraceStore } from "../src/trace/store.js";
 
 /**
  * Acceptance: secret-bearing prompt, response, tool and SDK-error material —
@@ -124,11 +131,15 @@ describe("secret-bearing material never reaches persistence or export", () => {
       capture,
       buffer: new ExportBuffer({ maxRecords: 50 }),
       transport,
-    });
-    exporter.register({
-      destination_id: "vendor",
-      approval_ref: "adr5-1",
-      permitted_data_classes: ["logs", "user_input"],
+      destinations: new ExportApprovalRegistry({
+        destinations: [
+          {
+            destination_id: "vendor",
+            approval_ref: "adr5-1",
+            permitted_data_classes: ["logs", "user_input"],
+          },
+        ],
+      }),
     });
 
     exporter.captureItem({
@@ -150,6 +161,49 @@ describe("secret-bearing material never reaches persistence or export", () => {
       "delivered export batches": JSON.stringify(deliveredBatches),
     });
     expect(JSON.stringify(deliveredBatches)).toContain("[redacted]");
+  });
+
+  test("secret-bearing material cannot persist through the trace store", () => {
+    // The store enforces the content gate at its write boundary: a writer
+    // stuffing material into an event payload cannot persist secrets
+    // through the ordinary persistence path.
+    const file = path.join(mkdtempSync(path.join(tmpdir(), "autofixer-leak-")), "trace-state.json");
+    const store = new TraceStore({
+      persistencePath: file,
+      now: () => new Date(Date.UTC(2026, 10, 3, 0, 0, 0)),
+    });
+    const event: NewTraceEvent = {
+      source: "worker-1",
+      event_id: "evt-1",
+      sequence: 1,
+      event_time: "2026-11-03T00:00:01.000Z",
+      record_class: "operational_trace",
+      kind: "tool.executed",
+      enterprise_id: "ent-1",
+      workspace_id: "ws-1",
+      trace_id: "trace-1",
+      span_id: "span-1",
+      payload: {
+        prompt: secretBearingText(),
+        response: secretBearingText(),
+        tool: secretBearingText(),
+        sdk_error: secretBearingText(),
+      },
+      labels: { status: `auth ${SECRETS.githubToken}` },
+    };
+    store.append(event);
+    store.flushSync();
+
+    expectNoSecrets({
+      "trace store read": JSON.stringify(
+        store.query({
+          enterprise_id: "ent-1",
+          workspace_id: "ws-1",
+          subject: "user-1",
+        }),
+      ),
+      "trace store persistence": readFileSync(file, "utf8"),
+    });
   });
 
   test("quarantine holds the raw material — and only quarantine does", () => {

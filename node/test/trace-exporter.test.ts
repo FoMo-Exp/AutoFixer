@@ -1,19 +1,25 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { describe, expect, test } from "vitest";
 
+import { TraceConflictError, TraceValidationError } from "../src/trace/errors.js";
 import {
   CaptureCapacityExhaustedError,
   DurableLocalCapture,
   EvidenceGate,
+  ExportApprovalRegistry,
   ExportBuffer,
   ExportDestinationNotApprovedError,
+  parseApprovedExportDestinations,
   TraceExporter,
 } from "../src/trace/exporter.js";
-import type { ExportItem, ExportTransport } from "../src/trace/exporter.js";
-import { TraceConflictError, TraceValidationError } from "../src/trace/errors.js";
+import type {
+  ApprovedExportDestination,
+  ExportItem,
+  ExportTransport,
+} from "../src/trace/exporter.js";
 
 function tempDir(): string {
   return mkdtempSync(path.join(tmpdir(), "autofixer-export-"));
@@ -30,11 +36,13 @@ function item(overrides: Partial<ExportItem> = {}): ExportItem {
   };
 }
 
-/** A transport that records every delivery and can be made unavailable. */
-function scriptedTransport(): ExportTransport & {
+interface ScriptedTransport extends ExportTransport {
   delivered: ExportItem[][];
   fail: boolean;
-} {
+}
+
+/** A transport that records every delivery and can be made unavailable. */
+function scriptedTransport(): ScriptedTransport {
   return {
     delivered: [],
     fail: false,
@@ -47,68 +55,106 @@ function scriptedTransport(): ExportTransport & {
   };
 }
 
+const APPROVED_LOGS: ApprovedExportDestination = {
+  destination_id: "vendor",
+  approval_ref: "adr5-1",
+  permitted_data_classes: ["logs"],
+};
+
+function makeExporter(
+  destinations: readonly ApprovedExportDestination[],
+  options: {
+    capture?: DurableLocalCapture;
+    maxBuffer?: number;
+    transport?: ScriptedTransport;
+  } = {},
+): {
+  exporter: TraceExporter;
+  capture: DurableLocalCapture;
+  buffer: ExportBuffer;
+  transport: ScriptedTransport;
+} {
+  const transport = options.transport ?? scriptedTransport();
+  const capture =
+    options.capture ?? new DurableLocalCapture({ maxRecords: 100, maxBytes: 100_000 });
+  const buffer = new ExportBuffer({ maxRecords: options.maxBuffer ?? 10 });
+  const exporter = new TraceExporter({
+    capture,
+    buffer,
+    transport,
+    destinations: new ExportApprovalRegistry({ destinations }),
+  });
+  return { exporter, capture, buffer, transport };
+}
+
 describe("export destination approval", () => {
-  test("registration without an ADR-0005 approval reference is refused", () => {
-    const exporter = new TraceExporter({
-      capture: new DurableLocalCapture({ maxRecords: 10, maxBytes: 10_000 }),
-      buffer: new ExportBuffer({ maxRecords: 10 }),
-      transport: scriptedTransport(),
-    });
-    expect(() =>
-      exporter.register({
-        destination_id: "vendor",
-        approval_ref: "",
-        permitted_data_classes: ["logs"],
-      }),
-    ).toThrow(ExportDestinationNotApprovedError);
+  test("approval comes from the injected authority, not the caller", () => {
+    const { exporter, transport } = makeExporter([APPROVED_LOGS]);
+    exporter.captureItem(item());
+    // Only ids the deployment-registered authority approves resolve; a
+    // caller cannot approve its own destination by naming one.
+    expect(() => exporter.flush("attacker-controlled")).toThrow(ExportDestinationNotApprovedError);
+    expect(exporter.flush("vendor").delivered).toBe(1);
+    expect(transport.delivered).toHaveLength(1);
   });
 
-  test("flushing to an unregistered destination is refused", () => {
-    const exporter = new TraceExporter({
-      capture: new DurableLocalCapture({ maxRecords: 10, maxBytes: 10_000 }),
-      buffer: new ExportBuffer({ maxRecords: 10 }),
-      transport: scriptedTransport(),
-    });
-    expect(() => exporter.flush("vendor")).toThrow(ExportDestinationNotApprovedError);
+  test("a registration without an ADR-0005 approval reference is refused", () => {
+    expect(
+      () =>
+        new ExportApprovalRegistry({
+          destinations: [{ destination_id: "vendor", approval_ref: "" }],
+        }),
+    ).toThrow(ExportDestinationNotApprovedError);
+    expect(
+      () =>
+        new ExportApprovalRegistry({
+          destinations: [
+            { destination_id: "vendor", approval_ref: "adr5-1" },
+            { destination_id: "vendor", approval_ref: "adr5-2" },
+          ],
+        }),
+    ).toThrow(TraceValidationError);
+    expect(
+      () =>
+        new ExportApprovalRegistry({
+          destinations: [
+            {
+              destination_id: "vendor",
+              approval_ref: "adr5-1",
+              permitted_data_classes: ["nope" as "logs"],
+            },
+          ],
+        }),
+    ).toThrow(TraceValidationError);
+  });
+
+  test("deployment approval config is parsed and validated fail-closed", () => {
+    const parsed = parseApprovedExportDestinations([
+      { destination_id: "vendor", approval_ref: "adr5-1", permitted_data_classes: ["logs"] },
+    ]);
+    expect(parsed).toEqual([
+      { destination_id: "vendor", approval_ref: "adr5-1", permitted_data_classes: ["logs"] },
+    ]);
+    expect(() => parseApprovedExportDestinations({})).toThrow(TraceValidationError);
     expect(() =>
-      exporter.register({
-        destination_id: "vendor",
-        approval_ref: "adr5-123",
-        permitted_data_classes: ["logs"],
-      }),
-    ).not.toThrow();
-    expect(() =>
-      exporter.register({
-        destination_id: "vendor",
-        approval_ref: "adr5-123",
-        permitted_data_classes: ["logs"],
-      }),
+      parseApprovedExportDestinations([{ destination_id: "", approval_ref: "adr5-1" }]),
     ).toThrow(TraceValidationError);
     expect(() =>
-      exporter.register({
-        destination_id: "other",
-        approval_ref: "adr5-124",
-        permitted_data_classes: ["nope" as "logs"],
-      }),
-    ).toThrow(TraceValidationError);
+      parseApprovedExportDestinations([{ destination_id: "vendor", approval_ref: "" }]),
+    ).toThrow(ExportDestinationNotApprovedError);
   });
 });
 
 describe("data-class authorization at export time", () => {
-  function setup(permitted: { permitted_data_classes?: ExportItem["data_classes"] }) {
-    const transport = scriptedTransport();
-    const capture = new DurableLocalCapture({ maxRecords: 10, maxBytes: 10_000 });
-    const exporter = new TraceExporter({
-      capture,
-      buffer: new ExportBuffer({ maxRecords: 10 }),
-      transport,
-    });
-    exporter.register({ destination_id: "vendor", approval_ref: "adr5-1", ...permitted });
-    return { transport, capture, exporter };
-  }
-
   test("a class the destination is not approved for is refused, not sent", () => {
-    const { transport, exporter } = setup({ permitted_data_classes: ["logs"] });
+    const { exporter, transport } = makeExporter([
+      APPROVED_LOGS,
+      {
+        destination_id: "code-vendor",
+        approval_ref: "adr5-2",
+        permitted_data_classes: ["code"],
+      },
+    ]);
     exporter.captureItem(item({ event_id: "ok", data_classes: ["logs"] }));
     exporter.captureItem(item({ event_id: "restricted", data_classes: ["code"] }));
 
@@ -120,17 +166,14 @@ describe("data-class authorization at export time", () => {
     expect(transport.delivered.flat().map((delivered) => delivered.event_id)).toEqual(["ok"]);
 
     // The refused record stays pending for a destination approved for it.
-    exporter.register({
-      destination_id: "code-vendor",
-      approval_ref: "adr5-2",
-      permitted_data_classes: ["code"],
-    });
     const second = exporter.flush("code-vendor");
     expect(second.delivered).toBe(1);
   });
 
   test("missing permitted data classes fail closed", () => {
-    const { transport, exporter } = setup({});
+    const { exporter, transport } = makeExporter([
+      { destination_id: "vendor", approval_ref: "adr5-1" },
+    ]);
     exporter.captureItem(item());
     const outcome = exporter.flush("vendor");
     expect(outcome.delivered).toBe(0);
@@ -142,17 +185,7 @@ describe("data-class authorization at export time", () => {
 describe("exporter unavailability never loses mandatory records", () => {
   test("mandatory records survive the outage and are delivered after recovery", () => {
     const transport = scriptedTransport();
-    const capture = new DurableLocalCapture({ maxRecords: 10, maxBytes: 10_000 });
-    const exporter = new TraceExporter({
-      capture,
-      buffer: new ExportBuffer({ maxRecords: 10 }),
-      transport,
-    });
-    exporter.register({
-      destination_id: "vendor",
-      approval_ref: "adr5-1",
-      permitted_data_classes: ["logs"],
-    });
+    const { exporter, capture } = makeExporter([APPROVED_LOGS], { transport });
 
     transport.fail = true;
     for (const eventId of ["e1", "e2", "e3"]) {
@@ -173,20 +206,9 @@ describe("exporter unavailability never loses mandatory records", () => {
   });
 
   test("mandatory records dropped by the bounded buffer are still delivered", () => {
-    const transport = scriptedTransport();
-    const capture = new DurableLocalCapture({ maxRecords: 10, maxBytes: 10_000 });
+    const { exporter, capture } = makeExporter([APPROVED_LOGS], { maxBuffer: 1 });
     // The buffer only has room for one record; the rest drop from delivery
     // queueing with an explicit counter.
-    const exporter = new TraceExporter({
-      capture,
-      buffer: new ExportBuffer({ maxRecords: 1 }),
-      transport,
-    });
-    exporter.register({
-      destination_id: "vendor",
-      approval_ref: "adr5-1",
-      permitted_data_classes: ["logs"],
-    });
     for (const eventId of ["e1", "e2", "e3"]) {
       exporter.captureItem(item({ event_id: eventId, mandatory: true }));
     }
@@ -195,21 +217,11 @@ describe("exporter unavailability never loses mandatory records", () => {
     // Pending-mandatory recovery from durable capture closes the gap.
     const outcome = exporter.flush("vendor");
     expect(outcome.delivered).toBe(3);
+    expect(capture.pendingMandatory()).toHaveLength(0);
   });
 
   test("high-volume debug drops are bounded and counted explicitly", () => {
-    const transport = scriptedTransport();
-    const capture = new DurableLocalCapture({ maxRecords: 100, maxBytes: 100_000 });
-    const exporter = new TraceExporter({
-      capture,
-      buffer: new ExportBuffer({ maxRecords: 2 }),
-      transport,
-    });
-    exporter.register({
-      destination_id: "vendor",
-      approval_ref: "adr5-1",
-      permitted_data_classes: ["logs"],
-    });
+    const { exporter, capture } = makeExporter([APPROVED_LOGS], { maxBuffer: 2 });
     for (let index = 0; index < 5; index += 1) {
       exporter.captureItem(item({ event_id: `debug-${index}`, mandatory: false }));
     }
@@ -298,6 +310,61 @@ describe("capture capacity and the evidence gate", () => {
   });
 });
 
+describe("a failed durable write never masquerades as persisted", () => {
+  // A directory at the write target makes the atomic rename fail after the
+  // record was offered: a deterministic, permissions-independent failure.
+  function blockedCapture(): { capture: DurableLocalCapture; file: string; unblock: () => void } {
+    const file = path.join(tempDir(), "capture.jsonl");
+    const capture = new DurableLocalCapture({ path: file, maxRecords: 10, maxBytes: 10_000 });
+    mkdirSync(file);
+    return {
+      capture,
+      file,
+      unblock: () => rmdirSync(file),
+    };
+  }
+
+  test("a failed first write commits nothing and the retry re-attempts the write", () => {
+    const { capture, file, unblock } = blockedCapture();
+    const mandatory = item({ event_id: "e1", mandatory: true });
+
+    expect(() => capture.append(mandatory)).toThrow();
+    // Memory did not commit with the failed write: no phantom record.
+    expect(capture.readAll()).toHaveLength(0);
+    expect(capture.pendingMandatory()).toHaveLength(0);
+    expect(capture.counters().captured).toBe(0);
+
+    unblock();
+    // The retry must attempt the write again — not be misjudged as a
+    // duplicate of a record that never persisted.
+    expect(capture.append(mandatory)).toBe("captured");
+    expect(capture.pendingMandatory().map((record) => record.event_id)).toEqual(["e1"]);
+    expect(readFileSync(file, "utf8")).toContain('"e1"');
+  });
+
+  test("mandatory evidence write failure stops the action that needs it", () => {
+    const { capture, unblock } = blockedCapture();
+    const gate = new EvidenceGate(capture);
+
+    let actionRan = false;
+    expect(() => {
+      gate.requireEvidence({
+        source: "worker",
+        event_id: "e1",
+        data_classes: ["logs"],
+        record: {},
+      });
+      actionRan = true;
+    }).toThrow();
+    expect(actionRan).toBe(false);
+    expect(capture.readAll()).toHaveLength(0);
+
+    unblock();
+    gate.requireEvidence({ source: "worker", event_id: "e1", data_classes: ["logs"], record: {} });
+    expect(capture.pendingMandatory()).toHaveLength(1);
+  });
+});
+
 describe("durable capture survives restarts", () => {
   test("records reload from the file and re-deliver at least once", () => {
     const file = path.join(tempDir(), "capture.jsonl");
@@ -327,19 +394,9 @@ describe("export-time scanning", () => {
   const assignedValue = ["verysecret", "value123"].join("");
 
   test("delivered records and the durable file carry no secret values", () => {
-    const transport = scriptedTransport();
     const file = path.join(tempDir(), "capture.jsonl");
     const capture = new DurableLocalCapture({ path: file, maxRecords: 10, maxBytes: 10_000 });
-    const exporter = new TraceExporter({
-      capture,
-      buffer: new ExportBuffer({ maxRecords: 10 }),
-      transport,
-    });
-    exporter.register({
-      destination_id: "vendor",
-      approval_ref: "adr5-1",
-      permitted_data_classes: ["logs"],
-    });
+    const { exporter, transport } = makeExporter([APPROVED_LOGS], { capture });
     exporter.captureItem(
       item({
         record: {

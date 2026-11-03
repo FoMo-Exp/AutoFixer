@@ -40,6 +40,12 @@ findings — is an unavailable scanner: the material is refused with
 evidence MUST stay token-shaped (`[A-Za-z0-9._-]{1,64}`) so evidence can
 never carry matched material.
 
+The trace store enforces this policy at its write boundary: `TraceStore.append`
+scans and redacts every event's `payload` strings and label values before
+ordinary persistence (`redactEventContent`). Identity and correlation fields
+are not material and stay intact; a redelivery of the raw writer content
+deduplicates against the stored redacted form.
+
 ## 2. Content classification and scan evidence
 
 Material carries data classes from the closed DAT-209 vocabulary (`system`,
@@ -111,9 +117,15 @@ exist. Both default policies deny every read.
 
 External tracing/analytics exporters are an egress path under ADR-0005:
 
-- A destination is only trusted when registered with an ADR-0005 approval
-  reference (`approval_ref`); registration without one is refused
-  (`EXPORT_DESTINATION_NOT_APPROVED`). An internal service is never its own
+- Approval is resolved from a trusted `ExportDestinationAuthority` injected
+  at service bootstrap — built from the deployment-owned export-approval
+  configuration (`parseApprovedExportDestinations`) and consulted by
+  destination id at export time. Callers assert a destination id and never
+  their own approval: a non-empty approval string or a caller-built
+  destination object is not a credential. A registration without an ADR-0005
+  approval reference is refused at registry construction
+  (`EXPORT_DESTINATION_NOT_APPROVED`), and an id the authority does not
+  resolve is refused at export. An internal service is never its own
   approval.
 - Per-record data-class authorization uses the gateway's own
   `authorizeRequestDataClasses`: a record whose classes the destination's
@@ -130,6 +142,9 @@ External tracing/analytics exporters are an egress path under ADR-0005:
   layer mandatory records live in while remote exporters are unavailable.
   Records are scanned and redacted before they are written; the file holds
   exactly the live records and is compacted when a debug record is evicted.
+  Memory commits only together with a successful durable write: a failed
+  write records nothing anywhere, and the retry of that record re-attempts
+  the write instead of being misjudged as an already-persisted duplicate.
   Duplicate delivery is deduplicated by `(source, event_id)`; a redelivery
   with different content is refused (`TRACE_EVENT_CONFLICT`). Delivery marks
   are process-local: after restart, records re-deliver at least once and
