@@ -2,11 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
 import { ApiConfigurationError, ApiError, ForgePilotClient } from "./api/client";
 import type { ArtifactMetadata, RunSummary, Task, TaskEvent, TaskStatus } from "./api/client";
+import { IdentityClient } from "./api/identity";
+import type { SessionInfo } from "./api/identity";
 import { resolveApiConfig } from "./api/config";
 import { useTaskStream } from "./api/hooks";
 import { CreateIdempotencyKeys } from "./api/idempotency";
 import { RepositoryPicker } from "./settings/RepositoryPicker";
 import { SettingsDialog } from "./settings/SettingsDialog";
+import { captureInviteToken } from "./workspaces/invite-token";
+import { InviteJoin } from "./workspaces/InviteJoin";
+import { WorkspaceAdminDialog } from "./workspaces/WorkspaceAdminDialog";
 import {
   approvalScopeDigest,
   buildTimelineRows,
@@ -63,7 +68,12 @@ function isTaskArchived(task: Task): boolean {
 }
 
 export default function App(): ReactElement {
-  const client = useMemo(() => new ForgePilotClient(resolveApiConfig()), []);
+  const apiConfig = useMemo(() => resolveApiConfig(), []);
+  const client = useMemo(() => new ForgePilotClient(apiConfig), [apiConfig]);
+  const identityClient = useMemo(() => new IdentityClient(apiConfig), [apiConfig]);
+  const [session, setSession] = useState<SessionInfo>();
+  const [inviteToken, setInviteToken] = useState<string>();
+  const [showWorkspaces, setShowWorkspaces] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   /** 窄屏钻取视图：list ↔ detail（≤900px 生效，桌面始终双栏并存） */
@@ -116,6 +126,35 @@ export default function App(): ReactElement {
     }, 1000);
     return () => window.clearTimeout(timeoutId);
   }, [actionError, isActionErrorHovered]);
+
+  const refreshSession = useCallback(async (): Promise<void> => {
+    try {
+      const activeSession = await identityClient.getSession();
+      setSession(activeSession);
+      // Cookie-authenticated deployments require the CSRF echo on writes. The
+      // transport only sends it when no bearer credential is configured.
+      client.setCsrfToken(activeSession.csrf_token);
+      identityClient.setCsrfToken(activeSession.csrf_token);
+    } catch {
+      // The task surface stays usable without identity: an anonymous or
+      // unconfigured deployment simply hides the administration entry.
+      setSession(undefined);
+    }
+  }, [client, identityClient]);
+
+  useEffect(() => {
+    void refreshSession();
+  }, [refreshSession]);
+
+  useEffect(() => {
+    const token = captureInviteToken(
+      window.location.hash,
+      window.history,
+      window.sessionStorage,
+      `${window.location.pathname}${window.location.search}`,
+    );
+    if (token) setInviteToken(token);
+  }, []);
 
   const selectTask = useCallback((task: Task | undefined): void => {
     const taskId = task?.id;
@@ -363,6 +402,19 @@ export default function App(): ReactElement {
     }
   }
 
+  if (inviteToken) {
+    return (
+      <InviteJoin
+        client={identityClient}
+        token={inviteToken}
+        onDismiss={() => {
+          setInviteToken(undefined);
+          void refreshSession();
+        }}
+      />
+    );
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -424,11 +476,36 @@ export default function App(): ReactElement {
             </svg>
             <span className="action-label">Settings</span>
           </button>
+          {session && (session.memberships.length > 0 || session.enterprise_roles.length > 0) && (
+            <button
+              className="button button-quiet button-small"
+              onClick={() => setShowWorkspaces(true)}
+              aria-label="Open workspace administration"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+              <span className="action-label">Workspaces</span>
+            </button>
+          )}
           <button
             className="button button-primary button-small"
             onClick={() => setShowCreate(true)}
+            aria-label="New task"
           >
-            <span aria-hidden="true">＋</span> New task
+            <span aria-hidden="true">＋</span> <span className="action-label">New task</span>
           </button>
         </div>
       </header>
@@ -592,6 +669,16 @@ export default function App(): ReactElement {
             const { task, action } = confirmTaskAction;
             closeTaskConfirmation();
             void (action === "archive" ? handleQuickCancel(task) : handleQuickRecovery(task));
+          }}
+        />
+      )}
+      {showWorkspaces && session && (
+        <WorkspaceAdminDialog
+          client={identityClient}
+          session={session}
+          onClose={() => {
+            setShowWorkspaces(false);
+            void refreshSession();
           }}
         />
       )}

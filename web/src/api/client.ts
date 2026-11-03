@@ -15,6 +15,11 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
   readonly retryable: boolean;
+  /** Trace/case reference from the shared envelope; quote it in support cases. */
+  readonly requestId: string | undefined;
+  readonly nextAction: string | null | undefined;
+  readonly retryAfterSeconds: number | null | undefined;
+  readonly details: Record<string, unknown>;
 
   constructor(status: number, payload: ErrorPayload | undefined, fallback: string) {
     super(payload?.error.message || fallback);
@@ -22,6 +27,10 @@ export class ApiError extends Error {
     this.status = status;
     this.code = payload?.error.code || "REQUEST_FAILED";
     this.retryable = payload?.error.retryable ?? status >= 500;
+    this.requestId = payload?.error.request_id;
+    this.nextAction = payload?.error.next_action;
+    this.retryAfterSeconds = payload?.error.retry_after_seconds;
+    this.details = payload?.error.details ?? {};
   }
 }
 
@@ -46,10 +55,87 @@ export function isLoopbackApiUrl(value: string): boolean {
   }
 }
 
-export interface ForgePilotClientOptions {
+export interface ApiTransportOptions {
   baseUrl: string;
   token: string;
+  /**
+   * CSRF echo for cookie-authenticated requests. Bearer-authenticated requests
+   * never send it (the contract rejects it only when the credential is a cookie).
+   */
+  csrfToken?: string;
   fetchImpl?: JsonFetch;
+}
+
+export type ForgePilotClientOptions = ApiTransportOptions;
+
+/**
+ * Loopback-only HTTP transport shared by the task surface and the identity
+ * surface: one place enforces the loopback guard, redirect refusal, bearer
+ * attachment, CSRF echo, and the shared error envelope.
+ */
+export class ApiTransport {
+  protected readonly baseUrl: string;
+  private readonly token: string;
+  private csrfToken: string | undefined;
+  protected readonly fetchImpl: JsonFetch;
+
+  constructor(options: ApiTransportOptions) {
+    this.baseUrl = options.baseUrl.replace(/\/$/, "");
+    this.token = options.token;
+    this.csrfToken = options.csrfToken;
+    // Bind the window method: Chromium rejects an unbound `fetch` invoked as an
+    // object property ("Illegal invocation").
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  }
+
+  /** Called once the session reports cookie authentication and its CSRF token. */
+  setCsrfToken(token: string | undefined): void {
+    this.csrfToken = token;
+  }
+
+  protected headers(extra: Record<string, string> = {}): Record<string, string> {
+    return {
+      ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+      ...(this.token || !this.csrfToken ? {} : { "X-CSRF-Token": this.csrfToken }),
+      ...extra,
+    };
+  }
+
+  protected async raw(path: string, init: RequestInit = {}): Promise<Response> {
+    if (!this.baseUrl) throw new ApiConfigurationError();
+    if (!isLoopbackApiUrl(this.baseUrl)) {
+      throw new ApiConfigurationError("ForgePilot only permits an HTTP loopback Node service.");
+    }
+    return this.fetchImpl(`${this.baseUrl}${path}`, {
+      ...init,
+      redirect: "error",
+      headers: {
+        ...this.headers(),
+        ...init.headers,
+      },
+    });
+  }
+
+  protected async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const response = await this.raw(path, init);
+    if (!response.ok) throw await errorFromResponse(response, "Node service request failed.");
+    return (await response.json()) as T;
+  }
+
+  protected async requestNoContent(path: string, init: RequestInit = {}): Promise<void> {
+    const response = await this.raw(path, init);
+    if (!response.ok) throw await errorFromResponse(response, "Node service request failed.");
+  }
+}
+
+async function errorFromResponse(response: Response, fallback: string): Promise<ApiError> {
+  let payload: ErrorPayload | undefined;
+  try {
+    payload = (await response.json()) as ErrorPayload;
+  } catch {
+    // Keep the status-specific fallback when the server closes without JSON.
+  }
+  return new ApiError(response.status, payload, fallback);
 }
 
 export interface CreateTaskInput {
@@ -76,17 +162,7 @@ export interface StreamResult {
   terminal: boolean;
 }
 
-export class ForgePilotClient {
-  private readonly baseUrl: string;
-  private readonly token: string;
-  private readonly fetchImpl: JsonFetch;
-
-  constructor(options: ForgePilotClientOptions) {
-    this.baseUrl = options.baseUrl.replace(/\/$/, "");
-    this.token = options.token;
-    this.fetchImpl = options.fetchImpl ?? fetch;
-  }
-
+export class ForgePilotClient extends ApiTransport {
   async listTasks(status?: TaskStatus, cursor?: string): Promise<TaskPage> {
     const params = new URLSearchParams();
     if (status) params.set("status", status);
@@ -177,8 +253,7 @@ export class ForgePilotClient {
       headers,
       signal: options.signal,
     });
-    if (!response.ok)
-      throw await this.errorFromResponse(response, "Unable to connect to task stream.");
+    if (!response.ok) throw await errorFromResponse(response, "Unable to connect to task stream.");
     if (!response.body) throw new Error("Task stream returned no readable body.");
 
     const reader = response.body.getReader();
@@ -207,44 +282,6 @@ export class ForgePilotClient {
     }
 
     return { lastEventId, terminal };
-  }
-
-  private headers(extra: Record<string, string> = {}): Record<string, string> {
-    return {
-      ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
-      ...extra,
-    };
-  }
-
-  private async raw(path: string, init: RequestInit = {}): Promise<Response> {
-    if (!this.baseUrl) throw new ApiConfigurationError();
-    if (!isLoopbackApiUrl(this.baseUrl)) {
-      throw new ApiConfigurationError("ForgePilot only permits an HTTP loopback Node service.");
-    }
-    return this.fetchImpl(`${this.baseUrl}${path}`, {
-      ...init,
-      redirect: "error",
-      headers: {
-        ...this.headers(),
-        ...init.headers,
-      },
-    });
-  }
-
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const response = await this.raw(path, init);
-    if (!response.ok) throw await this.errorFromResponse(response, "Node service request failed.");
-    return (await response.json()) as T;
-  }
-
-  private async errorFromResponse(response: Response, fallback: string): Promise<ApiError> {
-    let payload: ErrorPayload | undefined;
-    try {
-      payload = (await response.json()) as ErrorPayload;
-    } catch {
-      // Keep the status-specific fallback when the server closes without JSON.
-    }
-    return new ApiError(response.status, payload, fallback);
   }
 }
 

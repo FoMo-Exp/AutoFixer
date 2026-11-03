@@ -1,11 +1,14 @@
 ## Node-to-UI contract checklist
 
 The workbench uses `src/api/contracts/openapi.json` and its generated
-`schema.d.ts` as the only API source. The contract baseline is `main` at
-`5828f92ca6fbff0b462d05896e689b9aad66362f` (DAT-193 #21, OpenAPI `0.5.0`,
-merge-base `af2ac8e`), which contains DAT-191 (#18, `705b4a0`), DAT-192 (#19,
-`af2ac8e`) and the DAT-188 M3 baseline `8734984`. No UI fixture invents a
-field outside this baseline.
+`schema.d.ts` as the only API source. The current contract baseline is `main`
+at `7f85830533aeebf8552451428f86cb5cb1d0d8c7` (DAT-205 #38, OpenAPI `0.7.0`),
+which adds the enterprise identity and workspace/team/member/invitation
+surface (DAT-202 `0bf66c2`, DAT-205) on top of the DAT-193 baseline
+`5828f92ca6fbff0b462d05896e689b9aad66362f` (OpenAPI `0.5.0`, merge-base
+`af2ac8e`, containing DAT-191 #18 `705b4a0`, DAT-192 #19 `af2ac8e`, and the
+DAT-188 M3 baseline `8734984`). No UI fixture invents a field outside this
+baseline.
 
 | Endpoint                                              | Request fields                                                                                                         | Response type                  | Status |
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ------ |
@@ -19,6 +22,51 @@ field outside this baseline.
 | `GET /api/v1/tasks/{task_id}/timeline`                | `task_id` path                                                                                                         | `{items: TaskEvent[]}`         | ✅     |
 | `GET /api/v1/tasks/{task_id}/artifacts/{artifact_id}` | `task_id`, `artifact_id` path                                                                                          | redacted artifact object       | ✅     |
 | `GET /api/v1/tasks/{task_id}/stream`                  | `task_id` path; optional `Last-Event-ID` header                                                                        | SSE `TaskEvent` envelopes      | ✅     |
+
+### Workspace, member, team, and invitation surface
+
+Baseline `7f85830533aeebf8552451428f86cb5cb1d0d8c7` (DAT-205 #38, OpenAPI
+`0.7.0`). Fixtures are the merged-contract captures under
+`docs/fixtures/identity-api-v1/`; no field is invented.
+
+| Endpoint                                                               | Request fields                                                                           | Response type                                             | Status |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------- | ------ |
+| `GET /api/v1/auth/session`                                             | none                                                                                     | `SessionInfo`                                             | ✅     |
+| `GET /api/v1/auth/providers`                                           | none                                                                                     | `{items: LoginProvider[]}`                                | ✅     |
+| `GET /api/v1/workspaces`                                               | optional `cursor`                                                                        | `{items: Workspace[], next_cursor}`                       | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/members`                        | `workspace_id` path; optional `cursor`                                                   | `{items: Membership[], next_cursor}`                      | ✅     |
+| `PATCH /api/v1/workspaces/{workspace_id}/members/{membership_id}`      | `role`, `version`; optional `X-CSRF-Token`                                               | `Membership`                                              | ✅     |
+| `DELETE /api/v1/workspaces/{workspace_id}/members/{membership_id}`     | path ids; optional `X-CSRF-Token`                                                        | `204`                                                     | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/teams`                          | `workspace_id` path; optional `cursor`                                                   | `{items: Team[], next_cursor}`                            | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/teams`                         | `name`, `leader_user_id`, optional `responsibility`                                      | `Team`                                                    | ✅     |
+| `PATCH /api/v1/workspaces/{workspace_id}/teams/{team_id}`              | optional `name`, `leader_user_id`, `responsibility` (string or null), required `version` | `Team`                                                    | ✅     |
+| `DELETE /api/v1/workspaces/{workspace_id}/teams/{team_id}`             | path ids                                                                                 | `204`                                                     | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/invitations`                    | `workspace_id` path; optional `cursor`                                                   | `{items: Invitation[], next_cursor}` (token-free)         | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/invitations`                   | optional `expires_in_seconds` (1–86400), `bound_provider_subject`                        | `CreatedInvitation` (`invitation`, `token`, `invite_url`) | ✅     |
+| `DELETE /api/v1/workspaces/{workspace_id}/invitations/{invitation_id}` | path ids                                                                                 | `204`                                                     | ✅     |
+| `POST /api/v1/invitations/preview`                                     | `token` in the JSON body                                                                 | `InvitationPreview`                                       | ✅     |
+| `POST /api/v1/invitations/redeem`                                      | `token` in the JSON body                                                                 | `InvitationRedemption`                                    | ✅     |
+| `GET /api/v1/admin/enterprises/{enterprise_id}/auth-audit`             | optional `limit`                                                                         | `{items: AuthAuditRecord[]}`                              | ✅     |
+
+UI behavior that follows the contract:
+
+- The invitation token is captured from the URL fragment, the fragment is
+  cleared with `history.replaceState` before any request, and the token is
+  submitted only in the `preview`/`redeem` POST bodies. Landing on an invite
+  URL performs no consumption; the confirmation button is the only path to
+  `redeem`.
+- Only the create response is ever rendered with a token (grouped code and a
+  QR encoding `invite_url`). The QR renders modules only, never token text.
+  Every list view is token-free, and closing the reveal drops the token from
+  component state.
+- Bearer-authenticated transports never send `X-CSRF-Token`; the cookie
+  transport echoes the session's `csrf_token` after `GET /auth/session`.
+- Administrative controls are hidden for roles that cannot manage, but the
+  server remains authoritative: `403 ROLE_NOT_ASSIGNABLE`, `403 FORBIDDEN`,
+  `404 NOT_FOUND`, `409 VERSION_CONFLICT`, `422 TEAM_LEADER_NOT_MEMBER`, and
+  `429 RATE_LIMITED` all render their envelope message and case reference.
+- Stale or `unknown` provider-role provenance renders a `Stale` badge, and
+  version conflicts reload the roster before the next write.
 
 The Electron main process discovers an existing loopback service from launch
 configuration or a discovery file, or starts the local Node entrypoint with a

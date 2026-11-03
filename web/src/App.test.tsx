@@ -264,3 +264,27 @@ describe("workspace navigation", () => {
     expect(document.querySelector(".task-list")?.getAttribute("data-scroll")).toBe("stacked");
   });
 });
+
+describe("invitation landing", () => {
+  const token = "inv_2ZxQ7mK9pR4tW8vY1uB6cD3eF5gH0jL";
+
+  afterEach(() => {
+    window.history.replaceState(null, "", "/");
+    window.sessionStorage.clear();
+  });
+
+  it("captures the fragment token without a GET, clears the URL, and shows the join screen", async () => {
+    window.history.replaceState(null, "", `/#${token}`);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Join a workspace" })).toBeTruthy();
+    expect(window.location.hash).toBe("");
+    expect(window.location.pathname).toBe("/");
+    expect(document.body.innerHTML).not.toContain(token);
+    // The landing page consumes nothing on load: the token never enters a URL.
+    for (const [input] of fetchSpy.mock.calls) {
+      expect(String(input)).not.toContain(token);
+    }
+  });
+});
