@@ -101,3 +101,40 @@ export type {
   UserRepository,
 } from "./identity-repositories.js";
 export { createIdentityRepositories, hashToken, secretEquals } from "./identity-repositories.js";
+
+export type {
+  CapabilityGrantRepository,
+  ProviderAccessRepositories,
+  ProviderEventRepository,
+  ProviderRosterRepository,
+  ReconcileRunRepository,
+  ServiceIntegrationRepository,
+} from "./provider-access-repositories.js";
+export { createProviderAccessRepositories } from "./provider-access-repositories.js";
+
+export type {
+  AppendProviderEventInput,
+  AuthorityState,
+  CapabilityGrant,
+  CapabilityKind,
+  CreateCapabilityGrantInput,
+  CreateServiceIntegrationInput,
+  FinishReconcileRunInput,
+  InstallStatus,
+  NormalizedRoleRow,
+  PermissionVisibility,
+  ProviderEvent,
+  ProviderEventType,
+  ProviderMemberRole,
+  ProviderRoleSourceKind,
+  ReconcileRun,
+  ReconcileRunStatus,
+  RenameIntegrationInput,
+  ReplaceRosterInput,
+  ServiceIntegration,
+  ServiceIntegrationId,
+  SetInstallStatusInput,
+  StartReconcileRunInput,
+  SubjectAuthority,
+  TransferIntegrationInput,
+} from "./provider-access-types.js";

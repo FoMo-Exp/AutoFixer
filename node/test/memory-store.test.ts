@@ -134,7 +134,9 @@ describe("Memory migrations", () => {
       .prepare("SELECT version FROM schema_migrations ORDER BY version")
       .all()
       .map((row) => (row as { version: number }).version);
-    expect(applied).toEqual([1, 2, 3]);
+    // Versions 1–3 predate DAT-203; version 4 adds the provider access
+    // tables. A future migration bumps this list again.
+    expect(applied).toEqual([1, 2, 3, 4]);
   });
 });
 
