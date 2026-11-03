@@ -128,7 +128,9 @@ describe("Enterprise", () => {
 
   test("rejects duplicate slug", () => {
     repos.enterprises.create({ name: "A", slug: "dup", actor_id: ACTOR });
-    expect(() => repos.enterprises.create({ name: "B", slug: "dup", actor_id: ACTOR })).toThrow();
+    expect(() => repos.enterprises.create({ name: "B", slug: "dup", actor_id: ACTOR })).toThrow(
+      ConflictError,
+    );
   });
 
   test("gets enterprise by id and slug", () => {
@@ -141,17 +143,21 @@ describe("Enterprise", () => {
     expect(repos.enterprises.getById("ent_nonexistent")).toBeUndefined();
   });
 
-  test("update with correct version succeeds and bumps version", () => {
+  test("update with correct version succeeds, bumps version, and records updated_by", () => {
     const ent = repos.enterprises.create({ name: "Old", slug: "upd", actor_id: ACTOR });
-    const updated = repos.enterprises.update(ent.id, { name: "New" }, 1);
+    const updated = repos.enterprises.update(ent.id, { name: "New", actor_id: OTHER_ACTOR }, 1);
     expect(updated.name).toBe("New");
     expect(updated.version).toBe(2);
+    expect(updated.updated_by).toBe(OTHER_ACTOR);
+    expect(updated.created_by).toBe(ACTOR);
   });
 
   test("update with stale version throws VersionConflictError", () => {
     const ent = repos.enterprises.create({ name: "X", slug: "stale", actor_id: ACTOR });
-    repos.enterprises.update(ent.id, { name: "Y" }, 1);
-    expect(() => repos.enterprises.update(ent.id, { name: "Z" }, 1)).toThrow(VersionConflictError);
+    repos.enterprises.update(ent.id, { name: "Y", actor_id: ACTOR }, 1);
+    expect(() => repos.enterprises.update(ent.id, { name: "Z", actor_id: ACTOR }, 1)).toThrow(
+      VersionConflictError,
+    );
   });
 
   test("lists enterprises in creation order", () => {
@@ -209,6 +215,32 @@ describe("ProviderInstance", () => {
       repos.providerInstances.create(scope, {
         provider_type: "bitbucket" as never,
         origin_url: "https://bitbucket.org",
+      }),
+    ).toThrow(ValidationError);
+  });
+
+  test("rejects non-HTTP(S) origin_url", () => {
+    const { scope } = bootstrap();
+    expect(() =>
+      repos.providerInstances.create(scope, {
+        provider_type: "github",
+        origin_url: "ftp://evil.com",
+      }),
+    ).toThrow(ValidationError);
+    expect(() =>
+      repos.providerInstances.create(scope, {
+        provider_type: "github",
+        origin_url: "not-a-url",
+      }),
+    ).toThrow(ValidationError);
+  });
+
+  test("rejects origin_url with embedded credentials", () => {
+    const { scope } = bootstrap();
+    expect(() =>
+      repos.providerInstances.create(scope, {
+        provider_type: "github",
+        origin_url: "https://user:pass@github.com",
       }),
     ).toThrow(ValidationError);
   });
@@ -346,6 +378,17 @@ describe("Workspace", () => {
       provider_instance_id: providerId,
     });
     expect(() => repos.workspaces.restore(scope, ws.id, 1)).toThrow(ConflictError);
+  });
+
+  test("archive on already-archived workspace throws ConflictError", () => {
+    const { scope, providerId } = bootstrap();
+    const ws = repos.workspaces.create(scope, {
+      name: "To Archive",
+      repository_id: "repo_arch",
+      provider_instance_id: providerId,
+    });
+    repos.workspaces.archive(scope, ws.id, 1);
+    expect(() => repos.workspaces.archive(scope, ws.id, 2)).toThrow(ConflictError);
   });
 });
 
@@ -581,6 +624,24 @@ describe("Team", () => {
     expect(updated.name).toBe("T2");
     expect(updated.leader_user_id).toBe("u2");
     expect(updated.version).toBe(2);
+  });
+
+  test("update team can clear responsibility to null", () => {
+    const { scope, providerId } = bootstrap();
+    const ws = repos.workspaces.create(scope, {
+      name: "WS",
+      repository_id: "repo_trc",
+      provider_instance_id: providerId,
+    });
+    const wsScope = workspaceScope(scope.enterprise_id, ws.id);
+    const team = repos.teams.create(wsScope, {
+      name: "T",
+      leader_user_id: "u1",
+      responsibility: "Some responsibility",
+    });
+    expect(team.responsibility).toBe("Some responsibility");
+    const updated = repos.teams.update(wsScope, team.id, { responsibility: null }, 1);
+    expect(updated.responsibility).toBeNull();
   });
 
   test("update team with stale version throws", () => {
@@ -912,8 +973,38 @@ describe("Concurrent operations", () => {
       repository_id: "repo_stale",
       provider_instance_id: providerId,
     });
-    repos.workspaces.archive(scope, ws.id, 1);
+    // Bump version to 2 via rename, then try to archive with stale expectedVersion 1.
+    repos.workspaces.rename(scope, ws.id, "Renamed", 1);
     expect(() => repos.workspaces.archive(scope, ws.id, 1)).toThrow(VersionConflictError);
+  });
+
+  test("VersionConflictError reports the actual observed version", () => {
+    const ent = repos.enterprises.create({ name: "VC", slug: "vc", actor_id: ACTOR });
+    repos.enterprises.update(ent.id, { name: "VC2", actor_id: ACTOR }, 1);
+    repos.enterprises.update(ent.id, { name: "VC3", actor_id: ACTOR }, 2);
+    // Now at version 3; requesting with expectedVersion 1 should report 3.
+    try {
+      repos.enterprises.update(ent.id, { name: "VC4", actor_id: ACTOR }, 1);
+      expect.fail("should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(VersionConflictError);
+      expect((error as Error).message).toContain("found 3");
+    }
+  });
+
+  test("NotFoundError is raised for a deleted record (not VersionConflictError)", () => {
+    const { scope, providerId } = bootstrap();
+    const ws = repos.workspaces.create(scope, {
+      name: "Deleted",
+      repository_id: "repo_del",
+      provider_instance_id: providerId,
+    });
+    const wsScope = workspaceScope(scope.enterprise_id, ws.id);
+    const team = repos.teams.create(wsScope, { name: "T", leader_user_id: "u" });
+    repos.teams.remove(wsScope, team.id);
+    // Trying to update a removed team should yield NotFoundError from the
+    // requireRow pre-check, not VersionConflictError from requireVersionMatch.
+    expect(() => repos.teams.update(wsScope, team.id, { name: "T2" }, 1)).toThrow(NotFoundError);
   });
 });
 

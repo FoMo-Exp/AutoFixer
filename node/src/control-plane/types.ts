@@ -55,7 +55,12 @@ export interface ProviderInstance extends AuditFields {
   id: ProviderInstanceId;
   enterprise_id: EnterpriseId;
   provider_type: ProviderType;
-  /** Administrator-approved origin; arbitrary self-hosted URLs are rejected. */
+  /**
+   * Provider origin URL. Validated at creation to be a well-formed HTTP(S)
+   * URL without embedded credentials. Additional allow-list enforcement
+   * (preventing arbitrary self-hosted exfiltration endpoints) is the
+   * responsibility of the deployment's provider-origin policy, not this layer.
+   */
   origin_url: string;
   version: number;
 }
@@ -126,6 +131,8 @@ export interface CreateEnterpriseInput {
 
 export interface UpdateEnterpriseInput {
   name?: string;
+  /** Current operator; recorded in `updated_by` for audit. */
+  actor_id: UserId;
 }
 
 export interface CreateProviderInstanceInput {
@@ -157,7 +164,8 @@ export interface CreateTeamInput {
 export interface UpdateTeamInput {
   name?: string;
   leader_user_id?: UserId;
-  responsibility?: string;
+  /** Set to `null` to clear; `undefined` preserves the current value. */
+  responsibility?: string | null;
 }
 
 export interface CreateMembershipInput {

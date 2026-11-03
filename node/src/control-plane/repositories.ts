@@ -274,13 +274,19 @@ function requireVersionMatch(
   id: string,
   result: VersionedUpdateResult,
   expectedVersion: number,
+  db: ControlPlaneDb,
+  table: string,
 ): void {
   if (result.changes === 0) {
-    // Distinguish "record not found" from "version mismatch" by probing existence.
-    // This is a deliberate trade-off: callers need accurate error codes, and the
-    // existence check is still scoped (the caller must have the record in scope
-    // to reach this branch at all).
-    throw new VersionConflictError(entity, id, expectedVersion, -1);
+    // Probe the current version to distinguish "record not found" from
+    // "version mismatch" and to report the actual observed version.
+    const row = db.prepare(`SELECT version FROM ${table} WHERE id = ?`).get(id) as
+      { version: number } | undefined;
+    const actual = row?.version ?? -1;
+    if (actual === -1) {
+      throw new NotFoundError(entity, id);
+    }
+    throw new VersionConflictError(entity, id, expectedVersion, actual);
   }
 }
 
@@ -297,12 +303,21 @@ class SqliteEnterpriseRepository implements EnterpriseRepository {
     }
     const id = newId("ent");
     const now = nowIso();
-    this.db
-      .prepare(
-        `INSERT INTO enterprise (id, name, slug, created_at, updated_at, created_by, updated_by, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
-      )
-      .run(id, input.name, input.slug, now, now, input.actor_id, input.actor_id);
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO enterprise (id, name, slug, created_at, updated_at, created_by, updated_by, version)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+        )
+        .run(id, input.name, input.slug, now, now, input.actor_id, input.actor_id);
+    } catch (error) {
+      if (String(error).includes("UNIQUE")) {
+        throw new ConflictError(`Enterprise slug "${input.slug}" is already in use`, {
+          slug: input.slug,
+        });
+      }
+      throw error;
+    }
     return requireRow("Enterprise", id, this.getById(id));
   }
 
@@ -334,8 +349,8 @@ class SqliteEnterpriseRepository implements EnterpriseRepository {
         `UPDATE enterprise SET name = ?, updated_at = ?, updated_by = ?, version = version + 1
          WHERE id = ? AND version = ?`,
       )
-      .run(name, now, existing.updated_by, id, expectedVersion) as unknown as VersionedUpdateResult;
-    requireVersionMatch("Enterprise", id, result, expectedVersion);
+      .run(name, now, input.actor_id, id, expectedVersion) as unknown as VersionedUpdateResult;
+    requireVersionMatch("Enterprise", id, result, expectedVersion, this.db, "enterprise");
     return requireRow("Enterprise", id, this.getById(id));
   }
 }
@@ -349,6 +364,23 @@ class SqliteProviderInstanceRepository implements ProviderInstanceRepository {
     }
     if (!input.origin_url) {
       throw new ValidationError("origin_url is required");
+    }
+    // Validate origin_url is a well-formed HTTP(S) URL with no embedded
+    // credentials, matching the ADR-0006 requirement that provider instance
+    // origins are administrator-approved rather than arbitrary strings.
+    try {
+      const url = new URL(input.origin_url);
+      if (!["http:", "https:"].includes(url.protocol)) {
+        throw new ValidationError("origin_url must use HTTP or HTTPS");
+      }
+      if (url.username || url.password) {
+        throw new ValidationError("origin_url must not contain embedded credentials");
+      }
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        throw error;
+      }
+      throw new ValidationError(`origin_url is not a valid URL: ${input.origin_url}`);
     }
     const id = newId("pri");
     const now = nowIso();
@@ -488,12 +520,15 @@ class SqliteWorkspaceRepository implements WorkspaceRepository {
         scope.enterprise_id,
         expectedVersion,
       ) as unknown as VersionedUpdateResult;
-    requireVersionMatch("Workspace", id, result, expectedVersion);
+    requireVersionMatch("Workspace", id, result, expectedVersion, this.db, "workspace");
     return requireRow("Workspace", id, this.getById(scope, id));
   }
 
   archive(scope: EnterpriseScope, id: WorkspaceId, expectedVersion: number): Workspace {
-    requireRow("Workspace", id, this.getById(scope, id));
+    const existing = requireRow("Workspace", id, this.getById(scope, id));
+    if (existing.status === "archived") {
+      throw new ConflictError(`Workspace ${id} is already archived`);
+    }
     const now = nowIso();
     const result = this.db
       .prepare(
@@ -507,7 +542,7 @@ class SqliteWorkspaceRepository implements WorkspaceRepository {
         scope.enterprise_id,
         expectedVersion,
       ) as unknown as VersionedUpdateResult;
-    requireVersionMatch("Workspace", id, result, expectedVersion);
+    requireVersionMatch("Workspace", id, result, expectedVersion, this.db, "workspace");
     return requireRow("Workspace", id, this.getById(scope, id));
   }
 
@@ -532,19 +567,31 @@ class SqliteWorkspaceRepository implements WorkspaceRepository {
       );
     }
     const now = nowIso();
-    const result = this.db
-      .prepare(
-        `UPDATE workspace SET status = 'active', updated_at = ?, updated_by = ?, version = version + 1
-         WHERE id = ? AND enterprise_id = ? AND version = ?`,
-      )
-      .run(
-        now,
-        scope.actor_id,
-        id,
-        scope.enterprise_id,
-        expectedVersion,
-      ) as unknown as VersionedUpdateResult;
-    requireVersionMatch("Workspace", id, result, expectedVersion);
+    try {
+      const result = this.db
+        .prepare(
+          `UPDATE workspace SET status = 'active', updated_at = ?, updated_by = ?, version = version + 1
+           WHERE id = ? AND enterprise_id = ? AND version = ?`,
+        )
+        .run(
+          now,
+          scope.actor_id,
+          id,
+          scope.enterprise_id,
+          expectedVersion,
+        ) as unknown as VersionedUpdateResult;
+      requireVersionMatch("Workspace", id, result, expectedVersion, this.db, "workspace");
+    } catch (error) {
+      if (String(error).includes("UNIQUE")) {
+        // Pre-check passed but a concurrent restore/create won the race on the
+        // partial unique index between our check and this UPDATE.
+        throw new ConflictError(
+          `An active workspace already exists for repository ${existing.repository_id}`,
+          { repository_id: existing.repository_id },
+        );
+      }
+      throw error;
+    }
     return requireRow("Workspace", id, this.getById(scope, id));
   }
 
@@ -583,7 +630,7 @@ class SqliteWorkspaceRepository implements WorkspaceRepository {
           scope.enterprise_id,
           expectedVersion,
         ) as unknown as VersionedUpdateResult;
-      requireVersionMatch("Workspace", id, result, expectedVersion);
+      requireVersionMatch("Workspace", id, result, expectedVersion, this.db, "workspace");
     } catch (error) {
       if (String(error).includes("UNIQUE")) {
         throw new ConflictError(
@@ -680,7 +727,7 @@ class SqliteTeamRepository implements TeamRepository {
         expectedVersion,
         scope.enterprise_id,
       ) as unknown as VersionedUpdateResult;
-    requireVersionMatch("Team", id, result, expectedVersion);
+    requireVersionMatch("Team", id, result, expectedVersion, this.db, "team");
     return requireRow("Team", id, this.getById(scope, id));
   }
 
@@ -802,7 +849,7 @@ class SqliteMembershipRepository implements MembershipRepository {
         expectedVersion,
         scope.enterprise_id,
       ) as unknown as VersionedUpdateResult;
-    requireVersionMatch("Membership", id, result, expectedVersion);
+    requireVersionMatch("Membership", id, result, expectedVersion, this.db, "membership");
     return requireRow("Membership", id, this.getById(scope, id));
   }
 
