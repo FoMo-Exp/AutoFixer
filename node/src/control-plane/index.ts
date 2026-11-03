@@ -13,10 +13,12 @@ export {
   ConflictError,
   ControlPlaneError,
   NotFoundError,
+  RequestScopeError,
   ScopeError,
   ValidationError,
   VersionConflictError,
 } from "./errors.js";
+export type { RequestScopeErrorCode } from "./errors.js";
 
 export type {
   ControlPlaneRepositories,
@@ -27,6 +29,14 @@ export type {
   WorkspaceRepository,
 } from "./repositories.js";
 export { createRepositories } from "./repositories.js";
+
+export type {
+  AuthenticatedPrincipal,
+  RequestScopeDeps,
+  ResolvedRequestScope,
+  SessionContextLike,
+} from "./request-scope.js";
+export { principalFromSession, resolveRequestScope } from "./request-scope.js";
 
 export type {
   CreateEnterpriseInput,

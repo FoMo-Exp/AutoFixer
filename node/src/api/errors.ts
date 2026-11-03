@@ -3,6 +3,7 @@ import type { ControlPlaneError } from "../control-plane/errors.js";
 import {
   ConflictError,
   NotFoundError,
+  RequestScopeError,
   ValidationError,
   VersionConflictError,
 } from "../control-plane/errors.js";
@@ -129,6 +130,30 @@ const ERROR_SEMANTICS: Record<string, ErrorSemantics> = {
     category: "denial",
     retryable: false,
     next_action: "contact_admin",
+  },
+  ACCOUNT_SUSPENDED: {
+    stage: "auth",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  SCOPE_MISSING: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "request_review",
+  },
+  SCOPE_AMBIGUOUS: {
+    stage: "authorization",
+    category: "stop",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  SCOPE_CROSS_TENANT: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "request_review",
   },
   CSRF_TOKEN_INVALID: { stage: "auth", category: "stop", retryable: false, next_action: "refresh" },
   NOT_FOUND: { stage: "validation", category: "stop", retryable: false, next_action: null },
@@ -356,6 +381,11 @@ export function apiErrorFromControlPlane(error: ControlPlaneError): ApiError {
   }
   if (error instanceof ValidationError) {
     return new ApiError(400, "INVALID_REQUEST", error.message);
+  }
+  if (error instanceof RequestScopeError) {
+    // Scope failures carry their own 401/403 semantics and stable codes;
+    // flattening them into a generic FORBIDDEN would lose the 401 cases.
+    return new ApiError(error.status, error.code, error.message);
   }
   return new ApiError(403, "FORBIDDEN", error.message);
 }

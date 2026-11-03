@@ -59,3 +59,34 @@ export class ValidationError extends ControlPlaneError {
     super("VALIDATION_ERROR", message);
   }
 }
+
+/**
+ * Request-scope resolution failed (DAT-241). `status` states the request-path
+ * semantics: 401 = there is no valid authenticated session (authenticate
+ * again); 403 = the caller is authenticated but no scope is available to them
+ * (authorization). Codes are stable and never re-mapped:
+ *
+ * - `UNAUTHENTICATED` (401) — principal missing or not session-derived, or
+ *   the session is unknown, revoked, or expired.
+ * - `ACCOUNT_SUSPENDED` (403) — the user account is suspended.
+ * - `SCOPE_MISSING` (403) — no live workspace membership (never granted,
+ *   revoked, or its workspace is gone).
+ * - `SCOPE_AMBIGUOUS` (403) — more than one live workspace membership in the
+ *   enterprise; resolution never guesses.
+ * - `SCOPE_CROSS_TENANT` (403) — live memberships span enterprises.
+ */
+export type RequestScopeErrorCode =
+  | "UNAUTHENTICATED"
+  | "ACCOUNT_SUSPENDED"
+  | "SCOPE_MISSING"
+  | "SCOPE_AMBIGUOUS"
+  | "SCOPE_CROSS_TENANT";
+
+export class RequestScopeError extends ControlPlaneError {
+  readonly status: 401 | 403;
+
+  constructor(status: 401 | 403, code: RequestScopeErrorCode, message: string) {
+    super(code, message);
+    this.status = status;
+  }
+}
