@@ -348,6 +348,24 @@ describe("gateway denials", () => {
     expect(calls).toHaveLength(0);
   });
 
+  test("a binding outside the configured scope is denied — caller scope is not authoritative", async () => {
+    // The static resolver serves exactly its configured scope (scope A); a
+    // binding claiming another scope (scope B) resolves no policy and is
+    // denied before any provider dispatch. This pins the DAT-208 Architect
+    // ruling property until DAT-242 wires the authoritative scope pipeline.
+    const { adapter, calls } = spyAdapter(() => okStream());
+    const gateway = gatewayWith(adapter);
+    await expectDenial(
+      gateway.bind({ ...TEST_BINDING, enterpriseId: "ent_other", workspaceId: "ws_other" })(
+        TEST_MODEL,
+        CONTEXT,
+        undefined,
+      ),
+      "POLICY_UNAVAILABLE",
+    );
+    expect(calls).toHaveLength(0);
+  });
+
   test("a policy switch mid-retries cannot move the call to another endpoint", async () => {
     const policy = testPolicyFor(TEST_MODEL, { retry: { maxAttempts: 2 } });
     const moved: GatewayPolicy = {

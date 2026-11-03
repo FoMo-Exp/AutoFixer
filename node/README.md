@@ -102,6 +102,15 @@ egress path:
   Retries, fallbacks, and model switches are separate, fully re-checked
   invocations.
 
+Scope constraint (Architect ruling on DAT-208, 2026-11-03): the deployment is
+single-enterprise/single-workspace and policy resolution is served by the
+static `createStaticPolicyResolver` on the `GatewayPolicyResolver` seam. A
+binding's scope is not caller authority — non-configured scopes resolve no
+policy and are denied. Before multi-tenant enablement the authoritative
+authenticated scope pipeline must be wired in (DAT-241 builds the scope
+helper; DAT-242 switches gateway policy resolution to it). Until DAT-242
+merges, this deployment must not serve more than one enterprise or workspace.
+
 Policy file shape (credentials are referenced, never inlined):
 
 ```json

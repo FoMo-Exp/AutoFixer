@@ -9,15 +9,23 @@ import type { ApprovedEndpoint, GatewayFallback, GatewayPolicy, GatewayScope } f
  * ADR-0006 seam: resolves the enterprise/workspace policy that governs model
  * egress for one scope. The gateway never accepts a policy from its callers;
  * it asks this resolver and fails closed when nothing resolves.
+ *
+ * Temporary constraint (Architect ruling on DAT-208, 2026-11-03): deployment
+ * is single-enterprise/single-workspace and this seam is served by a static
+ * resolver. Before multi-tenant enablement the authoritative authenticated
+ * scope pipeline must be wired in (DAT-241 helper → DAT-242 gateway
+ * integration); until DAT-242 merges, this deployment must not serve more
+ * than one enterprise or workspace. A binding's scope is never caller
+ * authority: non-configured scopes resolve nothing and are denied.
  */
 export interface GatewayPolicyResolver {
   resolve(scope: GatewayScope): GatewayPolicy | undefined | Promise<GatewayPolicy | undefined>;
 }
 
 /**
- * A resolver that serves one validated policy for exactly one scope. This is
- * the interface stub the ADR-0006 workspace/role resolution replaces; any
- * other scope resolves to nothing and is denied.
+ * A resolver that serves one validated policy for exactly one scope. Any
+ * other scope resolves to nothing and is denied; swapping in DAT-242's
+ * authoritative scope-backed resolver replaces only this factory.
  */
 export function createStaticPolicyResolver(
   policy: GatewayPolicy,
