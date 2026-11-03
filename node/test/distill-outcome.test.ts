@@ -271,6 +271,56 @@ describe("outcome envelope parsing", () => {
     ).toThrow(ValidationError);
   });
 
+  test("rejects secret- or PII-shaped evidence references", () => {
+    expect(() =>
+      parseOutcomeEnvelope(
+        mergedEnvelope({
+          evidence: [{ evidence_type: "run", reference: "ada.lovelace@example.com" }],
+        }),
+      ),
+    ).toThrow(ValidationError);
+  });
+
+  test("rejects secret- or PII-shaped validation event references", () => {
+    for (const event_reference of [
+      "Bearer sk-live-abcdef123456",
+      "evidence://events/+15551234567",
+    ]) {
+      expect(() =>
+        parseOutcomeEnvelope(
+          mergedEnvelope({
+            delivery: {
+              patch_status: "merged",
+              head_sha: "head-1",
+              pr_id: "pr-42",
+              change_summary: "Localized fix.",
+              validation: [{ tool: "test-runner", exit_status: 0, event_reference }],
+            },
+          }),
+        ),
+      ).toThrow(ValidationError);
+    }
+  });
+
+  test("rejects secret-shaped run and PR identifiers", () => {
+    expect(() => parseOutcomeEnvelope(mergedEnvelope({ run_id: "sk-live-abcdef123456" }))).toThrow(
+      ValidationError,
+    );
+    expect(() =>
+      parseOutcomeEnvelope(
+        mergedEnvelope({
+          delivery: {
+            patch_status: "merged",
+            head_sha: "head-1",
+            pr_id: "ghp_abcdef1234567890",
+            change_summary: "Localized fix.",
+            validation: [],
+          },
+        }),
+      ),
+    ).toThrow(ValidationError);
+  });
+
   test("rejects oversized free text and duplicate evidence references", () => {
     expect(() => parseOutcomeEnvelope(rejectedEnvelope({ reason: "x".repeat(401) }))).toThrow(
       ValidationError,

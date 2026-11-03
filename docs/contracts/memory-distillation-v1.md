@@ -72,6 +72,12 @@ closed, and cross-field consistency makes a fabricated merge impossible.
   merged delivery record, and only with a non-null PR identity.
 - `evidence_type` ∈ `run`, `issue`, `pr`, `commit`, `test`, `reviewer_decision`,
   `incident`; references are unique, opaque, and bounded.
+- Every identifier and reference that can be persisted (`task_id`, `run_id`,
+  `issue_id`, `head_sha`, `pr_id`, `evidence[].reference`,
+  `validation[].event_reference`) must be free of secret- and PII-shaped
+  material. The evidence contract admits no secret or raw sensitive output in
+  a record, so a credential- or personal-data-shaped reference is **rejected**
+  (never stored, never scrubbed into a different identity).
 
 Capture derives the **evidence ledger** from the envelope: the run and issue
 identities, the PR and head commit identities when they exist, one `test` entry
@@ -89,7 +95,9 @@ again and anything left fails closed.
 Sensitivity is classified from the material found: a secret makes the item
 `restricted`, other personal data makes it `confidential`, clean content is
 `internal`. Secrets never enter a memory item at all — a distilled candidate
-carrying secret material is dropped.
+carrying secret material is dropped. Evidence references are not free text:
+they are opaque identifiers and are validated (and rejected when secret- or
+PII-shaped) at parse time and again at the evidence-persistence boundary.
 
 ## 4. Distillation output schema
 
@@ -153,9 +161,14 @@ Promotion to `candidate`/`active` is a separate, gated path (DAT-234/235).
 ## 6. Egress and workspace isolation
 
 Distillation model calls have exactly one egress path: the ADR-0005 model
-gateway. The context is composed only from the current workspace's captured
-outcomes (known ones only) plus explicitly supplied workspace material; a
-material bound to another workspace is refused before anything is composed.
+gateway. Every captured outcome is bound to the workspace that captured it:
+before any context is composed, an outcome whose episode belongs to another
+workspace or enterprise is refused with `SCOPE_DENIED`, so foreign summaries
+and evidence can never be composed into the model request and can never turn
+into candidates written into the wrong workspace. The context is composed
+only from the current workspace's captured outcomes (known ones only) plus
+explicitly supplied workspace material; a material bound to another workspace
+is likewise refused before anything is composed.
 Everything sent outward is secret-scanned and minimized again. A gateway
 denial fails the call closed and nothing is persisted.
 

@@ -27,7 +27,7 @@ import type { WorkspaceScope } from "../control-plane/types.js";
 import type { GatewayBindingIdentity, ModelGateway } from "../gateway/index.js";
 import { scrubSecrets } from "../gateway/redact.js";
 import type { MemoryItemRecord, MemoryProvenance, MemoryRepositories } from "../memory/index.js";
-import { captureOutcome } from "./capture.js";
+import { assertOutcomesInScope, captureOutcome } from "./capture.js";
 import { redactText } from "./redact.js";
 import { parseDistillationOutput } from "./schema.js";
 import {
@@ -71,6 +71,12 @@ export const DISTILL_INSTRUCTIONS = [
  * composed: cross-workspace data can never ride into a model call.
  */
 export function buildDistillationContext(input: DistillationContextInput): Context {
+  // Workspace isolation first: an outcome captured in another workspace (or
+  // enterprise) is refused before a single line is composed, so its summary
+  // and evidence can never ride into this workspace's model request or turn
+  // into candidates written here.
+  assertOutcomesInScope(input.scope, input.outcomes);
+
   const materials = input.materials ?? [];
   if (materials.length > DISTILL_MATERIAL_MAX) {
     throw new ValidationError(`distillation accepts at most ${DISTILL_MATERIAL_MAX} materials`);
@@ -254,6 +260,9 @@ export interface DistillRunResult {
  * policy-violating batch fails closed and persists nothing.
  */
 export async function distillAndPersist(input: DistillRunInput): Promise<DistillRunResult> {
+  // Fail fast on any cross-workspace outcome before composing, dispatching,
+  // building the evidence ledger, or persisting anything.
+  assertOutcomesInScope(input.scope, input.outcomes);
   const context = buildDistillationContext(input);
   const text = await dispatchDistillation({
     gateway: input.gateway,

@@ -187,4 +187,35 @@ describe("captured outcomes never carry secrets or personal data", () => {
     expect(statement).not.toContain("ghp_abcdef1234567890");
     expect(captured.episode.current.sensitivity).toBe("restricted");
   });
+
+  test("secret- or PII-shaped references never reach the evidence table", () => {
+    const before = memory.items.list(scope, { limit: 100 }).length;
+
+    // Envelope evidence reference shaped like an email address.
+    expect(() =>
+      captureOutcome(memory, scope, {
+        ...envelopeWithText("Cancelled: cleanup"),
+        evidence: [{ evidence_type: "run", reference: "ada.lovelace@example.com" }],
+      }),
+    ).toThrow(ValidationError);
+
+    // Validation event reference carrying credential material.
+    expect(() =>
+      captureOutcome(memory, scope, {
+        ...envelopeWithText("Cancelled: cleanup"),
+        delivery: {
+          patch_status: "not_created",
+          head_sha: null,
+          pr_id: null,
+          change_summary: "No patch was prepared.",
+          validation: [
+            { tool: "test-runner", exit_status: 0, event_reference: "ghp_abcdef1234567890" },
+          ],
+        },
+      }),
+    ).toThrow(ValidationError);
+
+    // Neither attempt persisted an item or an evidence row.
+    expect(memory.items.list(scope, { limit: 100 }).length).toBe(before);
+  });
 });

@@ -31,7 +31,7 @@ export {
 } from "./distill.js";
 export type { DistillRunInput, DistillRunResult, DistillationDispatch } from "./distill.js";
 
-export { captureEvidence, captureOutcome } from "./capture.js";
+export { assertOutcomesInScope, captureEvidence, captureOutcome } from "./capture.js";
 
 export { classifyOutcome, parseOutcomeEnvelope } from "./outcome.js";
 

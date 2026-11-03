@@ -103,11 +103,76 @@ function contextText(input: Parameters<typeof buildDistillationContext>[0]): str
   return context.messages.map((message) => String(message.content)).join("\n");
 }
 
+/** Another workspace inside the same enterprise. */
+function siblingScope(): WorkspaceScope {
+  const adminScope = { enterprise_id: scope.enterprise_id, actor_id: ACTOR };
+  const provider = seedProviderInstance(db, adminScope, {
+    provider_type: "github",
+    origin_url: "https://github.com",
+  });
+  const workspace = seedWorkspace(db, adminScope, {
+    name: "Sibling Workspace",
+    repository_id: "repo-2",
+    provider_instance_id: provider.id,
+  });
+  return { enterprise_id: scope.enterprise_id, workspace_id: workspace.id, actor_id: ACTOR };
+}
+
+/** A workspace in a completely different enterprise. */
+function foreignScope(): WorkspaceScope {
+  const { enterprise, admin_scope } = seedEnterprise(db, {
+    enterprise_name: "Other Enterprise",
+    enterprise_slug: "other-ent",
+    admin_user_id: ACTOR,
+  });
+  const provider = seedProviderInstance(db, admin_scope, {
+    provider_type: "github",
+    origin_url: "https://github.com",
+  });
+  const workspace = seedWorkspace(db, admin_scope, {
+    name: "Foreign Workspace",
+    repository_id: "repo-3",
+    provider_instance_id: provider.id,
+  });
+  return { enterprise_id: enterprise.id, workspace_id: workspace.id, actor_id: ACTOR };
+}
+
+function simpleOutcome(owner: WorkspaceScope, runId: string): CapturedOutcome {
+  return captureOutcome(memory, owner, {
+    contract_version: "1.0.0",
+    task_id: `task-${runId}`,
+    run_id: runId,
+    issue_id: `issue-${runId}`,
+    terminal_state: "timed_out",
+    delivery: {
+      patch_status: "not_created",
+      head_sha: null,
+      pr_id: null,
+      change_summary: "Run hit its wall clock.",
+      validation: [],
+    },
+    evidence: [],
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Workspace isolation of the distillation input
 // ---------------------------------------------------------------------------
 
 describe("distillation context composition", () => {
+  test("refuses outcomes captured in another workspace before composing anything", () => {
+    const foreign = simpleOutcome(siblingScope(), "run-sibling");
+    expect(() => buildDistillationContext({ scope, outcomes: [merged, foreign] })).toThrow(
+      ScopeError,
+    );
+    expect(() => buildDistillationContext({ scope, outcomes: [foreign] })).toThrow(ScopeError);
+  });
+
+  test("refuses outcomes captured in another enterprise", () => {
+    const foreign = simpleOutcome(foreignScope(), "run-foreign");
+    expect(() => buildDistillationContext({ scope, outcomes: [foreign] })).toThrow(ScopeError);
+  });
+
   test("refuses material from another workspace before composing anything", () => {
     expect(() =>
       buildDistillationContext({
@@ -353,6 +418,26 @@ describe("distillAndPersist", () => {
         outcomes: [merged],
       }),
     ).rejects.toBeInstanceOf(ValidationError);
+    expect(memory.items.list(scope, { limit: 100 }).length).toBe(before);
+  });
+
+  test("distillAndPersist refuses cross-workspace outcomes and writes nothing", async () => {
+    const scripted = scriptedStream([{ kind: "text", text: output }]);
+    const gateway = scriptedGateway(TEST_MODEL, scripted.streamFn);
+    const foreign = simpleOutcome(siblingScope(), "run-sibling");
+    const before = memory.items.list(scope, { limit: 100 }).length;
+
+    await expect(
+      distillAndPersist({
+        repos: memory,
+        gateway,
+        model: TEST_MODEL,
+        identity: TEST_BINDING,
+        scope,
+        outcomes: [merged, foreign],
+      }),
+    ).rejects.toBeInstanceOf(ScopeError);
+    expect(scripted.calls).toHaveLength(0);
     expect(memory.items.list(scope, { limit: 100 }).length).toBe(before);
   });
 });

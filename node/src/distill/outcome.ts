@@ -15,6 +15,7 @@
  */
 
 import { ValidationError } from "../control-plane/errors.js";
+import { assertNoSecretOrPii } from "./redact.js";
 import {
   FAILURE_CAUSES,
   OUTCOME_CHANGE_SUMMARY_MAX,
@@ -80,8 +81,23 @@ function optionalString(value: unknown, field: string, max: number): string | nu
   return requireString(value, field, max);
 }
 
-function optionalId(value: unknown, field: string): string | null {
-  return optionalString(value, field, OUTCOME_ID_MAX);
+/**
+ * An opaque identifier that will be persisted as an evidence reference. Such
+ * strings must never carry secret or personal material — the evidence
+ * contract admits no secret or raw sensitive output in a record — so a
+ * credential- or PII-shaped reference is rejected, never stored.
+ */
+function requireReference(value: unknown, field: string, max: number): string {
+  const text = requireString(value, field, max);
+  assertNoSecretOrPii(text, field);
+  return text;
+}
+
+function optionalReference(value: unknown, field: string): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  return requireReference(value, field, OUTCOME_ID_MAX);
 }
 
 function requireEnum<T extends string>(value: unknown, members: readonly T[], field: string): T {
@@ -132,7 +148,7 @@ function parseEvidenceRef(value: unknown, index: number): OutcomeEvidenceRef {
   const record = strictObject(value, EVIDENCE_REF_KEYS, `evidence[${index}]`);
   return {
     evidence_type: requireEnum(record["evidence_type"], OUTCOME_EVIDENCE_TYPES, "evidence_type"),
-    reference: requireString(record["reference"], "reference", OUTCOME_REFERENCE_MAX),
+    reference: requireReference(record["reference"], "reference", OUTCOME_REFERENCE_MAX),
   };
 }
 
@@ -145,7 +161,7 @@ function parseValidation(value: unknown, index: number): OutcomeValidationEviden
   return {
     tool: requireString(record["tool"], "validation tool", OUTCOME_TOOL_MAX),
     exit_status: (exitStatus ?? null) as number | null,
-    event_reference: requireString(
+    event_reference: requireReference(
       record["event_reference"],
       "validation event_reference",
       OUTCOME_REFERENCE_MAX,
@@ -161,8 +177,8 @@ function parseDelivery(value: unknown): OutcomeDelivery {
       `outcome delivery validation must be an array of at most ${OUTCOME_VALIDATION_MAX} entries`,
     );
   }
-  const headSha = optionalId(record["head_sha"], "head_sha");
-  const prId = optionalId(record["pr_id"], "pr_id");
+  const headSha = optionalReference(record["head_sha"], "head_sha");
+  const prId = optionalReference(record["pr_id"], "pr_id");
   const patchStatus = requireEnum(record["patch_status"], PATCH_STATUSES, "patch_status");
   // task-evidence-contract-v1 §4: revision identities are present exactly as
   // the patch status says; a fabricated merge cannot smuggle identities in.
@@ -262,9 +278,9 @@ export function parseOutcomeEnvelope(value: unknown): OutcomeEnvelope {
 
   return {
     contract_version: OUTCOME_ENVELOPE_CONTRACT_VERSION,
-    task_id: requireString(record["task_id"], "task_id", OUTCOME_ID_MAX),
-    run_id: requireString(record["run_id"], "run_id", OUTCOME_ID_MAX),
-    issue_id: requireString(record["issue_id"], "issue_id", OUTCOME_ID_MAX),
+    task_id: requireReference(record["task_id"], "task_id", OUTCOME_ID_MAX),
+    run_id: requireReference(record["run_id"], "run_id", OUTCOME_ID_MAX),
+    issue_id: requireReference(record["issue_id"], "issue_id", OUTCOME_ID_MAX),
     terminal_state: terminalState as TerminalState,
     stop_disposition: stopDisposition as StopDisposition | null,
     failure_cause: failureCause as FailureCause | null,

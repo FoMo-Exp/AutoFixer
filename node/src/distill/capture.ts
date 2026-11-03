@@ -13,6 +13,7 @@
  */
 
 import type { WorkspaceScope } from "../control-plane/types.js";
+import { ScopeError } from "../control-plane/errors.js";
 import type { MemoryEvidenceType, MemoryRepositories, MemorySensitivity } from "../memory/index.js";
 import { assertNoSecretOrPii, detectSecretOrPii, redactText, sensitivityFor } from "./redact.js";
 import { classifyOutcome, parseOutcomeEnvelope } from "./outcome.js";
@@ -72,6 +73,25 @@ export function captureEvidence(envelope: OutcomeEnvelope): EvidenceLedgerEntry[
     seen.add(key);
     return true;
   });
+}
+
+/**
+ * Fail closed unless every captured outcome belongs to `scope` (workspace and
+ * enterprise). A caller must never be able to feed one workspace's captured
+ * outcome into another workspace's distillation: its summary and evidence
+ * would be composed into the model request and its candidates would be
+ * written into the wrong workspace. Checked before any context is composed.
+ */
+export function assertOutcomesInScope(
+  scope: WorkspaceScope,
+  outcomes: readonly CapturedOutcome[],
+): void {
+  for (const outcome of outcomes) {
+    const item = outcome.episode.item;
+    if (item.workspace_id !== scope.workspace_id || item.enterprise_id !== scope.enterprise_id) {
+      throw new ScopeError("distillation outcome must belong to the current workspace");
+    }
+  }
 }
 
 /** Fixed episode statement template over bounded envelope fields only. */
@@ -144,6 +164,9 @@ export function captureOutcome(
 
   const evidence = captureEvidence(redacted);
   for (const entry of evidence) {
+    // Persistence-boundary gate: a reference is an opaque identifier and must
+    // never carry secret or personal material, whatever upstream missed.
+    assertNoSecretOrPii(entry.reference, "evidence reference");
     repos.evidence.add(scope, episode.item.id, {
       evidence_type: entry.evidence_type,
       reference: entry.reference,
