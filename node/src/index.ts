@@ -120,9 +120,12 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
  */
 export function createOrchestrator(options: OrchestratorOptions): OrchestratorHandle {
   const { config } = options;
-  const store = new TaskStore(
-    config.taskStateFile ? { persistencePath: config.taskStateFile } : {},
-  );
+  const store = new TaskStore({
+    ...(config.taskStateFile ? { persistencePath: config.taskStateFile } : {}),
+    // Pre-DAT-244 projections had no workspace ownership; one deployment
+    // served exactly one workspace, so that workspace is their owner.
+    legacyWorkspaceId: config.workspaceId,
+  });
   const dsh = new DshClient({
     socketPath: config.dshSocketPath,
     ...(config.dshTokenFile ? { tokenFile: config.dshTokenFile } : {}),
@@ -183,6 +186,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   const server = createApiServer({
     service,
     apiToken,
+    legacyWorkspaceId: config.workspaceId,
     ...(auth !== undefined ? { auth } : {}),
     ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
     ...(config.publicOrigin !== undefined ? { publicOrigin: config.publicOrigin } : {}),

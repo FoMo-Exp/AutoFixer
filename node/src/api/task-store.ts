@@ -91,6 +91,8 @@ export type TimelineItem = TaskEvent;
 
 export interface TaskResource {
   id: string;
+  /** The workspace this task belongs to; always the scoped path's workspace. */
+  workspace_id: string;
   version: number;
   created_at: string;
   updated_at: string;
@@ -200,6 +202,8 @@ export function runningPhaseFor(
 
 export interface TaskRecord {
   id: string;
+  /** Durable workspace ownership; never re-derived or client-supplied. */
+  workspaceId: string;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -244,6 +248,7 @@ export function newTaskId(): string {
 
 export function createTaskRecord(input: {
   id: string;
+  workspaceId: string;
   repository: TaskResource["repository"];
   summary: string;
   sourceReference: string | null;
@@ -252,6 +257,7 @@ export function createTaskRecord(input: {
   const now = new Date().toISOString();
   return {
     id: input.id,
+    workspaceId: input.workspaceId,
     version: 1,
     createdAt: now,
     updatedAt: now,
@@ -285,6 +291,7 @@ export function createTaskRecord(input: {
 export function toTaskResource(record: TaskRecord): TaskResource {
   return {
     id: record.id,
+    workspace_id: record.workspaceId,
     version: record.version,
     created_at: record.createdAt,
     updated_at: record.updatedAt,
@@ -332,12 +339,19 @@ export function toTaskResource(record: TaskRecord): TaskResource {
 export class TaskStore {
   private readonly tasks = new Map<string, TaskRecord>();
   private readonly persistencePath: string | undefined;
+  /**
+   * Workspace assigned to records persisted before tasks carried workspace
+   * ownership (schema < 2). Tasks were single-workspace then, so the
+   * deployment's configured workspace is the only truthful owner.
+   */
+  private readonly legacyWorkspaceId: string | undefined;
   private readonly idempotency = new Map<string, CreateIdempotencyRecord>();
   private persistTimer: NodeJS.Timeout | null = null;
   private dirty = false;
 
   constructor(options: TaskStoreOptions = {}) {
     this.persistencePath = options.persistencePath;
+    this.legacyWorkspaceId = options.legacyWorkspaceId;
     this.load();
   }
 
@@ -437,7 +451,7 @@ export class TaskStore {
     const raw = JSON.parse(fs.readFileSync(this.persistencePath, "utf8")) as unknown;
     const migrated = migratePersistedState(raw);
     for (const serialized of migrated.tasks) {
-      const record = deserializeTask(serialized);
+      const record = deserializeTask(serialized, this.legacyWorkspaceId);
       this.tasks.set(record.id, record);
     }
     for (const [key, entry] of Object.entries(migrated.idempotency)) {
@@ -486,6 +500,8 @@ export class TaskStore {
 export interface TaskStoreOptions {
   /** A private durable projection file. Omit for a process-local store in tests. */
   persistencePath?: string;
+  /** Owner assigned to pre-schema-2 records that predate workspace ownership. */
+  legacyWorkspaceId?: string;
 }
 
 interface CreateIdempotencyRecord {
@@ -502,7 +518,7 @@ interface PersistedState {
   idempotency: Record<string, CreateIdempotencyRecord>;
 }
 
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 
 /** Version-0 was the unversioned M2 shape; migrate it before deserializing. */
 function migratePersistedState(raw: unknown): PersistedState {
@@ -527,8 +543,20 @@ function serializeTask(record: TaskRecord): PersistedTaskRecord {
   return structuredClone(serializable);
 }
 
-function deserializeTask(serialized: PersistedTaskRecord): TaskRecord {
+function deserializeTask(
+  serialized: PersistedTaskRecord,
+  legacyWorkspaceId: string | undefined,
+): TaskRecord {
   const record = serialized as TaskRecord;
+  // Schema < 2 predates workspace ownership. Assigning the deployment's
+  // configured workspace is the only non-fabricated migration: those
+  // deployments served exactly one workspace.
+  if (record.workspaceId === undefined || record.workspaceId.length === 0) {
+    if (legacyWorkspaceId === undefined || legacyWorkspaceId.length === 0) {
+      throw new Error("task projection has no workspace ownership and no legacy workspace is set");
+    }
+    record.workspaceId = legacyWorkspaceId;
+  }
   record.subscribers = new Set();
   record.headSha ??= null;
   record.approvalSnapshotHeadSha ??= null;

@@ -326,6 +326,7 @@ const taskSchema: JsonObject = {
   type: "object",
   required: [
     "id",
+    "workspace_id",
     "version",
     "created_at",
     "updated_at",
@@ -345,6 +346,13 @@ const taskSchema: JsonObject = {
   ],
   properties: {
     id: { type: "string" },
+    workspace_id: {
+      type: "string",
+      description:
+        "Durable workspace ownership. Always equal to the workspace in the " +
+        "scoped path; a task can never be addressed through another " +
+        "workspace's route family.",
+    },
     version: { type: "integer" },
     created_at: { type: "string", format: "date-time" },
     updated_at: { type: "string", format: "date-time" },
@@ -1452,6 +1460,322 @@ export function buildOpenApiDocument(): OpenApiDocument {
             },
           },
           404: errorResponse("Task not found"),
+        },
+      },
+    },
+
+    // --- Workspace-scoped tasks (DAT-244) ----------------------------------
+    //
+    // The `{workspace_id}` segment is a locator, never a grant: each
+    // operation resolves the caller's live membership for that workspace on
+    // the request path, and no-membership, revoked, cross-enterprise, and
+    // unknown are one indistinguishable 404 NOT_FOUND. A task owned by any
+    // other workspace is the same 404, so the family is not an enumeration
+    // oracle.
+
+    "/api/v1/workspaces/{workspace_id}/tasks": {
+      get: {
+        operationId: "listWorkspaceTasks",
+        summary: "List tasks owned by one workspace",
+        description:
+          "Cursor/status semantics are identical to `GET /api/v1/tasks`, but " +
+          "only tasks whose durable `workspace_id` is this workspace are " +
+          "visible; a foreign task id is never a valid cursor. Creating a " +
+          "task in an arbitrary workspace is DAT-245, not this operation.",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "cursor", in: "query", schema: { type: "string" } },
+          { name: "status", in: "query", schema: { type: "string", enum: [...UI_STATUSES] } },
+        ],
+        responses: {
+          200: {
+            description: "Workspace task page",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["items", "next_cursor"],
+                  properties: {
+                    items: { type: "array", items: { $ref: "#/components/schemas/Task" } },
+                    next_cursor: { type: ["string", "null"] },
+                  },
+                },
+              },
+            },
+          },
+          400: errorResponse("INVALID_REQUEST — unknown status filter"),
+          404: errorResponse(
+            "NOT_FOUND — no live membership for this workspace, or a cursor from another workspace",
+          ),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}": {
+      get: {
+        operationId: "getWorkspaceTask",
+        summary: "Read one task in a workspace",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: { description: "Task", ...jsonRef("#/components/schemas/Task") },
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/runs": {
+      get: {
+        operationId: "getWorkspaceTaskRuns",
+        summary: "List the task's runs in a workspace",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: {
+            description: "Run summaries",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["items"],
+                  properties: {
+                    items: { type: "array", items: { $ref: "#/components/schemas/RunSummary" } },
+                  },
+                },
+              },
+            },
+          },
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/messages": {
+      post: {
+        operationId: "sendWorkspaceTaskMessage",
+        summary: "Queue a steering or follow-up message for the task's Pi session",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["mode", "content"],
+                properties: {
+                  mode: { type: "string", enum: ["steer", "follow_up"] },
+                  content: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          202: {
+            description: "Message queued",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["task_id", "queued"],
+                  properties: { task_id: { type: "string" }, queued: { type: "boolean" } },
+                },
+              },
+            },
+          },
+          400: errorResponse("Invalid request"),
+          403: errorResponse("FORBIDDEN — viewer is read-only"),
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
+          409: errorResponse("Task state conflict"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/approvals": {
+      post: {
+        operationId: "approveWorkspaceTask",
+        summary: "Record the pre-grant approval decision for an elevated task",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["decision", "scope_digest"],
+                properties: {
+                  decision: { type: "string", enum: ["approve", "reject"] },
+                  scope_digest: { type: "string", examples: ["sha256:…"] },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Task after the decision",
+            ...jsonRef("#/components/schemas/Task"),
+          },
+          400: errorResponse("Invalid request"),
+          403: errorResponse("FORBIDDEN — viewer, provider authority, or dsh policy denial"),
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
+          409: errorResponse("Task state conflict"),
+          503: errorResponse("PI_UNAVAILABLE or DSH_UNAVAILABLE"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/cancel": {
+      post: {
+        operationId: "cancelWorkspaceTask",
+        summary: "Cancel a task",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: { reason: { type: "string" } },
+              },
+            },
+          },
+        },
+        responses: {
+          202: { description: "Cancellation requested", ...jsonRef("#/components/schemas/Task") },
+          403: errorResponse("FORBIDDEN — viewer is read-only"),
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
+          409: errorResponse("The task cannot be cancelled in its terminal state."),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/archive": {
+      post: {
+        operationId: "archiveWorkspaceTask",
+        summary: "Move a cancelled task to the archive",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: { description: "Task after archiving", ...jsonRef("#/components/schemas/Task") },
+          403: errorResponse("FORBIDDEN — viewer is read-only"),
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
+          409: errorResponse("Task is not cancelled"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/recover": {
+      post: {
+        operationId: "recoverWorkspaceTask",
+        summary: "Restore a cancelled task to the workspace",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: {
+            description: "Task after restoring its visibility",
+            ...jsonRef("#/components/schemas/Task"),
+          },
+          403: errorResponse("FORBIDDEN — viewer is read-only"),
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
+          409: errorResponse("Task is not cancelled"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/timeline": {
+      get: {
+        operationId: "getWorkspaceTaskTimeline",
+        summary: "Read the task's redacted event timeline",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: {
+            description: "Timeline items",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["items"],
+                  properties: {
+                    items: { type: "array", items: { $ref: "#/components/schemas/TaskEvent" } },
+                  },
+                },
+              },
+            },
+          },
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/artifacts/{artifact_id}": {
+      get: {
+        operationId: "getWorkspaceTaskArtifact",
+        summary: "Read one redacted artifact for the task's current run",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "artifact_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: {
+            description: "Redacted artifact, already redacted by dsh",
+            content: {
+              "application/json": { schema: { type: "object", additionalProperties: true } },
+            },
+          },
+          403: errorResponse("Artifact access denied"),
+          404: errorResponse("NOT_FOUND — workspace access, task ownership, or artifact missing"),
+          409: errorResponse("Artifact not finalized"),
+          410: errorResponse("Artifact expired"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/stream": {
+      get: {
+        operationId: "streamWorkspaceTaskEvents",
+        summary: "SSE stream of task events in one workspace",
+        description:
+          "Replay and Last-Event-ID semantics match `GET /api/v1/tasks/" +
+          "{task_id}/stream`. The subscription is bound to both the session " +
+          "and this workspace: logout, account suspension, or losing this " +
+          "workspace's membership closes it immediately, while membership " +
+          "changes in another workspace leave it untouched.",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+          {
+            name: "Last-Event-ID",
+            in: "header",
+            required: false,
+            schema: { type: "string" },
+            description: "Replay events after this event_id; unknown ids replay from the start.",
+          },
+        ],
+        responses: {
+          200: {
+            description:
+              "text/event-stream. Each event carries id (event_id), the event type, " +
+              "and data: the TaskEvent envelope. The stream ends after task.terminal " +
+              "or when the subscription's authority ends.",
+            content: {
+              "text/event-stream": {
+                schema: { $ref: "#/components/schemas/TaskEvent" },
+              },
+            },
+          },
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
         },
       },
     },
@@ -2729,7 +3053,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
     openapi: "3.1.0",
     info: {
       title: "ForgePilot orchestrator API",
-      version: "0.7.0",
+      version: "0.8.0",
       description:
         "forgepilot-api/v1: the Node-to-UI contract of the ForgePilot pilot, the " +
         "enterprise identity surface (DAT-202, ADR-0006), and the workspace, " +

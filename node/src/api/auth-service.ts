@@ -18,6 +18,7 @@ import type {
   ProviderInstance,
   ProviderType,
   UserId,
+  Workspace,
   WorkspaceId,
   WorkspaceRole,
 } from "../control-plane/index.js";
@@ -113,6 +114,24 @@ export interface LoginProviderView {
   provider_instance_id: string;
   provider_type: ProviderType;
   display_origin: string;
+}
+
+/** One workspace the caller holds a live membership in (DAT-244). */
+export interface WorkspaceView {
+  id: string;
+  enterprise_id: string;
+  name: string;
+  status: Workspace["status"];
+  repository: { repository_id: string; provider_instance_id: string; provider_type: ProviderType };
+  role: WorkspaceRole;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspacePage {
+  items: WorkspaceView[];
+  next_cursor: string | null;
 }
 
 export interface StartLoginResult {
@@ -561,6 +580,102 @@ export class AuthService {
       },
       userId,
     )?.role;
+  }
+
+  /**
+   * Resolve a live workspace access from the authenticated user and a path
+   * workspace locator (DAT-244). The workspace id selects which membership
+   * to evaluate; it never grants anything on its own. Unknown, archived,
+   * cross-enterprise, and revoked memberships are all `undefined`, so the
+   * HTTP surface can answer them with one indistinguishable 404.
+   *
+   * The membership and workspace are re-read on every call: revocation and
+   * suspension take effect on the very next request.
+   */
+  workspaceAccess(
+    userId: UserId,
+    workspaceId: WorkspaceId,
+  ): { membership: Membership; workspace: Workspace } | undefined {
+    const enterpriseScope = {
+      enterprise_id: this.#config.enterpriseId,
+      actor_id: userId,
+    };
+    const workspaceScope = {
+      ...enterpriseScope,
+      workspace_id: workspaceId,
+    };
+    const membership = this.#repos.memberships.getByUser(workspaceScope, userId);
+    if (membership === undefined) {
+      return undefined;
+    }
+    if (
+      membership.enterprise_id !== this.#config.enterpriseId ||
+      membership.workspace_id !== workspaceId
+    ) {
+      return undefined;
+    }
+    const workspace = this.#repos.workspaces.getById(enterpriseScope, workspaceId);
+    if (workspace === undefined || workspace.enterprise_id !== membership.enterprise_id) {
+      return undefined;
+    }
+    return { membership, workspace };
+  }
+
+  /**
+   * The workspaces the caller holds a live membership in, for the enterprise
+   * switcher. Exactly the membership rows are the source; substituting a
+   * workspace id anywhere cannot widen the list. Archived workspaces are
+   * omitted, matching the workspace list contract.
+   */
+  listWorkspaces(userId: UserId, cursor: string | null): WorkspacePage {
+    const enterpriseScope = {
+      enterprise_id: this.#config.enterpriseId,
+      actor_id: userId,
+    };
+    const items: WorkspaceView[] = [];
+    for (const membership of this.#repos.memberships.listForUser(enterpriseScope, userId)) {
+      const workspace = this.#repos.workspaces.getById(enterpriseScope, membership.workspace_id);
+      if (workspace === undefined || workspace.status !== "active") {
+        continue;
+      }
+      const provider = this.#repos.providerInstances.getById(
+        enterpriseScope,
+        workspace.provider_instance_id,
+      );
+      if (provider === undefined) {
+        continue;
+      }
+      items.push({
+        id: workspace.id,
+        enterprise_id: workspace.enterprise_id,
+        name: workspace.name,
+        status: workspace.status,
+        repository: {
+          repository_id: workspace.repository_id,
+          provider_instance_id: workspace.provider_instance_id,
+          provider_type: provider.provider_type,
+        },
+        role: membership.role,
+        version: workspace.version,
+        created_at: workspace.created_at,
+        updated_at: workspace.updated_at,
+      });
+    }
+    items.sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+    let startIndex = 0;
+    if (cursor !== null) {
+      const index = items.findIndex((item) => item.id === cursor);
+      if (index === -1) {
+        throw new ApiError(400, "INVALID_CURSOR", `Unknown cursor ${JSON.stringify(cursor)}`);
+      }
+      startIndex = index + 1;
+    }
+    const page = items.slice(startIndex, startIndex + 50);
+    const last = page[page.length - 1];
+    return {
+      items: page,
+      next_cursor: last && startIndex + page.length < items.length ? last.id : null,
+    };
   }
 
   // -------------------------------------------------------------------------
