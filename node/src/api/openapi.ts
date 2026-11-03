@@ -47,6 +47,159 @@ const errorSchema: JsonObject = {
   },
 };
 
+// --- Identity, session, and administration schemas (DAT-202) ---------------
+
+const userSchema: JsonObject = {
+  type: "object",
+  required: ["id", "display_name", "status"],
+  properties: {
+    id: { type: "string" },
+    display_name: { type: "string" },
+    status: { type: "string", enum: ["active", "suspended"] },
+  },
+};
+
+const membershipSchema: JsonObject = {
+  type: "object",
+  required: ["id", "enterprise_id", "workspace_id", "user_id", "role"],
+  properties: {
+    id: { type: "string" },
+    enterprise_id: { type: "string" },
+    workspace_id: { type: "string" },
+    user_id: { type: "string" },
+    role: { type: "string", enum: ["owner", "admin", "member", "viewer"] },
+  },
+};
+
+const sessionInfoSchema: JsonObject = {
+  type: "object",
+  required: ["user", "kind", "csrf_token", "expires_at", "enterprise_roles", "memberships"],
+  properties: {
+    user: { $ref: "#/components/schemas/User" },
+    kind: { type: "string", enum: ["web", "desktop"] },
+    csrf_token: {
+      type: "string",
+      description:
+        "Paired with the HttpOnly session cookie: cookie-authenticated " +
+        "mutating requests must echo it in the X-CSRF-Token header. It is " +
+        "readable by the page on purpose — possession without the cookie " +
+        "grants nothing.",
+    },
+    expires_at: { type: "string", format: "date-time" },
+    enterprise_roles: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["enterprise_id", "role"],
+        properties: {
+          enterprise_id: { type: "string" },
+          role: { type: "string", enum: ["admin"] },
+        },
+      },
+    },
+    memberships: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["enterprise_id", "workspace_id", "role"],
+        properties: {
+          enterprise_id: { type: "string" },
+          workspace_id: { type: "string" },
+          role: { type: "string", enum: ["owner", "admin", "member", "viewer"] },
+        },
+      },
+    },
+  },
+};
+
+const loginProviderSchema: JsonObject = {
+  type: "object",
+  required: ["provider_instance_id", "provider_type", "display_origin"],
+  properties: {
+    provider_instance_id: { type: "string" },
+    provider_type: { type: "string", enum: ["github", "gitlab"] },
+    display_origin: { type: "string", examples: ["https://github.com"] },
+  },
+};
+
+const providerInstanceSchema: JsonObject = {
+  type: "object",
+  required: ["id", "enterprise_id", "provider_type", "origin_url", "version"],
+  properties: {
+    id: { type: "string" },
+    enterprise_id: { type: "string" },
+    provider_type: { type: "string", enum: ["github", "gitlab"] },
+    origin_url: {
+      type: "string",
+      description:
+        "Administrator-approved provider origin. Registration enforces " +
+        "HTTPS, no credentials/path/query/fragment, the default port, and a " +
+        "public hostname or IP literal that resolves to public addresses " +
+        "only — internal-network origins are refused.",
+    },
+    version: { type: "number" },
+  },
+};
+
+const desktopFlowSchema: JsonObject = {
+  type: "object",
+  required: ["flow_id", "secret", "login_url", "expires_at"],
+  properties: {
+    flow_id: { type: "string" },
+    secret: {
+      type: "string",
+      description:
+        "Single-use desktop-held secret, returned exactly once at creation " +
+        "and exchanged once for the desktop session. It never appears in a " +
+        "URL, log, or audit record.",
+    },
+    login_url: {
+      type: "string",
+      description: "Open in the system browser to complete sign-in.",
+    },
+    expires_at: { type: "string", format: "date-time" },
+  },
+};
+
+const authAuditRecordSchema: JsonObject = {
+  type: "object",
+  required: ["id", "at", "event", "actor_kind", "details"],
+  properties: {
+    id: { type: "string" },
+    at: { type: "string", format: "date-time" },
+    event: {
+      type: "string",
+      examples: [
+        "login.started",
+        "login.completed",
+        "login.rejected",
+        "session.created",
+        "session.revoked",
+        "desktop_flow.created",
+        "desktop_flow.consumed",
+        "user.provisioned",
+        "user.suspended",
+        "user.activated",
+        "membership.granted",
+        "membership.revoked",
+        "provider_instance.registered",
+        "admin.bootstrap",
+        "admin.denied",
+      ],
+    },
+    enterprise_id: { type: ["string", "null"] },
+    actor_kind: { type: "string", enum: ["user", "deployment", "anonymous"] },
+    actor_user_id: { type: ["string", "null"] },
+    subject_user_id: { type: ["string", "null"] },
+    provider_instance_id: { type: ["string", "null"] },
+    details: {
+      type: "object",
+      additionalProperties: true,
+      description: "Secret-free detail; never carries tokens, codes, or states.",
+    },
+  },
+};
+
 const artifactMetadataSchema: JsonObject = {
   type: "object",
   required: ["artifact_id", "available", "digest", "head_sha"],
@@ -430,6 +583,29 @@ function jsonRef(ref: string): JsonObject {
  */
 const BEARER_SECURITY: Array<Record<string, string[]>> = [{ bearerAuth: [] }];
 
+/** Web sessions: HttpOnly cookie plus the X-CSRF-Token echo on writes. */
+const SESSION_SECURITY: Array<Record<string, string[]>> = [
+  { sessionCookie: [] },
+  { bearerAuth: [] },
+];
+
+/**
+ * Administration: the deployment bootstrap token (the first provider
+ * approval and the one-time first-administrator grant) or an enterprise
+ * administrator session.
+ */
+const ADMIN_SECURITY: Array<Record<string, string[]>> = [
+  { bootstrapToken: [] },
+  { sessionCookie: [] },
+  { bearerAuth: [] },
+];
+
+/** Bootstrap grants are deployment-owned: never an ordinary session. */
+const BOOTSTRAP_SECURITY: Array<Record<string, string[]>> = [{ bootstrapToken: [] }];
+
+/** Anonymous login surface: no credential is required to start a login. */
+const ANONYMOUS_SECURITY: Array<Record<string, string[]>> = [];
+
 /** The 401 response every operation can return when the token is missing/wrong. */
 function unauthorizedResponse(): JsonObject {
   return errorResponse("Missing or invalid Authorization: Bearer <token> header");
@@ -437,7 +613,8 @@ function unauthorizedResponse(): JsonObject {
 
 /**
  * Stamp the security requirement and 401 response onto every operation in a
- * paths object, so auth coverage cannot silently miss an endpoint.
+ * paths object, so auth coverage cannot silently miss an endpoint. Operations
+ * that declare their own `security` (the identity surface) are left alone.
  */
 function stampAuth(paths: Record<string, Record<string, unknown>>): void {
   for (const methods of Object.values(paths)) {
@@ -446,6 +623,9 @@ function stampAuth(paths: Record<string, Record<string, unknown>>): void {
         continue;
       }
       const op = operation as { security?: unknown; responses?: Record<string, unknown> };
+      if (op.security !== undefined) {
+        continue;
+      }
       op.security = BEARER_SECURITY;
       op.responses = { ...op.responses, 401: unauthorizedResponse() };
     }
@@ -772,6 +952,537 @@ export function buildOpenApiDocument(): OpenApiDocument {
         },
       },
     },
+
+    // --- Identity and sessions (DAT-202) -----------------------------------
+
+    "/api/v1/auth/providers": {
+      get: {
+        operationId: "listLoginProviders",
+        summary: "List administrator-approved provider instances available for login",
+        security: ANONYMOUS_SECURITY,
+        responses: {
+          200: {
+            description: "Approved login providers",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["items"],
+                  properties: {
+                    items: {
+                      type: "array",
+                      items: { $ref: "#/components/schemas/LoginProvider" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/api/v1/auth/login": {
+      get: {
+        operationId: "startLogin",
+        summary: "Start a provider OAuth login (authorization code + state + PKCE)",
+        description:
+          "Browser navigation: responds 302 to the provider's authorize URL " +
+          "with an exact pre-registered redirect_uri, a single-use state, and " +
+          "an S256 PKCE challenge. Set-Cookie fp_oauth_binding (HttpOnly) " +
+          "binds the flow to this browser so a login-CSRF callback cannot " +
+          "complete. desktop_flow binds the login to a pending desktop flow.",
+        security: ANONYMOUS_SECURITY,
+        parameters: [
+          {
+            name: "provider_instance_id",
+            in: "query",
+            required: true,
+            schema: { type: "string" },
+            description: "Must name an administrator-approved provider instance.",
+          },
+          {
+            name: "return_to",
+            in: "query",
+            required: false,
+            schema: { type: "string" },
+            description: "Relative same-deployment path only; absolute URLs fall back to /.",
+          },
+          {
+            name: "desktop_flow",
+            in: "query",
+            required: false,
+            schema: { type: "string" },
+            description: "Pending desktop auth flow id to bind this login to.",
+          },
+        ],
+        responses: {
+          302: {
+            description: "Redirect to the provider authorize endpoint",
+            headers: {
+              Location: { schema: { type: "string" } },
+              "Set-Cookie": {
+                schema: { type: "string" },
+                description: "fp_oauth_binding=<secret>; HttpOnly; SameSite=Lax",
+              },
+            },
+          },
+          400: errorResponse("Unknown/unusable provider instance"),
+          410: errorResponse("AUTH_FLOW_EXPIRED: desktop flow is not startable"),
+        },
+      },
+    },
+    "/api/v1/auth/callback": {
+      get: {
+        operationId: "completeLogin",
+        summary: "OAuth callback: single-use code/state exchange into a session",
+        description:
+          "Validates the single-use state and the browser binding, exchanges " +
+          "the code with PKCE, and matches the account only by (provider " +
+          "instance, stable subject) — never by email. Web flows get the " +
+          "session as an HttpOnly cookie and a 302 to return_to; desktop " +
+          "flows get a plain completion page and deliver the credential " +
+          "through the single-use exchange instead.",
+        security: ANONYMOUS_SECURITY,
+        parameters: [
+          { name: "code", in: "query", required: true, schema: { type: "string" } },
+          { name: "state", in: "query", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          302: {
+            description: "Web login complete; redirect to return_to",
+            headers: {
+              Location: { schema: { type: "string" } },
+              "Set-Cookie": {
+                schema: { type: "string" },
+                description: "fp_session=<token>; HttpOnly; SameSite=Lax; Max-Age",
+              },
+            },
+          },
+          200: {
+            description: "Desktop login complete; return to the application",
+            content: { "text/plain": { schema: { type: "string" } } },
+          },
+          400: errorResponse("AUTH_FLOW_INVALID: unknown state or malformed callback"),
+          403: errorResponse("FORBIDDEN: binding mismatch (login CSRF) or suspended account"),
+          410: errorResponse("AUTH_FLOW_CONSUMED (replay) or AUTH_FLOW_EXPIRED"),
+          502: errorResponse("PROVIDER_ERROR: provider token/userinfo call failed (retryable)"),
+        },
+      },
+    },
+    "/api/v1/auth/session": {
+      get: {
+        operationId: "getSession",
+        summary: "Describe the current session, roles, memberships, and CSRF token",
+        security: SESSION_SECURITY,
+        responses: {
+          200: {
+            description: "Current session",
+            ...jsonRef("#/components/schemas/SessionInfo"),
+          },
+          401: unauthorizedResponse(),
+        },
+      },
+    },
+    "/api/v1/auth/logout": {
+      post: {
+        operationId: "logout",
+        summary: "Revoke the current session immediately",
+        description:
+          "Revokes the session server-side (reads, writes, and live SSE " +
+          "subscriptions die with it) and expires the cookie. Cookie " +
+          "sessions must echo the session CSRF token in X-CSRF-Token.",
+        security: SESSION_SECURITY,
+        parameters: [
+          {
+            name: "X-CSRF-Token",
+            in: "header",
+            required: true,
+            schema: { type: "string" },
+            description: "Required for cookie sessions; desktop bearer sessions are exempt.",
+          },
+        ],
+        responses: {
+          204: { description: "Session revoked" },
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN: missing or invalid CSRF token"),
+        },
+      },
+    },
+    "/api/v1/auth/desktop/flows": {
+      post: {
+        operationId: "createDesktopFlow",
+        summary: "Start a desktop system-browser sign-in binding",
+        description:
+          "Returns a flow id and a single-use secret held by the desktop only. " +
+          "The desktop opens login_url in the system browser; sign-in " +
+          "completes server-side and one exchange delivers the session.",
+        security: ANONYMOUS_SECURITY,
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  provider_instance_id: {
+                    type: "string",
+                    description: "Optional preselection included in login_url.",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: "Desktop flow created",
+            ...jsonRef("#/components/schemas/DesktopFlow"),
+          },
+        },
+      },
+    },
+    "/api/v1/auth/desktop/flows/{flow_id}/exchange": {
+      post: {
+        operationId: "exchangeDesktopFlow",
+        summary: "Single-use exchange of the desktop secret for a session token",
+        security: ANONYMOUS_SECURITY,
+        parameters: [{ name: "flow_id", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["secret"],
+                properties: { secret: { type: "string" } },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Session issued (exactly once per flow)",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["status", "token", "csrf_token", "expires_at", "user"],
+                  properties: {
+                    status: { type: "string", enum: ["ok"] },
+                    token: {
+                      type: "string",
+                      description: "Desktop session token for Authorization: Bearer.",
+                    },
+                    csrf_token: { type: "string" },
+                    expires_at: { type: "string", format: "date-time" },
+                    user: { $ref: "#/components/schemas/User" },
+                  },
+                },
+              },
+            },
+          },
+          400: errorResponse("AUTH_FLOW_INVALID: unknown flow"),
+          401: errorResponse("UNAUTHENTICATED: wrong secret (attempts are counted)"),
+          410: errorResponse("AUTH_FLOW_CONSUMED (replay) or AUTH_FLOW_EXPIRED"),
+          428: errorResponse("AUTH_FLOW_NOT_READY: browser sign-in has not completed"),
+          429: errorResponse("RATE_LIMITED: too many exchange attempts (retryable)"),
+        },
+      },
+    },
+
+    // --- Administration (DAT-202) ------------------------------------------
+
+    "/api/v1/admin/enterprises/{enterprise_id}/bootstrap": {
+      post: {
+        operationId: "bootstrapAdmin",
+        summary: "Deployment-owned, audited grant of the first enterprise administrator",
+        description:
+          "Names the administrator by provider instance and stable subject " +
+          "explicitly — whoever signed in first cannot capture the role — and " +
+          "succeeds at most once per enterprise. Requires the deployment " +
+          "bootstrap token (X-Bootstrap-Token); ordinary sessions are refused.",
+        security: BOOTSTRAP_SECURITY,
+        parameters: [
+          {
+            name: "enterprise_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+          {
+            name: "X-Bootstrap-Token",
+            in: "header",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["provider_instance_id", "subject"],
+                properties: {
+                  provider_instance_id: { type: "string" },
+                  subject: {
+                    type: "string",
+                    description: "Stable provider subject; the identity must have signed in.",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Enterprise administrator granted (idempotent for the same identity)",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["enterprise_id", "user_id", "role"],
+                  properties: {
+                    enterprise_id: { type: "string" },
+                    user_id: { type: "string" },
+                    role: { type: "string", enum: ["admin"] },
+                  },
+                },
+              },
+            },
+          },
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN: session callers are never deployment authority"),
+          404: errorResponse("NOT_FOUND: enterprise, provider instance, or signed-in identity"),
+          409: errorResponse("BOOTSTRAP_CONFLICT: an administrator already exists"),
+          503: errorResponse("BOOTSTRAP_UNAVAILABLE: no deployment token configured (retryable)"),
+        },
+      },
+    },
+    "/api/v1/admin/enterprises/{enterprise_id}/provider-instances": {
+      post: {
+        operationId: "registerProviderInstance",
+        summary: "Administrator approval of a provider instance origin",
+        description:
+          "The approval gate for OAuth logins. Refuses internal-network or " +
+          "arbitrary self-hosted origins: HTTPS, no credentials/path/query/" +
+          "fragment, default port, public hostname or IP literal, public DNS " +
+          "answers, and a configured OAuth application are all required.",
+        security: ADMIN_SECURITY,
+        parameters: [
+          {
+            name: "enterprise_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["provider_type", "origin_url"],
+                properties: {
+                  provider_type: { type: "string", enum: ["github", "gitlab"] },
+                  origin_url: { type: "string", examples: ["https://github.com"] },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: "Provider instance approved",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["provider_instance"],
+                  properties: {
+                    provider_instance: { $ref: "#/components/schemas/ProviderInstance" },
+                  },
+                },
+              },
+            },
+          },
+          400: errorResponse("INVALID_REQUEST: unusable origin or no OAuth application"),
+          401: unauthorizedResponse(),
+          403: errorResponse("PROVIDER_ORIGIN_REJECTED or missing administrator authority"),
+        },
+      },
+    },
+    "/api/v1/admin/enterprises/{enterprise_id}/auth-audit": {
+      get: {
+        operationId: "listAuthAudit",
+        summary: "Read the secret-free authentication/authorization audit trail",
+        security: ADMIN_SECURITY,
+        parameters: [
+          {
+            name: "enterprise_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+          { name: "limit", in: "query", required: false, schema: { type: "integer" } },
+        ],
+        responses: {
+          200: {
+            description: "Audit records, newest first",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["items"],
+                  properties: {
+                    items: {
+                      type: "array",
+                      items: { $ref: "#/components/schemas/AuthAuditRecord" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN: administrator authority required"),
+        },
+      },
+    },
+    "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}": {
+      put: {
+        operationId: "grantMembership",
+        summary: "Grant or fail on a workspace membership (administrator)",
+        security: ADMIN_SECURITY,
+        parameters: [
+          {
+            name: "enterprise_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+          {
+            name: "workspace_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+          { name: "user_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["role"],
+                properties: {
+                  role: { type: "string", enum: ["owner", "admin", "member", "viewer"] },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Membership granted",
+            ...jsonRef("#/components/schemas/Membership"),
+          },
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN: administrator authority required"),
+          404: errorResponse("Workspace or user not found"),
+          409: errorResponse("CONFLICT: already a member"),
+        },
+      },
+      delete: {
+        operationId: "revokeMembership",
+        summary: "Revoke a workspace membership; live streams close immediately",
+        security: ADMIN_SECURITY,
+        parameters: [
+          {
+            name: "enterprise_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+          {
+            name: "workspace_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+          { name: "user_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          204: { description: "Membership revoked" },
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN: administrator authority required"),
+          404: errorResponse("Membership not found"),
+        },
+      },
+    },
+    "/api/v1/admin/users/{user_id}/suspend": {
+      post: {
+        operationId: "suspendUser",
+        summary: "Suspend a user: all sessions, SSE streams, and logins die",
+        security: ADMIN_SECURITY,
+        parameters: [{ name: "user_id", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  enterprise_id: {
+                    type: "string",
+                    description: "Optional locator for deployment actors.",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "User suspended",
+            ...jsonRef("#/components/schemas/User"),
+          },
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN: administrator authority over this user required"),
+          404: errorResponse("User not found"),
+        },
+      },
+    },
+    "/api/v1/admin/users/{user_id}/activate": {
+      post: {
+        operationId: "activateUser",
+        summary: "Reactivate a suspended user",
+        security: ADMIN_SECURITY,
+        parameters: [{ name: "user_id", in: "path", required: true, schema: { type: "string" } }],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: { enterprise_id: { type: "string" } },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "User activated",
+            ...jsonRef("#/components/schemas/User"),
+          },
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN: administrator authority over this user required"),
+          404: errorResponse("User not found"),
+        },
+      },
+    },
   };
 
   // Stamp the security requirement and 401 response onto every operation so
@@ -807,6 +1518,13 @@ export function buildOpenApiDocument(): OpenApiDocument {
         TurnReport: turnReportSchema,
         RunSummary: runSummarySchema,
         ArtifactMetadata: artifactMetadataSchema,
+        User: userSchema,
+        Membership: membershipSchema,
+        SessionInfo: sessionInfoSchema,
+        LoginProvider: loginProviderSchema,
+        ProviderInstance: providerInstanceSchema,
+        DesktopFlow: desktopFlowSchema,
+        AuthAuditRecord: authAuditRecordSchema,
         Error: errorSchema,
       },
       securitySchemes: {
@@ -814,10 +1532,32 @@ export function buildOpenApiDocument(): OpenApiDocument {
           type: "http",
           scheme: "bearer",
           description:
-            "Per-process API bearer token, minted at orchestrator start and written " +
-            "0600 to the API token file. The UI reads that file and sends it as " +
-            "Authorization: Bearer <token> on every request; possession of the token " +
-            "authorizes acting as the local operator, approvals included.",
+            "Authorization: Bearer <token>. Either the per-process API token, " +
+            "minted at orchestrator start and written 0600 to the API token " +
+            "file (possession authorizes acting as the local operator, " +
+            "approvals included), or a desktop session token issued by the " +
+            "single-use desktop exchange. Web clients use the session cookie " +
+            "instead.",
+        },
+        sessionCookie: {
+          type: "apiKey",
+          in: "cookie",
+          name: "fp_session",
+          description:
+            "Server-side web session in an HttpOnly, SameSite=Lax cookie. " +
+            "Cookie-authenticated mutating requests must echo the session's " +
+            "CSRF token in the X-CSRF-Token header. Logout, suspension, and " +
+            "membership revocation invalidate it immediately.",
+        },
+        bootstrapToken: {
+          type: "apiKey",
+          in: "header",
+          name: "X-Bootstrap-Token",
+          description:
+            "Deployment-owned bootstrap secret (FORGEPILOT_BOOTSTRAP_TOKEN). " +
+            "The only authority for the first provider-instance approval and " +
+            "the one-time first-enterprise-administrator grant; every use is " +
+            "audited and the token never appears in logs or audit details.",
         },
       },
     },

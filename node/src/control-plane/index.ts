@@ -64,3 +64,40 @@ export type {
   SeedWorkspaceInput,
 } from "./seed.js";
 export { seedEnterprise, seedProviderInstance, seedWorkspace } from "./seed.js";
+
+export type {
+  AppendAuthAuditInput,
+  AppUser,
+  AuthActorKind,
+  AuthAuditFilter,
+  AuthAuditRecord,
+  AuthSession,
+  CreateDesktopFlowInput,
+  CreateIdentityInput,
+  CreateOauthFlowInput,
+  CreateSessionInput,
+  CreateUserInput,
+  DesktopAuthFlow,
+  DesktopFlowStatus,
+  EnterpriseRole,
+  EnterpriseRoleName,
+  GrantEnterpriseRoleInput,
+  LoginProvider,
+  OauthFlow,
+  SessionKind,
+  UserIdentity,
+  UserStatus,
+} from "./identity-types.js";
+
+export type {
+  AuthAuditRepository,
+  DesktopFlowRepository,
+  EnterpriseRoleRepository,
+  IdentityRepositories,
+  IdentityRepository,
+  LoginProviderDirectory,
+  OauthFlowRepository,
+  SessionRepository,
+  UserRepository,
+} from "./identity-repositories.js";
+export { createIdentityRepositories, hashToken, secretEquals } from "./identity-repositories.js";

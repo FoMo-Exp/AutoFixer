@@ -57,6 +57,28 @@ export interface OrchestratorConfig {
   gatewayCredentialsFile?: string;
   /** Durable gateway audit/metering event sink (JSONL, 0600). */
   gatewayAuditFile?: string;
+  // --- Enterprise identity (ADR-0006) -------------------------------------
+  /**
+   * External origin for OAuth redirect URLs and desktop login links. Unset
+   * derives a loopback origin per request (local development).
+   */
+  publicOrigin?: string;
+  /**
+   * Protected JSON file mapping provider origins to OAuth application
+   * credentials. Setting it enables the /api/v1/auth and /api/v1/admin
+   * surfaces together with server-side sessions.
+   */
+  oauthClientsFile?: string;
+  /** Durable control-plane database for identity/session state. */
+  controlPlaneFile?: string;
+  /** Deployment-owned bootstrap secret; unset disables admin bootstrap. */
+  bootstrapToken?: string;
+  /** Session lifetime in seconds (default 12 hours). */
+  sessionTtlSeconds?: number;
+  /** OAuth authorization-flow lifetime in seconds (default 10 minutes). */
+  oauthFlowTtlSeconds?: number;
+  /** Desktop system-browser flow lifetime in seconds (default 10 minutes). */
+  desktopFlowTtlSeconds?: number;
 }
 
 function csv(value: string | undefined, fallback: string[]): string[] {
@@ -101,6 +123,11 @@ function defaultTaskStatePath(): string {
 function defaultGatewayAuditPath(): string {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "gateway-audit.jsonl");
+}
+
+function defaultControlPlanePath(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "control-plane.sqlite");
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): OrchestratorConfig {
@@ -169,6 +196,52 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
   }
   const piBaseUrl = env["FORGEPILOT_PI_BASE_URL"]?.trim();
   if (piBaseUrl) config.piBaseUrl = validateModelBaseUrl(piBaseUrl);
+  // Enterprise identity options (ADR-0006). Absent values keep the
+  // local-operator behavior unchanged.
+  const publicOrigin = env["FORGEPILOT_PUBLIC_ORIGIN"]?.trim();
+  if (publicOrigin) {
+    config.publicOrigin = validateModelBaseUrl(publicOrigin, "FORGEPILOT_PUBLIC_ORIGIN");
+  }
+  const oauthClientsFile = env["FORGEPILOT_OAUTH_CLIENTS_FILE"]?.trim();
+  if (oauthClientsFile) {
+    config.oauthClientsFile = oauthClientsFile;
+    config.controlPlaneFile =
+      env["FORGEPILOT_CONTROL_PLANE_DB"]?.trim() || defaultControlPlanePath();
+  } else if (env["FORGEPILOT_CONTROL_PLANE_DB"]?.trim()) {
+    throw new Error(
+      "FORGEPILOT_CONTROL_PLANE_DB requires FORGEPILOT_OAUTH_CLIENTS_FILE to enable the identity surfaces",
+    );
+  }
+  const bootstrapToken = env["FORGEPILOT_BOOTSTRAP_TOKEN"];
+  if (bootstrapToken !== undefined && bootstrapToken !== "") {
+    if (bootstrapToken.length < 32) {
+      throw new Error("FORGEPILOT_BOOTSTRAP_TOKEN must be at least 32 characters");
+    }
+    config.bootstrapToken = bootstrapToken;
+  }
+  if (config.oauthClientsFile && config.bootstrapToken === undefined) {
+    // Without a bootstrap token nobody can register the first provider
+    // instance or grant the first administrator: fail closed at startup
+    // instead of shipping an unwinnable deployment.
+    throw new Error(
+      "FORGEPILOT_BOOTSTRAP_TOKEN is required when FORGEPILOT_OAUTH_CLIENTS_FILE enables the identity surfaces",
+    );
+  }
+  config.sessionTtlSeconds = positiveInt(
+    env["FORGEPILOT_SESSION_TTL_SECONDS"],
+    12 * 60 * 60,
+    "FORGEPILOT_SESSION_TTL_SECONDS",
+  );
+  config.oauthFlowTtlSeconds = positiveInt(
+    env["FORGEPILOT_OAUTH_FLOW_TTL_SECONDS"],
+    600,
+    "FORGEPILOT_OAUTH_FLOW_TTL_SECONDS",
+  );
+  config.desktopFlowTtlSeconds = positiveInt(
+    env["FORGEPILOT_DESKTOP_FLOW_TTL_SECONDS"],
+    600,
+    "FORGEPILOT_DESKTOP_FLOW_TTL_SECONDS",
+  );
   return config;
 }
 
