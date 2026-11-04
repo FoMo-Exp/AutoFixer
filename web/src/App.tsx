@@ -3,8 +3,11 @@ import type { FormEvent, ReactElement } from "react";
 import { ApiConfigurationError, ApiError, ForgePilotClient } from "./api/client";
 import type { ArtifactMetadata, RunSummary, Task, TaskEvent, TaskStatus } from "./api/client";
 import { IdentityClient } from "./api/identity";
-import type { SessionInfo } from "./api/identity";
 import { resolveApiConfig } from "./api/config";
+import type { ApiConfig } from "./api/config";
+import { useAuth } from "./auth/useAuth";
+import type { AuthApi } from "./auth/useAuth";
+import { AuthLoadingScreen, LoginScreen, NoWorkspaceScreen } from "./auth/LoginScreen";
 import { useTaskStream } from "./api/hooks";
 import { CreateIdempotencyKeys } from "./api/idempotency";
 import { RepositoryPicker } from "./settings/RepositoryPicker";
@@ -67,14 +70,111 @@ function isTaskArchived(task: Task): boolean {
   return task.archived ?? task.status === "cancelled";
 }
 
+interface WorkbenchProps {
+  config: ApiConfig;
+  auth: AuthApi;
+  identityClient: IdentityClient;
+}
+
 export default function App(): ReactElement {
-  const apiConfig = useMemo(() => resolveApiConfig(), []);
-  const client = useMemo(() => new ForgePilotClient(apiConfig), [apiConfig]);
-  const identityClient = useMemo(() => new IdentityClient(apiConfig), [apiConfig]);
-  const [session, setSession] = useState<SessionInfo>();
+  const config = useMemo(resolveApiConfig, []);
   const [inviteToken, setInviteToken] = useState<string>();
   const inviteTokenRef = useRef<string | undefined>(undefined);
-  const [showWorkspaces, setShowWorkspaces] = useState(false);
+
+  // Registered before useAuth so the fragment is captured and cleared before
+  // the auth controller's session request can observe it.
+  useEffect(() => {
+    const token = captureInviteToken(
+      window.location.hash,
+      window.history,
+      window.sessionStorage,
+      `${window.location.pathname}${window.location.search}`,
+    );
+    if (!token) return;
+    inviteTokenRef.current = token;
+    setInviteToken(token);
+  }, []);
+
+  const auth = useAuth(config);
+  const authRef = useRef(auth);
+  authRef.current = auth;
+  const identityClient = useMemo(
+    () =>
+      new IdentityClient({
+        baseUrl: config.baseUrl,
+        token: config.token,
+        ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
+        csrfToken: () => authRef.current.csrfToken(),
+        refreshCsrfToken: () => authRef.current.refreshCsrfToken(),
+        onUnauthorized: () => authRef.current.handleUnauthorized(),
+        onForbidden: (error) => authRef.current.handleForbidden(error.message),
+      }),
+    [config],
+  );
+
+  if (inviteToken) {
+    return (
+      <InviteJoin
+        client={identityClient}
+        token={inviteToken}
+        onDismiss={() => {
+          inviteTokenRef.current = undefined;
+          setInviteToken(undefined);
+          void auth.retry();
+        }}
+      />
+    );
+  }
+  if (config.startupError && auth.status !== "signed_in" && auth.status !== "legacy") {
+    return <Workbench config={config} auth={auth} identityClient={identityClient} />;
+  }
+  if (auth.status === "checking") return <AuthLoadingScreen />;
+  if (auth.status === "no_workspace") {
+    return (
+      <NoWorkspaceScreen
+        displayName={auth.session?.user.display_name}
+        onRetry={auth.retry}
+        onSignOut={auth.signOut}
+      />
+    );
+  }
+  if (
+    auth.status === "signed_out" ||
+    auth.status === "signing_in" ||
+    auth.status === "expired" ||
+    auth.status === "error"
+  ) {
+    return (
+      <LoginScreen
+        status={auth.status}
+        providers={auth.providers}
+        message={auth.message}
+        desktop={auth.desktop}
+        onSignIn={auth.signIn}
+        onCancel={auth.cancelSignIn}
+        onRetry={auth.retry}
+      />
+    );
+  }
+  return <Workbench config={config} auth={auth} identityClient={identityClient} />;
+}
+
+function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactElement {
+  const authRef = useRef(auth);
+  authRef.current = auth;
+  const client = useMemo(
+    () =>
+      new ForgePilotClient({
+        baseUrl: config.baseUrl,
+        token: config.token,
+        ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
+        csrfToken: () => authRef.current.csrfToken(),
+        refreshCsrfToken: () => authRef.current.refreshCsrfToken(),
+        onUnauthorized: () => authRef.current.handleUnauthorized(),
+        onForbidden: (error) => authRef.current.handleForbidden(error.message),
+      }),
+    [config],
+  );
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   /** 窄屏钻取视图：list ↔ detail（≤900px 生效，桌面始终双栏并存） */
@@ -98,6 +198,7 @@ export default function App(): ReactElement {
   const [filter, setFilter] = useState<"all" | TaskStatus>("all");
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showWorkspaces, setShowWorkspaces] = useState(false);
   // Bumped whenever the settings dialog closes so open pickers re-run
   // discovery against the (possibly changed) account set.
   const [settingsEpoch, setSettingsEpoch] = useState(0);
@@ -128,42 +229,6 @@ export default function App(): ReactElement {
     return () => window.clearTimeout(timeoutId);
   }, [actionError, isActionErrorHovered]);
 
-  const refreshSession = useCallback(async (): Promise<void> => {
-    try {
-      const activeSession = await identityClient.getSession();
-      setSession(activeSession);
-      // Cookie-authenticated deployments require the CSRF echo on writes. The
-      // transport only sends it when no bearer credential is configured.
-      client.setCsrfToken(activeSession.csrf_token);
-      identityClient.setCsrfToken(activeSession.csrf_token);
-    } catch {
-      // The task surface stays usable without identity: an anonymous or
-      // unconfigured deployment simply hides the administration entry.
-      setSession(undefined);
-    }
-  }, [client, identityClient]);
-
-  // Declared before every network effect: the invitation fragment is captured
-  // and cleared in the same commit that would otherwise start the session
-  // request, so no request can race the token still sitting in the URL.
-  useEffect(() => {
-    const token = captureInviteToken(
-      window.location.hash,
-      window.history,
-      window.sessionStorage,
-      `${window.location.pathname}${window.location.search}`,
-    );
-    if (!token) return;
-    inviteTokenRef.current = token;
-    setInviteToken(token);
-  }, []);
-
-  useEffect(() => {
-    // The join screen runs its own authenticated session/preview flow.
-    if (inviteTokenRef.current) return;
-    void refreshSession();
-  }, [refreshSession]);
-
   const selectTask = useCallback((task: Task | undefined): void => {
     const taskId = task?.id;
     taskDetailRequestRef.current += 1;
@@ -182,6 +247,12 @@ export default function App(): ReactElement {
     setDetailEpoch((n) => n + 1);
   }, []);
 
+  const reportRequestError = useCallback((caught: unknown): void => {
+    // 401 flips the auth gate; 403 is reported by the permission banner.
+    if (caught instanceof ApiError && (caught.status === 401 || caught.status === 403)) return;
+    setActionError(errorMessage(caught));
+  }, []);
+
   const loadTasks = useCallback(
     async (showConnecting = false): Promise<void> => {
       const requestId = ++listRequestRef.current;
@@ -195,6 +266,12 @@ export default function App(): ReactElement {
         setServiceError(undefined);
       } catch (caught) {
         if (requestId !== listRequestRef.current) return;
+        if (caught instanceof ApiError && caught.status === 401) return;
+        if (caught instanceof ApiError && caught.status === 403) {
+          setServiceStatus("connected");
+          setServiceError(undefined);
+          return;
+        }
         setServiceStatus("offline");
         setServiceError(errorMessage(caught));
       }
@@ -216,11 +293,11 @@ export default function App(): ReactElement {
       });
       setNextCursor(page.next_cursor);
     } catch (caught) {
-      if (listRequestId === listRequestRef.current) setActionError(errorMessage(caught));
+      if (listRequestId === listRequestRef.current) reportRequestError(caught);
     } finally {
       setIsLoadingMore(false);
     }
-  }, [client, isLoadingMore, nextCursor]);
+  }, [client, isLoadingMore, nextCursor, reportRequestError]);
 
   useEffect(() => {
     void loadTasks(true);
@@ -247,9 +324,9 @@ export default function App(): ReactElement {
       if (selectedIdRef.current !== requestedId || taskDetailRequestRef.current !== requestId) {
         return;
       }
-      setActionError(errorMessage(caught));
+      reportRequestError(caught);
     }
-  }, [client]);
+  }, [client, reportRequestError]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -314,7 +391,7 @@ export default function App(): ReactElement {
         setSelectedTask(cancelled);
       }
     } catch (caught) {
-      setActionError(errorMessage(caught));
+      reportRequestError(caught);
     } finally {
       setCancellingTaskId(undefined);
     }
@@ -335,7 +412,7 @@ export default function App(): ReactElement {
         setSelectedTask(recovered);
       }
     } catch (caught) {
-      setActionError(errorMessage(caught));
+      reportRequestError(caught);
     } finally {
       setCancellingTaskId(undefined);
     }
@@ -375,7 +452,7 @@ export default function App(): ReactElement {
       setForm(INITIAL_FORM);
       await loadTasks();
     } catch (caught) {
-      setActionError(errorMessage(caught));
+      reportRequestError(caught);
     } finally {
       setIsCreating(false);
     }
@@ -404,23 +481,10 @@ export default function App(): ReactElement {
       }
       setTasks((current) => current.map((entry) => (entry.id === task.id ? task : entry)));
     } catch (caught) {
-      if (selectedIdRef.current === taskId) setActionError(errorMessage(caught));
+      if (selectedIdRef.current === taskId) reportRequestError(caught);
     } finally {
       if (selectedIdRef.current === taskId) setActionBusy(undefined);
     }
-  }
-
-  if (inviteToken) {
-    return (
-      <InviteJoin
-        client={identityClient}
-        token={inviteToken}
-        onDismiss={() => {
-          setInviteToken(undefined);
-          void refreshSession();
-        }}
-      />
-    );
   }
 
   return (
@@ -440,6 +504,19 @@ export default function App(): ReactElement {
           </div>
         </div>
         <div className="topbar-actions">
+          {auth.session && (
+            <div className="account-chip">
+              <span className="account-name" title={auth.session.user.display_name}>
+                {auth.session.user.display_name}
+              </span>
+              <button
+                className="button button-quiet button-small"
+                onClick={() => void auth.signOut()}
+              >
+                Sign out
+              </button>
+            </div>
+          )}
           <ServiceBadge status={serviceStatus} />
           <button
             className="button button-quiet button-small"
@@ -484,30 +561,31 @@ export default function App(): ReactElement {
             </svg>
             <span className="action-label">Settings</span>
           </button>
-          {session && (session.memberships.length > 0 || session.enterprise_roles.length > 0) && (
-            <button
-              className="button button-quiet button-small"
-              onClick={() => setShowWorkspaces(true)}
-              aria-label="Open workspace administration"
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
+          {auth.session &&
+            (auth.session.memberships.length > 0 || auth.session.enterprise_roles.length > 0) && (
+              <button
+                className="button button-quiet button-small"
+                onClick={() => setShowWorkspaces(true)}
+                aria-label="Open workspace administration"
               >
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                <circle cx="9" cy="7" r="4" />
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
-              </svg>
-              <span className="action-label">Workspaces</span>
-            </button>
-          )}
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                  <circle cx="9" cy="7" r="4" />
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+                </svg>
+                <span className="action-label">Workspaces</span>
+              </button>
+            )}
           <button
             className="button button-primary button-small"
             onClick={() => setShowCreate(true)}
@@ -592,6 +670,18 @@ export default function App(): ReactElement {
         </aside>
 
         <main className="main-panel">
+          {auth.notice && (
+            <div className="connection-banner permission-banner" role="alert">
+              <span className="banner-dot" />
+              <div>
+                <strong>Permission denied</strong>
+                <span>{auth.notice}</span>
+              </div>
+              <button className="button button-quiet button-small" onClick={auth.dismissNotice}>
+                Dismiss
+              </button>
+            </div>
+          )}
           {serviceStatus === "offline" && (
             <div className="connection-banner" role="alert">
               <span className="banner-dot" />
@@ -680,13 +770,13 @@ export default function App(): ReactElement {
           }}
         />
       )}
-      {showWorkspaces && session && (
+      {showWorkspaces && auth.session && (
         <WorkspaceAdminDialog
           client={identityClient}
-          session={session}
+          session={auth.session}
           onClose={() => {
             setShowWorkspaces(false);
-            void refreshSession();
+            void auth.retry();
           }}
         />
       )}

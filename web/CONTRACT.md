@@ -1,27 +1,41 @@
 ## Node-to-UI contract checklist
 
 The workbench uses `src/api/contracts/openapi.json` and its generated
-`schema.d.ts` as the only API source. The current contract baseline is `main`
-at `7f85830533aeebf8552451428f86cb5cb1d0d8c7` (DAT-205 #38, OpenAPI `0.7.0`),
-which adds the enterprise identity and workspace/team/member/invitation
-surface (DAT-202 `0bf66c2`, DAT-205) on top of the DAT-193 baseline
-`5828f92ca6fbff0b462d05896e689b9aad66362f` (OpenAPI `0.5.0`, merge-base
-`af2ac8e`, containing DAT-191 #18 `705b4a0`, DAT-192 #19 `af2ac8e`, and the
-DAT-188 M3 baseline `8734984`). No UI fixture invents a field outside this
+`schema.d.ts` as the only API source. The identity/workspace surface targets the
+DAT-205 contract `7f85830533aeebf8552451428f86cb5cb1d0d8c7` (OpenAPI `0.7.0`),
+carried forward on `main` at `ff51ebf` (OpenAPI `0.9.0`, DAT-241/DAT-244
+workspace scoping) on top of the DAT-202 auth baseline
+`0bf66c2b4382d78577c5e23c158907579f8c228d` (OpenAPI `0.6.0`) and the DAT-193
+`0.5.0` baseline `5828f92`. No UI fixture invents a field outside this
 baseline.
 
-| Endpoint                                              | Request fields                                                                                                         | Response type                  | Status |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ------ |
-| `POST /api/v1/tasks`                                  | `repository_id`, `base_ref`, `summary`, optional `source_reference`, `acceptance_criteria[]`; `Idempotency-Key` header | `Task`                         | ✅     |
-| `GET /api/v1/tasks?cursor=&status=`                   | optional `cursor`, `status`                                                                                            | `{items: Task[], next_cursor}` | ✅     |
-| `GET /api/v1/tasks/{task_id}`                         | `task_id` path                                                                                                         | `Task`                         | ✅     |
-| `GET /api/v1/tasks/{task_id}/runs`                    | `task_id` path                                                                                                         | `{items: RunSummary[]}`        | ✅     |
-| `POST /api/v1/tasks/{task_id}/messages`               | `mode`, `content`                                                                                                      | `{task_id, queued}`            | ✅     |
-| `POST /api/v1/tasks/{task_id}/approvals`              | `decision`, `scope_digest`                                                                                             | `Task`                         | ✅     |
-| `POST /api/v1/tasks/{task_id}/cancel`                 | optional `reason`                                                                                                      | `Task`                         | ✅     |
-| `GET /api/v1/tasks/{task_id}/timeline`                | `task_id` path                                                                                                         | `{items: TaskEvent[]}`         | ✅     |
-| `GET /api/v1/tasks/{task_id}/artifacts/{artifact_id}` | `task_id`, `artifact_id` path                                                                                          | redacted artifact object       | ✅     |
-| `GET /api/v1/tasks/{task_id}/stream`                  | `task_id` path; optional `Last-Event-ID` header                                                                        | SSE `TaskEvent` envelopes      | ✅     |
+| Endpoint                                              | Request fields                                                                                                         | Response type                   | Status |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------- | ------ |
+| `POST /api/v1/tasks`                                  | `repository_id`, `base_ref`, `summary`, optional `source_reference`, `acceptance_criteria[]`; `Idempotency-Key` header | `Task`                          | ✅     |
+| `GET /api/v1/tasks?cursor=&status=`                   | optional `cursor`, `status`                                                                                            | `{items: Task[], next_cursor}`  | ✅     |
+| `GET /api/v1/tasks/{task_id}`                         | `task_id` path                                                                                                         | `Task`                          | ✅     |
+| `GET /api/v1/tasks/{task_id}/runs`                    | `task_id` path                                                                                                         | `{items: RunSummary[]}`         | ✅     |
+| `POST /api/v1/tasks/{task_id}/messages`               | `mode`, `content`                                                                                                      | `{task_id, queued}`             | ✅     |
+| `POST /api/v1/tasks/{task_id}/approvals`              | `decision`, `scope_digest`                                                                                             | `Task`                          | ✅     |
+| `POST /api/v1/tasks/{task_id}/cancel`                 | optional `reason`                                                                                                      | `Task`                          | ✅     |
+| `GET /api/v1/tasks/{task_id}/timeline`                | `task_id` path                                                                                                         | `{items: TaskEvent[]}`          | ✅     |
+| `GET /api/v1/tasks/{task_id}/artifacts/{artifact_id}` | `task_id`, `artifact_id` path                                                                                          | redacted artifact object        | ✅     |
+| `GET /api/v1/tasks/{task_id}/stream`                  | `task_id` path; optional `Last-Event-ID` header                                                                        | SSE `TaskEvent` envelopes       | ✅     |
+| `GET /api/v1/auth/providers`                          | none                                                                                                                   | `{items: LoginProvider[]}`      | ✅     |
+| `GET /api/v1/auth/login`                              | `provider_instance_id`, optional `return_to`, `desktop_flow`                                                           | 302 + `fp_oauth_binding` cookie | ✅     |
+| `GET /api/v1/auth/callback`                           | `code`, `state`                                                                                                        | 302 + HttpOnly `fp_session`     | ✅     |
+| `GET /api/v1/auth/session`                            | session cookie or bearer                                                                                               | `SessionInfo`                   | ✅     |
+| `POST /api/v1/auth/logout`                            | `X-CSRF-Token` for cookie sessions                                                                                     | 204                             | ✅     |
+| `POST /api/v1/auth/desktop/flows`                     | optional `provider_instance_id`                                                                                        | `DesktopFlow`                   | ✅     |
+| `POST /api/v1/auth/desktop/flows/{flow_id}/exchange`  | `secret`                                                                                                               | session grant                   | ✅     |
+
+Workspace switching is not implementable on this baseline: the task endpoints
+carry no workspace selector (path, query, or header), and `GET /api/v1/auth/session`
+memberships are not a task scope. Node resolves task authority against its
+single configured workspace (`node/src/api/auth-service.ts`, `workspaceRole`),
+so the UI must not present a switch that only changes a label. DAT-206 covers
+the auth/session client; a real switcher depends on a workspace-scoped task
+contract plus server enforcement.
 
 ### Workspace, member, team, and invitation surface
 

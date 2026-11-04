@@ -198,6 +198,15 @@ reading that file. Additionally:
   and request bodies must be `application/json`, so a cross-site page cannot
   ride a simple `text/plain` request.
 
+Session-authenticated callers resolve their enterprise/workspace/role scope
+through the server-authoritative helper `resolveRequestScope`
+(`node/src/control-plane/request-scope.ts`, DAT-241). The scope is derived
+from the caller's live membership on every call — never from
+client-provided enterprise/workspace IDs — and missing, revoked, ambiguous,
+or cross-tenant memberships fail closed with stable 401/403 codes. Request
+paths that need a scope (gateway, orchestrator, later projects) must use
+this helper instead of re-deriving scope from request input.
+
 ## Declared work and risk
 
 Node never classifies risk. The `forgepilot-api/v1` create body carries no

@@ -13,10 +13,12 @@ export {
   ConflictError,
   ControlPlaneError,
   NotFoundError,
+  RequestScopeError,
   ScopeError,
   ValidationError,
   VersionConflictError,
 } from "./errors.js";
+export type { RequestScopeErrorCode } from "./errors.js";
 
 export type {
   ControlPlaneRepositories,
@@ -27,6 +29,14 @@ export type {
   WorkspaceRepository,
 } from "./repositories.js";
 export { createRepositories } from "./repositories.js";
+
+export type {
+  AuthenticatedPrincipal,
+  RequestScopeDeps,
+  ResolvedRequestScope,
+  SessionContextLike,
+} from "./request-scope.js";
+export { principalFromSession, resolveRequestScope } from "./request-scope.js";
 
 export type {
   CreateEnterpriseInput,
@@ -101,3 +111,40 @@ export type {
   UserRepository,
 } from "./identity-repositories.js";
 export { createIdentityRepositories, hashToken, secretEquals } from "./identity-repositories.js";
+
+export type {
+  CapabilityGrantRepository,
+  ProviderAccessRepositories,
+  ProviderEventRepository,
+  ProviderRosterRepository,
+  ReconcileRunRepository,
+  ServiceIntegrationRepository,
+} from "./provider-access-repositories.js";
+export { createProviderAccessRepositories } from "./provider-access-repositories.js";
+
+export type {
+  AppendProviderEventInput,
+  AuthorityState,
+  CapabilityGrant,
+  CapabilityKind,
+  CreateCapabilityGrantInput,
+  CreateServiceIntegrationInput,
+  FinishReconcileRunInput,
+  InstallStatus,
+  NormalizedRoleRow,
+  PermissionVisibility,
+  ProviderEvent,
+  ProviderEventType,
+  ProviderMemberRole,
+  ProviderRoleSourceKind,
+  ReconcileRun,
+  ReconcileRunStatus,
+  RenameIntegrationInput,
+  ReplaceRosterInput,
+  ServiceIntegration,
+  ServiceIntegrationId,
+  SetInstallStatusInput,
+  StartReconcileRunInput,
+  SubjectAuthority,
+  TransferIntegrationInput,
+} from "./provider-access-types.js";
