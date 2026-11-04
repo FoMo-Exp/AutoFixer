@@ -1,4 +1,5 @@
 import type { DshState } from "../dsh/types.js";
+import type { ApprovalInvalidationReason } from "./contract.js";
 import type { ProductState } from "./states.js";
 
 /**
@@ -216,6 +217,84 @@ export interface HandoffRecord {
   created_at: string;
 }
 
+/**
+ * Digest and shape of the exact diff a pre-PR approver reviews (ADR-0007).
+ * `digest` is the sha256 of the retained diff content, so an independent
+ * reader can recompute it from the retained artifact rather than trusting the
+ * record.
+ */
+export interface CandidateDiff {
+  digest_algorithm: string;
+  digest: string;
+  changed_paths: string[];
+  insertions: number;
+  deletions: number;
+}
+
+/** One validation attempt against the exact candidate revision. */
+export interface CandidateValidationResult {
+  tool: string;
+  exit_status: number | null;
+  output_digest: { algorithm: string; value: string } | null;
+  event_reference: string;
+}
+
+/** The test evidence an approval is bound to. */
+export interface CandidateValidation {
+  config_digest: string;
+  environment: string;
+  results: CandidateValidationResult[];
+}
+
+/** Risk classes of the pre-approval assessment (FP-01). */
+export const RISK_CLASSES = ["low", "elevated", "prohibited"] as const;
+
+export type RiskClass = (typeof RISK_CLASSES)[number];
+
+/** The pre-approval risk decision for the candidate's work. */
+export interface ChangeRisk {
+  class: RiskClass;
+  decision_code: string;
+  requires_human_approval: boolean;
+}
+
+/**
+ * An immutable frozen candidate (DAT-219, ADR-0007).
+ *
+ * A candidate is produced by the service when local preparation stops: the
+ * preparation run's grant is revoked while the candidate is preserved outside
+ * the ephemeral worktree, so it stays reviewable and deliverable after cleanup.
+ * Nothing is added or edited after validation; the diff content is retained by
+ * digest in the candidate content store, and `diff.digest` is the sha256 over
+ * that retained content.
+ *
+ * Invalidation is the only later recorded fact: base advancement, test-evidence
+ * change, or a policy/authority change marks the candidate permanently invalid,
+ * and an approval bound to it can never be reused for another revision.
+ */
+export interface CandidateRecord {
+  candidate_id: string;
+  issue_id: string;
+  /** The stopped preparation run that produced the candidate. */
+  run_id: string;
+  workspace: WorkspaceScope;
+  repository: RepositoryRef;
+  base_sha: string;
+  head_sha: string;
+  tree_sha: string;
+  diff: CandidateDiff;
+  summary: string;
+  validation: CandidateValidation;
+  risk: ChangeRisk;
+  /** Patch, report, and evidence-bundle references retained after cleanup. */
+  artifacts: ArtifactRef[];
+  /** References into the append-only audit/evidence records. */
+  audit_refs: string[];
+  created_at: string;
+  invalidated_at: string | null;
+  invalidated_reason: ApprovalInvalidationReason | null;
+}
+
 /** Human disposition reference for the stopped -> approved (new grant) path. */
 export interface Disposition {
   actor: string;
@@ -227,6 +306,7 @@ export interface CollabState {
   issues: Map<string, IssueRecord>;
   tasks: Map<string, TaskRecord>;
   runs: Map<string, RunRecord>;
+  candidates: Map<string, CandidateRecord>;
   handoffs: HandoffRecord[];
   /** Signal fingerprint -> issue id; replays reuse the issue instead of a new one. */
   dedupe: Map<string, string>;
@@ -241,6 +321,7 @@ export function emptyCollabState(): CollabState {
     issues: new Map(),
     tasks: new Map(),
     runs: new Map(),
+    candidates: new Map(),
     handoffs: [],
     dedupe: new Map(),
     attempts: new Map(),

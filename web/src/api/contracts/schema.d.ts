@@ -1797,6 +1797,16 @@ export interface components {
             audit_refs: string[];
             /** Format: date-time */
             created_at: string;
+            /**
+             * Format: date-time
+             * @description When the candidate stopped being valid for delivery (base advancement, test-evidence, target, policy, or authority change). An invalidated candidate never authorizes delivery; a new revision needs a new run and a new candidate. Absent on records that predate this field and never invalidated.
+             */
+            invalidated_at?: string | null;
+            /**
+             * @description Why the candidate was invalidated; always paired with `invalidated_at`.
+             * @enum {string|null}
+             */
+            invalidated_reason?: "content_changed" | "test_evidence_changed" | "base_advanced" | "target_changed" | "policy_changed" | "authority_changed" | null;
         };
         /** @description Everything one approval is bound to (ADR-0007). Content, required test evidence, base advancement, target, approval policy, expiry, or relevant authority changes invalidate the approval; refresh/rebase and rerun tests, then request a new card. Never rebase after approval and push under the old one. */
         ApprovalBinding: {

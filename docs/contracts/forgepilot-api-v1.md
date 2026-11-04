@@ -753,7 +753,9 @@ bearer token.
 
 ## Collaboration v1 (DAT-221)
 
-Status: implementation contract defined ahead of its serving code. It defines
+Status: implementation contract whose durable issue/task/run/approval/delivery
+serving code is still landing; the immutable-candidate freeze and review-card
+reads below are implemented in the collaboration domain (DAT-219). It defines
 the durable issue/task/run/candidate/approval/delivery resources and their
 event stream of ADR-0007 so dependent web work is built against a merged
 contract; it claims no running control until the implementation lands, and dsh
@@ -802,6 +804,30 @@ direct main write, merge, self-review, or check waiver.
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}` | none | `200 Delivery` |
 | `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}/reconcile` | optional `note` | `202 Delivery` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stream` | `Last-Event-ID` optional | `200 text/event-stream` |
+
+### Candidate freeze and review card (DAT-219)
+
+A candidate is frozen by the service when local preparation stops; it is never
+client-authored or client-mutated. The record binds the exact base, candidate
+commit, and tree identity, the sha256 diff digest and changed paths, the
+validation configuration/environment and every validation attempt, the risk
+decision, and patch/report provenance references. The diff content is retained
+in a content-addressed store outside the ephemeral worktree, so the card and its
+evidence stay reviewable after cleanup; `diff.digest` is the sha256 of that
+retained content and can be recomputed independently instead of trusted.
+
+`Candidate` carries optional `invalidated_at`/`invalidated_reason`. When the
+issue base advances, every candidate frozen against an older base is
+permanently invalid (`base_advanced`) and can never be approved or delivered:
+refreshing a base requires a new run, new validation, and a new candidate. A
+frozen candidate has no branch or PR — no provider write exists before a
+current, candidate-bound human approval.
+
+The reviewer notification carries bounded metadata (summary, changed-path
+count, line counts, test totals, risk class) and an authenticated client link
+to the card. It never contains diff text, changed path names, tool output,
+digests, or a bearer/approval credential; the link selects a candidate and
+approval remains a confirmed authenticated mutation in the client.
 
 ### Issue events and replay
 

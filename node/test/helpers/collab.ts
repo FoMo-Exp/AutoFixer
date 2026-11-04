@@ -1,11 +1,13 @@
+import { diffDigest } from "../../src/collab/candidate-store.js";
 import { CollabMachine } from "../../src/collab/machine.js";
 import type {
   ArtifactInput,
   CreateIssueInput,
+  FreezeCandidateInput,
   GrantInput,
   OpenRunInput,
 } from "../../src/collab/machine.js";
-import type { IssueRecord, LeaseRecord, RunRecord } from "../../src/collab/types.js";
+import type { ArtifactRef, IssueRecord, LeaseRecord, RunRecord } from "../../src/collab/types.js";
 
 /** Controllable clock so lease/grant expiry is deterministic in tests. */
 export class Clock {
@@ -132,6 +134,173 @@ export function grantInput(overrides: Partial<GrantInput> = {}): GrantInput {
     may_create_patch: true,
     may_create_or_update_pr: false,
     scope_digest: "sha256:scope-1",
+    ...overrides,
+  };
+}
+
+/** The exact diff content one frozen candidate retains. */
+export const CANDIDATE_DIFF = [
+  "diff --git a/src/retry.ts b/src/retry.ts",
+  "--- a/src/retry.ts",
+  "+++ b/src/retry.ts",
+  "@@ -10,4 +10,6 @@ export function retryHeader(value: string | null): string {",
+  "-  return value.trim();",
+  "+  if (value === null) {",
+  '+    return "";',
+  "+  }",
+  "+  return value.trim();",
+  "",
+].join("\n");
+
+export const CANDIDATE_HEAD = "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00";
+export const CANDIDATE_TREE = "d4e5f60718293a4b5c6d7e8f9012345678a1b2c3";
+
+export interface PreparationContext {
+  issue: IssueRecord;
+  run: RunRecord;
+  lease: { holder: string; fencing_token: number };
+  artifacts: ArtifactRef[];
+  head_sha: string;
+  tree_sha: string;
+  diff_content: string;
+  diff_digest: string;
+}
+
+/**
+ * Drive one implementation run to a stopped preparation run that preserves
+ * candidate, patch, and report artifacts, then move the issue into
+ * `implementing` so a candidate may freeze.
+ */
+export function stoppedPreparation(
+  machine: CollabMachine,
+  issueId: string,
+  overrides: { worktreePath?: string } = {},
+): PreparationContext {
+  const run = openRun(machine, issueId, {
+    worktree: {
+      worktree_id: "wt_candidate",
+      path: overrides.worktreePath ?? "/tmp/worktrees/wt_candidate",
+    },
+  });
+  const lease = leaseRef(acquireLease(machine, run.run_id));
+  machine.recordRunState({
+    operation_id: op(),
+    actor: "worker:a",
+    run_id: run.run_id,
+    lease,
+    to: "approved",
+  });
+  machine.recordRunState({
+    operation_id: op(),
+    actor: "worker:a",
+    run_id: run.run_id,
+    lease,
+    to: "running",
+  });
+  machine.recordGrant({
+    operation_id: op(),
+    actor: "worker:a",
+    run_id: run.run_id,
+    lease,
+    grant: grantInput(),
+  });
+  const digest = diffDigest(CANDIDATE_DIFF);
+  const artifacts = [
+    machine.attachArtifact({
+      operation_id: op(),
+      actor: "worker:a",
+      run_id: run.run_id,
+      lease,
+      artifact: artifactInput({ kind: "candidate", digest, head_sha: CANDIDATE_HEAD }),
+    }),
+    machine.attachArtifact({
+      operation_id: op(),
+      actor: "worker:a",
+      run_id: run.run_id,
+      lease,
+      artifact: artifactInput({ kind: "patch", digest, head_sha: CANDIDATE_HEAD }),
+    }),
+    machine.attachArtifact({
+      operation_id: op(),
+      actor: "worker:a",
+      run_id: run.run_id,
+      lease,
+      artifact: artifactInput({
+        kind: "report",
+        digest: OTHER_DIGEST,
+        head_sha: CANDIDATE_HEAD,
+      }),
+    }),
+  ];
+  machine.recordRunState({
+    operation_id: op(),
+    actor: "worker:a",
+    run_id: run.run_id,
+    lease,
+    to: "stopped",
+    stop_reason: "local preparation complete; validation evidence recorded",
+    head_sha: CANDIDATE_HEAD,
+  });
+  machine.transitionIssue({
+    operation_id: op(),
+    actor: "human:operator",
+    issue_id: issueId,
+    to: "implementing",
+    reason: null,
+  });
+  return {
+    issue: machine.getIssue(issueId) as IssueRecord,
+    run: machine.getRun(run.run_id) as RunRecord,
+    lease,
+    artifacts,
+    head_sha: CANDIDATE_HEAD,
+    tree_sha: CANDIDATE_TREE,
+    diff_content: CANDIDATE_DIFF,
+    diff_digest: digest,
+  };
+}
+
+/** A well-formed freeze command for a stopped preparation run. */
+export function freezeCandidateInput(
+  context: PreparationContext,
+  overrides: Partial<FreezeCandidateInput> = {},
+): FreezeCandidateInput {
+  return {
+    operation_id: op(),
+    actor: "worker:a",
+    issue_id: context.issue.issue_id,
+    run_id: context.run.run_id,
+    summary: "Guard the retry header against null and add a regression test.",
+    base_sha: REPOSITORY.base_sha,
+    head_sha: context.head_sha,
+    tree_sha: context.tree_sha,
+    diff: {
+      digest_algorithm: "sha256",
+      digest: context.diff_digest,
+      changed_paths: ["src/retry.ts", "test/retry.test.ts"],
+      insertions: 6,
+      deletions: 1,
+    },
+    diff_content: context.diff_content,
+    validation: {
+      config_digest: `sha256:${OTHER_DIGEST}`,
+      environment: "node20-linux-x64-isolated",
+      results: [
+        {
+          tool: "npm test -- retry",
+          exit_status: 0,
+          output_digest: { algorithm: "sha256", value: DIGEST },
+          event_reference: "evidence://events/run_candidate/7",
+        },
+      ],
+    },
+    risk: {
+      class: "low",
+      decision_code: "risk_low_approved",
+      requires_human_approval: false,
+    },
+    artifact_ids: context.artifacts.map((artifact) => artifact.artifact_id),
+    audit_refs: ["evidence://events/run_candidate/7", "evidence://artifacts/run_candidate/patch"],
     ...overrides,
   };
 }

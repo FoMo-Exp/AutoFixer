@@ -4,12 +4,29 @@ import path from "node:path";
 
 import type { AuditCommand, AuditRecord } from "./audit.js";
 import { auditChainProblem, auditDigest, digestOf } from "./audit.js";
+import type { CandidateFreshness } from "./candidate.js";
+import { candidateFreshness as freshnessOf } from "./candidate.js";
+import { diffDigest } from "./candidate-store.js";
+import type { CandidateContentStore } from "./candidate-store.js";
+import type { ApprovalInvalidationReason } from "./contract.js";
 import { CollabError } from "./errors.js";
 import { HANDLERS } from "./handlers.js";
-import { newArtifactId, newGrantId, newHandoffId, newIssueId, newRunId, newTaskId } from "./ids.js";
+import {
+  newArtifactId,
+  newCandidateId,
+  newGrantId,
+  newHandoffId,
+  newIssueId,
+  newRunId,
+  newTaskId,
+} from "./ids.js";
 import type {
   ArtifactRef,
+  CandidateDiff,
+  CandidateRecord,
+  CandidateValidation,
   CapabilityGrant,
+  ChangeRisk,
   CollabState,
   Disposition,
   GrantTool,
@@ -176,9 +193,53 @@ export type RequestRunRestartInput = CommandBase & {
   trigger: "queue_retry" | "model_message";
 };
 
+/**
+ * Freeze one immutable candidate (DAT-219, ADR-0007).
+ *
+ * `diff_content` is the exact reviewable diff. The machine verifies it against
+ * `diff.digest`, retains it in the candidate content store (outside the
+ * ephemeral worktree), and records only the digest in the audited payload — the
+ * append-only log never carries patch text or tool output.
+ */
+export type FreezeCandidateInput = CommandBase & {
+  issue_id: string;
+  run_id: string;
+  summary: string;
+  base_sha: string;
+  head_sha: string;
+  tree_sha: string;
+  diff: CandidateDiff;
+  diff_content: string;
+  validation: CandidateValidation;
+  risk: ChangeRisk;
+  artifact_ids: string[];
+  audit_refs: string[];
+};
+
+export type InvalidateCandidateInput = CommandBase & {
+  candidate_id: string;
+  reason: ApprovalInvalidationReason;
+};
+
+export type RecordBaseAdvanceInput = CommandBase & {
+  issue_id: string;
+  base_sha: string;
+  base_ref?: string | null;
+};
+
+export interface BaseAdvanceResult {
+  issue: IssueRecord;
+  invalidated_candidate_ids: string[];
+}
+
 export interface CollabMachineOptions {
   /** Durable audit log location. Omit for a process-local machine in tests. */
   persistencePath?: string;
+  /**
+   * Retention boundary for frozen candidate content. Required by
+   * `freezeCandidate`; a candidate cannot exist without its verifiable diff.
+   */
+  candidateStore?: CandidateContentStore;
   /** Clock seam; captured per command as the audited effective time. */
   now?: () => Date;
 }
@@ -192,10 +253,12 @@ export class CollabMachine {
   private readonly state: CollabState = emptyCollabState();
   private readonly audit: AuditRecord[] = [];
   private readonly persistencePath: string | undefined;
+  private readonly candidateStore: CandidateContentStore | undefined;
   private readonly clock: () => Date;
 
   constructor(options: CollabMachineOptions = {}) {
     this.persistencePath = options.persistencePath;
+    this.candidateStore = options.candidateStore;
     this.clock = options.now ?? (() => new Date());
     if (this.persistencePath !== undefined && fs.existsSync(this.persistencePath)) {
       const raw = JSON.parse(fs.readFileSync(this.persistencePath, "utf8")) as unknown;
@@ -294,6 +357,64 @@ export class CollabMachine {
     return this.execute("attach_artifact", input, payload) as ArtifactRef;
   }
 
+  /**
+   * Freeze one immutable candidate from a stopped preparation run.
+   *
+   * The declared digest is recomputed from the exact content and the content is
+   * retained before the record is written, so a recorded candidate always has a
+   * verifiable diff. Freezing performs no provider write: no branch, no push, no
+   * PR — delivery is a separate, approval-bound operation.
+   */
+  freezeCandidate(input: FreezeCandidateInput): CandidateRecord {
+    if (this.candidateStore === undefined) {
+      throw new CollabError(
+        "CANDIDATE_INVALID",
+        "a candidate content store is required to retain the frozen diff",
+        {},
+      );
+    }
+    const computed = diffDigest(input.diff_content);
+    if (computed !== input.diff.digest) {
+      throw new CollabError(
+        "CANDIDATE_INVALID",
+        "diff content does not match the declared diff digest",
+        { declared: input.diff.digest, computed },
+      );
+    }
+    const run = this.state.runs.get(input.run_id);
+    if (run !== undefined) {
+      this.candidateStore.assertOutsideWorktree(run.worktree.path);
+    }
+    this.candidateStore.put(input.diff_content);
+    const { diff_content: _diffContent, ...rest } = input;
+    const payload: Payload = {
+      ...rest,
+      at: this.clock().toISOString(),
+      candidate_id: newCandidateId(),
+    };
+    return this.execute("freeze_candidate", input, payload) as CandidateRecord;
+  }
+
+  /** Permanently mark a candidate invalid; a later revision is a new candidate. */
+  invalidateCandidate(input: InvalidateCandidateInput): CandidateRecord {
+    const payload: Payload = { ...input, at: this.clock().toISOString() };
+    return this.execute("invalidate_candidate", input, payload) as CandidateRecord;
+  }
+
+  /**
+   * Record that the issue's base revision advanced. Every candidate frozen
+   * against an older base becomes permanently invalid, so a previously granted
+   * approval can never be used to deliver a rewritten tree.
+   */
+  recordBaseAdvance(input: RecordBaseAdvanceInput): BaseAdvanceResult {
+    const payload: Payload = {
+      ...input,
+      base_ref: input.base_ref ?? null,
+      at: this.clock().toISOString(),
+    };
+    return this.execute("record_base_advance", input, payload) as BaseAdvanceResult;
+  }
+
   transitionIssue(input: TransitionIssueInput): IssueRecord {
     const payload: Payload = {
       ...input,
@@ -339,6 +460,35 @@ export class CollabMachine {
   getRun(runId: string): RunRecord | undefined {
     const run = this.state.runs.get(runId);
     return run ? structuredClone(run) : undefined;
+  }
+
+  getCandidate(candidateId: string): CandidateRecord | undefined {
+    const candidate = this.state.candidates.get(candidateId);
+    return candidate ? structuredClone(candidate) : undefined;
+  }
+
+  /** Frozen candidates in freeze order (oldest first). */
+  listCandidates(issueId: string): CandidateRecord[] {
+    return [...this.state.candidates.values()]
+      .filter((candidate) => candidate.issue_id === issueId)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .map((candidate) => structuredClone(candidate));
+  }
+
+  /**
+   * Whether one candidate may still authorize delivery. `observedBaseSha` is
+   * the repository base the caller just observed; when it differs from the
+   * frozen base the candidate is stale even if no base advance was recorded
+   * locally.
+   */
+  candidateFreshness(candidateId: string, observedBaseSha?: string): CandidateFreshness {
+    const candidate = this.state.candidates.get(candidateId);
+    if (!candidate) {
+      throw new CollabError("CANDIDATE_NOT_FOUND", "unknown candidate", {
+        candidate_id: candidateId,
+      });
+    }
+    return freshnessOf(candidate, observedBaseSha);
   }
 
   listIssues(): IssueRecord[] {
@@ -401,6 +551,9 @@ export class CollabMachine {
       issues: [...this.state.issues.values()].sort((a, b) => a.issue_id.localeCompare(b.issue_id)),
       tasks: [...this.state.tasks.values()].sort((a, b) => a.task_id.localeCompare(b.task_id)),
       runs: [...this.state.runs.values()].sort((a, b) => a.run_id.localeCompare(b.run_id)),
+      candidates: [...this.state.candidates.values()].sort((a, b) =>
+        a.candidate_id.localeCompare(b.candidate_id),
+      ),
       handoffs: this.state.handoffs,
       dedupe: [...this.state.dedupe.entries()].sort(),
       attempts: [...this.state.attempts.entries()].sort(),

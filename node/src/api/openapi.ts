@@ -1462,6 +1462,21 @@ const candidateSchema: JsonObject = {
       description: "References into the append-only audit/evidence records backing the candidate.",
     },
     created_at: { type: "string", format: "date-time" },
+    invalidated_at: {
+      type: ["string", "null"],
+      format: "date-time",
+      description:
+        "When the candidate stopped being valid for delivery (base advancement, " +
+        "test-evidence, target, policy, or authority change). An invalidated " +
+        "candidate never authorizes delivery; a new revision needs a new run and " +
+        "a new candidate. Absent on records that predate this field and never " +
+        "invalidated.",
+    },
+    invalidated_reason: {
+      type: ["string", "null"],
+      enum: [...APPROVAL_INVALIDATION_REASONS, null],
+      description: "Why the candidate was invalidated; always paired with `invalidated_at`.",
+    },
   },
 };
 
