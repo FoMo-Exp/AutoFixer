@@ -56,6 +56,14 @@ export type SecurityAction =
   | "rule.review"
   | "rule.activate"
   | "rule.rollback"
+  /**
+   * Audit-trail access (DAT-213, ADR-0005 §6): reads are restricted to the
+   * principals who already see security evidence, and exports — which leave
+   * the service — are enterprise-security-administrator work. Every read and
+   * export is itself audited.
+   */
+  | "audit.read"
+  | "audit.export"
   | "role.grant"
   | "endpoint.configure";
 
@@ -100,6 +108,11 @@ export const SECURITY_DUTY_MATRIX: Record<SecurityAction, readonly SecurityDuty[
   "recovery.approve": ["independent_reviewer"],
   "recovery.revoke": ["independent_reviewer", "enterprise_security_admin"],
   "recovery.reconcile": ["security_handler", "enterprise_security_admin"],
+  // Audit access (DAT-213): handlers and reviewers may read the security
+  // trail for their scope; only the enterprise security administrator may
+  // export it out of the service. Neither action grants any other capability.
+  "audit.read": ["security_handler", "independent_reviewer", "enterprise_security_admin"],
+  "audit.export": ["enterprise_security_admin"],
   "role.grant": ["enterprise_security_admin"],
   "endpoint.configure": ["enterprise_security_admin"],
 };

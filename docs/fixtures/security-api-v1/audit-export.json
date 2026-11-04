@@ -1,0 +1,78 @@
+{
+  "exported_at": "2026-11-04T08:30:00.000Z",
+  "enterprise_id": "ent_acme",
+  "workspace_id": "ws_payments",
+  "event_count": 1,
+  "entries": [
+    {
+      "seq": 6,
+      "hash": "ah1.9d3c8a6f2b1e",
+      "event": {
+        "event_id": "evt_01JA7Y3K9Q",
+        "at": "2026-11-04T08:10:00.000Z",
+        "event": "recovery.dispatch_attempted",
+        "scope": {
+          "enterprise_id": "ent_acme",
+          "workspace_id": "ws_payments",
+          "issue_id": "issue_42",
+          "run_id": "run_7"
+        },
+        "case_id": "case_7f3a9c2e",
+        "invocation_id": "inv_10",
+        "trace_id": "trace_10",
+        "actor": {
+          "actor_id": "human_reviewer",
+          "actor_kind": "human",
+          "role": "independent_reviewer",
+          "independent_of": "human_handler"
+        },
+        "action": "recovery.dispatch_attempted",
+        "reason": "single-use authorization consumed",
+        "result": "recorded",
+        "review": {
+          "reviewer_id": "human_reviewer",
+          "independent": true
+        },
+        "destination": {
+          "endpoint_id": "ep_anthropic_primary",
+          "provider": "anthropic",
+          "model_id": "claude-sonnet-5-5",
+          "internal": false
+        },
+        "data_classes": ["code", "logs"],
+        "protected_refs": ["k1.audit:request-digest.4b6e"],
+        "policy_revision": "policy_12",
+        "rules_revision": "k1.rules.3f10",
+        "detector_version": "k1.scan-policy.88c2",
+        "redaction_version": "redaction_4",
+        "scan": {
+          "scanner": "pattern-v3",
+          "rule_version": "k1.rules.3f10",
+          "classification": "clean",
+          "segments": 12,
+          "data_classes": ["code", "logs"],
+          "finding_counts": {
+            "suspected": 0,
+            "confirmed": 0,
+            "unknown": 0
+          },
+          "detectors": ["openai_key", "github_token"],
+          "derived_segments": 0
+        },
+        "authorization": {
+          "authorization_id": "ra_5d2b",
+          "state": "consumed",
+          "expires_at": "2026-11-04T08:25:00.000Z",
+          "consumed_at": "2026-11-04T08:10:00.000Z"
+        },
+        "link": {
+          "block_event_id": "evt_01JA7Y2Q1A",
+          "dispatch_event_id": "evt_01JA7Y3K9Q"
+        },
+        "detail": {
+          "attempt": 1
+        }
+      }
+    }
+  ]
+}

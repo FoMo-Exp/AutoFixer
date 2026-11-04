@@ -34,6 +34,8 @@ import {
 } from "./control-plane/index.js";
 import type { AuthenticatedPrincipal, RequestScopeDeps } from "./control-plane/request-scope.js";
 import { resolveRequestScope } from "./control-plane/request-scope.js";
+import { DashboardAuditLog, DashboardService } from "./dashboard/index.js";
+import type { DashboardSources } from "./dashboard/index.js";
 import { DshClient } from "./dsh/client.js";
 import {
   createFileEventSink,
@@ -48,8 +50,12 @@ import {
 } from "./gateway/index.js";
 import type { GatewayScope, GatewayScopeBinding, ModelGateway } from "./gateway/index.js";
 import { createUsageLedgerStore } from "./ledger/index.js";
+import type { UsageLedgerStore } from "./ledger/index.js";
+import type { BudgetStore } from "./budget/index.js";
 import {
   createMemoryConsolidationRunner,
+  createMemoryGovernanceService,
+  createMemoryLifecycleStore,
   createMemoryRepositories,
   createMemoryRetrievalService,
   createRetrievalStore,
@@ -58,6 +64,7 @@ import {
 } from "./memory/index.js";
 import type {
   MemoryConsolidationRunner,
+  MemoryGovernanceService,
   MemoryRepositories,
   MemoryRetrievalService,
   RsiService,
@@ -71,10 +78,19 @@ import {
   SecurityCaseService,
   SecurityCaseStore,
   SecurityNotifier,
+  auditEventFromCaseEvent,
+  auditEventFromRuleEvent,
   createFileNotificationSink,
+  createFileSecurityAuditTrail,
+  createSecurityAuditGatewaySink,
+  readOrCreateSecurityAuditKey,
   staticDutyDirectory,
 } from "./security/index.js";
-import type { QuarantineKeyProvider, SecurityRoleDirectory } from "./security/index.js";
+import type {
+  QuarantineKeyProvider,
+  SecurityAuditTrail,
+  SecurityRoleDirectory,
+} from "./security/index.js";
 import {
   createStaticServiceCredentialStore,
   readServiceCredentialFile,
@@ -108,6 +124,12 @@ export interface OrchestratorOptions {
   providerServiceCredentials?: ServiceCredentialStore;
   /** Provider API base override for the point refresh (tests: fake provider). */
   providerApiBaseUrl?: string;
+  /**
+   * Dashboard read-model sources (tests inject in-memory stores). Unset uses
+   * the deployment's ledger/budget stores; a source that is still absent is
+   * reported as `missing_source`, never as zero.
+   */
+  dashboardSources?: Partial<DashboardSources>;
 }
 
 export interface OrchestratorHandle {
@@ -142,6 +164,8 @@ export interface OrchestratorHandle {
   rsi: RsiService | undefined;
   /** Scoped RSI store, for dataset provisioning and tests. */
   rsiStore: RsiStore | undefined;
+  /** Workspace dashboard read model (DAT-230); set with the identity surface. */
+  dashboard: DashboardService | undefined;
   /** Per-process bearer token callers must present on every API request. */
   apiToken: string;
   /** Start listening; resolves with the bound loopback address. */
@@ -171,6 +195,16 @@ function fileQuarantineKeyProvider(keyFile: string | undefined): QuarantineKeyPr
 }
 
 /**
+ * Read the protected audit-chain key, creating it 0600 on first use. An
+ * existing key that is a symlink, non-regular file, group/world-accessible, or
+ * malformed fails startup instead of silently starting a new chain (which
+ * would orphan the anchored history and let a forged log verify).
+ */
+function readOrCreateAuditKey(keyFile: string): Buffer {
+  return readOrCreateSecurityAuditKey(keyFile);
+}
+
+/**
  * The deployment security disposal machinery (DAT-210, DAT-211): durable
  * case history, durable dependent-work holds, encrypted quarantine, handler
  * notification with escalation, and the versioned rule-correction lifecycle
@@ -178,14 +212,25 @@ function fileQuarantineKeyProvider(keyFile: string | undefined): QuarantineKeyPr
  * case service as both its disposal-case intake and its admission-boundary
  * hold — the gateway cannot be deployed without either — and scans under the
  * currently activated rule corrections.
+ *
+ * DAT-213 adds the unified audit trail: every case event and every rule event
+ * is chained into one tamper-evident, non-secret log before the operation
+ * reports success. A failed trail write fails the operation (fail closed).
  */
 function deploymentSecurity(config: OrchestratorConfig): {
   security: SecurityCaseService;
   rules: RuleCorrectionService;
+  audit: SecurityAuditTrail;
 } {
   const referenceSecret = config.securityReferenceSecret
     ? Buffer.from(config.securityReferenceSecret, "utf8")
     : randomBytes(32);
+  const auditFile = config.securityAuditFile ?? defaultSecurityStatePath("security-audit.jsonl");
+  const auditKeyFile =
+    config.securityAuditKeyFile ?? defaultSecurityStatePath("security-audit.key");
+  const audit = createFileSecurityAuditTrail(auditFile, {
+    key: readOrCreateAuditKey(auditKeyFile),
+  });
   const directory: SecurityRoleDirectory = {
     resolve: () => ({
       workspaceHandlers: (config.securityHandlerIds ?? []).map((recipientId) => ({
@@ -207,10 +252,16 @@ function deploymentSecurity(config: OrchestratorConfig): {
     admins: config.securityAdminIds ?? [],
   });
   return {
+    audit,
     security: new SecurityCaseService({
-      caseStore: new SecurityCaseStore(
-        config.securityCaseStateFile ? { persistencePath: config.securityCaseStateFile } : {},
-      ),
+      caseStore: new SecurityCaseStore({
+        ...(config.securityCaseStateFile ? { persistencePath: config.securityCaseStateFile } : {}),
+        // DAT-213: every case event is chained into the unified non-secret
+        // audit trail. A throwing trail write fails the case operation.
+        onEvent: (event, record) => {
+          audit.record(auditEventFromCaseEvent(record, event));
+        },
+      }),
       pauses: new DependentWorkPauseLedger(
         config.securityPauseStateFile ? { persistencePath: config.securityPauseStateFile } : {},
       ),
@@ -236,6 +287,11 @@ function deploymentSecurity(config: OrchestratorConfig): {
     rules: new RuleCorrectionService({
       directory: duties,
       ...(config.securityRuleStateFile ? { persistencePath: config.securityRuleStateFile } : {}),
+      // DAT-213: rule proposal/review/activation/rollback events join the one
+      // audit chain; the rule transaction rolls back if the write fails.
+      onEvent: (event) => {
+        audit.record(auditEventFromRuleEvent(event));
+      },
     }),
   };
 }
@@ -253,7 +309,15 @@ function deploymentSecurity(config: OrchestratorConfig): {
  * prevent. Model egress without both gateway files fails closed — every
  * dispatch is denied.
  */
-function deploymentGateway(config: OrchestratorConfig): ModelGateway {
+interface DeploymentStores {
+  usageLedger?: UsageLedgerStore;
+  budgetStore?: BudgetStore;
+}
+
+function deploymentGateway(
+  config: OrchestratorConfig,
+  stores: DeploymentStores = {},
+): ModelGateway {
   const ambient = providerCredentialEnvVars(process.env);
   if (ambient.length > 0) {
     throw new Error(
@@ -263,17 +327,33 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
   }
   // Secret-gate blocks always open a disposal case and hold the affected
   // run's dependent work (DAT-210): the production gateway carries both.
-  const { security, rules } = deploymentSecurity(config);
+  const { security, rules, audit } = deploymentSecurity(config);
   const scope = { enterpriseId: config.enterpriseId, workspaceId: config.workspaceId };
   // Budget authority (DAT-229): configured with a policy file, it enforces
   // enterprise/workspace/run limits with a durable journal; without one the
   // deployment is explicitly unbudgeted rather than silently zero-cost.
-  const budget = config.budgetPolicyFile
+  const budgetStore = config.budgetPolicyFile
+    ? createBudgetStore({ persistencePath: config.budgetStateFile })
+    : undefined;
+  const budget = budgetStore
     ? new BudgetAuthority({
-        store: createBudgetStore({ persistencePath: config.budgetStateFile }),
-        policyResolver: loadBudgetPolicyFile(config.budgetPolicyFile, scope),
+        store: budgetStore,
+        policyResolver: loadBudgetPolicyFile(config.budgetPolicyFile as string, scope),
       })
     : undefined;
+  const gatewayFileSink = config.gatewayAuditFile
+    ? createFileEventSink(config.gatewayAuditFile)
+    : undefined;
+  const gatewaySecurityAuditSink = createSecurityAuditGatewaySink(audit);
+  const usageLedger = config.usageLedgerFile
+    ? createUsageLedgerStore({ persistencePath: config.usageLedgerFile })
+    : undefined;
+  if (usageLedger !== undefined) {
+    stores.usageLedger = usageLedger;
+  }
+  if (budgetStore !== undefined) {
+    stores.budgetStore = budgetStore;
+  }
   return createModelGateway({
     policyResolver: config.gatewayPolicyFile
       ? loadGatewayPolicyFile(config.gatewayPolicyFile)
@@ -288,15 +368,25 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
     // reviewed rule corrections (DAT-211). A deployment may swap in another
     // SecretScanner backend.
     scanner: createPatternSecretScanner({ corrections: () => rules.activeCorrections() }),
-    ...(config.gatewayAuditFile ? { sink: createFileEventSink(config.gatewayAuditFile) } : {}),
+    // The gateway's attempt stream keeps its own file sink (the required
+    // pre-dispatch evidence) and additionally feeds the unified security
+    // trail (DAT-213). Without the file sink the gateway still fails closed.
+    ...(gatewayFileSink
+      ? {
+          sink: {
+            record: (event) => {
+              gatewayFileSink.record(event);
+              gatewaySecurityAuditSink.record(event);
+            },
+          },
+        }
+      : {}),
     caseIntake: security,
     dependentWorkHold: security,
     // Invocation usage ledger (DAT-227): every actual dispatch attempt is
     // metered here — failures, retries and fallbacks included — so cost
     // accounting reconciles against real attempts instead of guesses.
-    ...(config.usageLedgerFile
-      ? { usageLedger: createUsageLedgerStore({ persistencePath: config.usageLedgerFile }) }
-      : {}),
+    ...(usageLedger !== undefined ? { usageLedger } : {}),
     ...(budget ? { budget } : {}),
   });
 }
@@ -367,7 +457,8 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     ...(config.dshTokenFile ? { tokenFile: config.dshTokenFile } : {}),
   });
   const model = options.model ?? resolveConfiguredModel(config);
-  const gateway = options.gateway ?? deploymentGateway(config);
+  const deploymentStores: DeploymentStores = {};
+  const gateway = options.gateway ?? deploymentGateway(config, deploymentStores);
   // Fresh per-process token: possessing it is what authorizes API callers,
   // approvals included; the configured dsh identity alone is not proof of a
   // human decision.
@@ -383,6 +474,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let memoryConsolidation: MemoryConsolidationRunner | undefined;
   let memory: MemoryRetrievalService | undefined;
   let memoryRepositories: MemoryRepositories | undefined;
+  let memoryGovernance: MemoryGovernanceService | undefined;
   let rsi: RsiService | undefined;
   let rsiStore: RsiStore | undefined;
   if (config.oauthClientsFile !== undefined) {
@@ -425,6 +517,17 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     memory = createMemoryRetrievalService({
       memory: memoryRepositories,
       store: retrievalStore,
+    });
+    // Memory governance (DAT-251) is the named-human half of the lifecycle:
+    // detail, per-version content, the audit timeline, and promote/deprecate/
+    // quarantine/restore. It reads the same scoped store as retrieval, and
+    // resolves team leadership from the workspace's team rows so authority is
+    // never a client claim.
+    memoryGovernance = createMemoryGovernanceService({
+      memory: memoryRepositories,
+      retrieval: memory,
+      lifecycle: createMemoryLifecycleStore(controlPlane),
+      teams: repos.teams,
     });
     // Bounded RSI (DAT-238) shares the same store. Offline replay uses the
     // retrieval preview path, so an evaluated candidate policy is never
@@ -532,6 +635,28 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     runScope: options.runScope ?? deploymentRunScope(requestScopeDeps),
     ...(memory !== undefined && rsi !== undefined ? { memory: { memory, rsi } } : {}),
   });
+  // Workspace dashboard (DAT-230): a read-only projection over the ledger,
+  // budget journal, trace and task event log. It is only served when the
+  // identity surface exists, because every route is session-scoped; an
+  // injected test source wins over the deployment store.
+  const dashboardSources: DashboardSources = {
+    ...(deploymentStores.usageLedger !== undefined ? { ledger: deploymentStores.usageLedger } : {}),
+    ...(deploymentStores.budgetStore !== undefined ? { budget: deploymentStores.budgetStore } : {}),
+    ...options.dashboardSources,
+    tasks: options.dashboardSources?.tasks ?? store,
+  };
+  const dashboard =
+    auth !== undefined && requestScopeDeps !== undefined
+      ? new DashboardService({
+          sources: dashboardSources,
+          audit: new DashboardAuditLog({
+            ...(config.dashboardAuditFile !== undefined
+              ? { persistencePath: config.dashboardAuditFile }
+              : {}),
+          }),
+        })
+      : undefined;
+
   const server = createApiServer({
     service,
     apiToken,
@@ -544,10 +669,15 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
           memory: {
             auth,
             service: memory,
+            apiToken,
             ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
             ...(rsi !== undefined ? { rsi } : {}),
+            ...(memoryGovernance !== undefined ? { governance: memoryGovernance } : {}),
           },
         }
+      : {}),
+    ...(dashboard !== undefined && auth !== undefined && requestScopeDeps !== undefined
+      ? { dashboard: { auth, service: dashboard, scope: requestScopeDeps } }
       : {}),
     ...(config.publicOrigin !== undefined ? { publicOrigin: config.publicOrigin } : {}),
   });
@@ -567,6 +697,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     memoryRepositories,
     rsi,
     rsiStore,
+    dashboard,
     apiToken,
     start: () => {
       const { promise, resolve, reject } = Promise.withResolvers<{ host: string; port: number }>();

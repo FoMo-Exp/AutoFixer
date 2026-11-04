@@ -1,0 +1,27 @@
+{
+  "authorization_id": "ra_5d2b",
+  "case_id": "case_7f3a9c2e",
+  "scope": {
+    "enterprise_id": "ent_acme",
+    "workspace_id": "ws_payments",
+    "issue_id": "issue_42",
+    "run_id": "run_7"
+  },
+  "destination": {
+    "endpoint_id": "ep_anthropic_primary",
+    "provider": "anthropic",
+    "model_id": "claude-sonnet-5-5",
+    "internal": false
+  },
+  "context_revision": "k1.request-context.7a91",
+  "policy_revision": "policy_12",
+  "rules_revision": "k1.rules.3f10",
+  "scan_policy_revision": "k1.scan-policy.88c2",
+  "approved_by": "human_reviewer",
+  "approved_at": "2026-11-04T08:10:00.000Z",
+  "expires_at": "2026-11-04T08:25:00.000Z",
+  "state": "approved",
+  "state_reason": null,
+  "consumed_at": null,
+  "consumed_by": null
+}

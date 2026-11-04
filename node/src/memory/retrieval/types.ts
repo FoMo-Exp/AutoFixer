@@ -17,6 +17,8 @@ import type {
   MemoryApplicability,
   MemoryEvidenceType,
   MemoryKind,
+  MemoryProvenance,
+  MemoryReview,
   MemorySensitivity,
   MemoryStatus,
   MemoryTrust,
@@ -387,6 +389,23 @@ export interface MemoryItemsFilter {
   kind?: MemoryKind;
   status?: MemoryStatus;
   tier?: MemoryTier;
+  /**
+   * Applicability filters (DAT-251). An item field that is set must match the
+   * filter; an item field that is empty means broad applicability and matches
+   * every value. Path prefixes match on segment boundaries.
+   */
+  team_id?: string;
+  path_prefix?: string;
+  language?: string;
+  task_family?: string;
+  /** Exact match on the current version's provenance trust class. */
+  trust?: MemoryTrust;
+  /**
+   * Exact match on the current version's data class. The caller's own
+   * sensitivity ceiling still applies first: a filter can narrow a browse, it
+   * cannot widen what the role may read.
+   */
+  sensitivity?: MemorySensitivity;
   limit?: number;
   cursor?: string;
 }
@@ -398,7 +417,11 @@ export interface MemoryItemView {
   versions_count: number;
   kind: MemoryKind;
   tier: MemoryTier;
-  statement: string;
+  /**
+   * The current statement. `null` exactly when `statement_redacted` is true:
+   * a quarantined item's content is never served by this surface.
+   */
+  statement: string | null;
   preconditions: string[];
   applicability: MemoryApplicability;
   trust: MemoryTrust;
@@ -411,6 +434,16 @@ export interface MemoryItemView {
   contradiction_count: number;
   evidence: MemoryBundleEvidence[];
   updated_at: string;
+  /**
+   * True when the statement and preconditions were withheld (quarantine).
+   * Optional so DAT-236 clients that predate this field keep working; the
+   * service always sets it.
+   */
+  statement_redacted?: boolean;
+  /** Provenance of the current version (optional, additive since DAT-251). */
+  provenance?: MemoryProvenance;
+  /** Exact-version human approval, or null when none (optional, additive). */
+  review?: MemoryReview | null;
 }
 
 export interface MemoryItemsPage {

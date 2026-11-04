@@ -49,13 +49,18 @@ function parseEndpoints(markdown: string): Array<[method: string, path: string]>
       markdown,
     )?.[1];
   const collaborationTable = /## Collaboration v1 \(DAT-221\)([\s\S]*?)\n## /.exec(markdown)?.[1];
-  if (!taskTable || !identityTable || !collaborationTable) {
+  const dashboardTable = /## Workspace dashboard \(DAT-230\)([\s\S]*?)\n## /.exec(markdown)?.[1];
+  const securityTable =
+    /## Model egress, security cases, and audit \(DAT-213\)([\s\S]*?)\n## /.exec(markdown)?.[1];
+  if (!taskTable || !identityTable || !collaborationTable || !dashboardTable || !securityTable) {
     throw new Error("could not locate the endpoints tables in the contract");
   }
   return [
     ...parseTableEndpoints(taskTable),
     ...parseTableEndpoints(identityTable),
     ...parseTableEndpoints(collaborationTable),
+    ...parseTableEndpoints(dashboardTable),
+    ...parseTableEndpoints(securityTable),
   ];
 }
 
@@ -278,10 +283,12 @@ describe("independent conformance to the normative contract", () => {
         }
       }
     }
-    // 71 identity/workspace/collaboration operations (DAT-220 adds the
-    // candidate-bound approval request), the five memory v1 operations
-    // (DAT-236), and the eleven bounded RSI operations (DAT-238).
-    expect(checked).toBe(87);
+    // 70 identity/workspace/collaboration operations on main, the five
+    // memory v1 operations (DAT-236), the eleven bounded RSI operations
+    // (DAT-238), the seven memory-governance operations (DAT-251), the five
+    // dashboard operations (DAT-230), and the eighteen ADR-0005 security
+    // operations (DAT-213).
+    expect(checked).toBe(116);
   });
 
   test("the committed openapi.json also carries the auth scheme", () => {

@@ -24,10 +24,18 @@ import {
   TASK_EVIDENCE_CONTRACT_VERSION,
 } from "../src/collab/contract.js";
 import {
+  DASHBOARD_BREAKDOWN_DIMENSIONS,
+  DASHBOARD_METRIC_STATUSES,
+  DASHBOARD_SOURCE_IDS,
+  DASHBOARD_SOURCE_STATUSES,
+} from "../src/dashboard/index.js";
+import {
   TURN_REPORT_ACTIVITIES,
   TURN_REPORT_AREAS,
   TURN_REPORT_OUTCOMES,
 } from "../src/pi/turn-report.js";
+import { SECURITY_AUDIT_EVENT_TYPES, SECURITY_AUDIT_RESULTS } from "../src/security/audit.js";
+import { CASE_STATES } from "../src/security/types.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const committedPath = path.join(repoRoot, "web", "src", "api", "contracts", "openapi.json");
@@ -137,13 +145,29 @@ const COLLAB_ENDPOINTS: Array<[method: string, path: string]> = [
   ["get", `${COLLAB_BASE}/{issue_id}/stream`],
 ];
 
-/** Workspace memory v1 surface (DAT-236). */
+/** Workspace memory v1 surface (DAT-236) plus governance (DAT-251). */
 const MEMORY_ENDPOINTS: Array<[method: string, path: string]> = [
   ["post", "/api/v1/workspaces/{workspace_id}/memory/search"],
   ["post", "/api/v1/workspaces/{workspace_id}/memory/feedback"],
   ["get", "/api/v1/workspaces/{workspace_id}/memory/items"],
+  ["get", "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}"],
+  ["get", "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/versions"],
+  ["get", "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/events"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/promote"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/deprecate"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/quarantine"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/restore"],
   ["get", "/api/v1/workspaces/{workspace_id}/memory/versions"],
   ["post", "/api/v1/workspaces/{workspace_id}/memory/eval-runs"],
+];
+
+/** Workspace dashboard v1 surface (DAT-230). */
+const DASHBOARD_ENDPOINTS: Array<[method: string, path: string]> = [
+  ["get", "/api/v1/workspaces/{workspace_id}/dashboard/summary"],
+  ["get", "/api/v1/workspaces/{workspace_id}/dashboard/cost-items"],
+  ["get", "/api/v1/workspaces/{workspace_id}/dashboard/issues/{issue_id}"],
+  ["get", "/api/v1/workspaces/{workspace_id}/dashboard/audit"],
+  ["get", "/api/v1/workspaces/{workspace_id}/dashboard/export"],
 ];
 
 /** Bounded RSI surface (DAT-238). */
@@ -161,6 +185,37 @@ const RSI_ENDPOINTS: Array<[method: string, path: string]> = [
   ["patch", "/api/v1/workspaces/{workspace_id}/memory/rsi/controls"],
 ];
 
+/** Model-egress gateway, security case, rule, recovery, and audit surface (DAT-213). */
+const SECURITY_ENDPOINTS: Array<[method: string, path: string]> = [
+  ["get", "/api/v1/workspaces/{workspace_id}/security/cases"],
+  ["get", "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}"],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}/transitions"],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}/termination-requests"],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}/reassignment-requests"],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}/quarantine-grants"],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/quarantine/{quarantine_id}/views"],
+  ["get", "/api/v1/workspaces/{workspace_id}/security/rules"],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/rules/proposals"],
+  [
+    "post",
+    "/api/v1/workspaces/{workspace_id}/security/rules/{lineage}/revisions/{version}/reviews",
+  ],
+  [
+    "post",
+    "/api/v1/workspaces/{workspace_id}/security/rules/{lineage}/revisions/{version}/activation",
+  ],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/rules/{lineage}/rollbacks"],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}/recovery-approvals"],
+  ["get", "/api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}"],
+  ["delete", "/api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}"],
+  [
+    "post",
+    "/api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}/dispatch",
+  ],
+  ["get", "/api/v1/workspaces/{workspace_id}/security/audit"],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/audit/exports"],
+];
+
 const ALL_ENDPOINTS = [
   ...M0_ENDPOINTS,
   ...AUTH_ENDPOINTS,
@@ -169,6 +224,8 @@ const ALL_ENDPOINTS = [
   ...COLLAB_ENDPOINTS,
   ...MEMORY_ENDPOINTS,
   ...RSI_ENDPOINTS,
+  ...DASHBOARD_ENDPOINTS,
+  ...SECURITY_ENDPOINTS,
 ];
 
 describe("forgepilot-api/v1 OpenAPI document", () => {
@@ -193,11 +250,11 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
       expect(document.paths[path], `missing path ${path}`).toBeDefined();
       expect(document.paths[path]?.[method], `missing ${method} ${path}`).toBeDefined();
     }
-    // Retrieval is read-mostly: promotion, deprecation, quarantine, and policy
-    // writes are deliberately not reachable from this credential.
+    // Governance transitions accept only the four documented actions, and
+    // there is still no policy-write route: L4 policy is created elsewhere.
     for (const path of Object.keys(document.paths)) {
       if (path.includes("/memory/")) {
-        expect(path).not.toMatch(/promote|deprecate|quarantine|policy/);
+        expect(path).not.toMatch(/policy/);
       }
     }
   });
@@ -700,6 +757,214 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
     const unmapped = new ApiError(500, "SOMETHING_NEW", "unexpected").toBody("req_4");
     expect(unmapped.error).toMatchObject({ category: "unknown", retryable: false });
     expect(ERROR_CATEGORIES).toContain(unmapped.error.category);
+  });
+
+  test("the dashboard contract keeps missing, stale and restricted states explicit", () => {
+    const summary = document.components.schemas["DashboardSummary"] as {
+      required: string[];
+    };
+    expect([...summary.required].sort()).toEqual(
+      [
+        "enterprise_id",
+        "workspace_id",
+        "period",
+        "generated_at",
+        "access",
+        "sources",
+        "denominators",
+        "unavailable_metrics",
+        "totals",
+        "breakdown",
+      ].sort(),
+    );
+
+    const totals = document.components.schemas["DashboardTotals"] as {
+      required: string[];
+    };
+    expect([...totals.required].sort()).toEqual(
+      [
+        "requests",
+        "invocations",
+        "retries",
+        "retry_rate",
+        "error_rate",
+        "denial_rate",
+        "tokens",
+        "latency_ms",
+        "queue_age_ms",
+        "approval_wait_ms",
+        "validation_outcomes",
+        "delivery_results",
+        "connector_lag_ms",
+        "worker_utilization",
+        "cost",
+        "budget",
+      ].sort(),
+    );
+
+    const count = document.components.schemas["DashboardCountMetric"] as {
+      properties: { status: { enum: string[] }; value: { type: string[] } };
+    };
+    expect(count.properties.status.enum).toEqual([...DASHBOARD_METRIC_STATUSES]);
+    // A count is nullable: null is "not measured", never a zero stand-in.
+    expect(count.properties.value.type).toEqual(["integer", "null"]);
+
+    const source = document.components.schemas["DashboardSourceState"] as {
+      properties: { source: { enum: string[] }; status: { enum: string[] } };
+    };
+    expect(source.properties.source.enum).toEqual([...DASHBOARD_SOURCE_IDS]);
+    expect(source.properties.status.enum).toEqual([...DASHBOARD_SOURCE_STATUSES]);
+
+    const cost = document.components.schemas["DashboardCostMetric"] as {
+      properties: { source: { enum: string[] } };
+    };
+    expect(cost.properties.source.enum).toEqual(["cost_ledger"]);
+    const budget = document.components.schemas["DashboardBudgetMetric"] as {
+      properties: { source: { enum: string[] } };
+    };
+    expect(budget.properties.source.enum).toEqual(["budget_journal"]);
+
+    const breakdown = document.components.schemas["DashboardBreakdown"] as {
+      properties: { dimension: { enum: string[] } };
+    };
+    expect(breakdown.properties.dimension.enum).toEqual([...DASHBOARD_BREAKDOWN_DIMENSIONS]);
+  });
+
+  test("the dashboard trace view never carries payload or content", () => {
+    const traceEvent = document.components.schemas["DashboardTraceEvent"] as {
+      properties: Record<string, unknown>;
+      required: string[];
+    };
+    expect(Object.keys(traceEvent.properties)).not.toContain("payload");
+    expect(traceEvent.required).not.toContain("payload");
+
+    const drilldown = document.components.schemas["DashboardIssueDrilldown"] as {
+      properties: {
+        content: { properties: { payload_included: { enum: unknown[] } } };
+      };
+    };
+    expect(drilldown.properties.content.properties.payload_included.enum).toEqual([false]);
+  });
+
+  test("the dashboard audit trail is metadata only and owner/admin gated", () => {
+    const entry = document.components.schemas["DashboardAuditEntry"] as {
+      properties: Record<string, unknown>;
+    };
+    const allowed = [
+      "audit_id",
+      "at",
+      "enterprise_id",
+      "workspace_id",
+      "subject",
+      "role",
+      "operation",
+      "resource",
+      "issue_id",
+      "query",
+      "record_count",
+      "request_id",
+    ];
+    expect(Object.keys(entry.properties).sort()).toEqual(allowed.sort());
+
+    const audit = document.paths["/api/v1/workspaces/{workspace_id}/dashboard/audit"]?.["get"] as {
+      responses: Record<string, unknown>;
+    };
+    expect(audit.responses["403"]).toBeDefined();
+    const costItems = document.paths["/api/v1/workspaces/{workspace_id}/dashboard/cost-items"]?.[
+      "get"
+    ] as { responses: Record<string, unknown> };
+    expect(costItems.responses["403"]).toBeDefined();
+  });
+
+  test("documents every model-egress security endpoint", () => {
+    for (const [method, path] of SECURITY_ENDPOINTS) {
+      expect(document.paths[path], `missing path ${path}`).toBeDefined();
+      expect(document.paths[path]?.[method], `missing ${method} ${path}`).toBeDefined();
+    }
+  });
+
+  test("the security surface reuses the case and audit vocabularies", () => {
+    const caseSchema = document.components.schemas["SecurityCase"] as {
+      properties: { state: { enum: string[] }; allowed_transitions: { items: { enum: string[] } } };
+    };
+    expect(caseSchema.properties.state.enum).toEqual([...CASE_STATES]);
+    expect(caseSchema.properties.allowed_transitions.items.enum).toEqual([...CASE_STATES]);
+
+    const event = document.components.schemas["SecurityAuditEvent"] as {
+      properties: { event: { enum: string[] }; result: { enum: string[] } };
+    };
+    expect(event.properties.event.enum).toEqual([...SECURITY_AUDIT_EVENT_TYPES]);
+    expect(event.properties.result.enum).toEqual([...SECURITY_AUDIT_RESULTS]);
+  });
+
+  test("the security error codes carry stable, non-leaking guidance and refs", () => {
+    for (const [code, status, nextAction] of [
+      ["MODEL_EGRESS_DENIED", 403, "request_review"],
+      ["SENSITIVE_DATA_UNCERTAIN", 422, "enter_security_case"],
+      ["SECURITY_REVIEW_REQUIRED", 428, "request_review"],
+      ["RECOVERY_APPROVAL_INVALID", 409, "request_review"],
+    ] as Array<[string, number, string]>) {
+      const body = new ApiError(status, code, "blocked").toBody("req_sec");
+      expect(body.error, code).toMatchObject({
+        code,
+        stage: "policy",
+        category: "denial",
+        retryable: false,
+        next_action: nextAction,
+        request_id: "req_sec",
+      });
+      expect(ERROR_NEXT_ACTIONS).toContain(body.error.next_action);
+    }
+
+    const envelope = document.components.schemas["Error"] as {
+      properties: { error: { properties: Record<string, unknown> } };
+    };
+    expect(Object.keys(envelope.properties.error.properties)).toEqual(
+      expect.arrayContaining([
+        "code",
+        "stage",
+        "category",
+        "retryable",
+        "next_action",
+        "case_ref",
+        "trace_ref",
+      ]),
+    );
+  });
+
+  test("the audit trail is append-only and read/export are purpose-bound", () => {
+    const auditPath = "/api/v1/workspaces/{workspace_id}/security/audit";
+    const operations = document.paths[auditPath] as Record<string, unknown>;
+    expect(Object.keys(operations).sort()).toEqual(["get"]);
+
+    const read = operations["get"] as {
+      parameters: Array<{ name: string; in: string; required?: boolean }>;
+    };
+    expect(
+      read.parameters.some(
+        (parameter) =>
+          parameter.name === "purpose" && parameter.in === "query" && parameter.required === true,
+      ),
+    ).toBe(true);
+
+    const exported = document.paths[`${auditPath}/exports`]?.["post"] as {
+      requestBody: { content: { "application/json": { schema: { $ref: string } } } };
+    };
+    expect(exported.requestBody.content["application/json"].schema.$ref).toBe(
+      "#/components/schemas/SecurityAuditExportRequest",
+    );
+  });
+
+  test("no security response or request advertises a bypass or a reusable approval", () => {
+    for (const [path, methods] of Object.entries(document.paths)) {
+      if (!path.includes("/security/")) {
+        continue;
+      }
+      const text = JSON.stringify(methods);
+      // Prose may say "no operation offers a bypass"; no field may deliver one.
+      expect(text, path).not.toMatch(/"(send_anyway|bypass|exempt_from_scan)"\s*:/i);
+      expect(text, path).not.toMatch(/"reusable"\s*:|"reuse"\s*:\s*true/i);
+    }
   });
 
   test("the committed contract file matches a fresh generation (regenerate on drift)", () => {

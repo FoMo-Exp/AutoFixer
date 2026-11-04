@@ -1387,6 +1387,146 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One memory item in the browse view
+         * @description Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. The same view and sensitivity ceiling as browse, for deep links. A quarantined item serves statement null with statement_redacted true; a restricted item and a foreign workspace id both answer 404.
+         */
+        get: operations["getMemoryItem"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Per-version content for diffing
+         * @description Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Every immutable version with its own statement, preconditions, trust, sensitivity, validity window, content hash, provenance, and review stamp. Each historical version is filtered by its own sensitivity ceiling: a high-sensitivity version is absent, not blanked. A quarantined item's statements and preconditions are withheld.
+         */
+        get: operations["getMemoryItemVersions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Item audit timeline, paged
+         * @description Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Merges memory events, promotion decisions, and consolidation operations into one ascending timeline with actor, action, version, time, and a fixed reason code. `detail` carries only enums, counts, and opaque ids. Events about versions above the caller's ceiling are absent. The timeline is paginated rather than truncated: pass `limit` (default 50, max 200) and follow `next_cursor` until it is null to read the complete audit history.
+         */
+        get: operations["getMemoryItemEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/promote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Named human promotion of an exact version
+         * @description Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Workspace owner/admin, or the lead of the item's team. Only candidate -> active is accepted. The named approver's review stamp is written on the exact version; policy additionally must be human-authored. An item with no evidence cannot be promoted. `expected_version` or a non-current `version` answers 409 VERSION_CONFLICT; an illegal transition answers 409 INVALID_TRANSITION.
+         */
+        post: operations["promoteMemoryItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/deprecate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retire a candidate or active item with a fixed reason
+         * @description Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Workspace owner/admin, or the lead of the item's team. Only active|candidate -> deprecated is accepted. The reason is a fixed machine code; free text is not accepted or stored.
+         */
+        post: operations["deprecateMemoryItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/quarantine": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Quarantine an item as a security response
+         * @description Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Workspace owner/admin, or the lead of the item's team. Any non-terminal state may be quarantined. Quarantine removes the item from retrieval immediately and every later response serves statement null, empty preconditions, and evidence reduced to an irreversible identifier. v1 has no route that returns the original content.
+         */
+        post: operations["quarantineMemoryItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Release a quarantined item to proposed, candidate, or deprecated
+         * @description Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Workspace owner/admin, or the lead of the item's team. Only a quarantined item can be restored, and `active` is not an accepted target: returning to active must go through promote so approval cannot be bypassed.
+         */
+        post: operations["restoreMemoryItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspace_id}/memory/proposals": {
         parameters: {
             query?: never;
@@ -1589,6 +1729,441 @@ export interface paths {
          * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. A workspace can disable automatic promotion and lower its weekly change and reflection-token budgets. Sample sizes, regression ceilings, and approval requirements are code constants and cannot be raised here.
          */
         patch: operations["updateRsiControls"];
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/dashboard/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Workspace usage, cost, latency and operational aggregates
+         * @description Read-only aggregate over the invocation ledger, cost ledger, budget journal, trace and task event log. The period is half-open and timezone-explicit; every rate publishes its denominator; a metric from an unwired source is null with an explicit status and is never rendered as zero. Financial sections are owner/admin only and appear as `restricted` for other roles. This surface never returns prompt content or quarantine material. Every read is audited.
+         */
+        get: operations["getDashboardSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/dashboard/cost-items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Priced cost items with their invocation ledger drill-down
+         * @description Owner/admin only. Each item is one immutable cost posting with its chargeable components, linked adjustments, the bound rate revision per component, and the invocation ledger entry it prices (`ledger_entry` + `ledger_lookup`). Unknown cost components stay null; estimates are labelled and never presented as invoiced amounts. Currencies are never merged. Every read is audited.
+         */
+        get: operations["listDashboardCostItems"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/dashboard/issues/{issue_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Issue drill-down: execution trace, runs, artifact/delivery references
+         * @description Follows one issue from its ledger/cost/budget entries to its causal trace, runs, and artifact, delivery and evidence references. Trace events are metadata only: `payload` is never included, and the response states `payload_included: false`. Approval waiting, queue age and validation outcomes need the trace to correlate task identity; without it they report `missing_source`. Financial sections follow the caller's role. Every read is audited.
+         */
+        get: operations["getDashboardIssueDrilldown"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/dashboard/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Dashboard read/export audit trail
+         * @description Owner/admin only. Newest-first metadata about every dashboard read and export in the caller's workspace: subject, role, resource, period/paging parameters, record count and request id. It contains no content, amounts, or token figures. Reading the trail is itself audited.
+         */
+        get: operations["listDashboardAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/dashboard/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export the workspace summary and cost items as JSON
+         * @description Owner/admin only. The bundle contains the same summary and cost-item page shapes the read endpoints serve; cost items are capped and `cost_items_truncated` says when the cap was hit. An export is audited as its own operation class. It never includes prompt content, quarantine material, or a currency-merged total.
+         */
+        get: operations["exportDashboard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/cases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List redacted disposal cases in the workspace
+         * @description ADR-0005 security surface: scoped disposal cases, separated duties, versioned rule corrections, one-time rechecked recovery, and the tamper-evident non-secret audit trail. No operation in this surface offers a per-call bypass: the only path out of a block is handling plus an independent review plus a complete recheck under current rules. Secrets never appear in case views, notifications, errors, audit events, or exports; quarantined content needs a separate grant and every view is audited. Recovery refusals use the stable codes SENSITIVE_DATA_UNCERTAIN, SECURITY_REVIEW_REQUIRED, RECOVERY_APPROVAL_INVALID, and MODEL_EGRESS_DENIED with stage, case/trace references, retryability, and one authorized next action. Newest first; redacted status only.
+         */
+        get: operations["listSecurityCases"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one redacted disposal case and its append-only history summary */
+        get: operations["getSecurityCase"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}/transitions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply one duty-gated case disposition edge
+         * @description ADR-0005 security surface: scoped disposal cases, separated duties, versioned rule corrections, one-time rechecked recovery, and the tamper-evident non-secret audit trail. No operation in this surface offers a per-call bypass: the only path out of a block is handling plus an independent review plus a complete recheck under current rules. Secrets never appear in case views, notifications, errors, audit events, or exports; quarantined content needs a separate grant and every view is audited. Recovery refusals use the stable codes SENSITIVE_DATA_UNCERTAIN, SECURITY_REVIEW_REQUIRED, RECOVERY_APPROVAL_INVALID, and MODEL_EGRESS_DENIED with stage, case/trace references, retryability, and one authorized next action. Every state is final at resolved/terminated; a failed review returns to handling with an append-only history.
+         */
+        post: operations["transitionSecurityCase"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}/termination-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Task owner requests termination (recorded, never executed)
+         * @description ADR-0005 security surface: scoped disposal cases, separated duties, versioned rule corrections, one-time rechecked recovery, and the tamper-evident non-secret audit trail. No operation in this surface offers a per-call bypass: the only path out of a block is handling plus an independent review plus a complete recheck under current rules. Secrets never appear in case views, notifications, errors, audit events, or exports; quarantined content needs a separate grant and every view is audited. Recovery refusals use the stable codes SENSITIVE_DATA_UNCERTAIN, SECURITY_REVIEW_REQUIRED, RECOVERY_APPROVAL_INVALID, and MODEL_EGRESS_DENIED with stage, case/trace references, retryability, and one authorized next action. Ownership alone never dispositions a case.
+         */
+        post: operations["requestSecurityCaseTermination"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}/reassignment-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Task owner requests reassignment (recorded, never executed) */
+        post: operations["requestSecurityCaseReassignment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}/quarantine-grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Grant one subject scoped, time-limited quarantine inspection
+         * @description ADR-0005 security surface: scoped disposal cases, separated duties, versioned rule corrections, one-time rechecked recovery, and the tamper-evident non-secret audit trail. No operation in this surface offers a per-call bypass: the only path out of a block is handling plus an independent review plus a complete recheck under current rules. Secrets never appear in case views, notifications, errors, audit events, or exports; quarantined content needs a separate grant and every view is audited. Recovery refusals use the stable codes SENSITIVE_DATA_UNCERTAIN, SECURITY_REVIEW_REQUIRED, RECOVERY_APPROVAL_INVALID, and MODEL_EGRESS_DENIED with stage, case/trace references, retryability, and one authorized next action. Administrator work; the subject must be a handler or independent reviewer. The grant is not case authority.
+         */
+        post: operations["grantSecurityQuarantineAccess"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/quarantine/{quarantine_id}/views": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Inspect quarantined raw context under an existing grant
+         * @description ADR-0005 security surface: scoped disposal cases, separated duties, versioned rule corrections, one-time rechecked recovery, and the tamper-evident non-secret audit trail. No operation in this surface offers a per-call bypass: the only path out of a block is handling plus an independent review plus a complete recheck under current rules. Secrets never appear in case views, notifications, errors, audit events, or exports; quarantined content needs a separate grant and every view is audited. Recovery refusals use the stable codes SENSITIVE_DATA_UNCERTAIN, SECURITY_REVIEW_REQUIRED, RECOVERY_APPROVAL_INVALID, and MODEL_EGRESS_DENIED with stage, case/trace references, retryability, and one authorized next action. Every attempt — allowed or denied — is audited. The response is never logged or cached by the service.
+         */
+        post: operations["viewQuarantinedContext"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List versioned rule corrections for the workspace
+         * @description ADR-0005 security surface: scoped disposal cases, separated duties, versioned rule corrections, one-time rechecked recovery, and the tamper-evident non-secret audit trail. No operation in this surface offers a per-call bypass: the only path out of a block is handling plus an independent review plus a complete recheck under current rules. Secrets never appear in case views, notifications, errors, audit events, or exports; quarantined content needs a separate grant and every view is audited. Recovery refusals use the stable codes SENSITIVE_DATA_UNCERTAIN, SECURITY_REVIEW_REQUIRED, RECOVERY_APPROVAL_INVALID, and MODEL_EGRESS_DENIED with stage, case/trace references, retryability, and one authorized next action. History is per lineage and never rewrites.
+         */
+        get: operations["listSecurityRuleRevisions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/rules/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Propose one bounded versioned rule correction
+         * @description ADR-0005 security surface: scoped disposal cases, separated duties, versioned rule corrections, one-time rechecked recovery, and the tamper-evident non-secret audit trail. No operation in this surface offers a per-call bypass: the only path out of a block is handling plus an independent review plus a complete recheck under current rules. Secrets never appear in case views, notifications, errors, audit events, or exports; quarantined content needs a separate grant and every view is audited. Recovery refusals use the stable codes SENSITIVE_DATA_UNCERTAIN, SECURITY_REVIEW_REQUIRED, RECOVERY_APPROVAL_INVALID, and MODEL_EGRESS_DENIED with stage, case/trace references, retryability, and one authorized next action. The service rejects targeted exemptions (an invocation, case, request digest, or secret value) and blanket allows/disables by name. Regression evidence is computed by the service.
+         */
+        post: operations["proposeSecurityRuleCorrection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/rules/{lineage}/revisions/{version}/reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Independent reviewer approves or rejects one revision
+         * @description ADR-0005 security surface: scoped disposal cases, separated duties, versioned rule corrections, one-time rechecked recovery, and the tamper-evident non-secret audit trail. No operation in this surface offers a per-call bypass: the only path out of a block is handling plus an independent review plus a complete recheck under current rules. Secrets never appear in case views, notifications, errors, audit events, or exports; quarantined content needs a separate grant and every view is audited. Recovery refusals use the stable codes SENSITIVE_DATA_UNCERTAIN, SECURITY_REVIEW_REQUIRED, RECOVERY_APPROVAL_INVALID, and MODEL_EGRESS_DENIED with stage, case/trace references, retryability, and one authorized next action. The reviewer must differ from the author and every handling principal.
+         */
+        post: operations["reviewSecurityRuleCorrection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/rules/{lineage}/revisions/{version}/activation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enterprise security administrator activates an approved revision
+         * @description ADR-0005 security surface: scoped disposal cases, separated duties, versioned rule corrections, one-time rechecked recovery, and the tamper-evident non-secret audit trail. No operation in this surface offers a per-call bypass: the only path out of a block is handling plus an independent review plus a complete recheck under current rules. Secrets never appear in case views, notifications, errors, audit events, or exports; quarantined content needs a separate grant and every view is audited. Recovery refusals use the stable codes SENSITIVE_DATA_UNCERTAIN, SECURITY_REVIEW_REQUIRED, RECOVERY_APPROVAL_INVALID, and MODEL_EGRESS_DENIED with stage, case/trace references, retryability, and one authorized next action. Activation re-verifies the regression binding; the complete-request checks still apply afterwards.
+         */
+        post: operations["activateSecurityRuleCorrection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/rules/{lineage}/rollbacks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Roll back the active correction in a lineage (versioned and audited)
+         * @description ADR-0005 security surface: scoped disposal cases, separated duties, versioned rule corrections, one-time rechecked recovery, and the tamper-evident non-secret audit trail. No operation in this surface offers a per-call bypass: the only path out of a block is handling plus an independent review plus a complete recheck under current rules. Secrets never appear in case views, notifications, errors, audit events, or exports; quarantined content needs a separate grant and every view is audited. Recovery refusals use the stable codes SENSITIVE_DATA_UNCERTAIN, SECURITY_REVIEW_REQUIRED, RECOVERY_APPROVAL_INVALID, and MODEL_EGRESS_DENIED with stage, case/trace references, retryability, and one authorized next action. Rollback cannot restore a superseded approval.
+         */
+        post: operations["rollbackSecurityRuleCorrection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}/recovery-approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Independent reviewer approves one recheck of a rebuilt request
+         * @description ADR-0005 security surface: scoped disposal cases, separated duties, versioned rule corrections, one-time rechecked recovery, and the tamper-evident non-secret audit trail. No operation in this surface offers a per-call bypass: the only path out of a block is handling plus an independent review plus a complete recheck under current rules. Secrets never appear in case views, notifications, errors, audit events, or exports; quarantined content needs a separate grant and every view is audited. Recovery refusals use the stable codes SENSITIVE_DATA_UNCERTAIN, SECURITY_REVIEW_REQUIRED, RECOVERY_APPROVAL_INVALID, and MODEL_EGRESS_DENIED with stage, case/trace references, retryability, and one authorized next action. Approval authorizes rechecking, never sending: the complete request is rebuilt and scanned again, and the authorization is single-use and expiring.
+         */
+        post: operations["approveSecurityRecovery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one recovery authorization's bound facts and state */
+        get: operations["getSecurityRecoveryApproval"];
+        put?: never;
+        post?: never;
+        /**
+         * Withdraw an unconsumed recovery approval
+         * @description ADR-0005 security surface: scoped disposal cases, separated duties, versioned rule corrections, one-time rechecked recovery, and the tamper-evident non-secret audit trail. No operation in this surface offers a per-call bypass: the only path out of a block is handling plus an independent review plus a complete recheck under current rules. Secrets never appear in case views, notifications, errors, audit events, or exports; quarantined content needs a separate grant and every view is audited. Recovery refusals use the stable codes SENSITIVE_DATA_UNCERTAIN, SECURITY_REVIEW_REQUIRED, RECOVERY_APPROVAL_INVALID, and MODEL_EGRESS_DENIED with stage, case/trace references, retryability, and one authorized next action. A consumed authorization cannot be revoked or reused.
+         */
+        delete: operations["revokeSecurityRecoveryApproval"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}/dispatch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Recheck the complete rebuilt request and dispatch once
+         * @description ADR-0005 security surface: scoped disposal cases, separated duties, versioned rule corrections, one-time rechecked recovery, and the tamper-evident non-secret audit trail. No operation in this surface offers a per-call bypass: the only path out of a block is handling plus an independent review plus a complete recheck under current rules. Secrets never appear in case views, notifications, errors, audit events, or exports; quarantined content needs a separate grant and every view is audited. Recovery refusals use the stable codes SENSITIVE_DATA_UNCERTAIN, SECURITY_REVIEW_REQUIRED, RECOVERY_APPROVAL_INVALID, and MODEL_EGRESS_DENIED with stage, case/trace references, retryability, and one authorized next action. Required pre-dispatch audit evidence is persisted before any byte leaves; the authorization is consumed atomically so concurrent workers cannot send twice. An unknown provider outcome is recorded as unknown and never replayed.
+         */
+        post: operations["dispatchSecurityRecovery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the tamper-evident non-secret security audit trail
+         * @description ADR-0005 security surface: scoped disposal cases, separated duties, versioned rule corrections, one-time rechecked recovery, and the tamper-evident non-secret audit trail. No operation in this surface offers a per-call bypass: the only path out of a block is handling plus an independent review plus a complete recheck under current rules. Secrets never appear in case views, notifications, errors, audit events, or exports; quarantined content needs a separate grant and every view is audited. Recovery refusals use the stable codes SENSITIVE_DATA_UNCERTAIN, SECURITY_REVIEW_REQUIRED, RECOVERY_APPROVAL_INVALID, and MODEL_EGRESS_DENIED with stage, case/trace references, retryability, and one authorized next action. Restricted to handlers, reviewers, and administrators; the read itself is audited with the stated purpose before data is returned.
+         */
+        get: operations["readSecurityAuditTrail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/security/audit/exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export a filtered audit slice (administrator only, audited)
+         * @description ADR-0005 security surface: scoped disposal cases, separated duties, versioned rule corrections, one-time rechecked recovery, and the tamper-evident non-secret audit trail. No operation in this surface offers a per-call bypass: the only path out of a block is handling plus an independent review plus a complete recheck under current rules. Secrets never appear in case views, notifications, errors, audit events, or exports; quarantined content needs a separate grant and every view is audited. Recovery refusals use the stable codes SENSITIVE_DATA_UNCERTAIN, SECURITY_REVIEW_REQUIRED, RECOVERY_APPROVAL_INVALID, and MODEL_EGRESS_DENIED with stage, case/trace references, retryability, and one authorized next action. An export leaves the service: it is restricted to the enterprise security administrator and recorded as audit.trail_exported before the payload is returned. No secret ever appears in the export.
+         */
+        post: operations["exportSecurityAuditTrail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
 }
@@ -2520,7 +3095,10 @@ export interface components {
             kind: "fact" | "lesson" | "playbook" | "anti_pattern" | "episode" | "policy";
             /** @enum {string} */
             tier: "L1" | "L2" | "L3" | "L4";
-            statement: string;
+            /** @description The current statement. Null exactly when the item is quarantined: quarantine content is never served by this surface. */
+            statement: string | null;
+            /** @description True when statement and preconditions were withheld (quarantine). Optional so DAT-236 clients keep working; the service always sets it. */
+            statement_redacted?: boolean;
             preconditions: string[];
             applicability: components["schemas"]["MemoryApplicability"];
             /** @enum {string} */
@@ -2537,6 +3115,8 @@ export interface components {
             evidence: components["schemas"]["MemoryEvidence"][];
             /** Format: date-time */
             updated_at: string;
+            provenance?: components["schemas"]["MemoryProvenance"];
+            review?: components["schemas"]["MemoryReview"] | null;
         };
         MemoryItemsPage: {
             items: components["schemas"]["MemoryItemView"][];
@@ -2643,6 +3223,141 @@ export interface components {
             /** Format: date-time */
             created_at: string;
             created_by: string;
+        };
+        /** @description Who authored a version and under which agent configuration. Provenance is a claim recorded at write time; it never grants authority. */
+        MemoryProvenance: {
+            /** @enum {string} */
+            author_type: "human" | "agent" | "system";
+            agent_model?: string;
+            config_digest?: string;
+            prompt_template_version?: string;
+        };
+        /** @description Named human approval of exactly one immutable version. Set once; a later version needs its own approval. */
+        MemoryReview: {
+            approver_id: string;
+            /** Format: date-time */
+            approved_at: string;
+        };
+        /** @description One immutable content version, served so the UI can diff versions. A version above the caller's sensitivity ceiling is absent entirely — a high-sensitivity history cannot be enumerated through this surface. */
+        MemoryItemVersion: {
+            version: number;
+            /** @enum {string} */
+            kind: "fact" | "lesson" | "playbook" | "anti_pattern" | "episode" | "policy";
+            /** @enum {string} */
+            tier: "L1" | "L2" | "L3" | "L4";
+            /** @description Null exactly when statement_redacted is true (quarantined item). */
+            statement: string | null;
+            statement_redacted: boolean;
+            preconditions: string[];
+            applicability: components["schemas"]["MemoryApplicability"];
+            /** @enum {string} */
+            trust: "human" | "agent" | "enterprise_template" | "system";
+            /** @enum {string} */
+            sensitivity: "internal" | "confidential" | "restricted";
+            /** Format: date-time */
+            valid_from: string;
+            valid_to: string | null;
+            content_hash: string;
+            provenance: components["schemas"]["MemoryProvenance"];
+            review: components["schemas"]["MemoryReview"] | null;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+        };
+        MemoryItemVersions: {
+            schema_version: number;
+            item_id: string;
+            /** @enum {string} */
+            status: "proposed" | "candidate" | "active" | "deprecated" | "retired" | "quarantined";
+            current_version: number;
+            versions: components["schemas"]["MemoryItemVersion"][];
+        };
+        /** @description One normalized audit entry, merged from memory events, promotion decisions, and consolidation operations. `detail` holds only fixed enums, counts, and opaque ids — never free text and never memory content. */
+        MemoryItemEvent: {
+            /** Format: date-time */
+            at: string;
+            /** @enum {string} */
+            source: "memory_event" | "promotion_decision" | "consolidation_op";
+            /** @description The recorded action: a memory event type, `promotion_decision`, or the consolidation operation (merge, supersede, expire, deprecate, quarantine). */
+            action: string;
+            actor: {
+                /** @enum {string} */
+                type: "user" | "system";
+                id: string;
+            };
+            item_version: number | null;
+            /** @enum {string} */
+            from_status?: "proposed" | "candidate" | "active" | "deprecated" | "retired" | "quarantined";
+            /** @enum {string} */
+            to_status?: "proposed" | "candidate" | "active" | "deprecated" | "retired" | "quarantined";
+            reason_code?: string;
+            detail?: {
+                [key: string]: string | number | boolean;
+            };
+        };
+        /** @description One page of the merged audit timeline. The timeline is traversable: `next_cursor` is non-null exactly when older-to-newer traversal has more rows, so a client can always reach the complete history. */
+        MemoryItemEvents: {
+            item_id: string;
+            /** @description Ascending by `at`. Append-only: entries are never rewritten. */
+            events: components["schemas"]["MemoryItemEvent"][];
+            /** @description Opaque cursor for the next page; null at the end of the timeline. A bounded page is never presented as the complete audit history. */
+            next_cursor: string | null;
+        };
+        /** @description Named human promotion. Only candidate -> active is accepted; procedural content and policy receive the approver's exact-version review stamp. */
+        MemoryPromoteRequest: {
+            /** @description The exact content version the human acted on; must be current. */
+            version: number;
+            /** @description Optimistic concurrency token; must equal the current version. */
+            expected_version: number;
+        };
+        MemoryDeprecateRequest: {
+            /** @description The exact content version the human acted on; must be current. */
+            version: number;
+            /** @description Optimistic concurrency token; must equal the current version. */
+            expected_version: number;
+            /**
+             * @description Fixed machine reason; free-text reasons are not accepted or stored.
+             * @enum {string}
+             */
+            reason_code: "duplicate_content" | "past_valid_to" | "stale_fact" | "unused_decay" | "retirement_proposal" | "security_report" | "human_decision" | "contradiction" | "incorrect_content" | "policy_violation" | "secret_leak" | "poisoning_suspected" | "restore_after_review" | "false_positive";
+        };
+        MemoryQuarantineRequest: {
+            /** @description The exact content version the human acted on; must be current. */
+            version: number;
+            /** @description Optimistic concurrency token; must equal the current version. */
+            expected_version: number;
+            /**
+             * @description Fixed machine reason; free-text reasons are not accepted or stored.
+             * @enum {string}
+             */
+            reason_code: "duplicate_content" | "past_valid_to" | "stale_fact" | "unused_decay" | "retirement_proposal" | "security_report" | "human_decision" | "contradiction" | "incorrect_content" | "policy_violation" | "secret_leak" | "poisoning_suspected" | "restore_after_review" | "false_positive";
+        };
+        /** @description Restore a quarantined item. `active` is not a permitted target: returning to active must go through promote so approval cannot be bypassed. */
+        MemoryRestoreRequest: {
+            /** @description The exact content version the human acted on; must be current. */
+            version: number;
+            /** @description Optimistic concurrency token; must equal the current version. */
+            expected_version: number;
+            /** @enum {string} */
+            target_status: "proposed" | "candidate" | "deprecated";
+            /**
+             * @description Fixed machine reason; free-text reasons are not accepted or stored.
+             * @enum {string}
+             */
+            reason_code: "duplicate_content" | "past_valid_to" | "stale_fact" | "unused_decay" | "retirement_proposal" | "security_report" | "human_decision" | "contradiction" | "incorrect_content" | "policy_violation" | "secret_leak" | "poisoning_suspected" | "restore_after_review" | "false_positive";
+        };
+        /** @description The applied transition plus the item's post-transition view, served under the same sensitivity ceiling as browse. */
+        MemoryGovernanceResult: {
+            /** @enum {string} */
+            action: "promote" | "deprecate" | "quarantine" | "restore";
+            item_id: string;
+            /** @enum {string} */
+            from_status: "proposed" | "candidate" | "active" | "deprecated" | "retired" | "quarantined";
+            /** @enum {string} */
+            to_status: "proposed" | "candidate" | "active" | "deprecated" | "retired" | "quarantined";
+            item_version: number;
+            reason_code: ("duplicate_content" | "past_valid_to" | "stale_fact" | "unused_decay" | "retirement_proposal" | "security_report" | "human_decision" | "contradiction" | "incorrect_content" | "policy_violation" | "secret_leak" | "poisoning_suspected" | "restore_after_review" | "false_positive") | "human_approved" | null;
+            item: components["schemas"]["MemoryItemView"];
         };
         RsiArtifact: {
             /** @enum {string} */
@@ -2867,6 +3582,771 @@ export interface components {
         RsiControlsResponse: {
             controls: components["schemas"]["RsiControls"];
         };
+        DashboardAccess: {
+            /**
+             * @description Financial metrics are granted to owner/admin. Any other role gets `restricted` with null cost/budget values — never zeros.
+             * @enum {string}
+             */
+            financial: "granted" | "restricted";
+            /**
+             * @description This surface never serves captured model content. Content access is a separate grant held by the trace viewer (DAT-225).
+             * @enum {string}
+             */
+            content: "separate_authorization_required";
+            /**
+             * @description This surface never serves ADR-0005 quarantine material. Quarantine access is a separate grant held by the security case surface.
+             * @enum {string}
+             */
+            quarantine: "separate_authorization_required";
+        };
+        DashboardPeriod: {
+            /** Format: date-time */
+            from: string;
+            /** Format: date-time */
+            to: string;
+            timezone: string;
+            /** @enum {string} */
+            boundary: "half_open";
+            /** @enum {string} */
+            bucket: "hour" | "day" | "week" | "month";
+        };
+        DashboardSourceState: {
+            /** @enum {string} */
+            source: "invocation_ledger" | "cost_ledger" | "budget_journal" | "trace" | "task_events";
+            /**
+             * @description missing = source not wired (counts are null); empty = wired with no rows in the period (a real zero); stale = wired, newest record older than stale_after_seconds; restricted = the caller may not read this financial source, so even its count and watermark are null; ok otherwise.
+             * @enum {string}
+             */
+            status: "ok" | "empty" | "stale" | "missing" | "restricted";
+            /** @description Newest observed timestamp in the period; null when missing or empty. */
+            watermark: string | null;
+            /** @description Rows read in the period; null when the source is not wired. */
+            record_count: number | null;
+            stale_after_seconds: number;
+            note: string | null;
+        };
+        DashboardCountMetric: {
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            source: ("invocation_ledger" | "cost_ledger" | "budget_journal" | "trace" | "task_events") | null;
+            /** @description Null unless measured; a measured empty period is a real 0. */
+            value: number | null;
+        };
+        DashboardRatioMetric: {
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            source: ("invocation_ledger" | "cost_ledger" | "budget_journal" | "trace" | "task_events") | null;
+            numerator: number | null;
+            denominator: number | null;
+            /** @description numerator / denominator rounded to 6 decimals; null when unmeasured or when the denominator is 0. */
+            value: number | null;
+        };
+        DashboardLatencyMetric: {
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            source: ("invocation_ledger" | "cost_ledger" | "budget_journal" | "trace" | "task_events") | null;
+            p50_ms: number | null;
+            p95_ms: number | null;
+            sample_size: number | null;
+        };
+        DashboardNotMeasuredMetric: {
+            /** @enum {string} */
+            status: "not_measured";
+            source: null;
+            value: null;
+            /** @description Why the deployment has no source for this metric. */
+            note: string;
+        };
+        DashboardFigureTotals: {
+            known_tokens: number;
+            /** @description Provisional; never a reconciled or invoiced quantity. */
+            estimated_tokens: number;
+            /** @description Attempts whose figure was absent/unknown; they contribute to no sum. */
+            unknown_attempts: number;
+        };
+        DashboardTokenTotals: {
+            input: components["schemas"]["DashboardFigureTotals"];
+            output: components["schemas"]["DashboardFigureTotals"];
+            cache_read: components["schemas"]["DashboardFigureTotals"];
+            cache_write: components["schemas"]["DashboardFigureTotals"];
+            reasoning: components["schemas"]["DashboardFigureTotals"];
+            total_tokens: components["schemas"]["DashboardFigureTotals"];
+        };
+        DashboardTokenMetric: {
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            source: ("invocation_ledger" | "cost_ledger" | "budget_journal" | "trace" | "task_events") | null;
+            figures: components["schemas"]["DashboardTokenTotals"] | null;
+        };
+        DashboardCostLine: {
+            /** @description ISO 4217 currency; null when the line holds no priced component. */
+            currency: string | null;
+            /** @enum {string} */
+            cost_class: "provider_tokens" | "self_hosted_tokens" | "infrastructure";
+            /** @description Canonical fixed-precision decimal. */
+            known_cost: string;
+            /** @description Provisional; never a billed amount. */
+            estimated_cost: string;
+            unknown_components: number;
+            components: number;
+            postings: number;
+        };
+        DashboardCostMetric: {
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            /** @enum {string} */
+            source: "cost_ledger";
+            lines: components["schemas"]["DashboardCostLine"][] | null;
+            /** @description Every currency present in the period; currencies are never merged. */
+            currencies: string[] | null;
+            /** @description Rate revisions bound by the period's postings (sorted, capped at 100). */
+            rate_revision_ids: string[] | null;
+            completeness: {
+                known: number;
+                estimated: number;
+                unknown: number;
+            } | null;
+            updated_at: string | null;
+        };
+        DashboardCurrencyAmount: {
+            currency: string;
+            /** @description Canonical fixed-precision decimal. */
+            amount: string;
+        };
+        DashboardBudgetMetric: {
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            /** @enum {string} */
+            source: "budget_journal";
+            reservations: {
+                held: number;
+                settled: number;
+                reconciling: number;
+                released: number;
+            } | null;
+            /** @description Held plus reconciling bounds; an unknown outcome keeps its bound committed. */
+            outstanding_bound: components["schemas"]["DashboardCurrencyAmount"][] | null;
+            settled_known: components["schemas"]["DashboardCurrencyAmount"][] | null;
+            /** @description Ceiling-derived settlement; labelled internal estimate, not a provider invoice. */
+            settled_estimated: components["schemas"]["DashboardCurrencyAmount"][] | null;
+            unknown_money_accounts: number | null;
+            updated_at: string | null;
+        };
+        DashboardValidationMetric: {
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            /** @enum {string} */
+            source: "task_events";
+            total: number | null;
+            passed: number | null;
+            failed: number | null;
+            /** @description Events without a boolean `passed` field; never guessed. */
+            unclassified: number | null;
+        };
+        DashboardDeliveryMetric: {
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            /** @enum {string} */
+            source: "trace";
+            total: number | null;
+            succeeded: number | null;
+            failed: number | null;
+            unknown: number | null;
+        };
+        DashboardTotals: {
+            requests: components["schemas"]["DashboardCountMetric"];
+            invocations: components["schemas"]["DashboardCountMetric"];
+            retries: components["schemas"]["DashboardCountMetric"];
+            retry_rate: components["schemas"]["DashboardRatioMetric"];
+            error_rate: components["schemas"]["DashboardRatioMetric"];
+            denial_rate: components["schemas"]["DashboardRatioMetric"];
+            tokens: components["schemas"]["DashboardTokenMetric"];
+            latency_ms: components["schemas"]["DashboardLatencyMetric"];
+            queue_age_ms: components["schemas"]["DashboardLatencyMetric"];
+            approval_wait_ms: components["schemas"]["DashboardLatencyMetric"];
+            validation_outcomes: components["schemas"]["DashboardValidationMetric"];
+            delivery_results: components["schemas"]["DashboardDeliveryMetric"];
+            connector_lag_ms: components["schemas"]["DashboardNotMeasuredMetric"];
+            worker_utilization: components["schemas"]["DashboardNotMeasuredMetric"];
+            cost: components["schemas"]["DashboardCostMetric"];
+            budget: components["schemas"]["DashboardBudgetMetric"];
+        };
+        DashboardBreakdownRow: {
+            key: string;
+            request_count: number | null;
+            invocation_count: number | null;
+            retry_count: number | null;
+            error_rate: number | null;
+            tokens: components["schemas"]["DashboardTokenTotals"] | null;
+            /** @description Empty array = cost source wired with no postings for this key (a real zero); null = cost source not wired. */
+            cost: components["schemas"]["DashboardCostLine"][] | null;
+            latency_ms: {
+                p50_ms: number | null;
+                p95_ms: number | null;
+                sample_size: number | null;
+            } | null;
+        };
+        DashboardBreakdown: {
+            /** @enum {string} */
+            dimension: "task" | "agent" | "model" | "date";
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            rows: components["schemas"]["DashboardBreakdownRow"][];
+            next_cursor: string | null;
+            /** @description True when the scan exceeded 5000 distinct keys; aggregate totals stay exact, but omitted keys are only counted. */
+            truncated: boolean;
+            omitted_keys: number;
+        };
+        DashboardSummary: {
+            enterprise_id: string;
+            workspace_id: string;
+            period: components["schemas"]["DashboardPeriod"];
+            /** Format: date-time */
+            generated_at: string;
+            access: components["schemas"]["DashboardAccess"];
+            sources: components["schemas"]["DashboardSourceState"][];
+            /** @description Metric name -> exact denominator definition. A published rate always says what it is a rate of. */
+            denominators: {
+                [key: string]: string;
+            };
+            unavailable_metrics: {
+                metric: string;
+                reason: string;
+            }[];
+            totals: components["schemas"]["DashboardTotals"];
+            breakdown: components["schemas"]["DashboardBreakdown"];
+        };
+        DashboardLedgerEntryView: {
+            invocation_id: string;
+            attempt: number;
+            issue_id: string;
+            run_id: string;
+            trace_id: string;
+            provider: string;
+            api: string;
+            requested_model: string;
+            returned_model: string | null;
+            provider_request_id: string | null;
+            /** Format: date-time */
+            started_at: string;
+            /** Format: date-time */
+            ended_at: string;
+            finish_status: string;
+            /** @enum {string} */
+            usage_completeness: "known" | "estimated" | "unknown";
+            usage_provenance: string;
+            issue_drilldown_url: string | null;
+        };
+        DashboardCostComponent: {
+            category: string;
+            chargeable: boolean;
+            included_in: string | null;
+            chargeable_units: number | null;
+            unit: string;
+            cost_class: string;
+            currency: string | null;
+            rate_revision_id: string | null;
+            rate: string | null;
+            divisor: number | null;
+            /** @description Canonical decimal; null means unknown (never a stand-in zero). */
+            cost: string | null;
+            /** @enum {string} */
+            completeness: "known" | "estimated" | "unknown";
+            unknown_reason: string | null;
+        };
+        DashboardAdjustmentComponent: {
+            category: string;
+            /** @enum {string} */
+            completeness: "known" | "estimated" | "unknown";
+            corrected_units: number | null;
+            corrected_rate_revision_id: string | null;
+            corrected_cost: string | null;
+            corrected_currency: string | null;
+            note: string | null;
+        };
+        DashboardAdjustment: {
+            adjustment_id: string;
+            target_posting_id: string;
+            /** @enum {string} */
+            reason: "provider_correction" | "administrator_correction";
+            /** @enum {string} */
+            source: "provider" | "administrator";
+            /** Format: date-time */
+            created_at: string;
+            note: string | null;
+            components: components["schemas"]["DashboardAdjustmentComponent"][];
+        };
+        DashboardCostItem: {
+            posting_id: string;
+            /** @enum {string} */
+            kind: "invocation" | "infrastructure";
+            invocation_id: string | null;
+            attempt: number | null;
+            endpoint_id: string | null;
+            model_id: string | null;
+            requested_model: string | null;
+            returned_model: string | null;
+            /** @enum {string} */
+            target: "provider" | "self_hosted";
+            /** Format: date-time */
+            applicable_time: string;
+            currency: string | null;
+            /** @enum {string} */
+            completeness: "known" | "estimated" | "unknown";
+            components: components["schemas"]["DashboardCostComponent"][];
+            adjustments: components["schemas"]["DashboardAdjustment"][];
+            ledger_entry: components["schemas"]["DashboardLedgerEntryView"] | null;
+            /**
+             * @description Cost item -> invocation ledger entry drill-down state. `missing_source` means the ledger is not wired; `not_found` means no matching (invocation_id, attempt) in the period.
+             * @enum {string}
+             */
+            ledger_lookup: "ok" | "not_found" | "missing_source" | "infrastructure";
+            /** Format: date-time */
+            recorded_at: string;
+        };
+        DashboardCostItemPage: {
+            period: components["schemas"]["DashboardPeriod"];
+            /** Format: date-time */
+            generated_at: string;
+            access: components["schemas"]["DashboardAccess"];
+            /** @enum {string} */
+            ledger_lookup: "ok" | "missing_source";
+            items: components["schemas"]["DashboardCostItem"][];
+            next_cursor: string | null;
+            total: number;
+        };
+        DashboardTraceEvent: {
+            source: string;
+            event_id: string;
+            version: number;
+            sequence: number;
+            /** Format: date-time */
+            event_time: string;
+            /** Format: date-time */
+            ingest_time: string;
+            record_class: string;
+            kind: string;
+            issue_id: string | null;
+            task_id: string | null;
+            run_id: string | null;
+            attempt_id: string | null;
+            agent_id: string | null;
+            agent_config_revision: string | null;
+            invocation_id: string | null;
+            tool_id: string | null;
+            artifact_id: string | null;
+            delivery_id: string | null;
+            trace_id: string;
+            span_id: string;
+            parent_span_id: string | null;
+            causation_id: string | null;
+            evidence_refs: string[];
+            /** @description Metric-safe labels only; payload is never included by this surface. */
+            labels: {
+                [key: string]: string;
+            };
+            truncated: boolean;
+            late: boolean;
+        };
+        DashboardIssueDrilldown: {
+            enterprise_id: string;
+            workspace_id: string;
+            issue_id: string;
+            period: components["schemas"]["DashboardPeriod"];
+            /** Format: date-time */
+            generated_at: string;
+            access: components["schemas"]["DashboardAccess"];
+            sources: components["schemas"]["DashboardSourceState"][];
+            totals: components["schemas"]["DashboardTotals"];
+            runs: {
+                run_id: string;
+                task_ids: string[];
+                event_count: number;
+                /** Format: date-time */
+                first_event_at: string;
+                /** Format: date-time */
+                last_event_at: string;
+            }[];
+            trace: {
+                /** @enum {string} */
+                status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+                events: components["schemas"]["DashboardTraceEvent"][];
+                next_cursor: string | null;
+                freshness: {
+                    /** Format: date-time */
+                    as_of: string | null;
+                    /** Format: date-time */
+                    event_time_watermark: string | null;
+                } | null;
+                completeness: {
+                    complete: boolean;
+                    missing_ranges: number;
+                    truncated_event_refs: number;
+                } | null;
+            };
+            references: {
+                artifact_ids: string[];
+                delivery_ids: string[];
+                evidence_refs: string[];
+                task_ids: string[];
+                truncated: boolean;
+            };
+            content: {
+                /** @enum {string} */
+                access: "separate_authorization_required";
+                /** @enum {boolean} */
+                payload_included: false;
+            };
+        };
+        DashboardAuditEntry: {
+            audit_id: string;
+            /** Format: date-time */
+            at: string;
+            enterprise_id: string;
+            workspace_id: string;
+            subject: string;
+            role: string;
+            /** @enum {string} */
+            operation: "read" | "export";
+            /** @enum {string} */
+            resource: "summary" | "cost_items" | "issue_drilldown" | "audit" | "export";
+            issue_id: string | null;
+            /** @description Request metadata only; never content, amounts, or token figures. */
+            query: {
+                [key: string]: string | number | null;
+            };
+            record_count: number;
+            request_id: string;
+        };
+        DashboardAuditPage: {
+            items: components["schemas"]["DashboardAuditEntry"][];
+            next_cursor: string | null;
+            total: number;
+        };
+        DashboardExportBundle: {
+            /** Format: date-time */
+            exported_at: string;
+            summary: components["schemas"]["DashboardSummary"];
+            cost_items: components["schemas"]["DashboardCostItemPage"];
+            cost_items_truncated: boolean;
+        };
+        SecurityScope: {
+            enterprise_id: string;
+            workspace_id: string;
+            issue_id: string;
+            run_id: string;
+        };
+        /** @description A rule correction is bound to exactly one enterprise and workspace. */
+        SecurityRuleScope: {
+            enterprise_id: string;
+            workspace_id: string;
+        };
+        SecurityDestination: {
+            endpoint_id: string;
+            provider: string;
+            model_id: string;
+            /** @description An internal endpoint is still scanned; internal never means exempt. */
+            internal: boolean;
+        };
+        SecurityBlock: {
+            invocation_id: string;
+            trace_id: string;
+            /**
+             * @description Stable redacted reason. Never carries matched content.
+             * @enum {string}
+             */
+            reason: "SENSITIVE_DATA_UNCERTAIN" | "MODEL_EGRESS_DENIED" | "SECURITY_REVIEW_REQUIRED" | "CLASSIFICATION_UNKNOWN" | "SCANNER_UNAVAILABLE" | "DATA_CLASS_NOT_AUTHORIZED" | "AUDIT_UNAVAILABLE";
+            /** @description Content-free handler summary; scrubbed at intake. */
+            safe_detail: string;
+            /** Format: date-time */
+            at: string;
+        };
+        /** @description Redacted case status. It contains no quarantined content and no credential: viewing raw context requires a separately granted, audited quarantine access. */
+        SecurityCase: {
+            case_id: string;
+            scope: components["schemas"]["SecurityScope"];
+            /** @enum {string} */
+            state: "pending" | "handling" | "awaiting_review" | "resolved" | "terminated";
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            blocks: components["schemas"]["SecurityBlock"][];
+            quarantine_ids: string[];
+            allowed_transitions: ("pending" | "handling" | "awaiting_review" | "resolved" | "terminated")[];
+        };
+        SecurityCasePage: {
+            items: components["schemas"]["SecurityCase"][];
+            next_cursor: string | null;
+        };
+        /** @description Every edge requires its separated duty: handling and submission are handler work, review decisions are independent-reviewer work, and termination is handler or administrator work. Reviewing your own handling is rejected. */
+        SecurityCaseTransitionRequest: {
+            /** @enum {string} */
+            to: "pending" | "handling" | "awaiting_review" | "resolved" | "terminated";
+            /** @description Non-secret disposition note; scrubbed before it is recorded. */
+            note?: string;
+        };
+        /** @description A task owner's request is recorded, never executed: only handler or administrator work dispositions a case. */
+        SecurityOwnerRequest: {
+            note?: string;
+        };
+        /** @description Issued only by an enterprise security administrator, only to a handler or independent reviewer, and only for one record with an expiry. It is never a case reference and never a transferable credential. */
+        SecurityQuarantineGrantRequest: {
+            quarantine_id: string;
+            subject: string;
+        };
+        SecurityQuarantineGrant: {
+            grant_id: string;
+            quarantine_id: string;
+            subject: string;
+            /** @enum {string} */
+            scope: "inspect";
+            granted_by: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        SecurityQuarantineView: {
+            quarantine_id: string;
+            /** @description Decrypted raw context. Returned only under a valid, scoped grant; this response is never logged, cached, or copied into an audit event, and the view attempt is audited whether it succeeds or is denied. */
+            content: string;
+            /** Format: date-time */
+            viewed_at: string;
+        };
+        /** @description Narrowing constraints only. A correction can require more entropy, length, or a fixed marker; it can never disable a detector or widen what matches. */
+        SecurityRuleConstraints: {
+            min_shannon_entropy?: number;
+            min_length?: number;
+            required_prefix?: string;
+            required_suffix?: string;
+        };
+        /** @description Evidence the service computed from its trusted corpus. A proposal cannot submit evidence; activation re-verifies it. */
+        SecurityRegressionEvidence: {
+            test_ref: string;
+            description: string;
+            detector_id: string;
+            /** @enum {string} */
+            result: "pass" | "fail";
+            /** Format: date-time */
+            at: string;
+        };
+        /** @description One versioned correction. A rule that selects one invocation, case, request digest, or secret value — or disables a whole detector — is rejected by name, not silently accepted. */
+        SecurityRuleRevision: {
+            /** @description `detector_id|enterprise_id|workspace_id`; URL-encode it in a path. */
+            lineage: string;
+            version: number;
+            /** @enum {string} */
+            kind: "correction" | "rollback";
+            /** @enum {string} */
+            status: "proposed" | "approved" | "rejected" | "activated" | "superseded" | "rolled_back" | "expired" | "applied";
+            detector_id: string;
+            scope: components["schemas"]["SecurityRuleScope"];
+            constraints: components["schemas"]["SecurityRuleConstraints"];
+            reason: string;
+            /** Format: date-time */
+            expires_at: string;
+            /** Format: date-time */
+            review_at?: string | null;
+            regression_evidence: components["schemas"]["SecurityRegressionEvidence"][];
+            regression_binding?: {
+                rule_digest: string;
+                corpus_digest: string;
+                /** Format: date-time */
+                at: string;
+            } | null;
+            author_id: string;
+            /** Format: date-time */
+            proposed_at: string;
+            review?: {
+                reviewer_id: string;
+                approved: boolean;
+                reason: string;
+                /** Format: date-time */
+                at: string;
+            } | null;
+            activated_by?: string | null;
+            /** Format: date-time */
+            activated_at?: string | null;
+            /** Format: date-time */
+            superseded_at?: string | null;
+            rolled_back_by?: string | null;
+            /** Format: date-time */
+            rolled_back_at?: string | null;
+            rolls_back_version?: number | null;
+            /** Format: date-time */
+            expired_at?: string | null;
+            rejected_code?: string | null;
+        };
+        SecurityRulePage: {
+            items: components["schemas"]["SecurityRuleRevision"][];
+            next_cursor: string | null;
+        };
+        /** @description The scope comes from the authenticated workspace path, never from the body. Regression evidence is computed by the service and cannot be supplied here. */
+        SecurityRuleProposalRequest: {
+            detector_id: string;
+            constraints: components["schemas"]["SecurityRuleConstraints"];
+            reason: string;
+            /** Format: date-time */
+            expires_at: string;
+            /** Format: date-time */
+            review_at?: string;
+        };
+        /** @description Independent-reviewer work. A handler who authored or handled the change cannot review it, and role combinations never create an exception. */
+        SecurityRuleReviewRequest: {
+            /** @enum {string} */
+            decision: "approve" | "reject";
+            reason: string;
+        };
+        /** @description Enterprise-security-administrator work after an independent approval. Activation re-verifies the computed regression evidence; rollback cannot restore a superseded approval. */
+        SecurityRuleActivationRequest: {
+            note?: string;
+        };
+        /** @description Approves rechecking a rebuilt request at one destination — never a bypass. The approval binds the reviewed context revision, scope, destination, and current policy/rule/scan revisions, and expires. */
+        SecurityRecoveryApprovalRequest: {
+            destination: {
+                endpoint_id: string;
+                model_id: string;
+            };
+            ttl_seconds?: number;
+        };
+        /** @description An approval is not a dispatch. `state: approved` authorizes one recheck attempt; sending is recorded separately as a dispatch outcome. */
+        SecurityRecoveryApproval: {
+            authorization_id: string;
+            case_id: string;
+            scope: components["schemas"]["SecurityScope"];
+            destination: components["schemas"]["SecurityDestination"];
+            /** @description Keyed identifier of the complete reviewed request. */
+            context_revision: string;
+            policy_revision: string;
+            rules_revision: string;
+            scan_policy_revision: string;
+            approved_by: string;
+            /** Format: date-time */
+            approved_at: string;
+            /** Format: date-time */
+            expires_at: string;
+            /** @enum {string} */
+            state: "approved" | "consumed" | "invalidated" | "revoked" | "expired";
+            state_reason?: string | null;
+            /** Format: date-time */
+            consumed_at?: string | null;
+            consumed_by?: string | null;
+        };
+        /** @description The complete request is rebuilt from approved sources and rechecked under current authorization, destination, classification, minimization, and secret rules. Any difference from the approved revisions invalidates the authorization (RECOVERY_APPROVAL_INVALID). */
+        SecurityRecoveryDispatchRequest: {
+            worker_id: string;
+        };
+        /** @description `unknown` means the provider outcome could not be established: the authorization is consumed and the request is never automatically replayed. An approval and an actual send are distinct audit events. */
+        SecurityRecoveryDispatch: {
+            authorization_id: string;
+            case_id: string;
+            invocation_id: string;
+            trace_id: string;
+            /** @description Keyed digest of the exact frozen request handed to the adapter. */
+            request_digest: string;
+            /** @enum {string} */
+            outcome: "pending" | "dispatched" | "failed" | "unknown";
+            detail?: string | null;
+        };
+        SecurityAuditActor: {
+            actor_id: string;
+            /** @enum {string} */
+            actor_kind: "human" | "service" | "run";
+            role: string | null;
+            independent_of: string | null;
+        };
+        SecurityAuditScanEvidence: {
+            scanner: string;
+            rule_version: string;
+            classification: string;
+            segments: number;
+            data_classes: string[];
+            finding_counts: {
+                suspected: number;
+                confirmed: number;
+                unknown: number;
+            };
+            detectors: string[];
+            derived_segments: number;
+        };
+        /** @description One hash-chained, non-secret security audit event. Reading or exporting the trail records its own `audit.trail_read` / `audit.trail_exported` event with the requester and stated purpose. */
+        SecurityAuditEvent: {
+            event_id: string;
+            /** Format: date-time */
+            at: string;
+            /** @enum {string} */
+            event: "block.detected" | "block.enforced" | "case.opened" | "gateway.pre_dispatch" | "gateway.outcome" | "notification.dispatched" | "notification.escalated" | "notification.undeliverable" | "case.termination_requested" | "case.reassignment_requested" | "quarantine.sealed" | "quarantine.seal_failed" | "quarantine.access_granted" | "quarantine.viewed" | "quarantine.access_denied" | "quarantine.expired" | "case.handled" | "case.submitted_for_review" | "case.review_approved" | "case.review_rejected" | "case.review_denied" | "case.reviewer_unavailable" | "case.resolved" | "case.state_changed" | "run.dependent_work_paused" | "run.pause_released" | "rule.proposed" | "rule.proposal_rejected" | "rule.review_approved" | "rule.review_rejected" | "rule.review_denied" | "rule.activated" | "rule.activation_denied" | "rule.superseded" | "rule.rolled_back" | "rule.rollback_denied" | "rule.expired" | "recovery.approval_recorded" | "recovery.approval_revoked" | "recovery.authorization_invalidated" | "recovery.recheck_failed" | "recovery.dispatch_denied" | "recovery.pre_dispatch" | "recovery.dispatch_attempted" | "recovery.dispatch_outcome" | "recovery.reconciliation_recorded" | "case.terminated" | "audit.trail_read" | "audit.trail_exported" | "audit.access_denied";
+            scope: components["schemas"]["SecurityScope"];
+            case_id: string | null;
+            invocation_id: string | null;
+            trace_id: string | null;
+            actor: components["schemas"]["SecurityAuditActor"] | null;
+            action: string;
+            reason: string | null;
+            /** @enum {string} */
+            result: "recorded" | "allowed" | "denied" | "succeeded" | "failed" | "unknown";
+            review: {
+                reviewer_id: string;
+                independent: boolean;
+            } | null;
+            destination: components["schemas"]["SecurityDestination"] | null;
+            data_classes: string[];
+            /** @description Keyed identifiers for content correlation. Never raw content and never a plain hash of a low-entropy secret value. */
+            protected_refs: string[];
+            policy_revision: string | null;
+            rules_revision: string | null;
+            detector_version: string | null;
+            redaction_version: string | null;
+            scan: components["schemas"]["SecurityAuditScanEvidence"] | null;
+            authorization: {
+                authorization_id: string;
+                state: string;
+                /** Format: date-time */
+                expires_at: string | null;
+                /** Format: date-time */
+                consumed_at: string | null;
+            } | null;
+            link: {
+                block_event_id: string | null;
+                dispatch_event_id: string | null;
+            } | null;
+            detail: {
+                [key: string]: unknown;
+            };
+        };
+        SecurityAuditEntry: {
+            seq: number;
+            hash: string;
+            event: components["schemas"]["SecurityAuditEvent"];
+        };
+        SecurityAuditPage: {
+            items: components["schemas"]["SecurityAuditEntry"][];
+            next_cursor: string | null;
+        };
+        /** @description Restricted to the enterprise security administrator. The export is recorded as `audit.trail_exported` before the payload is returned, and no secret ever appears in it. */
+        SecurityAuditExportRequest: {
+            /** @description Non-secret stated purpose, recorded with the export event. */
+            purpose: string;
+            case_id?: string;
+            run_id?: string;
+            trace_id?: string;
+            invocation_id?: string;
+            /** @enum {string} */
+            event_type?: "block.detected" | "block.enforced" | "case.opened" | "gateway.pre_dispatch" | "gateway.outcome" | "notification.dispatched" | "notification.escalated" | "notification.undeliverable" | "case.termination_requested" | "case.reassignment_requested" | "quarantine.sealed" | "quarantine.seal_failed" | "quarantine.access_granted" | "quarantine.viewed" | "quarantine.access_denied" | "quarantine.expired" | "case.handled" | "case.submitted_for_review" | "case.review_approved" | "case.review_rejected" | "case.review_denied" | "case.reviewer_unavailable" | "case.resolved" | "case.state_changed" | "run.dependent_work_paused" | "run.pause_released" | "rule.proposed" | "rule.proposal_rejected" | "rule.review_approved" | "rule.review_rejected" | "rule.review_denied" | "rule.activated" | "rule.activation_denied" | "rule.superseded" | "rule.rolled_back" | "rule.rollback_denied" | "rule.expired" | "recovery.approval_recorded" | "recovery.approval_revoked" | "recovery.authorization_invalidated" | "recovery.recheck_failed" | "recovery.dispatch_denied" | "recovery.pre_dispatch" | "recovery.dispatch_attempted" | "recovery.dispatch_outcome" | "recovery.reconciliation_recorded" | "case.terminated" | "audit.trail_read" | "audit.trail_exported" | "audit.access_denied";
+            /** Format: date-time */
+            from?: string;
+            /** Format: date-time */
+            to?: string;
+        };
+        SecurityAuditExport: {
+            /** Format: date-time */
+            exported_at: string;
+            enterprise_id: string;
+            workspace_id: string;
+            event_count: number;
+            entries: components["schemas"]["SecurityAuditEntry"][];
+        };
         Error: {
             /** @description The shared versioned error envelope (ADR-0008, DAT-226 alignment): a stable machine code, the processing stage, the outcome category, a safe localizable user message, service-decided retryability, retry-after where applicable, the request_id trace/case reference, safe-only structured details, and the authorized next action. No field ever carries secrets, credentials, invitation tokens, or sensitive diagnostics; those stay behind separate access checks. */
             error: {
@@ -2894,6 +4374,10 @@ export interface components {
                 retry_after_seconds: number | null;
                 /** @description Trace/case reference to quote in support and security cases. */
                 request_id: string;
+                /** @description Authenticated security-case identifier, when the failure belongs to one (ADR-0005). A correlation handle only: it authorizes nothing and never grants access to quarantined content. */
+                case_ref?: string | null;
+                /** @description Trace identifier for correlation, when one exists. */
+                trace_ref?: string | null;
                 /** @description Safe structured context only (e.g. a conflicting version, a denied capability category). Never secrets, raw provider errors, invitation tokens, or sensitive diagnostics. */
                 details: {
                     [key: string]: unknown;
@@ -2902,7 +4386,7 @@ export interface components {
                  * @description The authorized next action, as a machine code. Additive vocabulary: a client renders an unknown action as generic guidance from `message`. Null when no action applies.
                  * @enum {string|null}
                  */
-                next_action: "reauthenticate" | "refresh" | "retry" | "resubmit" | "reconcile" | "request_review" | "request_new_invitation" | "contact_admin" | null;
+                next_action: "reauthenticate" | "refresh" | "retry" | "resubmit" | "reconcile" | "request_review" | "request_new_invitation" | "contact_admin" | "enter_security_case" | null;
             };
         };
     };
@@ -8082,6 +9566,15 @@ export interface operations {
                 kind?: "fact" | "lesson" | "playbook" | "anti_pattern" | "episode" | "policy";
                 status?: "proposed" | "candidate" | "active" | "deprecated" | "retired" | "quarantined";
                 tier?: "L1" | "L2" | "L3" | "L4";
+                /** @description Applicability filter (DAT-251): shows items scoped to this team plus broadly applicable items (no team scope). Items scoped to another team are excluded. Leaving it unset changes nothing. */
+                team_id?: string;
+                /** @description Applicability filter; matches on segment boundaries and includes broadly applicable items. */
+                path_prefix?: string;
+                language?: string;
+                task_family?: string;
+                trust?: "human" | "agent" | "enterprise_template" | "system";
+                /** @description Narrows the browse; it never widens the role ceiling, so a sensitivity above the caller's ceiling stays invisible. */
+                sensitivity?: "internal" | "confidential" | "restricted";
                 limit?: number;
                 cursor?: string;
             };
@@ -8248,6 +9741,475 @@ export interface operations {
             };
             /** @description NOT_FOUND */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getMemoryItem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+                /** @description Memory item id. Ids never grant access; a foreign id answers 404. */
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Item detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemView"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — unknown item, other workspace, or above the ceiling */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getMemoryItemVersions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+                /** @description Memory item id. Ids never grant access; a foreign id answers 404. */
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Visible version history, ascending */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemVersions"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getMemoryItemEvents: {
+        parameters: {
+            query?: {
+                /** @description Timeline page size. */
+                limit?: number;
+                /** @description Opaque `next_cursor` from the previous page. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+                /** @description Memory item id. Ids never grant access; a foreign id answers 404. */
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Audit timeline */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemEvents"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    promoteMemoryItem: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+                /** @description Memory item id. Ids never grant access; a foreign id answers 404. */
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryPromoteRequest"];
+            };
+        };
+        responses: {
+            /** @description Promoted item */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryGovernanceResult"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — member/viewer, other team, or agent credential */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description VERSION_CONFLICT, INVALID_TRANSITION, or PRECONDITION_FAILED */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deprecateMemoryItem: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+                /** @description Memory item id. Ids never grant access; a foreign id answers 404. */
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryDeprecateRequest"];
+            };
+        };
+        responses: {
+            /** @description Deprecated item */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryGovernanceResult"];
+                };
+            };
+            /** @description INVALID_REQUEST — unknown reason_code */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description VERSION_CONFLICT or INVALID_TRANSITION */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    quarantineMemoryItem: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+                /** @description Memory item id. Ids never grant access; a foreign id answers 404. */
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryQuarantineRequest"];
+            };
+        };
+        responses: {
+            /** @description Quarantined item, content redacted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryGovernanceResult"];
+                };
+            };
+            /** @description INVALID_REQUEST — unknown reason_code */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description VERSION_CONFLICT or INVALID_TRANSITION */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    restoreMemoryItem: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+                /** @description Memory item id. Ids never grant access; a foreign id answers 404. */
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryRestoreRequest"];
+            };
+        };
+        responses: {
+            /** @description Restored item */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryGovernanceResult"];
+                };
+            };
+            /** @description INVALID_REQUEST — unknown target_status or reason_code */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description VERSION_CONFLICT or INVALID_TRANSITION */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8989,6 +10951,1516 @@ export interface operations {
             };
             /** @description NOT_FOUND */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getDashboardSummary: {
+        parameters: {
+            query?: {
+                /** @description Inclusive lower bound (RFC 3339). Default: 24 hours before `to`. The period is half-open [from, to) and may span at most 366 days; a longer range is 400 RANGE_TOO_LARGE. */
+                from?: string;
+                /** @description Exclusive upper bound (RFC 3339). Default: the current instant. */
+                to?: string;
+                /** @description IANA timezone used for date buckets and calendar boundaries. An unknown zone is 400. */
+                timezone?: string;
+                /** @description Bucket size for `breakdown=date`. Bucket keys are local wall-clock labels in `timezone` (`2026-11-03`, `2026-11-03T14:00`, `2026-W45` style Monday week start, `2026-11`). */
+                bucket?: "hour" | "day" | "week" | "month";
+                /** @description Aggregate dimension. Enterprise/workspace are the scope itself and are not queryable as rows. `agent` requires the trace source (ledger `trace_id` joined to trace `agent_id`) and is reported as `missing_source` when trace is not wired. */
+                breakdown?: "task" | "agent" | "model" | "date";
+                /** @description Page size. The maximum is endpoint-specific; a larger value is 400 LIMIT_OUT_OF_RANGE. */
+                limit?: number;
+                /** @description Opaque cursor copied from a previous page's `next_cursor`. Clients must not construct or parse it; a malformed cursor is 400 INVALID_CURSOR. */
+                cursor?: string;
+                /** @description A wired source whose newest record is older than `to - stale_after_seconds` is reported `stale`; staleness never removes the data, and never turns it into a zero. */
+                stale_after_seconds?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace locator. It must equal the workspace resolved from the caller's live membership; any other id is 404 (indistinguishable from a missing workspace). */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Workspace dashboard summary */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardSummary"];
+                };
+            };
+            /** @description INVALID_REQUEST, INVALID_CURSOR, RANGE_TOO_LARGE or LIMIT_OUT_OF_RANGE */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN, SCOPE_MISSING, SCOPE_AMBIGUOUS, SCOPE_CROSS_TENANT, ACCOUNT_SUSPENDED, or CONTENT_ACCESS_DENIED / QUARANTINE_ACCESS_DENIED when content/quarantine is requested */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — the path names a workspace other than the caller's live membership; the answer is identical to a workspace that does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listDashboardCostItems: {
+        parameters: {
+            query?: {
+                /** @description Inclusive lower bound (RFC 3339). Default: 24 hours before `to`. The period is half-open [from, to) and may span at most 366 days; a longer range is 400 RANGE_TOO_LARGE. */
+                from?: string;
+                /** @description Exclusive upper bound (RFC 3339). Default: the current instant. */
+                to?: string;
+                /** @description IANA timezone used for date buckets and calendar boundaries. An unknown zone is 400. */
+                timezone?: string;
+                /** @description Page size. The maximum is endpoint-specific; a larger value is 400 LIMIT_OUT_OF_RANGE. */
+                limit?: number;
+                /** @description Opaque cursor copied from a previous page's `next_cursor`. Clients must not construct or parse it; a malformed cursor is 400 INVALID_CURSOR. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace locator. It must equal the workspace resolved from the caller's live membership; any other id is 404 (indistinguishable from a missing workspace). */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cost item page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardCostItemPage"];
+                };
+            };
+            /** @description INVALID_REQUEST, INVALID_CURSOR, RANGE_TOO_LARGE or LIMIT_OUT_OF_RANGE */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FINANCIAL_ACCESS_DENIED for roles other than owner/admin, or a scope failure */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — the path names a workspace other than the caller's live membership; the answer is identical to a workspace that does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getDashboardIssueDrilldown: {
+        parameters: {
+            query?: {
+                /** @description Inclusive lower bound (RFC 3339). Default: 24 hours before `to`. The period is half-open [from, to) and may span at most 366 days; a longer range is 400 RANGE_TOO_LARGE. */
+                from?: string;
+                /** @description Exclusive upper bound (RFC 3339). Default: the current instant. */
+                to?: string;
+                /** @description IANA timezone used for date buckets and calendar boundaries. An unknown zone is 400. */
+                timezone?: string;
+                /** @description Page size. The maximum is endpoint-specific; a larger value is 400 LIMIT_OUT_OF_RANGE. */
+                limit?: number;
+                /** @description Opaque cursor copied from a previous page's `next_cursor`. Clients must not construct or parse it; a malformed cursor is 400 INVALID_CURSOR. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace locator. It must equal the workspace resolved from the caller's live membership; any other id is 404 (indistinguishable from a missing workspace). */
+                workspace_id: string;
+                /** @description Issue locator; it is matched inside the authenticated workspace scope. It is audited as metadata, so only identifier characters are accepted. */
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Issue drill-down */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardIssueDrilldown"];
+                };
+            };
+            /** @description INVALID_REQUEST, INVALID_CURSOR, RANGE_TOO_LARGE or LIMIT_OUT_OF_RANGE */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN or a scope failure; CONTENT_ACCESS_DENIED / QUARANTINE_ACCESS_DENIED when content or quarantine is requested */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — the path names a workspace other than the caller's live membership; the answer is identical to a workspace that does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listDashboardAudit: {
+        parameters: {
+            query?: {
+                operation?: "read" | "export";
+                resource?: "summary" | "cost_items" | "issue_drilldown" | "audit" | "export";
+                /** @description Page size. The maximum is endpoint-specific; a larger value is 400 LIMIT_OUT_OF_RANGE. */
+                limit?: number;
+                /** @description Opaque cursor copied from a previous page's `next_cursor`. Clients must not construct or parse it; a malformed cursor is 400 INVALID_CURSOR. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace locator. It must equal the workspace resolved from the caller's live membership; any other id is 404 (indistinguishable from a missing workspace). */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Audit page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardAuditPage"];
+                };
+            };
+            /** @description INVALID_REQUEST, INVALID_CURSOR or LIMIT_OUT_OF_RANGE */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description AUDIT_ACCESS_DENIED for roles other than owner/admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — the path names a workspace other than the caller's live membership; the answer is identical to a workspace that does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    exportDashboard: {
+        parameters: {
+            query?: {
+                /** @description Inclusive lower bound (RFC 3339). Default: 24 hours before `to`. The period is half-open [from, to) and may span at most 366 days; a longer range is 400 RANGE_TOO_LARGE. */
+                from?: string;
+                /** @description Exclusive upper bound (RFC 3339). Default: the current instant. */
+                to?: string;
+                /** @description IANA timezone used for date buckets and calendar boundaries. An unknown zone is 400. */
+                timezone?: string;
+                /** @description Bucket size for `breakdown=date`. Bucket keys are local wall-clock labels in `timezone` (`2026-11-03`, `2026-11-03T14:00`, `2026-W45` style Monday week start, `2026-11`). */
+                bucket?: "hour" | "day" | "week" | "month";
+                /** @description Aggregate dimension. Enterprise/workspace are the scope itself and are not queryable as rows. `agent` requires the trace source (ledger `trace_id` joined to trace `agent_id`) and is reported as `missing_source` when trace is not wired. */
+                breakdown?: "task" | "agent" | "model" | "date";
+            };
+            header?: never;
+            path: {
+                /** @description Workspace locator. It must equal the workspace resolved from the caller's live membership; any other id is 404 (indistinguishable from a missing workspace). */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Export bundle */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardExportBundle"];
+                };
+            };
+            /** @description INVALID_REQUEST, RANGE_TOO_LARGE or an invalid bucket/timezone */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FINANCIAL_ACCESS_DENIED for roles other than owner/admin, or a scope failure */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — the path names a workspace other than the caller's live membership; the answer is identical to a workspace that does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listSecurityCases: {
+        parameters: {
+            query?: {
+                state?: "pending" | "handling" | "awaiting_review" | "resolved" | "terminated";
+                run_id?: string;
+                /** @description Opaque pagination cursor copied from a previous page's next_cursor. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Case page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityCasePage"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — no security duty in this workspace */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getSecurityCase: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Case */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityCase"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — no security duty in this workspace */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CASE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    transitionSecurityCase: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the same command with the same key returns the recorded result instead of applying it twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecurityCaseTransitionRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated case */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityCase"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — SOD_DUTY_REQUIRED or a separation-of-duties refusal */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CASE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CASE_STATE_CONFLICT or CANDIDATE_CONFLICT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description SOD_SELF_REVIEW_FORBIDDEN or SOD_SAME_PRINCIPAL_FORBIDDEN */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    requestSecurityCaseTermination: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the same command with the same key returns the recorded result instead of applying it twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SecurityOwnerRequest"];
+            };
+        };
+        responses: {
+            /** @description Request recorded */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityCase"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — CASE_TERMINATION_REQUEST_FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CASE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    requestSecurityCaseReassignment: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the same command with the same key returns the recorded result instead of applying it twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SecurityOwnerRequest"];
+            };
+        };
+        responses: {
+            /** @description Request recorded */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityCase"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — CASE_REASSIGNMENT_REQUEST_FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CASE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    grantSecurityQuarantineAccess: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the same command with the same key returns the recorded result instead of applying it twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecurityQuarantineGrantRequest"];
+            };
+        };
+        responses: {
+            /** @description Grant issued */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityQuarantineGrant"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — SOD_DUTY_REQUIRED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CASE_NOT_FOUND or QUARANTINE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    viewQuarantinedContext: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Grant id issued for this subject and record. */
+                "X-Quarantine-Grant": string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+                quarantine_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Decrypted content (sensitive) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityQuarantineView"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — SOD_DUTY_REQUIRED or QUARANTINE_ACCESS_DENIED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description QUARANTINE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description QUARANTINE_EXPIRED or QUARANTINE_ACCESS_GRANT_EXPIRED */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listSecurityRuleRevisions: {
+        parameters: {
+            query?: {
+                detector_id?: string;
+                status?: "proposed" | "approved" | "rejected" | "activated" | "superseded" | "rolled_back" | "expired" | "applied";
+                /** @description Opaque pagination cursor copied from a previous page's next_cursor. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revision page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityRulePage"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — no security duty in this workspace */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    proposeSecurityRuleCorrection: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the same command with the same key returns the recorded result instead of applying it twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecurityRuleProposalRequest"];
+            };
+        };
+        responses: {
+            /** @description Proposal recorded */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityRuleRevision"];
+                };
+            };
+            /** @description RULE_PROPOSAL_INVALID */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — SOD_DUTY_REQUIRED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RULE_TARGETED_EXEMPTION, RULE_BLANKET_EXEMPTION, RULE_EVIDENCE_MISSING, or RULE_EVIDENCE_FAILED */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    reviewSecurityRuleCorrection: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the same command with the same key returns the recorded result instead of applying it twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+                /** @description URL-encoded `detector_id|enterprise_id|workspace_id`. */
+                lineage: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecurityRuleReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Reviewed revision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityRuleRevision"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — SOD_DUTY_REQUIRED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RULE_REVISION_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RULE_STATE_CONFLICT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description SOD_SELF_REVIEW_FORBIDDEN or SOD_SAME_PRINCIPAL_FORBIDDEN */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    activateSecurityRuleCorrection: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the same command with the same key returns the recorded result instead of applying it twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+                /** @description URL-encoded `detector_id|enterprise_id|workspace_id`. */
+                lineage: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SecurityRuleActivationRequest"];
+            };
+        };
+        responses: {
+            /** @description Activated revision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityRuleRevision"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — SOD_DUTY_REQUIRED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RULE_REVISION_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RULE_STATE_CONFLICT or RULE_EVIDENCE_CHANGED */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RULE_NOT_APPROVED or RULE_EVIDENCE_FAILED */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    rollbackSecurityRuleCorrection: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the same command with the same key returns the recorded result instead of applying it twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+                /** @description URL-encoded `detector_id|enterprise_id|workspace_id`. */
+                lineage: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SecurityRuleActivationRequest"];
+            };
+        };
+        responses: {
+            /** @description Rollback entry */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityRuleRevision"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — SOD_DUTY_REQUIRED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RULE_NOTHING_TO_ROLL_BACK */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    approveSecurityRecovery: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the same command with the same key returns the recorded result instead of applying it twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecurityRecoveryApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description Recovery approval issued */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityRecoveryApproval"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — SOD_DUTY_REQUIRED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CASE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RECOVERY_CASE_NOT_REVIEWABLE */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description SOD_SELF_REVIEW_FORBIDDEN or MODEL_EGRESS_DENIED */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getSecurityRecoveryApproval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+                authorization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Authorization */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityRecoveryApproval"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RECOVERY_APPROVAL_INVALID — unknown authorization */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    revokeSecurityRecoveryApproval: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the same command with the same key returns the recorded result instead of applying it twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+                authorization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked authorization */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityRecoveryApproval"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — SOD_DUTY_REQUIRED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RECOVERY_APPROVAL_NOT_REVOCABLE */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RECOVERY_APPROVAL_INVALID */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    dispatchSecurityRecovery: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the same command with the same key returns the recorded result instead of applying it twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+                authorization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecurityRecoveryDispatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Dispatch attempt recorded */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityRecoveryDispatch"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN or MODEL_EGRESS_DENIED — authorization, destination, or policy refusal */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RECOVERY_APPROVAL_INVALID — expired, revoked, consumed, or context changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description SENSITIVE_DATA_UNCERTAIN — the recheck still finds uncertain secret material */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description AUDIT_UNAVAILABLE or SCANNER_UNAVAILABLE — fail closed, no bytes sent */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    readSecurityAuditTrail: {
+        parameters: {
+            query: {
+                purpose: string;
+                case_id?: string;
+                run_id?: string;
+                trace_id?: string;
+                invocation_id?: string;
+                event_type?: "block.detected" | "block.enforced" | "case.opened" | "gateway.pre_dispatch" | "gateway.outcome" | "notification.dispatched" | "notification.escalated" | "notification.undeliverable" | "case.termination_requested" | "case.reassignment_requested" | "quarantine.sealed" | "quarantine.seal_failed" | "quarantine.access_granted" | "quarantine.viewed" | "quarantine.access_denied" | "quarantine.expired" | "case.handled" | "case.submitted_for_review" | "case.review_approved" | "case.review_rejected" | "case.review_denied" | "case.reviewer_unavailable" | "case.resolved" | "case.state_changed" | "run.dependent_work_paused" | "run.pause_released" | "rule.proposed" | "rule.proposal_rejected" | "rule.review_approved" | "rule.review_rejected" | "rule.review_denied" | "rule.activated" | "rule.activation_denied" | "rule.superseded" | "rule.rolled_back" | "rule.rollback_denied" | "rule.expired" | "recovery.approval_recorded" | "recovery.approval_revoked" | "recovery.authorization_invalidated" | "recovery.recheck_failed" | "recovery.dispatch_denied" | "recovery.pre_dispatch" | "recovery.dispatch_attempted" | "recovery.dispatch_outcome" | "recovery.reconciliation_recorded" | "case.terminated" | "audit.trail_read" | "audit.trail_exported" | "audit.access_denied";
+                from?: string;
+                to?: string;
+                /** @description Opaque pagination cursor copied from a previous page's next_cursor. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Audit page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityAuditPage"];
+                };
+            };
+            /** @description AUDIT_QUERY_INVALID */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — SOD_DUTY_REQUIRED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description SECURITY_AUDIT_LOG_TAMPERED or SECURITY_AUDIT_LOCK_TIMEOUT */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    exportSecurityAuditTrail: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the same command with the same key returns the recorded result instead of applying it twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace scope. Resolved against the caller's authenticated membership. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecurityAuditExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Export record and entries */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecurityAuditExport"];
+                };
+            };
+            /** @description AUDIT_QUERY_INVALID */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — SOD_DUTY_REQUIRED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description SECURITY_AUDIT_LOG_TAMPERED or SECURITY_AUDIT_LOCK_TIMEOUT */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
