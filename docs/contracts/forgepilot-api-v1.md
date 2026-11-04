@@ -1048,6 +1048,37 @@ outcome classes and their retryability:
 `partial` delivery (a pushed branch without a PR) is an explicit recorded
 outcome, never success and never automatically deleted.
 
+## Model egress, security cases, and audit (DAT-213)
+
+The ADR-0005 surface is detailed by `docs/contracts/security-api-v1.md`. It is
+workspace-scoped under `/api/v1/workspaces/{workspace_id}/security`, adds
+`case_ref` and `trace_ref` to the shared error envelope, and emits the stable
+codes `MODEL_EGRESS_DENIED`, `SENSITIVE_DATA_UNCERTAIN`,
+`SECURITY_REVIEW_REQUIRED`, and `RECOVERY_APPROVAL_INVALID`. No operation in
+that surface accepts a per-call bypass, a client-supplied scope, or reused
+recovery authorization.
+
+| Operation | Purpose |
+| --- | --- |
+| `GET /api/v1/workspaces/{workspace_id}/security/cases` | List redacted cases. |
+| `GET /api/v1/workspaces/{workspace_id}/security/cases/{case_id}` | Read one case and its allowed transitions. |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/transitions` | Advance or close a case through a permitted edge. |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/termination-requests` | Request termination for administrator review. |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/reassignment-requests` | Hand a case to another handler. |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/quarantine-grants` | Grant temporary access to quarantined content. |
+| `POST /api/v1/workspaces/{workspace_id}/security/quarantine/{quarantine_id}/views` | View quarantined content under a live grant. |
+| `GET /api/v1/workspaces/{workspace_id}/security/rules` | List rule revisions by lineage. |
+| `POST /api/v1/workspaces/{workspace_id}/security/rules/proposals` | Propose a versioned constraint revision. |
+| `POST /api/v1/workspaces/{workspace_id}/security/rules/{lineage}/revisions/{version}/reviews` | Independent review of one revision. |
+| `POST /api/v1/workspaces/{workspace_id}/security/rules/{lineage}/revisions/{version}/activation` | Activate an approved revision. |
+| `POST /api/v1/workspaces/{workspace_id}/security/rules/{lineage}/rollbacks` | Roll back the active revision. |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/recovery-approvals` | Bind a single-use recovery approval. |
+| `GET /api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}` | Read an authorization's bound facts. |
+| `DELETE /api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}` | Revoke an unconsumed approval. |
+| `POST /api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}/dispatch` | Recheck the complete request and dispatch once. |
+| `GET /api/v1/workspaces/{workspace_id}/security/audit` | Read the tamper-evident non-secret trail. |
+| `POST /api/v1/workspaces/{workspace_id}/security/audit/exports` | Export a filtered trail; the export is itself audited. |
+
 ## Pagination
 
 List endpoints paginate with an opaque cursor: request `?cursor=`, response

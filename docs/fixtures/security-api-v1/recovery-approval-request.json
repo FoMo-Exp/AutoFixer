@@ -1,0 +1,7 @@
+{
+  "destination": {
+    "endpoint_id": "ep_anthropic_primary",
+    "model_id": "claude-sonnet-5-5"
+  },
+  "ttl_seconds": 900
+}

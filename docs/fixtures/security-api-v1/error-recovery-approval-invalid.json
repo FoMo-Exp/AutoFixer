@@ -1,0 +1,18 @@
+{
+  "error": {
+    "envelope_version": 1,
+    "code": "RECOVERY_APPROVAL_INVALID",
+    "stage": "policy",
+    "category": "denial",
+    "message": "The recovery approval no longer authorizes rechecking this request.",
+    "retryable": false,
+    "retry_after_seconds": null,
+    "request_id": "req_01JA7Y4M2B",
+    "case_ref": "case_7f3a9c2e",
+    "trace_ref": "trace_10",
+    "details": {
+      "reason": "context_changed"
+    },
+    "next_action": "request_review"
+  }
+}

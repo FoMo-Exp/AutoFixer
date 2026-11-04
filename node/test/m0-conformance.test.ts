@@ -49,13 +49,16 @@ function parseEndpoints(markdown: string): Array<[method: string, path: string]>
       markdown,
     )?.[1];
   const collaborationTable = /## Collaboration v1 \(DAT-221\)([\s\S]*?)\n## /.exec(markdown)?.[1];
-  if (!taskTable || !identityTable || !collaborationTable) {
+  const securityTable =
+    /## Model egress, security cases, and audit \(DAT-213\)([\s\S]*?)\n## /.exec(markdown)?.[1];
+  if (!taskTable || !identityTable || !collaborationTable || !securityTable) {
     throw new Error("could not locate the endpoints tables in the contract");
   }
   return [
     ...parseTableEndpoints(taskTable),
     ...parseTableEndpoints(identityTable),
     ...parseTableEndpoints(collaborationTable),
+    ...parseTableEndpoints(securityTable),
   ];
 }
 
@@ -280,8 +283,8 @@ describe("independent conformance to the normative contract", () => {
     }
     // 70 identity/workspace/collaboration operations on main, the five
     // memory v1 operations (DAT-236), the eleven bounded RSI operations
-    // (DAT-238), and the seven memory governance operations (DAT-251).
-    expect(checked).toBe(93);
+    // (DAT-238), and the eighteen ADR-0005 security operations (DAT-213).
+    expect(checked).toBe(104);
   });
 
   test("the committed openapi.json also carries the auth scheme", () => {
