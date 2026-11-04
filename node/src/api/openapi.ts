@@ -28,6 +28,7 @@ import {
   ERROR_STAGES,
 } from "./errors.js";
 import { MEMORY_OPENAPI_SCHEMAS, memoryOpenApiPaths } from "./openapi-memory.js";
+import { RSI_OPENAPI_SCHEMAS, rsiOpenApiPaths } from "./openapi-rsi.js";
 import type { JsonObject } from "./openapi-types.js";
 
 /** Loosely-typed OpenAPI 3.1 document; schemas stay plain JSON objects. */
@@ -350,6 +351,7 @@ const taskSchema: JsonObject = {
     "risk",
     "progress",
     "pi_summary",
+    "memory",
     "governance",
     "artifacts",
   ],
@@ -453,6 +455,37 @@ const taskSchema: JsonObject = {
         "served unavailable with text null.",
       oneOf: [{ $ref: "#/components/schemas/PiSummary" }, { type: "null" }],
     },
+    memory: {
+      type: ["object", "null"],
+      description:
+        "Memory and retrieval-policy versions this run was pinned to at start " +
+        "(DAT-238), so a run is reproducible after a rollback. `canary` marks " +
+        "an unpublished candidate policy overlay; `item_ids` are the exact " +
+        "memory versions injected. Null when the memory service is not " +
+        "configured; `degraded` records an outage that did not block the run.",
+      required: [
+        "run_id",
+        "memory_version",
+        "policy_version",
+        "policy_hash",
+        "canary",
+        "rollout_id",
+        "bundle_id",
+        "degraded",
+        "item_ids",
+      ],
+      properties: {
+        run_id: { type: "string" },
+        memory_version: { type: ["string", "null"] },
+        policy_version: { type: ["integer", "null"] },
+        policy_hash: { type: ["string", "null"] },
+        canary: { type: "boolean" },
+        rollout_id: { type: ["string", "null"] },
+        bundle_id: { type: ["string", "null"] },
+        degraded: { type: "boolean" },
+        item_ids: { type: "array", items: { type: "string" } },
+      },
+    },
     governance: {
       type: "object",
       description:
@@ -502,11 +535,30 @@ const taskEventSchema: JsonObject = {
 
 const runSummarySchema: JsonObject = {
   type: "object",
+  description:
+    "One remediation run on a task. The optional evidence fields are written " +
+    "only while that run was active; absent means the evidence cannot be " +
+    "attributed to this run (DAT-238), never that it is zero.",
   required: ["run_id", "state", "created_at"],
   properties: {
     run_id: { type: "string" },
     state: { type: "string", enum: [...DSH_STATES] },
     created_at: { type: "string", format: "date-time" },
+    actions_completed: {
+      type: "integer",
+      minimum: 0,
+      description: "Executed tool actions attributed to this run.",
+    },
+    safety_events: {
+      type: "integer",
+      minimum: 0,
+      description: "Prohibited/policy-denied tool intents attributed to this run.",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+      description: "Last time this run's own evidence changed.",
+    },
   },
 };
 
@@ -4493,6 +4545,10 @@ export function buildOpenApiDocument(): OpenApiDocument {
   // browse, versions, and evaluation records.
   Object.assign(paths, memoryOpenApiPaths());
 
+  // Bounded RSI (DAT-238): proposals, replay evaluation, approvals, canary,
+  // rollback, budgets, kill switch. Mounted under the same memory surface.
+  Object.assign(paths, rsiOpenApiPaths());
+
   // Stamp the security requirement and 401 response onto every operation so
   // auth coverage cannot silently miss an endpoint.
   stampAuth(paths);
@@ -4596,6 +4652,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
         DesktopFlow: desktopFlowSchema,
         AuthAuditRecord: authAuditRecordSchema,
         ...MEMORY_OPENAPI_SCHEMAS,
+        ...RSI_OPENAPI_SCHEMAS,
         Error: errorSchema,
       },
       securitySchemes: {

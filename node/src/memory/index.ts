@@ -112,3 +112,7 @@ export * from "./lifecycle/index.js";
 // Bounded retrieval, ranking, budget, conflict and degraded-mode surface
 // (DAT-236). Re-exported here so callers depend on one memory module.
 export * from "./retrieval/index.js";
+
+// Bounded RSI (DAT-238): proposals, offline replay, approvals, canary,
+// rollback, weekly budgets, run version pins, and the workspace kill switch.
+export * from "./rsi/index.js";

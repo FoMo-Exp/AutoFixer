@@ -20,6 +20,9 @@ import { createTurnSummaryReportTool } from "../pi/turn-report-tool.js";
 import { piSystemPrompt, taskPrompt } from "../pi/prompts.js";
 import type { PiSessionOptions } from "../pi/session.js";
 import { PiSession } from "../pi/session.js";
+import { assembleRunMemory } from "./run-memory.js";
+import type { RunMemoryDeps } from "./run-memory.js";
+import { SAFETY_DENIAL_CODES } from "./run-outcomes.js";
 import { ApiError, apiErrorFromDsh, DSH_SAFE_MESSAGES } from "./errors.js";
 import { PiSummaryTracker } from "./pi-summary.js";
 import type { PiSummary } from "./pi-summary.js";
@@ -188,6 +191,12 @@ export interface TaskServiceDeps {
    * denied at the next dispatch.
    */
   runScope: (principal: AuthenticatedPrincipal | null) => GatewayScopeBinding;
+  /**
+   * Run-start memory and version pinning (DAT-238). Set when the control plane
+   * and memory service are on. A failed assembly degrades the run to
+   * policy-only and is recorded on the task — it never blocks delivery.
+   */
+  memory?: RunMemoryDeps;
 }
 
 /**
@@ -995,6 +1004,26 @@ export class TaskService {
       this.finalizeIfTerminal(record);
       return;
     }
+    const memoryContext = this.deps.memory
+      ? assembleRunMemory(
+          this.deps.memory,
+          {
+            enterprise_id: this.deps.config.enterpriseId,
+            workspace_id: this.deps.config.workspaceId,
+            actor_id: this.deps.config.actorId,
+          },
+          record,
+        )
+      : { system_prompt: "", ref: null };
+    record.memory = memoryContext.ref;
+    this.store.save(record);
+    const systemPrompt =
+      memoryContext.system_prompt.length > 0
+        ? `${piSystemPrompt()}\n\n${memoryContext.system_prompt}`
+        : piSystemPrompt();
+    // Every observation below belongs to this run, not to whatever run the
+    // task may hold later.
+    const activeRunId = record.runId;
     const sessionId = `pis_${randomUUID().replaceAll("-", "")}`;
     const observedToolCalls = new Set<string>();
     // The summary lifecycle starts with the run: pending until the first
@@ -1010,7 +1039,7 @@ export class TaskService {
     let sessionRef: PiSession | null = null;
     const tool = createDshRequestActionTool({
       client: this.deps.dsh,
-      runId: record.runId,
+      runId: activeRunId,
       sessionId,
       getTurnId: () => sessionRef?.currentTurnId() ?? "turn_0",
       diagnostics: this.diagnostics,
@@ -1026,6 +1055,7 @@ export class TaskService {
         }
         observedToolCalls.add(observation.toolCallId);
         if (observation.outcome === "accepted") {
+          this.store.recordRunEvidence(record, activeRunId, { action: true });
           this.store.appendEvent(record, "tool.completed", {
             tool_call_id: observation.toolCallId,
             tool_id: observation.toolId,
@@ -1042,11 +1072,15 @@ export class TaskService {
             });
           }
         } else {
+          const errorCode = observation.errorCode ?? "DSH_UNAVAILABLE";
+          if (SAFETY_DENIAL_CODES.has(errorCode)) {
+            this.store.recordRunEvidence(record, activeRunId, { safety_event: true });
+          }
           this.store.appendEvent(record, "tool.denied", {
             tool_call_id: observation.toolCallId,
             tool_id: observation.toolId,
             action_id: observation.actionId,
-            error_code: observation.errorCode ?? "DSH_UNAVAILABLE",
+            error_code: errorCode,
             message: observation.errorMessage ?? "dsh did not answer",
             error_envelope: observation.errorEnvelope ?? null,
           });
@@ -1056,7 +1090,7 @@ export class TaskService {
     });
     const sessionOptions: PiSessionOptions = {
       sessionId,
-      systemPrompt: piSystemPrompt(),
+      systemPrompt,
       model: this.deps.model,
       tools: [tool, reportTool],
       // Every model call this session makes goes through the gateway, bound to
@@ -1304,9 +1338,15 @@ export class TaskService {
     const entry = record.runs.find((run) => run.run_id === runId);
     if (entry) {
       entry.state = state;
+      entry.updated_at = new Date().toISOString();
       return;
     }
-    record.runs.push({ run_id: runId, state, created_at: record.updatedAt });
+    record.runs.push({
+      run_id: runId,
+      state,
+      created_at: record.updatedAt,
+      updated_at: new Date().toISOString(),
+    });
   }
 
   /** Project one dsh state onto the task, emitting terminal bookkeeping. */

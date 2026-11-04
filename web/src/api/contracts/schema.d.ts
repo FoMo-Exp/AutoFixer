@@ -1383,6 +1383,210 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspace_id}/memory/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List bounded RSI proposals
+         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. RSI is a governed feedback loop over memory artifacts and retrieval policy. Only class A and C retrieval-policy changes and class B memory-item changes may be proposed; class D targets (capability grants, approval rules, evidence schema, evaluation definitions, safety policy, merge/deploy) are rejected. Evaluation runs the offline replay itself and computes the confidence interval: the caller cannot submit a score. The hidden holdout contributes only aggregate sample counts. The workspace kill switch stops all RSI actions immediately and rolls back an active canary. Bounded list, newest first.
+         */
+        get: operations["listRsiProposals"];
+        put?: never;
+        /**
+         * Open a governed RSI proposal
+         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. RSI is a governed feedback loop over memory artifacts and retrieval policy. Only class A and C retrieval-policy changes and class B memory-item changes may be proposed; class D targets (capability grants, approval rules, evidence schema, evaluation definitions, safety policy, merge/deploy) are rejected. Evaluation runs the offline replay itself and computes the confidence interval: the caller cannot submit a score. The hidden holdout contributes only aggregate sample counts. The workspace kill switch stops all RSI actions immediately and rolls back an active canary. A class D target is rejected; the proposer is the authenticated user and is recorded as such.
+         */
+        post: operations["createRsiProposal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Proposal detail with evaluations, approvals, rollout, and gate
+         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. RSI is a governed feedback loop over memory artifacts and retrieval policy. Only class A and C retrieval-policy changes and class B memory-item changes may be proposed; class D targets (capability grants, approval rules, evidence schema, evaluation definitions, safety policy, merge/deploy) are rejected. Evaluation runs the offline replay itself and computes the confidence interval: the caller cannot submit a score. The hidden holdout contributes only aggregate sample counts. The workspace kill switch stops all RSI actions immediately and rolls back an active canary. The holdout contributes an aggregate counter only; its case content is not part of this payload.
+         */
+        get: operations["getRsiProposal"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/evaluations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run the offline replay over the golden set and hidden holdout
+         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. Workspace owner only. The server executes the replay over the stored corpus and both datasets, computes the per-arm samples, delta and Newcombe confidence interval, and records one evaluation per dataset. The verifier is the authenticated evaluator with a server-derived replay reference; metrics, verifier claims, and evidence text in the request are refused, and the proposer cannot evaluate itself. Reaching the weekly reflection-token budget blocks the run before anything is recorded.
+         */
+        post: operations["evaluateRsiProposal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record a named human approval for the exact proposal version
+         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner or admin. Class B needs one named human; class C needs two distinct humans with the owner and reviewer keys; class A needs none only when the workspace enabled automatic promotion. The proposer can never approve its own proposal.
+         */
+        post: operations["approveRsiProposal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/canary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start the 10% canary for an eligible proposal
+         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. Requires a passing offline replay over both datasets, the required human approvals, remaining weekly change budget, and an inactive kill switch. Rollouts are serialized per workspace: a second start is refused while one canary is active, and the stored baseline must still be the policy version the proposal was evaluated against. The candidate policy stays unpublished: only runs pinned into the canary receive it.
+         */
+        post: operations["startRsiCanary"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/canary/observations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record a canary stage observation and advance or roll back
+         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. The sample is derived server-side from the runs this rollout pinned and their terminal task outcomes; the control arm includes only baseline pins at the rollout's baseline policy version. Pending runs are excluded and any request body is refused. The stage advances 10% → 50% → 100% only after its minimum sample passes. Any security event, negative delta, a confidence interval establishing a regression beyond the margin, or a rework/cost breach triggers an automatic rollback. A pass at 100% promotes and publishes exactly one policy version (or activates the candidate memory item).
+         */
+        post: operations["recordRsiCanaryObservation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Roll back a canary or revert a promoted change
+         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. A canary is stopped; a promoted retrieval change is reverted by publishing the baseline policy as a new immutable version, and a promoted memory item is deprecated. Historical run pins are not rewritten.
+         */
+        post: operations["rollbackRsiProposal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/rsi/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Workspace RSI controls, budgets, holdout counter, and active rollout
+         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. RSI is a governed feedback loop over memory artifacts and retrieval policy. Only class A and C retrieval-policy changes and class B memory-item changes may be proposed; class D targets (capability grants, approval rules, evidence schema, evaluation definitions, safety policy, merge/deploy) are rejected. Evaluation runs the offline replay itself and computes the confidence interval: the caller cannot submit a score. The hidden holdout contributes only aggregate sample counts. The workspace kill switch stops all RSI actions immediately and rolls back an active canary. The holdout block is an aggregate count and last-evaluation timestamp only.
+         */
+        get: operations["getRsiStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/rsi/kill-switch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Engage or release the per-workspace RSI kill switch
+         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. Engaging requires a reason and takes effect in the same call: every active canary is rolled back, new runs resolve to the baseline policy, and proposals, evaluations, approvals, and canaries are refused until it is released.
+         */
+        post: operations["setRsiKillSwitch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/rsi/controls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Tighten automatic promotion or the weekly budgets
+         * @description Requires a web/desktop session and derives enterprise/workspace scope from membership. Owner only. A workspace can disable automatic promotion and lower its weekly change and reflection-token budgets. Sample sizes, regression ceilings, and approval requirements are code constants and cannot be raised here.
+         */
+        patch: operations["updateRsiControls"];
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1439,6 +1643,18 @@ export interface components {
             };
             /** @description Display-safe summary of the latest settled Pi turn for the current run (DAT-191). Null until a Pi session exists for the task. The raw pi.text_delta stream is never the display source: text is exposed only through this fail-closed, Node-judged summary, and only with a verifiable source record (DAT-194) — a summary whose source cannot be re-proven, including every legacy DAT-191/192 record, is served unavailable with text null. */
             pi_summary: components["schemas"]["PiSummary"] | null;
+            /** @description Memory and retrieval-policy versions this run was pinned to at start (DAT-238), so a run is reproducible after a rollback. `canary` marks an unpublished candidate policy overlay; `item_ids` are the exact memory versions injected. Null when the memory service is not configured; `degraded` records an outage that did not block the run. */
+            memory: {
+                run_id: string;
+                memory_version: string | null;
+                policy_version: number | null;
+                policy_hash: string | null;
+                canary: boolean;
+                rollout_id: string | null;
+                bundle_id: string | null;
+                degraded: boolean;
+                item_ids: string[];
+            } | null;
             /** @description GitHub merge-boundary projection for the current head. Approvals and checks observed against an older head are invalidated: observations_valid turns false and merge_queue_eligible turns false until dsh observes them against the current head. */
             governance: {
                 current_head_sha: string | null;
@@ -1513,12 +1729,22 @@ export interface components {
             /** @enum {string} */
             outcome: "ready_for_review" | "needs_approval" | "blocked" | "failed" | "completed";
         };
+        /** @description One remediation run on a task. The optional evidence fields are written only while that run was active; absent means the evidence cannot be attributed to this run (DAT-238), never that it is zero. */
         RunSummary: {
             run_id: string;
             /** @enum {string} */
             state: "requested" | "approved" | "running" | "awaiting_review" | "approved_for_merge" | "stopped" | "timed_out" | "expired" | "rejected" | "cancelled" | "merged";
             /** Format: date-time */
             created_at: string;
+            /** @description Executed tool actions attributed to this run. */
+            actions_completed?: number;
+            /** @description Prohibited/policy-denied tool intents attributed to this run. */
+            safety_events?: number;
+            /**
+             * Format: date-time
+             * @description Last time this run's own evidence changed.
+             */
+            updated_at?: string;
         };
         ArtifactMetadata: {
             /**
@@ -2413,6 +2639,229 @@ export interface components {
             /** Format: date-time */
             created_at: string;
             created_by: string;
+        };
+        RsiArtifact: {
+            /** @enum {string} */
+            kind: "retrieval_policy" | "memory_item";
+            baseline_policy_version: number;
+            candidate_policy_hash: string | null;
+            item_id: string | null;
+            item_version: number | null;
+        };
+        RsiProposer: {
+            id: string;
+            /** @enum {string} */
+            kind: "agent" | "human";
+            model?: string;
+        };
+        RsiEvaluation: {
+            evaluation_id: string;
+            proposal_id: string;
+            proposal_version: number;
+            /** @enum {string} */
+            dataset: "golden" | "holdout";
+            holdout_used: boolean;
+            sample_size: number;
+            baseline_sample_size: number;
+            candidate_sample_size: number;
+            baseline_successes: number;
+            candidate_successes: number;
+            baseline_rework: number;
+            candidate_rework: number;
+            baseline_cost: number;
+            candidate_cost: number;
+            safety_events: number;
+            success_delta: number;
+            delta_ci_low: number;
+            delta_ci_high: number;
+            /** @enum {string} */
+            verdict: "pass" | "fail" | "inconclusive";
+            verifier: {
+                /**
+                 * @description The server-run replay is the only verifier; agent self-report is not a kind.
+                 * @enum {string}
+                 */
+                kind: "test" | "qa_disposition" | "reviewer_acceptance";
+                id: string;
+                reference: string;
+            };
+            policy_version: number;
+            policy_hash: string;
+            memory_version: string;
+            reflection_tokens: number;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+        };
+        RsiApproval: {
+            approval_id: string;
+            proposal_id: string;
+            proposal_version: number;
+            /** @enum {string} */
+            approval_key: "single" | "owner" | "reviewer";
+            approver_id: string;
+            /** @enum {string} */
+            role: "owner" | "admin" | "member" | "viewer";
+            note: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        RsiRollout: {
+            rollout_id: string;
+            proposal_id: string;
+            /** @enum {integer} */
+            stage: 10 | 50 | 100;
+            /** @enum {string} */
+            status: "canary" | "promoted" | "rolled_back";
+            baseline_policy_version: number;
+            candidate_hash: string;
+            reason: string | null;
+            /** Format: date-time */
+            started_at: string;
+            /** Format: date-time */
+            ended_at: string | null;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description One canary stage sample derived from pinned runs and their terminal task outcomes. Evidence is the server-generated pin set, never request text. */
+        RsiCanaryObservation: {
+            observation_id: string;
+            rollout_id: string;
+            /** @enum {integer} */
+            stage: 10 | 50 | 100;
+            sample_size: number;
+            baseline_sample_size: number;
+            candidate_sample_size: number;
+            baseline_successes: number;
+            candidate_successes: number;
+            baseline_rework: number;
+            candidate_rework: number;
+            baseline_cost: number;
+            candidate_cost: number;
+            safety_events: number;
+            success_delta: number;
+            delta_ci_low: number;
+            delta_ci_high: number;
+            /** @enum {string} */
+            verdict: "pass" | "fail" | "inconclusive";
+            evidence_reference: string;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+        };
+        RsiGate: {
+            /** @enum {string} */
+            offline_evaluation: "missing" | "pass" | "fail";
+            holdout_required: boolean;
+            approvals_required: number;
+            approvals_satisfied: number;
+            approval_keys: ("single" | "owner" | "reviewer")[];
+            budget_ok: boolean;
+            kill_switch: boolean;
+            canary_eligible: boolean;
+            reasons: string[];
+        };
+        RsiProposal: {
+            proposal_id: string;
+            title: string;
+            summary: string;
+            diff: string;
+            /** @enum {string} */
+            target: "retrieval_weights" | "ranking_tiebreakers" | "lesson" | "playbook" | "prompt_hint" | "retrieval_bounds" | "scope_taxonomy" | "consolidation_thresholds" | "capability_grant" | "approval_rules" | "evidence_schema" | "evaluation_definition" | "safety_policy" | "merge_deploy";
+            /** @enum {string} */
+            risk: "A" | "B" | "C" | "D";
+            /** @enum {string} */
+            status: "proposed" | "awaiting_approval" | "ready" | "canary" | "promoted" | "rolled_back" | "blocked";
+            status_reason: string | null;
+            artifact: components["schemas"]["RsiArtifact"];
+            proposer: components["schemas"]["RsiProposer"];
+            baseline_policy_version: number;
+            baseline_memory_version: string;
+            applied_policy_version: number | null;
+            version: number;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+            evaluations: components["schemas"]["RsiEvaluation"][];
+            approvals: components["schemas"]["RsiApproval"][];
+            rollout: components["schemas"]["RsiRollout"] | null;
+            observations: components["schemas"]["RsiCanaryObservation"][];
+            gate: components["schemas"]["RsiGate"];
+        };
+        RsiProposalList: {
+            proposals: components["schemas"]["RsiProposal"][];
+        };
+        RsiControls: {
+            kill_switch: boolean;
+            kill_switch_reason: string | null;
+            /** Format: date-time */
+            kill_switch_changed_at: string | null;
+            kill_switch_changed_by: string | null;
+            auto_promote_low_risk: boolean;
+            weekly_change_budget: number;
+            weekly_reflection_token_budget: number;
+            /** Format: date-time */
+            updated_at: string | null;
+            updated_by: string | null;
+        };
+        RsiBudget: {
+            /** @description Monday of the ISO week (YYYY-MM-DD, UTC). */
+            week_start: string;
+            weekly_change_budget: number;
+            changes_promoted: number;
+            changes_remaining: number;
+            weekly_reflection_token_budget: number;
+            reflection_tokens_used: number;
+            reflection_tokens_remaining: number;
+        };
+        RsiHoldoutStatus: {
+            /** @description Aggregate count only; holdout case content is never exposed. */
+            cases: number;
+            /** Format: date-time */
+            last_evaluated_at: string | null;
+        };
+        RsiStatus: {
+            contract_version: number;
+            controls: components["schemas"]["RsiControls"];
+            budget: components["schemas"]["RsiBudget"];
+            holdout: components["schemas"]["RsiHoldoutStatus"];
+            active_rollout: components["schemas"]["RsiRollout"] | null;
+            proposals: {
+                proposed: number;
+                awaiting_approval: number;
+                ready: number;
+                canary: number;
+                promoted: number;
+                rolled_back: number;
+                blocked: number;
+            };
+        };
+        /** @description The proposer is the session user and the risk is derived from the target; neither may be sent. A retrieval-policy target carries `candidate_policy`; a memory-item target carries `memory_item` referencing a candidate version. */
+        RsiCreateProposalRequest: {
+            title: string;
+            summary: string;
+            diff: string;
+            /** @enum {string} */
+            target: "retrieval_weights" | "ranking_tiebreakers" | "lesson" | "playbook" | "prompt_hint" | "retrieval_bounds" | "scope_taxonomy" | "consolidation_thresholds" | "capability_grant" | "approval_rules" | "evidence_schema" | "evaluation_definition" | "safety_policy" | "merge_deploy";
+            /** @description Complete candidate retrieval policy. Validated against the same hard ceilings as a stored policy and unpublished until promotion. */
+            candidate_policy?: Record<string, never>;
+            memory_item?: {
+                item_id: string;
+                item_version: number;
+            };
+        };
+        /** @description Selects datasets only. The replay, its per-arm samples, delta, confidence interval, and verifier identity are computed or bound server-side; a request that carries metrics, a verifier claim, or evidence text is refused. */
+        RsiEvaluationRequest: {
+            /** @description Defaults to both datasets; the canary gate requires both. */
+            datasets?: ("golden" | "holdout")[];
+        };
+        RsiControlsRequest: {
+            auto_promote_low_risk?: boolean;
+            weekly_change_budget?: number;
+            weekly_reflection_token_budget?: number;
+        };
+        RsiControlsResponse: {
+            controls: components["schemas"]["RsiControls"];
         };
         Error: {
             /** @description The shared versioned error envelope (ADR-0008, DAT-226 alignment): a stable machine code, the processing stage, the outcome category, a safe localizable user message, service-decided retryability, retry-after where applicable, the request_id trace/case reference, safe-only structured details, and the authorized next action. No field ever carries secrets, credentials, invitation tokens, or sensitive diagnostics; those stay behind separate access checks. */
@@ -7699,6 +8148,747 @@ export interface operations {
                 };
             };
             /** @description FORBIDDEN — owner role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listRsiProposals: {
+        parameters: {
+            query?: {
+                status?: "proposed" | "awaiting_approval" | "ready" | "canary" | "promoted" | "rolled_back" | "blocked";
+                risk?: "A" | "B" | "C" | "D";
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded proposal list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RsiProposalList"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createRsiProposal: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RsiCreateProposalRequest"];
+            };
+        };
+        responses: {
+            /** @description Proposal created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RsiProposal"];
+                };
+            };
+            /** @description INVALID_REQUEST — including a class D target or a scope claim */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CONFLICT — the RSI kill switch is active */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getRsiProposal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Proposal detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RsiProposal"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    evaluateRsiProposal: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RsiEvaluationRequest"];
+            };
+        };
+        responses: {
+            /** @description Evaluation recorded; the returned gate is recomputed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RsiProposal"];
+                };
+            };
+            /** @description INVALID_REQUEST — including self-verification */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — owner role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CONFLICT — kill switch active, budget exhausted, or already live */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    approveRsiProposal: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    note?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Approval recorded; the gate is recomputed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RsiProposal"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — owner or admin required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CONFLICT — evaluation has not passed or the proposal is final */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    startRsiCanary: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Canary started at 10% */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RsiProposal"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CONFLICT — gate not satisfied or kill switch active */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    recordRsiCanaryObservation: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Observation recorded; the rollout state reflects the decision */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RsiProposal"];
+                };
+            };
+            /** @description INVALID_REQUEST — a request body carrying samples */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CONFLICT — no active canary or no terminal pinned runs */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    rollbackRsiProposal: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    reason: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Rolled back */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RsiProposal"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CONFLICT — nothing to roll back */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getRsiStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description RSI status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RsiStatus"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    setRsiKillSwitch: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    enabled: boolean;
+                    reason?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Updated controls */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RsiControlsResponse"];
+                };
+            };
+            /** @description INVALID_REQUEST — engaging without a reason */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    updateRsiControls: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RsiControlsRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated controls */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RsiControlsResponse"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
             403: {
                 headers: {
                     [name: string]: unknown;

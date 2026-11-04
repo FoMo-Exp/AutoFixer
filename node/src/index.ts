@@ -12,6 +12,7 @@ import { InvitationService, readOrCreateInvitationDigestKey } from "./api/invita
 import type { InvitationRateLimits } from "./api/invitation-service.js";
 import { ProviderOAuth, readOAuthCredentialsFile } from "./api/oauth.js";
 import { createApiServer } from "./api/server.js";
+import { createTaskRunOutcomes } from "./api/run-outcomes.js";
 import { createRequestAuthority } from "./api/request-authority.js";
 import type { RequestAuthority } from "./api/request-authority.js";
 import { TaskService } from "./api/task-service.js";
@@ -51,11 +52,15 @@ import {
   createMemoryRepositories,
   createMemoryRetrievalService,
   createRetrievalStore,
+  createRsiService,
+  createRsiStore,
 } from "./memory/index.js";
 import type {
   MemoryConsolidationRunner,
   MemoryRepositories,
   MemoryRetrievalService,
+  RsiService,
+  RsiStore,
 } from "./memory/index.js";
 import { resolveConfiguredModel } from "./pi/model.js";
 import {
@@ -132,6 +137,10 @@ export interface OrchestratorHandle {
   memory: MemoryRetrievalService | undefined;
   /** Scoped memory repositories, for memory lifecycle wiring and tests. */
   memoryRepositories: MemoryRepositories | undefined;
+  /** Bounded RSI governance service; set when the control plane is on. */
+  rsi: RsiService | undefined;
+  /** Scoped RSI store, for dataset provisioning and tests. */
+  rsiStore: RsiStore | undefined;
   /** Per-process bearer token callers must present on every API request. */
   apiToken: string;
   /** Start listening; resolves with the bound loopback address. */
@@ -362,6 +371,8 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let memoryConsolidation: MemoryConsolidationRunner | undefined;
   let memory: MemoryRetrievalService | undefined;
   let memoryRepositories: MemoryRepositories | undefined;
+  let rsi: RsiService | undefined;
+  let rsiStore: RsiStore | undefined;
   if (config.oauthClientsFile !== undefined) {
     controlPlane = openControlPlaneDb({ path: config.controlPlaneFile ?? ":memory:" });
     const repos = createRepositories(controlPlane);
@@ -398,9 +409,22 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     // service is read-only over memory: it assembles bounded, cited bundles and
     // records audit rows; it cannot promote, edit, or grant anything.
     memoryRepositories = createMemoryRepositories(controlPlane);
+    const retrievalStore = createRetrievalStore(controlPlane);
     memory = createMemoryRetrievalService({
       memory: memoryRepositories,
-      store: createRetrievalStore(controlPlane),
+      store: retrievalStore,
+    });
+    // Bounded RSI (DAT-238) shares the same store. Offline replay uses the
+    // retrieval preview path, so an evaluated candidate policy is never
+    // stored or retrievable before promotion; promotion publishes a version.
+    rsiStore = createRsiStore(controlPlane);
+    rsi = createRsiService({
+      store: rsiStore,
+      memory: memoryRepositories,
+      retrieval: memory,
+      retrievalStore,
+      // Canary samples come only from the task projection for pinned runs.
+      outcomes: createTaskRunOutcomes(store),
     });
     providerAuthority = createRequestAuthority({
       access: providerAccess,
@@ -483,6 +507,9 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       },
     });
   }
+  // The task service starts runs, so it receives the same memory/RSI pair:
+  // every run pins its versions here and the canary overlay is consumed by the
+  // retrieval call above the prompt.
   const service = new TaskService({
     config,
     dsh,
@@ -491,6 +518,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     workspaceBindings,
     ...(model ? { model } : {}),
     runScope: options.runScope ?? deploymentRunScope(requestScopeDeps),
+    ...(memory !== undefined && rsi !== undefined ? { memory: { memory, rsi } } : {}),
   });
   const server = createApiServer({
     service,
@@ -505,6 +533,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
             auth,
             service: memory,
             ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
+            ...(rsi !== undefined ? { rsi } : {}),
           },
         }
       : {}),
@@ -524,6 +553,8 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     memoryConsolidation,
     memory,
     memoryRepositories,
+    rsi,
+    rsiStore,
     apiToken,
     start: () => {
       const { promise, resolve, reject } = Promise.withResolvers<{ host: string; port: number }>();

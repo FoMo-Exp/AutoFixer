@@ -145,6 +145,21 @@ const MEMORY_ENDPOINTS: Array<[method: string, path: string]> = [
   ["post", "/api/v1/workspaces/{workspace_id}/memory/eval-runs"],
 ];
 
+/** Bounded RSI surface (DAT-238). */
+const RSI_ENDPOINTS: Array<[method: string, path: string]> = [
+  ["get", "/api/v1/workspaces/{workspace_id}/memory/proposals"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/proposals"],
+  ["get", "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/evaluations"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/approvals"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/canary"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/canary/observations"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/rollback"],
+  ["get", "/api/v1/workspaces/{workspace_id}/memory/rsi/status"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/rsi/kill-switch"],
+  ["patch", "/api/v1/workspaces/{workspace_id}/memory/rsi/controls"],
+];
+
 const ALL_ENDPOINTS = [
   ...M0_ENDPOINTS,
   ...AUTH_ENDPOINTS,
@@ -152,6 +167,7 @@ const ALL_ENDPOINTS = [
   ...WORKSPACE_TASK_ENDPOINTS,
   ...COLLAB_ENDPOINTS,
   ...MEMORY_ENDPOINTS,
+  ...RSI_ENDPOINTS,
 ];
 
 describe("forgepilot-api/v1 OpenAPI document", () => {

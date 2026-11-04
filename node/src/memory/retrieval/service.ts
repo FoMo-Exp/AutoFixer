@@ -34,10 +34,12 @@ import type {
   MemoryItemsFilter,
   MemoryItemsPage,
   MemoryItemView,
+  MemoryPreview,
   MemoryRetrievalPurpose,
   MemorySearchRequest,
   MemoryTier,
   MemoryVersionsView,
+  RetrievalPolicy,
   RetrievalPolicyRecord,
 } from "./types.js";
 import { MEMORY_BUNDLE_VERSION, MEMORY_EVAL_KINDS, RETRIEVAL_HARD_LIMITS } from "./types.js";
@@ -51,6 +53,7 @@ import {
   scoreMemoryItem,
   withinSensitivityCeiling,
 } from "./rank.js";
+import { retrievalPolicyHash, validateRetrievalPolicy } from "./policy.js";
 import {
   bm25Scores,
   computeMemoryVersion,
@@ -90,6 +93,22 @@ export interface MemoryRetrievalService {
    */
   versions(scope: WorkspaceScope, role: WorkspaceRole): MemoryVersionsView;
   recordEvalRun(scope: WorkspaceScope, input: MemoryEvalRunInput): MemoryEvalRunRecord;
+  /**
+   * Offline replay only: assemble a preview under an unpublished policy.
+   *
+   * The candidate policy is validated against the same hard ceilings as a
+   * stored one, but it is never written, never becomes retrievable, and no
+   * retrieval run is audited. RSI evaluation (DAT-238) is the only caller; a
+   * run's real retrieval must still name a stored policy version.
+   */
+  preview(scope: WorkspaceScope, request: MemorySearchRequest, policy: unknown): MemoryPreview;
+  /**
+   * The same unpublished-policy assembly as {@link preview}, but returning the
+   * full cited bundle. A run pinned into a canary uses this to inject memory
+   * selected under the candidate policy; it still records no retrieval run,
+   * because the pin itself is the audit record for that run.
+   */
+  previewBundle(scope: WorkspaceScope, request: MemorySearchRequest, policy: unknown): MemoryBundle;
   renderPrompt(bundle: MemoryBundle): string;
 }
 
@@ -350,11 +369,58 @@ class SqliteMemoryRetrievalService implements MemoryRetrievalService {
     }
   }
 
+  previewBundle(
+    scope: WorkspaceScope,
+    rawRequest: MemorySearchRequest,
+    rawPolicy: unknown,
+  ): MemoryBundle {
+    const request = parseSearchRequest(rawRequest);
+    const policy: RetrievalPolicy = validateRetrievalPolicy(rawPolicy);
+    const synthetic: RetrievalPolicyRecord = {
+      id: "preview",
+      enterprise_id: scope.enterprise_id,
+      workspace_id: scope.workspace_id,
+      version: 0,
+      policy,
+      policy_hash: retrievalPolicyHash(policy),
+      created_at: this.clock().toISOString(),
+      created_by: scope.actor_id,
+    };
+    return this.assemble(scope, request, synthetic, this.clock(), false);
+  }
+
+  preview(scope: WorkspaceScope, request: MemorySearchRequest, policy: unknown): MemoryPreview {
+    const bundle = this.previewBundle(scope, request, policy);
+    return {
+      policy_hash: retrievalPolicyHash(validateRetrievalPolicy(policy)),
+      items: [
+        ...bundle.policy_items,
+        ...bundle.lessons,
+        ...bundle.episodes,
+        ...bundle.facts,
+        ...bundle.candidates,
+      ].map((item) => ({
+        item_id: item.item_id,
+        item_version: item.item_version,
+        kind: item.kind,
+        tier: item.tier,
+        candidate: item.candidate,
+        approved: item.approved,
+        token_estimate: item.token_estimate,
+        score: item.score,
+      })),
+      used_items: bundle.budget.used_items,
+      used_tokens: bundle.budget.used_tokens,
+      omitted_count: bundle.budget.omitted_count,
+    };
+  }
+
   private assemble(
     scope: WorkspaceScope,
     request: MemorySearchRequest,
     policy: RetrievalPolicyRecord,
     now: Date,
+    audit = true,
   ): MemoryBundle {
     const nowIso = now.toISOString();
     const requestScope: MemoryApplicability = request.scope ?? {};
@@ -658,25 +724,27 @@ class SqliteMemoryRetrievalService implements MemoryRetrievalService {
       },
       created_at: nowIso,
     };
-    this.store.recordRun(scope, {
-      bundle_id: bundle.bundle_id,
-      run_id: request.run_id ?? null,
-      purpose: request.purpose,
-      query: request.query,
-      policy_version: policy.version,
-      memory_version: memoryVersion,
-      degraded: false,
-      degraded_reason: null,
-      injected: [...policyItems, ...bundleItems].map((item) => ({
-        item_id: item.item_id,
-        item_version: item.item_version,
-        kind: item.kind,
-        tier: item.tier,
-        approved: item.approved,
-      })),
-      omitted_count: omittedCount,
-      created_at: nowIso,
-    });
+    if (audit) {
+      this.store.recordRun(scope, {
+        bundle_id: bundle.bundle_id,
+        run_id: request.run_id ?? null,
+        purpose: request.purpose,
+        query: request.query,
+        policy_version: policy.version,
+        memory_version: memoryVersion,
+        degraded: false,
+        degraded_reason: null,
+        injected: [...policyItems, ...bundleItems].map((item) => ({
+          item_id: item.item_id,
+          item_version: item.item_version,
+          kind: item.kind,
+          tier: item.tier,
+          approved: item.approved,
+        })),
+        omitted_count: omittedCount,
+        created_at: nowIso,
+      });
+    }
     return bundle;
   }
 
