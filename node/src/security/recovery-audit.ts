@@ -37,7 +37,11 @@
  * critical section, forking the chain), so an expired lock fails closed with
  * `RECOVERY_AUDIT_LOCK_TIMEOUT` and the dispatch that needed the record is
  * blocked. A crashed holder's lock must be removed by an operator who has
- * confirmed the recorded pid/host is gone; never delete a live lock. Boundary
+ * confirmed the recorded pid/host is gone; never delete a live lock. The
+ * holder identity is reported only when the lock file carries a complete and
+ * well-typed one: a truncated or malformed lock is reported as unparseable and
+ * is never padded with placeholder values, because a made-up pid/host could
+ * send an operator to delete a live lock. Boundary
  * of the token check: while this process holds the lock, no legitimate writer
  * can create a new lock at that path, so a token mismatch can only come from
  * manual intervention — and an operator deleting a lock during a live write is
@@ -350,20 +354,63 @@ interface LockIdentity {
   at: string;
 }
 
-/** Read the lock file as evidence; `null` when it is unreadable or malformed. */
-function readLockIdentity(lockFile: string): LockIdentity | null {
+/** What the lock file actually contains: the token (if readable) and full identity (if complete). */
+interface LockFileContent {
+  /** Ownership token exactly as written, or `null` when absent or not a non-empty string. */
+  token: string | null;
+  /** Complete holder identity, or `null` when any field is missing or malformed. */
+  identity: LockIdentity | null;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+/** Positive, safe integer: a real process id, never a sentinel such as `-1` or `0`. */
+function isPositivePid(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+/** A timestamp string that names a real instant (`Date.parse` rejects garbage). */
+function isTimestamp(value: unknown): value is string {
+  return isNonEmptyString(value) && Number.isFinite(Date.parse(value));
+}
+
+/**
+ * Read the lock file once. Nothing in here fills in a missing field: an
+ * unreadable, truncated, or mistyped lock yields `identity: null` rather than
+ * a fabricated holder, because this is the evidence an operator uses to decide
+ * whether a leftover lock may be deleted.
+ */
+function readLockFileContent(lockFile: string): LockFileContent {
+  const empty: LockFileContent = { token: null, identity: null };
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(fs.readFileSync(lockFile, "utf8")) as Partial<LockIdentity>;
-    if (typeof parsed.token !== "string" || parsed.token.length === 0) return null;
-    return {
-      token: parsed.token,
-      pid: typeof parsed.pid === "number" ? parsed.pid : -1,
-      host: typeof parsed.host === "string" ? parsed.host : "",
-      at: typeof parsed.at === "string" ? parsed.at : "",
-    };
+    parsed = JSON.parse(fs.readFileSync(lockFile, "utf8"));
   } catch {
-    return null;
+    return empty;
   }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return empty;
+  const fields = parsed as Partial<Record<keyof LockIdentity, unknown>>;
+  const token = isNonEmptyString(fields.token) ? fields.token : null;
+  if (token === null) return empty;
+  if (!isPositivePid(fields.pid) || !isNonEmptyString(fields.host) || !isTimestamp(fields.at)) {
+    return { token, identity: null };
+  }
+  return {
+    token,
+    identity: { token, pid: fields.pid, host: fields.host, at: fields.at },
+  };
+}
+
+/**
+ * Complete holder identity, or `null`. Every field must be present and valid:
+ * a non-empty token, a positive safe-integer pid, a non-empty host, and a
+ * parseable timestamp. A partial lock is not an identity — reporting one would
+ * risk an operator deleting a live lock on the strength of a made-up pid/host.
+ */
+function readLockIdentity(lockFile: string): LockIdentity | null {
+  return readLockFileContent(lockFile).identity;
 }
 
 /**
@@ -380,15 +427,19 @@ function lockTimeoutError(file: string, lockFile: string): SecurityError {
   const holder = readLockIdentity(lockFile);
   return new SecurityError(
     "RECOVERY_AUDIT_LOCK_TIMEOUT",
-    "another writer holds the recovery audit log; the record was not appended and the dispatch that needed it is blocked. No automatic lock recovery is performed: confirm the holder pid/host below is gone, then delete the lock file by hand. Never delete a live lock.",
+    "another writer holds the recovery audit log; the record was not appended and the dispatch that needed it is blocked. No automatic lock recovery is performed: confirm the holder recorded below is gone — and when no holder identity could be parsed, inspect the lock file itself and confirm by other means that nothing live holds it — then delete the lock file by hand. Never delete a live lock.",
     {
       file,
       lockFile,
       lockMtime,
+      // Only a complete, valid identity is reported; a partial lock file is
+      // reported as unparseable and never padded with placeholder values.
       lockHolder: holder
         ? { pid: holder.pid, host: holder.host, at: holder.at, parseable: true }
         : { parseable: false },
-      manualAction: `confirm the process ${holder ? `pid=${holder.pid} host=${holder.host}` : "that owns"} is gone, then remove ${lockFile}; never remove a live lock`,
+      manualAction: holder
+        ? `confirm the process pid=${holder.pid} host=${holder.host} (lock written at ${holder.at}) is gone, then remove ${lockFile}; never remove a live lock`
+        : `the lock file content is incomplete or not parseable, so the holder identity is unknown: inspect ${lockFile} directly (its mode, owner, size and mtime ${lockMtime ?? "unknown"}), confirm by other means that no live process holds it, and only then remove it by hand; never remove a live lock`,
     },
   );
 }
@@ -451,8 +502,13 @@ export function openAuditLogLock(
       return {
         token,
         release(): void {
-          const current = readLockIdentity(lockFile);
-          if (!current || current.token !== token) {
+          // One read yields both the ownership token and the evidence fields,
+          // so the decision and the report can never disagree.
+          const current = readLockFileContent(lockFile);
+          // Ownership is proven by the token alone (this process wrote it and
+          // no legitimate writer can have replaced it); the complete identity
+          // is only ever reported as evidence, never synthesized.
+          if (current.token !== token) {
             throw new SecurityError(
               "RECOVERY_AUDIT_LOCK_LOST",
               "the audit log lock no longer carries this process's ownership token; it was left in place and the write is not treated as exclusive",
@@ -460,11 +516,18 @@ export function openAuditLogLock(
                 file,
                 lockFile,
                 expectedToken: token,
-                foundToken: current?.token ?? null,
-                lockHolder: current
-                  ? { pid: current.pid, host: current.host, at: current.at }
+                foundToken: current.token,
+                lockHolder: current.identity
+                  ? {
+                      pid: current.identity.pid,
+                      host: current.identity.host,
+                      at: current.identity.at,
+                      parseable: true,
+                    }
                   : { parseable: false },
-                manualAction: `inspect ${lockFile}; a live lock must not be removed`,
+                manualAction: current.identity
+                  ? `inspect ${lockFile}; it does not carry this process's token, so a live holder may own it — confirm pid=${current.identity.pid} host=${current.identity.host} is gone before removing it; a live lock must not be removed`
+                  : `the lock file no longer carries a complete holder identity (a non-empty token, a positive pid, a non-empty host and a parseable timestamp are all required), so the owner is unknown: inspect ${lockFile} directly and confirm by other means that no live process holds it before removing it; a live lock must not be removed`,
               },
             );
           }
