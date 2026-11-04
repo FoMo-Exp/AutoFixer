@@ -1,0 +1,10 @@
+{
+  "task_id": "tsk_3b8e1c4a9d2f5067",
+  "issue_id": "iss_7f3c2a9e51b84d0fa1c6",
+  "role": "implementation",
+  "assignee_agent_id": "agent_impl_01",
+  "depends_on": ["tsk_analysis_01"],
+  "state": "active",
+  "created_at": "2026-11-02T09:20:00Z",
+  "updated_at": "2026-11-02T09:35:00Z"
+}

@@ -1,0 +1,16 @@
+{
+  "error": {
+    "envelope_version": 1,
+    "code": "IDEMPOTENCY_CONFLICT",
+    "stage": "validation",
+    "category": "stop",
+    "message": "The Idempotency-Key was already used with a different payload.",
+    "retryable": false,
+    "retry_after_seconds": null,
+    "request_id": "req_2a8c5e0f7b3d9146",
+    "details": {
+      "operation_id": "op_20261102_create_issue_01"
+    },
+    "next_action": "resubmit"
+  }
+}

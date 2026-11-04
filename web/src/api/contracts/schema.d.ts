@@ -938,6 +938,351 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspace_id}/issues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the workspace's issues (workbench)
+         * @description Exactly the issues visible in the caller's authenticated workspace scope, newest first, with opaque cursor pagination. `product_state` filters by product stage (never by harness run state).
+         */
+        get: operations["listIssues"];
+        put?: never;
+        /**
+         * Submit an issue manually
+         * @description Manual issue submission (ADR-0007). The service derives the dedupe fingerprint and owns routing: the response is the durable issue, not an assignee assertion. A repeated signal or resubmission for the same repository and source reference is 409 ISSUE_DEDUPE_CONFLICT with `details.existing_issue_id` instead of spawning a second issue.
+         */
+        post: operations["createIssue"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one issue
+         * @description 404 ISSUE_NOT_FOUND is uniform — nonexistent, in another workspace, or not visible to the caller — and reveals no other issue's existence.
+         */
+        get: operations["getIssue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/stage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the issue's product stage and its allowed transitions
+         * @description The product lifecycle stage with the exact outgoing edges the workbench may render. Product stages are distinct from harness run states; `awaiting_change_approval` means an immutable candidate awaits a human change approval and no PR exists.
+         */
+        get: operations["getIssueStage"];
+        put?: never;
+        /**
+         * Move the issue to another product stage
+         * @description Applies one edge of the ADR-0007 stage table. The service — not the client — enforces the edge, the product/harness consistency rules, and the candidate requirement: `awaiting_change_approval` requires a stopped preparation run that preserved a candidate, `pr_review` requires an observed PR, and `completed` requires a provider- confirmed merge. Leaving `needs_human` requires a recorded human disposition; it is a stop outcome, never a retry of the stopped run. A `needs_human` or `cancelled` transition revokes the issue's remaining grants.
+         */
+        post: operations["transitionIssueStage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the issue's child tasks */
+        get: operations["listIssueTasks"];
+        put?: never;
+        /**
+         * Add a child task to the issue
+         * @description Routing a bounded unit of work to a Pi role. Dependencies must name tasks of the same issue and must not form a cycle.
+         */
+        post: operations["addIssueTask"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks/{task_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one child task */
+        get: operations["getIssueTask"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks/{task_id}/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Move a child task to another state
+         * @description A task with unfinished dependencies cannot leave `open` (409 TASK_BLOCKED), and a terminal state has no outgoing edge.
+         */
+        post: operations["setIssueTaskState"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the issue's bounded remediation runs
+         * @description Runs in creation order, including terminal attempts. Each run's `state` is the observed harness state; a terminal run never resumes.
+         */
+        get: operations["listIssueRuns"];
+        put?: never;
+        /**
+         * Open a bounded remediation run for the issue
+         * @description Records one bounded attempt: role, isolated worktree, tool/path/network scope, and duration/resource/token limits. The service allocates the worktree and resolves the issue's repository binding; the run begins in harness state `requested` and dsh remains the execution gate — opening a run grants nothing. Terminal or cancelled issues cannot open runs (409 RUN_OPEN_FORBIDDEN).
+         */
+        post: operations["openIssueRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one run with its lease, grants, and artifacts */
+        get: operations["getIssueRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the issue's frozen candidates
+         * @description Immutable candidates in freeze order. A candidate is produced by the service when local preparation stops; it is never client-authored or client-mutated.
+         */
+        get: operations["listIssueCandidates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/candidates/{candidate_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one candidate — the review card's source
+         * @description The full summary/diff/test/risk/provenance record the pre-PR reviewer confirms. Reading it never grants approval authority.
+         */
+        get: operations["getIssueCandidate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the issue's approval requests
+         * @description Candidate-bound approval requests, including invalidated, expired, rejected, and consumed history; only a `pending` request addressed to the caller is actionable.
+         */
+        get: operations["listIssueApprovals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one approval request */
+        get: operations["getIssueApproval"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record the approver's confirmed decision on a candidate
+         * @description The one pre-PR human approval gate. The approver is the authenticated caller: agents cannot approve their own work, and a body field can never assert an identity. `diff_digest` must equal the candidate's reviewed diff digest — approving a different revision is 409 APPROVAL_BINDING_STALE, and a stale, invalidated, expired, consumed, or already-decided request is 409 APPROVAL_STATE_CONFLICT. A `reject` decision refuses delivery for that candidate; a new candidate requires a new request.
+         */
+        post: operations["decideIssueApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the issue's delivery operations */
+        get: operations["listIssueDeliveries"];
+        put?: never;
+        /**
+         * Request broker-controlled delivery for an approved candidate
+         * @description Records the delivery operation (identity and intention) before any provider write and returns it in state `pending`; the trusted broker performs the push/PR. Delivery requires a current, valid candidate-bound approval (409 APPROVAL_NOT_APPROVED) — an assignee, blame author, or team leader is never sufficient — and consumes that approval: reusing a consumed approval is 409 APPROVAL_CONSUMED. A safe retry with the same Idempotency-Key reconciles the same operation instead of creating a second branch/PR. No direct main write, merge, self-review, or check waiver exists.
+         */
+        post: operations["requestIssueDelivery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one delivery operation and its provider evidence
+         * @description `state` distinguishes success (`delivered`), an explicit partial outcome (`partial`: branch pushed, PR creation failed or unconfirmed), and an unknown provider outcome (`unknown`: reconcile before any further write — never auto-retried). `delivered` is not a merge and never claims production recovery.
+         */
+        get: operations["getIssueDelivery"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}/reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reconcile an ambiguous delivery outcome against provider evidence
+         * @description The only path out of `unknown` (and a supported retry out of `partial`): the service re-reads branch and provider operation evidence for this operation and records the reconciled state before any further write, so retries never duplicate a PR. Reconciliation is an `unknown`-outcome remedy, not a bounded retry: the request is never automatically retried. A delivery with nothing to reconcile is 409 DELIVERY_STATE_CONFLICT.
+         */
+        post: operations["reconcileIssueDelivery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * SSE stream of issue events; replays by Last-Event-ID from the durable projection in sequence order, with replay-stable event ids
+         * @description Reconnecting clients send the last delivered `event_id` in `Last-Event-ID`; the service replays every later event from the durable projection — including events written while disconnected and across orchestrator restarts — without duplicating or dropping a business event. Delivery is at least once and `event_id` is stable across replays (the consumer's idempotency key), so a client deduplicates on `event_id` and orders on `sequence`. An unknown id replays from the start of the retained log. The stream closes after `issue.terminal`, including when the anchor is already terminal.
+         */
+        get: operations["streamIssueEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1251,6 +1596,306 @@ export interface components {
         InvitationRedemption: {
             workspace: components["schemas"]["Workspace"];
             membership: components["schemas"]["Membership"];
+        };
+        /** @description The enterprise/workspace pair that owns an issue and everything derived from it (ADR-0006). Resolved server-side from the caller's authenticated membership; it is never accepted from a request body. */
+        WorkspaceScope: {
+            enterprise_id: string;
+            workspace_id: string;
+        };
+        /** @description Immutable repository identity an issue, its runs, candidates, and deliveries are bound to (ADR-0006 binds an id, not a mutable URL). */
+        IssueRepository: {
+            repository_id: string;
+            url: string;
+            base_ref: string;
+            base_sha: string;
+        };
+        /** @description A digest value with the algorithm that produced it; an unverifiable or algorithm-less digest is never a valid evidence reference. */
+        Digest: {
+            algorithm: string;
+            value: string;
+        };
+        /** @description Immutable artifact reference (ADR-0007: handoffs carry artifact references and head identity, never raw memory). The digest binds the reference to exactly one artifact content; `base_sha`/`head_sha` bind it to the revision it was produced from. */
+        ArtifactReference: {
+            artifact_id: string;
+            /**
+             * @example candidate
+             * @example patch
+             * @example report
+             * @example evidence_bundle
+             */
+            kind: string;
+            digest_algorithm: string;
+            digest: string;
+            base_sha: string;
+            head_sha: string | null;
+        };
+        /** @description A product issue (ADR-0007): the durable aggregate the workspace triages, plans, implements, validates, approves, and delivers. `product_state` is the product lifecycle stage — never a harness run state — and terminal stages (`completed`, `cancelled`) have no outgoing edge. `completed` requires a provider-confirmed merge; a published PR alone is not completion. `needs_human` records a stop reason awaiting human disposition, with other `needs_human` exits requiring that disposition. */
+        Issue: {
+            issue_id: string;
+            workspace: components["schemas"]["WorkspaceScope"];
+            repository: components["schemas"]["IssueRepository"];
+            /** @description Service-derived fingerprint (versioned for log signals) that binds a repeated alert to one issue instead of spawning unbounded tasks; a repeat updates the existing issue's evidence. */
+            dedupe_key: string;
+            summary: string;
+            /** @description Immutable originating signal or manual submission reference. */
+            source_reference: string | null;
+            /** @enum {string} */
+            product_state: "triage" | "planning" | "implementing" | "validating" | "awaiting_change_approval" | "delivering" | "pr_review" | "completed" | "needs_human" | "cancelled";
+            /** @description Recorded reason for the current product stage; always set for a `needs_human` stop and for an explicit cancellation. */
+            state_reason: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description The issue's product lifecycle stage and the stages it may move to next, derived from the ADR-0007 stage table. A transition is refused when the edge does not exist (409 TRANSITION_FORBIDDEN) or when the target stage is inconsistent with the observed harness states of the issue's runs (409 PRODUCT_HARNESS_CONFLICT). Leaving `needs_human` without a recorded human disposition is 428 DISPOSITION_REQUIRED. */
+        IssueStage: {
+            issue_id: string;
+            /** @enum {string} */
+            product_state: "triage" | "planning" | "implementing" | "validating" | "awaiting_change_approval" | "delivering" | "pr_review" | "completed" | "needs_human" | "cancelled";
+            state_reason: string | null;
+            /** @description Exact outgoing edges of the current stage; empty for terminal stages. */
+            allowed_transitions: ("triage" | "planning" | "implementing" | "validating" | "awaiting_change_approval" | "delivering" | "pr_review" | "completed" | "needs_human" | "cancelled")[];
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description A child task of an issue: one bounded unit of work routed to a specific Pi role (ADR-0007), never an implicitly distributed squad. `depends_on` names tasks that must reach `done` first; a blocked dependency is 409 TASK_BLOCKED and an invalid dependency graph is 409 TASK_DEPENDENCY_INVALID. */
+        IssueTask: {
+            task_id: string;
+            issue_id: string;
+            /** @enum {string} */
+            role: "analysis" | "planning" | "implementation" | "verification" | "delivery";
+            assignee_agent_id: string | null;
+            depends_on: string[];
+            /** @enum {string} */
+            state: "open" | "active" | "done" | "cancelled";
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description One run's isolated checkout. Different runs use separate worktrees; one worktree identity is never bound to two concurrent runs. */
+        RunWorktree: {
+            worktree_id: string;
+            path: string;
+        };
+        /** @description Tool, path, and network scope recorded for one bounded run. Missing scope means denied: the scope narrows what dsh may grant, never widens it. */
+        RunScope: {
+            tools: string[];
+            paths: string[];
+            network: string[];
+        };
+        /** @description Duration, resource, and token limits recorded for one bounded run. */
+        RunLimits: {
+            max_wall_clock_seconds: number;
+            max_memory_mb: number;
+            max_tokens: number;
+        };
+        /** @description Lease with a monotonic fencing token. Only the current holder of the current fencing token may mutate the run; a token is never reused, so a worker that lost its lease (expiry, crash, restart) can never overwrite a newer writer. */
+        RunLease: {
+            holder: string;
+            fencing_token: number;
+            /** Format: date-time */
+            acquired_at: string;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        /** @description Capability grant recorded for one run (task-evidence-contract-v1 §2). The recorded grant mirrors what dsh issued and grants nothing by itself — dsh re-checks every operation. `state` is the effective state at read time: revocation is recorded and permanent, expiry is derived from the clock, and a stopped or terminal run's grants are revoked. */
+        RunGrant: {
+            grant_id: string;
+            run_id: string;
+            /** @enum {string} */
+            state: "active" | "expired" | "revoked";
+            capability_grant_version: string;
+            policy_version: string;
+            /** Format: date-time */
+            issued_at: string;
+            /** Format: date-time */
+            expires_at: string;
+            may_create_patch: boolean;
+            /** @description Whether this grant permits PR creation; PR capability never includes merge, self-review, or check waiver, and delivery still requires a current candidate-bound human approval. */
+            may_create_or_update_pr: boolean;
+            scope_digest: string;
+            revoked_at: string | null;
+            revoked_reason: string | null;
+        };
+        /** @description One bounded remediation run: isolated checkout, scope, limits, capability grants, lease, and the observed harness (FP-01) state. `state` is the harness state dsh reported and is never invented here. A `stopped` run requires human disposition and never resumes: it may become `cancelled`, or a new grant may move it to `approved` — stopped-to-running does not exist. `timed_out`, `expired`, `rejected`, `cancelled`, and `merged` are terminal for the grant; a later attempt is a new run id beginning in `requested`. */
+        IssueRun: {
+            run_id: string;
+            issue_id: string;
+            task_id: string | null;
+            /** @enum {string} */
+            role: "analysis" | "planning" | "implementation" | "verification" | "delivery";
+            workspace: components["schemas"]["WorkspaceScope"];
+            repository: components["schemas"]["IssueRepository"];
+            worktree: components["schemas"]["RunWorktree"];
+            scope: components["schemas"]["RunScope"];
+            limits: components["schemas"]["RunLimits"];
+            /** @enum {string} */
+            state: "requested" | "approved" | "running" | "awaiting_review" | "approved_for_merge" | "stopped" | "timed_out" | "expired" | "rejected" | "cancelled" | "merged";
+            /** @description Candidate head identity produced by the run so far; null until one exists. */
+            head_sha: string | null;
+            /** @description Why the run stopped (validation failure, policy/security stop, resource violation, …). A stop is an outcome, not a retry: continuation needs human disposition and a fresh run/grant. */
+            stop_reason: string | null;
+            /** Format: date-time */
+            stopped_at: string | null;
+            lease: components["schemas"]["RunLease"] | null;
+            grants: components["schemas"]["RunGrant"][];
+            artifact_refs: components["schemas"]["ArtifactReference"][];
+            /** Format: date-time */
+            opened_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description One validation attempt against the exact candidate revision: the tool invoked, its redacted exit status, the digest of its redacted output, and the matching append-only event reference. */
+        ValidationResult: {
+            tool: string;
+            exit_status: number | null;
+            output_digest: components["schemas"]["Digest"] | null;
+            event_reference: string;
+        };
+        /** @description The pre-approval risk decision for the candidate's work. `prohibited` is never downgraded in the same run; an `elevated` assessment requires the recorded pre-grant human approval reference. */
+        ChangeRisk: {
+            /** @enum {string} */
+            class: "low" | "elevated" | "prohibited";
+            decision_code: string;
+            requires_human_approval: boolean;
+        };
+        /** @description An immutable frozen candidate (ADR-0007): the exact patch, revision identity, diff digest, changed paths, validation configuration/environment identity, test results, risk, and provenance a human reviews before any remote branch push or PR. Local preparation stops and the preparation run's grant is revoked while the candidate is preserved outside the ephemeral workspace. Nothing may be added or edited after validation, and no approval or delivery applies to any other revision. The review card shows `summary` and expands to the authorized diff (`diff`, artifacts), tests (`validation`), risks (`risk`), and provenance (`artifacts`, `audit_refs`). */
+        Candidate: {
+            /** @enum {string} */
+            contract_version: "1.0.0";
+            candidate_id: string;
+            issue_id: string;
+            /** @description The preparation run that produced the candidate. */
+            run_id: string;
+            repository: components["schemas"]["IssueRepository"];
+            base_sha: string;
+            /** @description Candidate commit identity (the frozen revision). */
+            head_sha: string;
+            tree_sha: string;
+            /** @description Digest and shape of the exact diff an approver reviews. */
+            diff: {
+                digest_algorithm: string;
+                digest: string;
+                changed_paths: string[];
+                insertions: number;
+                deletions: number;
+            };
+            /** @description Bounded change summary for the review card. */
+            summary: string;
+            /** @description The validation evidence the approval is bound to: configuration digest, environment identity, and every validation attempt. */
+            validation: {
+                config_digest: string;
+                environment: string;
+                results: components["schemas"]["ValidationResult"][];
+            };
+            risk: components["schemas"]["ChangeRisk"];
+            /** @description Patch, report, and evidence-bundle references, retained after cleanup. */
+            artifacts: components["schemas"]["ArtifactReference"][];
+            /** @description References into the append-only audit/evidence records backing the candidate. */
+            audit_refs: string[];
+            /** Format: date-time */
+            created_at: string;
+        };
+        /** @description Everything one approval is bound to (ADR-0007). Content, required test evidence, base advancement, target, approval policy, expiry, or relevant authority changes invalidate the approval; refresh/rebase and rerun tests, then request a new card. Never rebase after approval and push under the old one. */
+        ApprovalBinding: {
+            workspace: components["schemas"]["WorkspaceScope"];
+            repository: components["schemas"]["IssueRepository"];
+            candidate_id: string;
+            head_sha: string;
+            diff_digest: components["schemas"]["Digest"];
+            test_evidence_digest: components["schemas"]["Digest"];
+            /** @description Intended PR target branch. Writes are restricted to the issue's autofixer branch and PR; direct main writes are never permitted. */
+            target_branch: string;
+            policy_version: string;
+        };
+        /** @description A recorded approver decision. The approver is the authenticated caller — never a body field — and the decision must be a confirmed mutation. */
+        ApprovalDecision: {
+            /** @enum {string} */
+            decision: "approve" | "reject";
+            decided_by: components["schemas"]["UserRef"];
+            /** Format: date-time */
+            decided_at: string;
+            note: string | null;
+        };
+        /** @description A candidate-bound pre-PR human approval request (ADR-0007). One named eligible human delivery approver — selected from workspace-configured maintainers — must approve the frozen candidate before any remote branch push or PR mutation; assignee/blame/team-leader status alone is insufficient, and current repository access plus explicit approval authority are checked. Approval is consumed by exactly one delivery operation; safe retries reconcile that same operation and never reuse the approval for a new candidate or PR. An approval never substitutes for the repository's own PR review, checks, or quorum. */
+        Approval: {
+            /** @enum {string} */
+            contract_version: "1.0.0";
+            approval_id: string;
+            issue_id: string;
+            candidate_id: string;
+            /** @enum {string} */
+            state: "pending" | "approved" | "rejected" | "invalidated" | "expired" | "consumed" | "cancelled";
+            binding: components["schemas"]["ApprovalBinding"];
+            /** @description The named human the request is addressed to; null while no eligible approver is available (the issue then awaits human triage, never an automatic approval). */
+            approver: components["schemas"]["UserRef"] | null;
+            /** Format: date-time */
+            requested_at: string;
+            /** Format: date-time */
+            decided_at: string | null;
+            /**
+             * Format: date-time
+             * @description Finite approval TTL; the proposed default is 24 hours.
+             */
+            expires_at: string;
+            decision: components["schemas"]["ApprovalDecision"] | null;
+            /** Format: date-time */
+            invalidated_at: string | null;
+            /** @enum {string|null} */
+            invalidated_reason: "content_changed" | "test_evidence_changed" | "base_advanced" | "target_changed" | "policy_changed" | "authority_changed" | null;
+            consumed_by_delivery_id: string | null;
+        };
+        /** @description One broker-controlled delivery operation (ADR-0007). Only the trusted delivery broker obtains provider write credentials; before each write it re-checks current human approval, enterprise/repository permissions, the dsh grant, audit availability, branch constraints, and exact candidate identity. Operation identity and intention are persisted before the write; ambiguous push/PR outcomes are reconciled by branch and provider operation evidence before any retry, so a retry never merges, self-approves, or creates a duplicate PR. A pushed branch whose PR creation failed remains an explicit `partial` delivery — neither success nor automatic deletion. No state change deploys the change or claims the incident is fixed in production. */
+        Delivery: {
+            delivery_id: string;
+            /** @description Idempotent operation identity. Safe retries reconcile this same operation; they never authorize a new candidate or PR. */
+            operation_id: string;
+            issue_id: string;
+            candidate_id: string;
+            approval_id: string;
+            repository: components["schemas"]["IssueRepository"];
+            target_branch: string;
+            /** @description The exact approved candidate commit published. */
+            head_sha: string;
+            /**
+             * @description Provider the broker writes through. GitLab delivery requires a reviewed mapping to that provider's repository governance before enablement; unsupported governance or missing integration permissions leave delivery blocked rather than silently advertised.
+             * @enum {string}
+             */
+            provider: "github" | "gitlab";
+            /** @enum {string} */
+            state: "pending" | "pushing" | "opening_pr" | "delivered" | "partial" | "unknown" | "failed" | "cancelled";
+            /** @description The issue's autofixer branch once the push is verified; null before. */
+            branch: string | null;
+            pr_id: string | null;
+            pr_url: string | null;
+            /** @description Safe machine code of the last provider failure (shared error vocabulary); raw provider text and credentials never appear. */
+            error_code: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /**
+             * Format: date-time
+             * @description When the latest unknown/partial outcome was reconciled against provider evidence.
+             */
+            reconciled_at: string | null;
+        };
+        /** @description One issue event on the SSE stream: the projection of exactly one durable audit record. Replay semantics: a reconnect sends the last delivered `event_id` in `Last-Event-ID`; the service replays every later event in `sequence` order from the durable projection (including events written while no client was connected, and across orchestrator restarts), so no business event is duplicated or lost. Delivery is at least once: `event_id` is stable and idempotent across replays — replayed frames carry the same id and payload — so a consumer MUST deduplicate on `event_id` and treat `sequence` as the ordering cursor. An unknown `Last-Event-ID` replays from the start of the retained log. The stream closes after `issue.terminal` is replayed, and a terminal issue's stream always closes after its replay even when the anchor is already at `issue.terminal`. A 404 ISSUE_NOT_FOUND is returned before any event is sent when the issue is not visible to the caller. */
+        IssueEvent: {
+            /** @description Stable, replay-stable event identity and the consumer's idempotency key. A new event never reuses an id; a replay never changes it. */
+            event_id: string;
+            /** @description Monotonic, gap-free order within the issue's event log. */
+            sequence: number;
+            /** Format: date-time */
+            occurred_at: string;
+            issue_id: string;
+            /** @enum {string} */
+            type: "issue.created" | "issue.stage_changed" | "issue.terminal" | "task.created" | "task.state_changed" | "run.opened" | "run.state_changed" | "run.grant_recorded" | "run.grant_revoked" | "run.artifact_attached" | "candidate.frozen" | "approval.requested" | "approval.decided" | "approval.invalidated" | "delivery.requested" | "delivery.state_changed" | "delivery.reconciled" | "operation.denied";
+            data: {
+                [key: string]: unknown;
+            };
         };
         SessionInfo: {
             user: components["schemas"]["User"];
@@ -5011,6 +5656,1307 @@ export interface operations {
             };
             /** @description RATE_LIMITED */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listIssues: {
+        parameters: {
+            query?: {
+                /** @description Opaque pagination cursor copied from a previous page's `next_cursor`. Clients must not construct, parse, or interpret cursors; an unknown cursor is 400 INVALID_CURSOR. */
+                cursor?: string;
+                /** @description Only issues currently in this product stage. */
+                product_state?: "triage" | "planning" | "implementing" | "validating" | "awaiting_change_approval" | "delivering" | "pr_review" | "completed" | "needs_human" | "cancelled";
+            };
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Issue page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Issue"][];
+                        /** @description Opaque cursor for the next page; null at the end of the list. */
+                        next_cursor: string | null;
+                    };
+                };
+            };
+            /** @description INVALID_CURSOR or INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — non-enumerating: the workspace is not visible to the caller */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createIssue: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the request with the same key and payload returns the recorded result instead of applying the command twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a new one. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Immutable provider repository id bound to the workspace. */
+                    repository_id: string;
+                    /** @example main */
+                    base_ref: string;
+                    summary: string;
+                    /** @description Immutable report/signal reference; never a grant. */
+                    source_reference?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Issue created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Issue"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — the repository is not bound to this workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_DEDUPE_CONFLICT — the fingerprint already maps to an open issue (`details.existing_issue_id`) — or IDEMPOTENCY_CONFLICT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getIssue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Issue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Issue"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getIssueStage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Issue stage */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueStage"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    transitionIssueStage: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the request with the same key and payload returns the recorded result instead of applying the command twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a new one. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    to: "triage" | "planning" | "implementing" | "validating" | "awaiting_change_approval" | "delivering" | "pr_review" | "completed" | "needs_human" | "cancelled";
+                    /** @description Required for a stop or cancellation. */
+                    reason?: string | null;
+                    /** @description Human disposition reference required when leaving `needs_human`; the actor is the authenticated caller. */
+                    disposition?: {
+                        reference: string;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description Issue stage after the transition */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueStage"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description TRANSITION_FORBIDDEN, PRODUCT_HARNESS_CONFLICT — the target stage contradicts the observed harness states — or IDEMPOTENCY_CONFLICT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description DISPOSITION_REQUIRED — leaving `needs_human` needs a recorded human disposition; category `stop`, not retryable */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listIssueTasks: {
+        parameters: {
+            query?: {
+                /** @description Opaque pagination cursor copied from a previous page's `next_cursor`. Clients must not construct, parse, or interpret cursors; an unknown cursor is 400 INVALID_CURSOR. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Task page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["IssueTask"][];
+                        /** @description Opaque cursor for the next page; null at the end of the list. */
+                        next_cursor: string | null;
+                    };
+                };
+            };
+            /** @description INVALID_CURSOR */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    addIssueTask: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the request with the same key and payload returns the recorded result instead of applying the command twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a new one. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    role: "analysis" | "planning" | "implementation" | "verification" | "delivery";
+                    assignee_agent_id?: string | null;
+                    depends_on?: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description Task added */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueTask"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description TASK_DEPENDENCY_INVALID or IDEMPOTENCY_CONFLICT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getIssueTask: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                issue_id: string;
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Task */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueTask"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description TASK_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    setIssueTaskState: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the request with the same key and payload returns the recorded result instead of applying the command twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a new one. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                workspace_id: string;
+                issue_id: string;
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    to: "open" | "active" | "done" | "cancelled";
+                };
+            };
+        };
+        responses: {
+            /** @description Task after the transition */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueTask"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description TASK_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description TASK_STATE_CONFLICT, TASK_BLOCKED, or IDEMPOTENCY_CONFLICT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listIssueRuns: {
+        parameters: {
+            query?: {
+                /** @description Opaque pagination cursor copied from a previous page's `next_cursor`. Clients must not construct, parse, or interpret cursors; an unknown cursor is 400 INVALID_CURSOR. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Run page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["IssueRun"][];
+                        /** @description Opaque cursor for the next page; null at the end of the list. */
+                        next_cursor: string | null;
+                    };
+                };
+            };
+            /** @description INVALID_CURSOR */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    openIssueRun: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the request with the same key and payload returns the recorded result instead of applying the command twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a new one. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    task_id?: string | null;
+                    /** @enum {string} */
+                    role: "analysis" | "planning" | "implementation" | "verification" | "delivery";
+                    scope: components["schemas"]["RunScope"];
+                    limits: components["schemas"]["RunLimits"];
+                };
+            };
+        };
+        responses: {
+            /** @description Run opened */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueRun"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND or TASK_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RUN_OPEN_FORBIDDEN or IDEMPOTENCY_CONFLICT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getIssueRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                issue_id: string;
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Run */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssueRun"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description RUN_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listIssueCandidates: {
+        parameters: {
+            query?: {
+                /** @description Opaque pagination cursor copied from a previous page's `next_cursor`. Clients must not construct, parse, or interpret cursors; an unknown cursor is 400 INVALID_CURSOR. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Candidate page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Candidate"][];
+                        /** @description Opaque cursor for the next page; null at the end of the list. */
+                        next_cursor: string | null;
+                    };
+                };
+            };
+            /** @description INVALID_CURSOR */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getIssueCandidate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                issue_id: string;
+                candidate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Candidate */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Candidate"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CANDIDATE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listIssueApprovals: {
+        parameters: {
+            query?: {
+                /** @description Opaque pagination cursor copied from a previous page's `next_cursor`. Clients must not construct, parse, or interpret cursors; an unknown cursor is 400 INVALID_CURSOR. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Approval page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Approval"][];
+                        /** @description Opaque cursor for the next page; null at the end of the list. */
+                        next_cursor: string | null;
+                    };
+                };
+            };
+            /** @description INVALID_CURSOR */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getIssueApproval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                issue_id: string;
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Approval */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Approval"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description APPROVAL_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    decideIssueApproval: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the request with the same key and payload returns the recorded result instead of applying the command twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a new one. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                workspace_id: string;
+                issue_id: string;
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    decision: "approve" | "reject";
+                    diff_digest: components["schemas"]["Digest"];
+                    note?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Approval after the decision */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Approval"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — the caller is not the addressed approver or lacks current repository access/approval authority */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description APPROVAL_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description APPROVAL_BINDING_STALE, APPROVAL_STATE_CONFLICT, or IDEMPOTENCY_CONFLICT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listIssueDeliveries: {
+        parameters: {
+            query?: {
+                /** @description Opaque pagination cursor copied from a previous page's `next_cursor`. Clients must not construct, parse, or interpret cursors; an unknown cursor is 400 INVALID_CURSOR. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Delivery page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["Delivery"][];
+                        /** @description Opaque cursor for the next page; null at the end of the list. */
+                        next_cursor: string | null;
+                    };
+                };
+            };
+            /** @description INVALID_CURSOR */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    requestIssueDelivery: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the request with the same key and payload returns the recorded result instead of applying the command twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a new one. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    approval_id: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Delivery operation recorded */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Delivery"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — missing delivery authority, unsupported governance, or missing integration permissions; delivery stays blocked */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND or APPROVAL_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description APPROVAL_NOT_APPROVED, APPROVAL_CONSUMED, or IDEMPOTENCY_CONFLICT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getIssueDelivery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                issue_id: string;
+                delivery_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Delivery */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Delivery"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description DELIVERY_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    reconcileIssueDelivery: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the request with the same key and payload returns the recorded result instead of applying the command twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a new one. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                workspace_id: string;
+                issue_id: string;
+                delivery_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    note?: string | null;
+                };
+            };
+        };
+        responses: {
+            /** @description Reconciliation recorded */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Delivery"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description DELIVERY_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description DELIVERY_STATE_CONFLICT or IDEMPOTENCY_CONFLICT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description PROVIDER_ERROR — retryable; no write was performed */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    streamIssueEvents: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay events after this event_id; unknown ids replay from the start. */
+                "Last-Event-ID"?: string;
+            };
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description text/event-stream. Each frame carries id (event_id), the event type, and data: the IssueEvent envelope. The stream ends after issue.terminal. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["IssueEvent"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
