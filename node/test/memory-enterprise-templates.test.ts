@@ -175,6 +175,13 @@ function createActiveItem(
     reference: "ci/run/1",
   });
   memory.items.setStatus(sourceScope, created.item.id, "candidate", 1);
+  // DAT-235 gate: procedural and policy content reaches `active` only with a
+  // named human approval of the exact version. Approval always precedes
+  // activation, including in the tests that publish banned text (publication
+  // policy lint, not activation, is what must reject it).
+  if (["lesson", "playbook", "anti_pattern", "policy"].includes(overrides.kind ?? "fact")) {
+    memory.items.reviewVersion(sourceScope, created.item.id, 1, REVIEWER);
+  }
   memory.items.setStatus(sourceScope, created.item.id, "active", 1);
   return { item_id: created.item.id, version: 1 };
 }
