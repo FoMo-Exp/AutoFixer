@@ -2,7 +2,10 @@ import type { DshError } from "../dsh/client.js";
 import type { ControlPlaneError } from "../control-plane/errors.js";
 import {
   ConflictError,
+  ForbiddenError,
+  InvalidTransitionError,
   NotFoundError,
+  PreconditionFailedError,
   RequestScopeError,
   ValidationError,
   VersionConflictError,
@@ -166,6 +169,18 @@ const ERROR_SEMANTICS: Record<string, ErrorSemantics> = {
   },
   VERSION_CONFLICT: {
     stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  INVALID_TRANSITION: {
+    stage: "policy",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  PRECONDITION_FAILED: {
+    stage: "policy",
     category: "stop",
     retryable: false,
     next_action: "refresh",
@@ -520,6 +535,15 @@ export function apiErrorFromControlPlane(error: ControlPlaneError): ApiError {
   }
   if (error instanceof VersionConflictError) {
     return new ApiError(409, "VERSION_CONFLICT", error.message);
+  }
+  if (error instanceof InvalidTransitionError) {
+    return new ApiError(409, "INVALID_TRANSITION", error.message, error.details);
+  }
+  if (error instanceof PreconditionFailedError) {
+    return new ApiError(409, "PRECONDITION_FAILED", error.message, error.details);
+  }
+  if (error instanceof ForbiddenError) {
+    return new ApiError(403, "FORBIDDEN", error.message);
   }
   if (error instanceof ValidationError) {
     return new ApiError(400, "INVALID_REQUEST", error.message);

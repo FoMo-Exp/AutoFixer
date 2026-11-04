@@ -8349,6 +8349,72 @@
             }
           },
           {
+            "name": "team_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "description": "Applicability filter (DAT-251): shows items scoped to this team plus broadly applicable items (no team scope). Items scoped to another team are excluded. Leaving it unset changes nothing."
+          },
+          {
+            "name": "path_prefix",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "description": "Applicability filter; matches on segment boundaries and includes broadly applicable items."
+          },
+          {
+            "name": "language",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "task_family",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "trust",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "human",
+                "agent",
+                "enterprise_template",
+                "system"
+              ]
+            }
+          },
+          {
+            "name": "sensitivity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "internal",
+                "confidential",
+                "restricted"
+              ]
+            },
+            "description": "Narrows the browse; it never widens the role ceiling, so a sensitivity above the caller's ceiling stays invisible."
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -8577,6 +8643,701 @@
           },
           "404": {
             "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}": {
+      "get": {
+        "operationId": "getMemoryItem",
+        "summary": "One memory item in the browse view",
+        "description": "Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. The same view and sensitivity ceiling as browse, for deep links. A quarantined item serves statement null with statement_redacted true; a restricted item and a foreign workspace id both answer 404.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Memory item id. Ids never grant access; a foreign id answers 404."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Item detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryItemView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND — unknown item, other workspace, or above the ceiling",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/versions": {
+      "get": {
+        "operationId": "getMemoryItemVersions",
+        "summary": "Per-version content for diffing",
+        "description": "Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Every immutable version with its own statement, preconditions, trust, sensitivity, validity window, content hash, provenance, and review stamp. Each historical version is filtered by its own sensitivity ceiling: a high-sensitivity version is absent, not blanked. A quarantined item's statements and preconditions are withheld.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Memory item id. Ids never grant access; a foreign id answers 404."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Visible version history, ascending",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryItemVersions"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/events": {
+      "get": {
+        "operationId": "getMemoryItemEvents",
+        "summary": "Item audit timeline",
+        "description": "Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Merges memory events, promotion decisions, and consolidation operations into one ascending timeline with actor, action, version, time, and a fixed reason code. `detail` carries only enums, counts, and opaque ids. Events about versions above the caller's ceiling are absent.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Memory item id. Ids never grant access; a foreign id answers 404."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audit timeline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryItemEvents"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/promote": {
+      "post": {
+        "operationId": "promoteMemoryItem",
+        "summary": "Named human promotion of an exact version",
+        "description": "Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Workspace owner/admin, or the lead of the item's team. Only candidate -> active is accepted. The named approver's review stamp is written on the exact version; policy additionally must be human-authored. An item with no evidence cannot be promoted. `expected_version` or a non-current `version` answers 409 VERSION_CONFLICT; an illegal transition answers 409 INVALID_TRANSITION.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Memory item id. Ids never grant access; a foreign id answers 404."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryPromoteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Promoted item",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryGovernanceResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — member/viewer, other team, or agent credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "VERSION_CONFLICT, INVALID_TRANSITION, or PRECONDITION_FAILED",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/deprecate": {
+      "post": {
+        "operationId": "deprecateMemoryItem",
+        "summary": "Retire a candidate or active item with a fixed reason",
+        "description": "Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Workspace owner/admin, or the lead of the item's team. Only active|candidate -> deprecated is accepted. The reason is a fixed machine code; free text is not accepted or stored.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Memory item id. Ids never grant access; a foreign id answers 404."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryDeprecateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Deprecated item",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryGovernanceResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST — unknown reason_code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "VERSION_CONFLICT or INVALID_TRANSITION",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/quarantine": {
+      "post": {
+        "operationId": "quarantineMemoryItem",
+        "summary": "Quarantine an item as a security response",
+        "description": "Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Workspace owner/admin, or the lead of the item's team. Any non-terminal state may be quarantined. Quarantine removes the item from retrieval immediately and every later response serves statement null, empty preconditions, and evidence reduced to an irreversible identifier. v1 has no route that returns the original content.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Memory item id. Ids never grant access; a foreign id answers 404."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryQuarantineRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Quarantined item, content redacted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryGovernanceResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST — unknown reason_code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "VERSION_CONFLICT or INVALID_TRANSITION",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/restore": {
+      "post": {
+        "operationId": "restoreMemoryItem",
+        "summary": "Release a quarantined item to proposed, candidate, or deprecated",
+        "description": "Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Workspace owner/admin, or the lead of the item's team. Only a quarantined item can be restored, and `active` is not an accepted target: returning to active must go through promote so approval cannot be bypassed.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace the caller is a member of; resolved from the session."
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Memory item id. Ids never grant access; a foreign id answers 404."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryRestoreRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Restored item",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryGovernanceResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST — unknown target_status or reason_code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "VERSION_CONFLICT or INVALID_TRANSITION",
             "content": {
               "application/json": {
                 "schema": {
@@ -13230,7 +13991,15 @@
             ]
           },
           "statement": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The current statement. Null exactly when the item is quarantined: quarantine content is never served by this surface."
+          },
+          "statement_redacted": {
+            "type": "boolean",
+            "description": "True when statement and preconditions were withheld (quarantine). Optional so DAT-236 clients keep working; the service always sets it."
           },
           "preconditions": {
             "type": "array",
@@ -13296,6 +14065,19 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/MemoryProvenance"
+          },
+          "review": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MemoryReview"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -13720,6 +14502,577 @@
           },
           "created_by": {
             "type": "string"
+          }
+        }
+      },
+      "MemoryProvenance": {
+        "type": "object",
+        "description": "Who authored a version and under which agent configuration. Provenance is a claim recorded at write time; it never grants authority.",
+        "required": [
+          "author_type"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "author_type": {
+            "type": "string",
+            "enum": [
+              "human",
+              "agent",
+              "system"
+            ]
+          },
+          "agent_model": {
+            "type": "string"
+          },
+          "config_digest": {
+            "type": "string"
+          },
+          "prompt_template_version": {
+            "type": "string"
+          }
+        }
+      },
+      "MemoryReview": {
+        "type": "object",
+        "description": "Named human approval of exactly one immutable version. Set once; a later version needs its own approval.",
+        "required": [
+          "approver_id",
+          "approved_at"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "approver_id": {
+            "type": "string"
+          },
+          "approved_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "MemoryItemVersion": {
+        "type": "object",
+        "description": "One immutable content version, served so the UI can diff versions. A version above the caller's sensitivity ceiling is absent entirely — a high-sensitivity history cannot be enumerated through this surface.",
+        "required": [
+          "version",
+          "kind",
+          "tier",
+          "statement",
+          "statement_redacted",
+          "preconditions",
+          "applicability",
+          "trust",
+          "sensitivity",
+          "valid_from",
+          "valid_to",
+          "content_hash",
+          "provenance",
+          "review",
+          "created_at",
+          "created_by"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "fact",
+              "lesson",
+              "playbook",
+              "anti_pattern",
+              "episode",
+              "policy"
+            ]
+          },
+          "tier": {
+            "type": "string",
+            "enum": [
+              "L1",
+              "L2",
+              "L3",
+              "L4"
+            ]
+          },
+          "statement": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Null exactly when statement_redacted is true (quarantined item)."
+          },
+          "statement_redacted": {
+            "type": "boolean"
+          },
+          "preconditions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "applicability": {
+            "$ref": "#/components/schemas/MemoryApplicability"
+          },
+          "trust": {
+            "type": "string",
+            "enum": [
+              "human",
+              "agent",
+              "enterprise_template",
+              "system"
+            ]
+          },
+          "sensitivity": {
+            "type": "string",
+            "enum": [
+              "internal",
+              "confidential",
+              "restricted"
+            ]
+          },
+          "valid_from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "valid_to": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/MemoryProvenance"
+          },
+          "review": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MemoryReview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string"
+          }
+        }
+      },
+      "MemoryItemVersions": {
+        "type": "object",
+        "required": [
+          "schema_version",
+          "item_id",
+          "status",
+          "current_version",
+          "versions"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "type": "integer"
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "proposed",
+              "candidate",
+              "active",
+              "deprecated",
+              "retired",
+              "quarantined"
+            ]
+          },
+          "current_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemoryItemVersion"
+            }
+          }
+        }
+      },
+      "MemoryItemEvent": {
+        "type": "object",
+        "description": "One normalized audit entry, merged from memory events, promotion decisions, and consolidation operations. `detail` holds only fixed enums, counts, and opaque ids — never free text and never memory content.",
+        "required": [
+          "at",
+          "source",
+          "action",
+          "actor",
+          "item_version"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "memory_event",
+              "promotion_decision",
+              "consolidation_op"
+            ]
+          },
+          "action": {
+            "type": "string",
+            "description": "The recorded action: a memory event type, `promotion_decision`, or the consolidation operation (merge, supersede, expire, deprecate, quarantine)."
+          },
+          "actor": {
+            "type": "object",
+            "required": [
+              "type",
+              "id"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "user",
+                  "system"
+                ]
+              },
+              "id": {
+                "type": "string"
+              }
+            }
+          },
+          "item_version": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "from_status": {
+            "type": "string",
+            "enum": [
+              "proposed",
+              "candidate",
+              "active",
+              "deprecated",
+              "retired",
+              "quarantined"
+            ]
+          },
+          "to_status": {
+            "type": "string",
+            "enum": [
+              "proposed",
+              "candidate",
+              "active",
+              "deprecated",
+              "retired",
+              "quarantined"
+            ]
+          },
+          "reason_code": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "object",
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "MemoryItemEvents": {
+        "type": "object",
+        "required": [
+          "item_id",
+          "events"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array",
+            "description": "Ascending by `at`. Append-only: entries are never rewritten.",
+            "items": {
+              "$ref": "#/components/schemas/MemoryItemEvent"
+            }
+          }
+        }
+      },
+      "MemoryPromoteRequest": {
+        "type": "object",
+        "description": "Named human promotion. Only candidate -> active is accepted; procedural content and policy receive the approver's exact-version review stamp.",
+        "required": [
+          "version",
+          "expected_version"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The exact content version the human acted on; must be current."
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Optimistic concurrency token; must equal the current version."
+          }
+        }
+      },
+      "MemoryDeprecateRequest": {
+        "type": "object",
+        "required": [
+          "version",
+          "expected_version",
+          "reason_code"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The exact content version the human acted on; must be current."
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Optimistic concurrency token; must equal the current version."
+          },
+          "reason_code": {
+            "type": "string",
+            "enum": [
+              "duplicate_content",
+              "past_valid_to",
+              "stale_fact",
+              "unused_decay",
+              "retirement_proposal",
+              "security_report",
+              "human_decision",
+              "contradiction",
+              "incorrect_content",
+              "policy_violation",
+              "secret_leak",
+              "poisoning_suspected",
+              "restore_after_review",
+              "false_positive"
+            ],
+            "description": "Fixed machine reason; free-text reasons are not accepted or stored."
+          }
+        }
+      },
+      "MemoryQuarantineRequest": {
+        "type": "object",
+        "required": [
+          "version",
+          "expected_version",
+          "reason_code"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The exact content version the human acted on; must be current."
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Optimistic concurrency token; must equal the current version."
+          },
+          "reason_code": {
+            "type": "string",
+            "enum": [
+              "duplicate_content",
+              "past_valid_to",
+              "stale_fact",
+              "unused_decay",
+              "retirement_proposal",
+              "security_report",
+              "human_decision",
+              "contradiction",
+              "incorrect_content",
+              "policy_violation",
+              "secret_leak",
+              "poisoning_suspected",
+              "restore_after_review",
+              "false_positive"
+            ],
+            "description": "Fixed machine reason; free-text reasons are not accepted or stored."
+          }
+        }
+      },
+      "MemoryRestoreRequest": {
+        "type": "object",
+        "description": "Restore a quarantined item. `active` is not a permitted target: returning to active must go through promote so approval cannot be bypassed.",
+        "required": [
+          "version",
+          "expected_version",
+          "target_status",
+          "reason_code"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The exact content version the human acted on; must be current."
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Optimistic concurrency token; must equal the current version."
+          },
+          "target_status": {
+            "type": "string",
+            "enum": [
+              "proposed",
+              "candidate",
+              "deprecated"
+            ]
+          },
+          "reason_code": {
+            "type": "string",
+            "enum": [
+              "duplicate_content",
+              "past_valid_to",
+              "stale_fact",
+              "unused_decay",
+              "retirement_proposal",
+              "security_report",
+              "human_decision",
+              "contradiction",
+              "incorrect_content",
+              "policy_violation",
+              "secret_leak",
+              "poisoning_suspected",
+              "restore_after_review",
+              "false_positive"
+            ],
+            "description": "Fixed machine reason; free-text reasons are not accepted or stored."
+          }
+        }
+      },
+      "MemoryGovernanceResult": {
+        "type": "object",
+        "description": "The applied transition plus the item's post-transition view, served under the same sensitivity ceiling as browse.",
+        "required": [
+          "action",
+          "item_id",
+          "from_status",
+          "to_status",
+          "item_version",
+          "reason_code",
+          "item"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "promote",
+              "deprecate",
+              "quarantine",
+              "restore"
+            ]
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "from_status": {
+            "type": "string",
+            "enum": [
+              "proposed",
+              "candidate",
+              "active",
+              "deprecated",
+              "retired",
+              "quarantined"
+            ]
+          },
+          "to_status": {
+            "type": "string",
+            "enum": [
+              "proposed",
+              "candidate",
+              "active",
+              "deprecated",
+              "retired",
+              "quarantined"
+            ]
+          },
+          "item_version": {
+            "type": "integer"
+          },
+          "reason_code": {
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "duplicate_content",
+                  "past_valid_to",
+                  "stale_fact",
+                  "unused_decay",
+                  "retirement_proposal",
+                  "security_report",
+                  "human_decision",
+                  "contradiction",
+                  "incorrect_content",
+                  "policy_violation",
+                  "secret_leak",
+                  "poisoning_suspected",
+                  "restore_after_review",
+                  "false_positive"
+                ]
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "human_approved"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "item": {
+            "$ref": "#/components/schemas/MemoryItemView"
           }
         }
       },

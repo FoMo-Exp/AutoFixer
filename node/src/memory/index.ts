@@ -116,3 +116,19 @@ export * from "./retrieval/index.js";
 // Bounded RSI (DAT-238): proposals, offline replay, approvals, canary,
 // rollback, weekly budgets, run version pins, and the workspace kill switch.
 export * from "./rsi/index.js";
+
+// Workspace memory governance (DAT-251): item detail, per-version content,
+// the audit timeline, and promote/deprecate/quarantine/restore. See
+// `docs/contracts/memory-governance-v1.md`.
+export * from "./governance/index.js";
+
+// Quarantine redaction shared by browse and governance (DAT-251).
+export {
+  REDACTED_EVIDENCE_PREFIX,
+  isQuarantined,
+  opaqueEvidenceReference,
+  servedEvidence,
+  servedPreconditions,
+  servedStatement,
+} from "./redact.js";
+export type { ServedEvidence } from "./redact.js";

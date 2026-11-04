@@ -136,11 +136,18 @@ const COLLAB_ENDPOINTS: Array<[method: string, path: string]> = [
   ["get", `${COLLAB_BASE}/{issue_id}/stream`],
 ];
 
-/** Workspace memory v1 surface (DAT-236). */
+/** Workspace memory v1 surface (DAT-236) plus governance (DAT-251). */
 const MEMORY_ENDPOINTS: Array<[method: string, path: string]> = [
   ["post", "/api/v1/workspaces/{workspace_id}/memory/search"],
   ["post", "/api/v1/workspaces/{workspace_id}/memory/feedback"],
   ["get", "/api/v1/workspaces/{workspace_id}/memory/items"],
+  ["get", "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}"],
+  ["get", "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/versions"],
+  ["get", "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/events"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/promote"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/deprecate"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/quarantine"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/restore"],
   ["get", "/api/v1/workspaces/{workspace_id}/memory/versions"],
   ["post", "/api/v1/workspaces/{workspace_id}/memory/eval-runs"],
 ];
@@ -192,11 +199,11 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
       expect(document.paths[path], `missing path ${path}`).toBeDefined();
       expect(document.paths[path]?.[method], `missing ${method} ${path}`).toBeDefined();
     }
-    // Retrieval is read-mostly: promotion, deprecation, quarantine, and policy
-    // writes are deliberately not reachable from this credential.
+    // Governance transitions accept only the four documented actions, and
+    // there is still no policy-write route: L4 policy is created elsewhere.
     for (const path of Object.keys(document.paths)) {
       if (path.includes("/memory/")) {
-        expect(path).not.toMatch(/promote|deprecate|quarantine|policy/);
+        expect(path).not.toMatch(/policy/);
       }
     }
   });

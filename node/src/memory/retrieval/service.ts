@@ -13,7 +13,7 @@
  */
 
 import type { WorkspaceRole, WorkspaceScope } from "../../control-plane/types.js";
-import { ValidationError } from "../../control-plane/errors.js";
+import { NotFoundError, ValidationError } from "../../control-plane/errors.js";
 import { MEMORY_SCHEMA_VERSION } from "../index.js";
 import type {
   MemoryApplicability,
@@ -22,7 +22,7 @@ import type {
   MemoryLink,
   MemoryRepositories,
 } from "../index.js";
-import { MEMORY_KINDS, MEMORY_STATUSES } from "./constants.js";
+import { MEMORY_KINDS, MEMORY_SENSITIVITIES, MEMORY_STATUSES, MEMORY_TRUSTS } from "./constants.js";
 import type {
   MemoryBundle,
   MemoryBundleItem,
@@ -47,12 +47,14 @@ import { tierOf } from "./types.js";
 import type { RetrievalStore } from "./store.js";
 import {
   allowedSensitivities,
+  applicabilityMatches,
   approvalSatisfied,
   assessEligibility,
   itemTokenEstimate,
   scoreMemoryItem,
   withinSensitivityCeiling,
 } from "./rank.js";
+import { servedEvidence, servedPreconditions, servedStatement } from "../redact.js";
 import { retrievalPolicyHash, validateRetrievalPolicy } from "./policy.js";
 import {
   bm25Scores,
@@ -86,6 +88,12 @@ export interface MemoryRetrievalService {
     role: WorkspaceRole,
     filter?: MemoryItemsFilter,
   ): MemoryItemsPage;
+  /**
+   * One item by id, in exactly the browse view and under the same sensitivity
+   * ceiling. An item outside the workspace or above the caller's ceiling is
+   * indistinguishable from a missing one (NotFound).
+   */
+  getItem(scope: WorkspaceScope, role: WorkspaceRole, itemId: string): MemoryItemView;
   /**
    * Policy and corpus versions. Obeys the caller's sensitivity ceiling exactly
    * like browse: item identifiers, versions, hashes, and timestamps for items
@@ -938,6 +946,18 @@ class SqliteMemoryRetrievalService implements MemoryRetrievalService {
     if (filter.tier !== undefined && !["L1", "L2", "L3", "L4"].includes(filter.tier)) {
       throw new ValidationError(`unsupported tier: ${String(filter.tier)}`);
     }
+    if (filter.trust !== undefined && !MEMORY_TRUSTS.includes(filter.trust)) {
+      throw new ValidationError(`unsupported trust: ${String(filter.trust)}`);
+    }
+    if (filter.sensitivity !== undefined && !MEMORY_SENSITIVITIES.includes(filter.sensitivity)) {
+      throw new ValidationError(`unsupported sensitivity: ${String(filter.sensitivity)}`);
+    }
+    for (const field of ["team_id", "path_prefix", "language", "task_family"] as const) {
+      const value = filter[field];
+      if (value !== undefined && (typeof value !== "string" || value.length === 0)) {
+        throw new ValidationError(`${field} must be a non-empty string`);
+      }
+    }
     const limit = optionalPositiveInteger(filter.limit, "limit") ?? 25;
     if (limit > 100) {
       throw new ValidationError("limit must be at most 100");
@@ -948,10 +968,27 @@ class SqliteMemoryRetrievalService implements MemoryRetrievalService {
       ...(filter.kind !== undefined ? { kind: filter.kind } : {}),
       ...(filter.status !== undefined ? { status: filter.status } : {}),
     });
+    // Applicability filters use the same match rule as retrieval: a filter
+    // narrows the browse, and an item field that is unset is broadly
+    // applicable. An absent filter changes nothing, so DAT-236 callers keep
+    // their exact behaviour.
+    const applicabilityFilter: MemoryApplicability = {
+      ...(filter.team_id !== undefined ? { team_id: filter.team_id } : {}),
+      ...(filter.path_prefix !== undefined ? { path_prefix: filter.path_prefix } : {}),
+      ...(filter.language !== undefined ? { language: filter.language } : {}),
+      ...(filter.task_family !== undefined ? { task_family: filter.task_family } : {}),
+    };
+    const filteredByApplicability = Object.keys(applicabilityFilter).length > 0;
     const views = records
       .map((record) => this.toItemView(scope, record))
       .filter((view) => withinSensitivityCeiling(view.sensitivity, role))
       .filter((view) => filter.tier === undefined || view.tier === filter.tier)
+      .filter((view) => filter.trust === undefined || view.trust === filter.trust)
+      .filter((view) => filter.sensitivity === undefined || view.sensitivity === filter.sensitivity)
+      .filter(
+        (view) =>
+          !filteredByApplicability || applicabilityMatches(view.applicability, applicabilityFilter),
+      )
       .sort((left, right) => {
         if (left.updated_at !== right.updated_at) {
           return right.updated_at.localeCompare(left.updated_at);
@@ -966,10 +1003,28 @@ class SqliteMemoryRetrievalService implements MemoryRetrievalService {
     };
   }
 
+  getItem(scope: WorkspaceScope, role: WorkspaceRole, itemId: string): MemoryItemView {
+    if (typeof itemId !== "string" || itemId.length === 0) {
+      throw new ValidationError("item_id is required");
+    }
+    const record = this.memory.items.getById(scope, itemId);
+    if (record === undefined) {
+      // A foreign workspace, an unknown id, and an id above the caller's
+      // sensitivity ceiling are the same answer on purpose.
+      throw new NotFoundError("MemoryItem", itemId);
+    }
+    const view = this.toItemView(scope, record);
+    if (!withinSensitivityCeiling(view.sensitivity, role)) {
+      throw new NotFoundError("MemoryItem", itemId);
+    }
+    return view;
+  }
+
   private toItemView(scope: WorkspaceScope, record: MemoryItemRecord): MemoryItemView {
     const version = record.current;
     const evidence = this.memory.evidence.listByItem(scope, record.item.id);
     const versions = this.memory.items.listVersions(scope, record.item.id);
+    const served = servedStatement(record.item.status, version.statement);
     return {
       item_id: record.item.id,
       status: record.item.status,
@@ -977,8 +1032,9 @@ class SqliteMemoryRetrievalService implements MemoryRetrievalService {
       versions_count: versions.length,
       kind: version.kind,
       tier: tierOf(version.kind),
-      statement: version.statement,
-      preconditions: [...version.preconditions],
+      statement: served.statement,
+      statement_redacted: served.statement_redacted,
+      preconditions: servedPreconditions(record.item.status, version.preconditions),
       applicability: { ...version.scope },
       trust: version.trust,
       sensitivity: version.sensitivity,
@@ -988,11 +1044,10 @@ class SqliteMemoryRetrievalService implements MemoryRetrievalService {
       content_hash: version.content_hash,
       support_count: record.item.support_count,
       contradiction_count: record.item.contradiction_count,
-      evidence: evidence.map((entry) => ({
-        evidence_type: entry.evidence_type,
-        reference: entry.reference,
-      })),
+      evidence: servedEvidence(record.item.status, evidence),
       updated_at: record.item.updated_at,
+      provenance: { ...version.provenance },
+      review: version.review === null ? null : { ...version.review },
     };
   }
 

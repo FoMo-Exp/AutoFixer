@@ -108,6 +108,12 @@ export interface MemoryItemRepository {
     itemId: MemoryItemId,
     status: MemoryStatus,
     expectedVersion: number,
+    /**
+     * Fixed machine reason for a governance transition (DAT-251). It is an
+     * enum token, never free text, and it is audited on the same
+     * `status_changed` event as `from`/`to`.
+     */
+    options?: { reason_code?: string },
   ): MemoryItem;
   /**
    * Recompute the derived confidence counters from the item's evidence and
@@ -512,14 +518,16 @@ const REQUIRES_APPROVAL_KINDS: readonly MemoryKind[] = [
 /**
  * ADR-0009 lifecycle state machine. `retired` is terminal; `quarantined` is
  * reachable from every non-terminal state; restore moves a quarantined item
- * back to `candidate`.
+ * back to `proposed`, `candidate`, or `deprecated` (DAT-251). Restoring to
+ * `active` is deliberately absent: returning to `active` must go through the
+ * promotion path so approval cannot be bypassed.
  */
 const STATUS_TRANSITIONS: Readonly<Record<MemoryStatus, readonly MemoryStatus[]>> = {
   proposed: ["candidate", "deprecated", "quarantined"],
   candidate: ["active", "deprecated", "quarantined"],
   active: ["deprecated", "quarantined"],
   deprecated: ["active", "retired", "quarantined"],
-  quarantined: ["candidate", "retired"],
+  quarantined: ["proposed", "candidate", "deprecated", "retired"],
   retired: [],
 };
 
@@ -1054,10 +1062,17 @@ class SqliteMemoryItemRepository implements MemoryItemRepository {
     itemId: MemoryItemId,
     status: MemoryStatus,
     expectedVersion: number,
+    options: { reason_code?: string } = {},
   ): MemoryItem {
     requireWorkspaceScope(scope);
     if (!MEMORY_STATUSES.includes(status)) {
       throw new ValidationError(`unsupported memory status: ${String(status)}`);
+    }
+    const reasonCode = options.reason_code;
+    if (reasonCode !== undefined && !/^[a-z][a-z0-9_]{0,63}$/.test(reasonCode)) {
+      // The audit detail never carries free text or memory content; a reason
+      // that is not a fixed machine token is refused here as well.
+      throw new ValidationError("reason_code must be a fixed snake_case machine code");
     }
     return this.store.runAtomically(() => {
       const record = requireRow("MemoryItem", itemId, this.getRecord(scope, itemId));
@@ -1120,7 +1135,11 @@ class SqliteMemoryItemRepository implements MemoryItemRepository {
         item_version: expectedVersion,
         event_type: "status_changed",
         run_id: null,
-        detail: { from, to: status },
+        detail: {
+          from,
+          to: status,
+          ...(reasonCode !== undefined ? { reason_code: reasonCode } : {}),
+        },
       });
       return requireRow("MemoryItem", itemId, this.getRecord(scope, itemId)).item;
     });

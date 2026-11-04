@@ -206,7 +206,7 @@ export function assessAndAutoPromote(
 export function approveAndPromote(
   scope: WorkspaceScope,
   deps: PromotionServiceDeps,
-  input: { itemId: MemoryItemId; version: number },
+  input: { itemId: MemoryItemId; version: number; reasonCode?: string },
 ): MemoryItemRecord {
   const record = deps.memory.items.getById(scope, input.itemId);
   if (record === undefined) {
@@ -221,7 +221,11 @@ export function approveAndPromote(
     if (record.current.review === null) {
       deps.memory.items.reviewVersion(scope, input.itemId, input.version, scope.actor_id);
     }
-    deps.memory.items.setStatus(scope, input.itemId, "active", input.version);
+    deps.memory.items.setStatus(scope, input.itemId, "active", input.version, {
+      // A governance caller records its fixed reason on the audited status
+      // change; DAT-235 callers keep the default `status_changed` detail.
+      ...(input.reasonCode !== undefined ? { reason_code: input.reasonCode } : {}),
+    });
     deps.lifecycle.recordPromotionDecision(scope, {
       item_id: input.itemId,
       item_version: input.version,
