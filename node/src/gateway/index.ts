@@ -53,7 +53,12 @@ export type {
 } from "./scan.js";
 export {
   DATA_CLASSES,
+  MODEL_BUDGET_EXHAUSTED,
+  MODEL_BUDGET_UNAVAILABLE,
   MODEL_EGRESS_DENIED,
+  MODEL_TOKEN_CEILING_EXCEEDED,
+  MODEL_USAGE_UNKNOWN,
+  ModelBudgetReconciliationError,
   PROVIDER_USAGE_DIAGNOSTIC,
   ModelDispatchError,
   ModelEgressDeniedError,

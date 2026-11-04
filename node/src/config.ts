@@ -103,6 +103,13 @@ export interface OrchestratorConfig {
    * stream: financial records are queried and retained on their own terms.
    */
   usageLedgerFile?: string;
+  /**
+   * Budget policy JSON (DAT-229). Setting it enables enterprise/workspace/run
+   * budget enforcement at the gateway; unset leaves invocations unbudgeted.
+   */
+  budgetPolicyFile?: string;
+  /** Durable budget journal (JSONL, 0600); required alongside the policy. */
+  budgetStateFile?: string;
   // --- Enterprise identity (ADR-0006) -------------------------------------
   /**
    * External origin for OAuth redirect URLs and desktop login links. Unset
@@ -204,6 +211,11 @@ function defaultUsageLedgerPath(): string {
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "usage-ledger.json");
 }
 
+function defaultBudgetStatePath(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "budget-journal.jsonl");
+}
+
 function defaultControlPlanePath(): string {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "control-plane.sqlite");
@@ -301,6 +313,15 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     throw new Error(
       "FORGEPILOT_GATEWAY_POLICY_FILE and FORGEPILOT_GATEWAY_CREDENTIALS_FILE must be configured together",
     );
+  }
+  // Budget enforcement is opt-in by configuration, not by accident: a
+  // deployment that sets the policy file gets the authority and a durable
+  // journal; leaving it unset keeps the historical unbudgeted behavior.
+  const budgetPolicyFile = env["FORGEPILOT_BUDGET_POLICY_FILE"]?.trim();
+  if (budgetPolicyFile) {
+    config.budgetPolicyFile = budgetPolicyFile;
+    config.budgetStateFile =
+      env["FORGEPILOT_BUDGET_STATE_FILE"]?.trim() || defaultBudgetStatePath();
   }
   if (env["FORGEPILOT_PI_PROVIDER"] && env["FORGEPILOT_PI_MODEL"]) {
     config.piModelProvider = env["FORGEPILOT_PI_PROVIDER"];

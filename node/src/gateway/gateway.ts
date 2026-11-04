@@ -12,6 +12,7 @@ import type {
   SimpleStreamOptions,
 } from "@mariozechner/pi-ai";
 
+import type { BudgetDenyReason, InvocationBudget } from "../budget/index.js";
 import type { ProviderAdapter } from "./adapter.js";
 import { buildAdapterOptions } from "./adapter.js";
 import type { GatewayCredentialStore } from "./credentials.js";
@@ -44,9 +45,14 @@ import type {
   RequestScanEvidence,
 } from "./types.js";
 import {
+  ModelBudgetReconciliationError,
   ModelDispatchError,
   ModelEgressDeniedError,
+  MODEL_BUDGET_EXHAUSTED,
+  MODEL_BUDGET_UNAVAILABLE,
   MODEL_EGRESS_DENIED,
+  MODEL_TOKEN_CEILING_EXCEEDED,
+  MODEL_USAGE_UNKNOWN,
   PROVIDER_USAGE_DIAGNOSTIC,
   SECURITY_REVIEW_REQUIRED,
   SENSITIVE_DATA_UNCERTAIN,
@@ -104,6 +110,13 @@ export interface ModelGatewayDeps {
    * attempts unmetered, so a deployment that keeps cost accounting wires it.
    */
   usageLedger?: UsageLedgerSink;
+  /**
+   * Budget authority (DAT-229). A conservative enterprise/workspace/run bound
+   * is reserved before every dispatch attempt and settled against observed
+   * usage. Unset leaves invocations unbudgeted; a deployment that enforces
+   * cost limits always wires it.
+   */
+  budget?: InvocationBudget;
   now?: () => Date;
   newInvocationId?: () => string;
   /** Operational-incident channel for post-outcome audit failures. */
@@ -117,7 +130,24 @@ interface DestinationSlot {
   fallback?: GatewayFallback;
 }
 
-type TerminalOutcome = { outcome: "dispatched" | "failed"; detail?: string };
+/**
+ * What is known about the provider side of one attempt:
+ * - `known`: the provider completed or explicitly failed the attempt.
+ * - `unknown`: bytes may have reached the provider but no outcome was read;
+ *   the budget reservation is retained and the attempt is never re-sent.
+ * - `not_dispatched`: the attempt provably never left the gateway, so its
+ *   reservation is refunded.
+ */
+type ProviderOutcome = "known" | "unknown" | "not_dispatched";
+
+type TerminalOutcome = {
+  outcome: "dispatched" | "failed";
+  detail?: string;
+  /** Usage the provider reported; absent means never reported — not zero. */
+  usage?: { tokens: number; completeness: "known" | "estimated" };
+  /** Defaults to `known` when the transport reached a terminal decision. */
+  providerOutcome?: ProviderOutcome;
+};
 
 /**
  * How one attempt closed, for both its audit outcome and its usage ledger
@@ -141,6 +171,14 @@ type AttemptResult =
       retryable: boolean;
       finish: LedgerFinishStatus;
       terminal?: AssistantMessage;
+      providerOutcome?: ProviderOutcome;
+      /**
+       * The provider outcome is unknown and cannot be surfaced as a normal
+       * stream completion or retried, whatever the budget configuration.
+       */
+      fatalUnknown?: boolean;
+      /** Exact outcome to audit/settle for this failure, when not the default. */
+      terminalOutcome?: TerminalOutcome;
     };
 
 const CONTENT_EVENTS = new Set<AssistantMessageEvent["type"]>([
@@ -153,6 +191,72 @@ const CONTENT_EVENTS = new Set<AssistantMessageEvent["type"]>([
 const NON_RETRYABLE_MARKERS =
   /\b(?:HTTP|status)\s*[:=]?\s*(?:400|401|403|404|422)\b|content_filter|invalid api key/i;
 
+/**
+ * Transport failures that prove the request never reached the provider. Only
+ * these may refund a budget reservation; a reset or timeout may have been
+ * served and keeps the reservation for reconciliation.
+ */
+const CERTAINLY_UNSENT = /^(ECONNREFUSED|ENOTFOUND|EAI_AGAIN|UND_ERR_CONNECT_TIMEOUT)$/;
+
+function isCertainlyUnsent(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && CERTAINLY_UNSENT.test(code);
+}
+
+/** Map a budget-domain refusal into the gateway's stable denial vocabulary. */
+function mapBudgetDenial(reason: BudgetDenyReason): {
+  reason: GatewayDenyReason;
+  code: string;
+} {
+  switch (reason) {
+    case "BUDGET_LIMIT_EXCEEDED":
+      return { reason: "BUDGET_EXHAUSTED", code: MODEL_BUDGET_EXHAUSTED };
+    case "BUDGET_TOKEN_CEILING_EXCEEDED":
+      return { reason: "TOKEN_CEILING_EXCEEDED", code: MODEL_TOKEN_CEILING_EXCEEDED };
+    case "BUDGET_BOUND_UNKNOWN":
+      return { reason: "BUDGET_BOUND_UNKNOWN", code: MODEL_BUDGET_UNAVAILABLE };
+    case "BUDGET_POLICY_UNAVAILABLE":
+      return { reason: "BUDGET_UNAVAILABLE", code: MODEL_BUDGET_UNAVAILABLE };
+  }
+}
+
+/**
+ * The conservative token bound of one attempt: the whole input context plus
+ * the requested output ceiling. Zero usage is never assumed.
+ */
+function tokenBoundOf(model: Model<Api>, options: SimpleStreamOptions | undefined): number {
+  const output = options?.maxTokens ?? model.maxTokens;
+  return model.contextWindow + output;
+}
+
+/**
+ * The stable error message for an attempt whose provider outcome is unknown.
+ * Callers read the code from the message, the attempt is never retried, and
+ * any budget reservation stays retained for reconciliation.
+ */
+function usageUnknownDetail(detail: string): string {
+  return `${MODEL_USAGE_UNKNOWN}: ${detail}`;
+}
+
+/** An error terminal message carrying the stable unknown-outcome code. */
+function usageUnknownMessage(model: Model<Api>, detail: string): AssistantMessage {
+  return syntheticErrorMessage(model, usageUnknownDetail(detail));
+}
+
+/** Provider-reported usage, or undefined when nothing usable was reported. */
+function usageOf(message: AssistantMessage): TerminalOutcome["usage"] {
+  const usage = message.usage;
+  const categories = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+  // `totalTokens` may exclude cache categories; the larger figure is the
+  // conservative billable stand-in for this attempt.
+  const tokens = Math.max(usage.totalTokens, categories);
+  if (!Number.isSafeInteger(tokens) || tokens <= 0) {
+    return undefined;
+  }
+  return { tokens, completeness: "known" };
+}
+
 function isTerminalEvent(event: AssistantMessageEvent): boolean {
   return event.type === "done" || event.type === "error";
 }
@@ -164,14 +268,24 @@ function isTerminalEvent(event: AssistantMessageEvent): boolean {
  */
 function outcomeFromTerminal(event: AssistantMessageEvent): TerminalOutcome {
   if (event.type === "error") {
+    const aborted = event.reason === "aborted";
     return {
       outcome: "failed",
-      detail:
-        event.error.errorMessage ??
-        (event.reason === "aborted" ? "aborted" : "provider stream failed"),
+      detail: event.error.errorMessage ?? (aborted ? "aborted" : "provider stream failed"),
+      // A caller abort leaves the provider side unknown: the request was
+      // already sent and its accounting cannot be released.
+      providerOutcome: aborted ? "unknown" : "known",
     };
   }
-  return { outcome: "dispatched" };
+  if (event.type === "done") {
+    const usage = usageOf(event.message);
+    return {
+      outcome: "dispatched",
+      providerOutcome: "known",
+      ...(usage === undefined ? {} : { usage }),
+    };
+  }
+  return { outcome: "dispatched", providerOutcome: "known" };
 }
 
 /** The terminal message a provider-reported usage can only ride on. */
@@ -361,6 +475,19 @@ export class ModelGateway {
         if (result.status === "handed_off") {
           return result.stream;
         }
+        if (
+          result.fatalUnknown === true ||
+          (this.deps.budget && result.providerOutcome === "unknown")
+        ) {
+          // The provider may have served this attempt and its reservation is
+          // retained; re-sending would consume budget twice. Reconcile first.
+          throw new ModelBudgetReconciliationError(
+            usageUnknownDetail(
+              "the provider outcome is unknown; reconcile the existing invocation before any retry",
+            ),
+            prepared.budgetReservation?.reservationId ?? null,
+          );
+        }
         lastDetail = result.detail;
         lastRetryable = result.retryable;
         if (!result.retryable) {
@@ -405,6 +532,8 @@ export class ModelGateway {
         adapterOptions: SimpleStreamOptions;
         /** The scanned (possibly minimized) request the adapter may dispatch. */
         context: Context;
+        /** Budget reservation admitted for this attempt, when budgets are enforced. */
+        budgetReservation: { reservationId: string } | null;
       }
   > {
     const scope = this.resolveScope(binding, attempt);
@@ -538,6 +667,39 @@ export class ModelGateway {
         gate.evidence,
       );
     }
+    // Budget admission is the last gate before bytes leave the gateway. It
+    // runs after the required pre-dispatch evidence is durable, reserves a
+    // conservative bound, and denies (never shrinks) when no finite safe
+    // reservation exists or a scope is exhausted.
+    let budgetReservation: { reservationId: string } | null = null;
+    if (this.deps.budget) {
+      const decision = await this.deps.budget.reserve({
+        enterprise_id: identity.enterpriseId,
+        workspace_id: identity.workspaceId,
+        issue_id: identity.issueId,
+        run_id: identity.runId,
+        invocation_id: identity.invocationId,
+        trace_id: identity.traceId,
+        attempt,
+        endpoint_id: endpoint.endpointId,
+        provider: endpoint.provider,
+        model_id: slot.modelId,
+        token_bound: tokenBoundOf(model, options),
+      });
+      if (decision.status === "denied") {
+        const mapped = mapBudgetDenial(decision.reason);
+        return this.deny(
+          identity,
+          attempt,
+          mapped.reason,
+          decision.detail,
+          { policyRevision: policy.revision, destination },
+          gate.evidence,
+          mapped.code,
+        );
+      }
+      budgetReservation = { reservationId: decision.reservation_id };
+    }
     return {
       identity,
       attempt,
@@ -557,6 +719,7 @@ export class ModelGateway {
       // Sanitized here as well as in the pi-ai adapter: no adapter ever sees
       // caller-supplied payload hooks, headers, or retry knobs.
       adapterOptions: buildAdapterOptions(options, credential),
+      budgetReservation,
     };
   }
 
@@ -571,14 +734,25 @@ export class ModelGateway {
     pinnedModel: Model<Api>;
     adapterOptions: SimpleStreamOptions;
     context: Context;
+    budgetReservation: { reservationId: string } | null;
   }): Promise<AttemptResult> {
     const { identity, attempt, endpoint, modelId, policyRevision, credential } = prepared;
     const startedAt = this.timestamp();
-    // Closing an attempt means its audit outcome AND its usage record are
-    // written; record() settles only when both have.
+    // Closing an attempt means its audit outcome, its usage record and its
+    // budget settlement are written; record() settles only when all have.
     const record = async (close: AttemptClose): Promise<void> => {
       await this.recordOutcome(identity, attempt, policyRevision, endpoint, modelId, close.outcome);
-      await this.recordUsage(prepared, startedAt, close);
+      try {
+        await this.recordUsage(prepared, startedAt, close);
+      } finally {
+        // Budget accounting is independent of ledger persistence. A ledger
+        // write failure must never skip the budget close: an unknown-outcome
+        // attempt would stay `held` and become releasable, refunding a call
+        // the provider may already have executed. closeBudget absorbs its own
+        // failures as incidents, so the ledger error still propagates with
+        // the reservation retained.
+        await this.closeBudget(prepared.budgetReservation, close.outcome);
+      }
     };
     try {
       const inner = await this.deps.adapter.stream(
@@ -592,7 +766,13 @@ export class ModelGateway {
         // failure must not rewrite its retryability (it surfaces as an
         // incident), so the failure close is best-effort here.
         await record({
-          outcome: { outcome: "failed", detail: scrubSecrets(head.detail, [credential]) },
+          outcome: head.terminalOutcome ?? {
+            outcome: "failed",
+            detail: scrubSecrets(head.detail, [credential]),
+            // The provider answered with an explicit failure: the outcome is
+            // known, even though no usage was reported for it.
+            providerOutcome: "known",
+          },
           finish: head.finish,
           ...(head.terminal ? { terminal: head.terminal } : {}),
         }).catch(() => undefined);
@@ -618,10 +798,19 @@ export class ModelGateway {
         const flagged = error.retryable;
         if (typeof flagged === "boolean") retryable = flagged;
       }
+      // Only a failure that proves nothing was sent refunds the reservation;
+      // anything else may have been served and is retained for reconciliation.
+      const providerOutcome: ProviderOutcome = isCertainlyUnsent(error)
+        ? "not_dispatched"
+        : "unknown";
       // The transport failed before any provider message existed: no usage
       // was reported, so the ledger records this attempt as unknown usage.
       await record({
-        outcome: { outcome: "failed", detail: scrubSecrets(detail, [credential]) },
+        outcome: {
+          outcome: "failed",
+          detail: scrubSecrets(detail, [credential]),
+          providerOutcome,
+        },
         finish: "transport_failed",
       }).catch(() => undefined);
       return {
@@ -629,6 +818,7 @@ export class ModelGateway {
         detail: scrubSecrets(detail, [credential]),
         retryable,
         finish: "transport_failed",
+        providerOutcome,
       };
     }
   }
@@ -652,12 +842,20 @@ export class ModelGateway {
     for (;;) {
       const next = await iterator.next();
       if (next.done) {
-        for (const event of buffered) out.push(event);
-        // The stream ended without a terminal event: there is no provider
-        // finish status and no usage to read, only the honest unknown.
-        await record({ outcome: { outcome: "dispatched" }, finish: "unknown" });
-        out.end();
-        return { status: "handed_off", stream: out };
+        // The stream ended without a terminal signal: no provider outcome and
+        // no usage were read. This is unknown, never a normal completion, so
+        // the dispatch fails with the stable MODEL_USAGE_UNKNOWN contract and
+        // the attempt is not retried. Nothing was handed to the caller yet.
+        const detail = "provider stream ended without a terminal outcome";
+        return {
+          status: "failed",
+          detail: usageUnknownDetail(detail),
+          retryable: false,
+          finish: "unknown",
+          providerOutcome: "unknown",
+          fatalUnknown: true,
+          terminalOutcome: { outcome: "dispatched", detail, providerOutcome: "unknown" },
+        };
       }
       const event = next.value;
       if (isTerminalEvent(event)) {
@@ -670,9 +868,28 @@ export class ModelGateway {
             terminal: event.error,
           };
         }
+        const outcome = outcomeFromTerminal(event);
+        if (outcome.providerOutcome === "unknown") {
+          // A caller abort leaves the provider side unknown. The caller gets
+          // the stable unknown-outcome failure, not the raw abort event, and
+          // the attempt is never retried.
+          const detail = scrubSecrets(
+            outcome.detail ?? "provider stream ended without a terminal outcome",
+          );
+          return {
+            status: "failed",
+            detail: usageUnknownDetail(detail),
+            retryable: false,
+            finish: finishFromEvent(event),
+            ...(messageOf(event) ? { terminal: messageOf(event) } : {}),
+            providerOutcome: "unknown",
+            fatalUnknown: true,
+            terminalOutcome: { ...outcome, detail },
+          };
+        }
         for (const bufferedEvent of buffered) out.push(bufferedEvent);
         await record({
-          outcome: outcomeFromTerminal(event),
+          outcome,
           finish: finishFromEvent(event),
           ...(messageOf(event) ? { terminal: messageOf(event) } : {}),
         });
@@ -716,17 +933,43 @@ export class ModelGateway {
         for (;;) {
           const next = await iterator.next();
           if (next.done) {
-            await close({ outcome: { outcome: "dispatched" }, finish: "unknown" });
+            // Content may already be with the caller, so the stream cannot be
+            // retracted; it ends with the stable unknown-outcome error instead
+            // of a normal completion, and the reservation stays retained.
+            const detail = "provider stream ended without a terminal outcome";
+            await close({
+              outcome: { outcome: "dispatched", detail, providerOutcome: "unknown" },
+              finish: "unknown",
+            });
+            out.push({
+              type: "error",
+              reason: "error",
+              error: usageUnknownMessage(model, detail),
+            });
             out.end();
             return;
           }
           if (isTerminalEvent(next.value)) {
+            const outcome = outcomeFromTerminal(next.value);
             await close({
-              outcome: outcomeFromTerminal(next.value),
+              outcome,
               finish: finishFromEvent(next.value),
               ...(messageOf(next.value) ? { terminal: messageOf(next.value) } : {}),
             });
-            out.push(next.value);
+            if (outcome.providerOutcome === "unknown") {
+              out.push({
+                type: "error",
+                reason: "error",
+                error: usageUnknownMessage(
+                  model,
+                  scrubSecrets(
+                    outcome.detail ?? "provider stream ended without a terminal outcome",
+                  ),
+                ),
+              });
+            } else {
+              out.push(next.value);
+            }
             out.end();
             return;
           }
@@ -737,11 +980,66 @@ export class ModelGateway {
         // A mid-stream transport failure never produced a provider terminal
         // message: record the attempt without usage instead of trusting the
         // synthetic zero-filled stand-in below.
-        await close({ outcome: { outcome: "failed", detail }, finish: "transport_failed" });
-        out.push({ type: "error", reason: "error", error: syntheticErrorMessage(model, detail) });
+        await close({
+          outcome: { outcome: "failed", detail, providerOutcome: "unknown" },
+          finish: "transport_failed",
+        });
+        out.push({
+          type: "error",
+          reason: "error",
+          error: usageUnknownMessage(model, detail),
+        });
         out.end();
       }
     })();
+  }
+
+  /**
+   * Close the attempt's budget reservation against what was observed.
+   *
+   * - A provably unsent attempt is refunded in full.
+   * - An unknown provider outcome retains the conservative reservation; the
+   *   dispatch already stopped so it cannot be duplicated.
+   * - A known outcome settles observed usage; missing usage stays `unknown`
+   *   (the bound remains committed) instead of becoming zero.
+   *
+   * A settlement failure is an operational incident, never a stream failure:
+   * the reservation simply keeps its bound, which cannot overspend.
+   */
+  private async closeBudget(
+    reservation: { reservationId: string } | null,
+    outcome: TerminalOutcome,
+  ): Promise<void> {
+    if (this.deps.budget === undefined || reservation === null) {
+      return;
+    }
+    try {
+      const providerOutcome = outcome.providerOutcome ?? "known";
+      if (providerOutcome === "not_dispatched") {
+        await this.deps.budget.release(
+          reservation.reservationId,
+          "the dispatch never left the gateway",
+        );
+        return;
+      }
+      if (providerOutcome === "unknown") {
+        await this.deps.budget.requireReconciliation(
+          reservation.reservationId,
+          outcome.detail ?? "provider outcome unknown",
+        );
+        return;
+      }
+      await this.deps.budget.settleUsage(
+        reservation.reservationId,
+        outcome.usage ?? { tokens: null, completeness: "unknown" },
+      );
+    } catch (error) {
+      this.incident(
+        `gateway budget settlement failed: ${scrubSecrets(
+          error instanceof Error ? error.message : String(error),
+        )}`,
+      );
+    }
   }
 
   /** Record the per-attempt outcome; a failure raises an incident, never a replay. */
