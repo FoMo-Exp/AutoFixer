@@ -298,6 +298,7 @@ describe("dashboard HTTP surface authorization", () => {
     const audit = await getJson<{
       items: Array<{
         resource: string;
+        issue_id: string | null;
         record_count: number;
         query: Record<string, string | number | null>;
       }>;
@@ -344,6 +345,16 @@ describe("dashboard HTTP surface authorization", () => {
       parameter_names: "bucket,from,timezone,to,workspace_id",
     });
     expect(serialized).not.toContain("group_by");
+
+    // The invalid path locator is a refusal like any other: it is audited,
+    // with the rejected value itself omitted.
+    const deniedIssue = audit.body.items.find((entry) => entry.resource === "issue_drilldown");
+    expect(deniedIssue).toMatchObject({
+      resource: "issue_drilldown",
+      issue_id: null,
+      record_count: 0,
+      query: { denial_code: "INVALID_REQUEST", parameter_names: "from,to" },
+    });
   });
 
   test("a non-GET request has no dashboard route", async () => {

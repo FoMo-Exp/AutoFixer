@@ -221,20 +221,28 @@ function classifyRoute(
     return null;
   }
   if (segments.length === 7 && segments[5] === "issues") {
-    const issueId = segments[6];
-    // The id is written to the audit trail, so it must be a locator, not
-    // free-form caller text: reject anything outside the identifier charset
-    // before any audit record exists.
-    if (issueId === undefined || !ISSUE_ID_PATTERN.test(issueId)) {
-      throw new ApiError(
-        400,
-        "INVALID_REQUEST",
-        "issue_id must be 1-200 identifier characters (letters, digits, . _ : -)",
-      );
-    }
-    return { resource: "issue_drilldown", issueId };
+    // Shape only: the id is validated inside the audited region so an
+    // authenticated refusal is still recorded (the invalid value itself is
+    // never written to the audit entry).
+    return { resource: "issue_drilldown", issueId: segments[6] ?? "" };
   }
   return null;
+}
+
+/**
+ * Validate the issue locator. Called after authentication, scope resolution
+ * and the path-workspace check, so an invalid locator is audited as a
+ * zero-record read like every other refusal.
+ */
+function requireIssueId(value: string): string {
+  if (!ISSUE_ID_PATTERN.test(value)) {
+    throw new ApiError(
+      400,
+      "INVALID_REQUEST",
+      "issue_id must be 1-200 identifier characters (letters, digits, . _ : -)",
+    );
+  }
+  return value;
 }
 
 function auditDenied(
@@ -282,6 +290,9 @@ export async function handleDashboardRequest(
   requirePathWorkspace(ctx, scope);
 
   ctx.res.setHeader("Cache-Control", "no-store");
+  // Set only once a drilldown locator passes validation, so a rejected value
+  // is never copied into the audit entry.
+  let auditIssueId: string | null = null;
   try {
     checkQuery(ctx.url);
     const query = queryOf(ctx.url);
@@ -297,12 +308,9 @@ export async function handleDashboardRequest(
         return;
       }
       case "issue_drilldown": {
-        const drilldown = deps.service.issueDrilldown(
-          scope,
-          route.issueId ?? "",
-          query,
-          ctx.requestId,
-        );
+        const issueId = requireIssueId(route.issueId ?? "");
+        auditIssueId = issueId;
+        const drilldown = deps.service.issueDrilldown(scope, issueId, query, ctx.requestId);
         writeJson(ctx.res, 200, drilldown);
         return;
       }
@@ -325,7 +333,7 @@ export async function handleDashboardRequest(
         scope,
         ctx,
         route.resource,
-        route.issueId,
+        auditIssueId,
         route.resource === "export" ? "export" : "read",
         error,
       );
