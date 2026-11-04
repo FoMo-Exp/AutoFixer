@@ -58,6 +58,65 @@ export interface CreateTaskOptions {
    * 409 IDEMPOTENCY_CONFLICT.
    */
   idempotencyKey?: string;
+  /**
+   * Path workspace for the workspace-scoped create route (DAT-245). The id is
+   * a locator only: {@link WorkspaceRunBindingResolver} resolves it to the
+   * workspace's authoritative repository/base/gateway binding, and the caller
+   * never supplies scope. Absent means the legacy local-operator seam, which
+   * stays bound to the deployment configuration.
+   */
+  workspaceId?: string;
+}
+
+/**
+ * The exact run parameters an authoritative workspace binding supplies.
+ *
+ * Every field is read from the workspace's own binding (repository and
+ * provider instance) plus the deployment's pinned base revision for that
+ * repository — never from the caller and never from process config for a
+ * workspace other than the configured one.
+ */
+export interface WorkspaceRunBinding {
+  enterpriseId: string;
+  workspaceId: string;
+  repositoryId: string;
+  repositoryUrl: string;
+  baseRef: string;
+  baseSha: string;
+}
+
+/**
+ * Resolve a workspace locator to its run binding, or fail closed.
+ *
+ * Implementations must throw:
+ * - `404 NOT_FOUND` for unknown, archived, or cross-enterprise workspaces
+ *   (indistinguishable, so the surface is not an enumeration oracle);
+ * - `409 REPOSITORY_BINDING_UNAVAILABLE` when the workspace's repository has
+ *   no pinned base revision in this deployment;
+ * - `409 PROVIDER_INSTANCE_NOT_APPROVED` when the bound provider instance is
+ *   missing for the workspace's enterprise.
+ *
+ * Returning a fallback binding for another workspace, or falling back to the
+ * deployment's configured repository, is never allowed.
+ */
+export interface WorkspaceRunBindingResolver {
+  resolve(workspaceId: string): WorkspaceRunBinding;
+}
+
+/**
+ * The deployment's own binding: used by the legacy local-operator seam and by
+ * resolvers for the configured workspace. It is never a fallback for a
+ * different workspace.
+ */
+export function deploymentRunBinding(config: OrchestratorConfig): WorkspaceRunBinding {
+  return {
+    enterpriseId: config.enterpriseId,
+    workspaceId: config.workspaceId,
+    repositoryId: config.repositoryId,
+    repositoryUrl: config.repositoryUrl,
+    baseRef: config.baseRef,
+    baseSha: config.baseSha,
+  };
 }
 
 export interface ApproveTaskInput {
@@ -96,6 +155,13 @@ export interface TaskServiceDeps {
   gateway: ModelGateway;
   /** Clock seam for approval-window timestamps in tests. */
   now?: () => Date;
+  /**
+   * Authoritative workspace → run-binding resolution for the workspace-scoped
+   * create family (DAT-245). The legacy seam never consults it; a scoped
+   * create without a resolvable binding is refused, never dispatched against
+   * the deployment's configured repository.
+   */
+  workspaceBindings: WorkspaceRunBindingResolver;
   /**
    * Server-side role check for reading sealed sensitive diagnostics
    * (DAT-226). Defaults to deny-all: nobody reads diagnostics until the
@@ -294,21 +360,48 @@ export class TaskService {
   }
 
   async createTask(input: CreateTaskInput, options: CreateTaskOptions = {}): Promise<TaskResource> {
-    if (input.repository_id !== this.deps.config.repositoryId) {
-      throw new ApiError(
-        400,
-        "INVALID_REQUEST",
-        `repository_id must be ${this.deps.config.repositoryId} for this pilot`,
-        { repository_id: input.repository_id },
-      );
-    }
-    if (input.base_ref !== this.deps.config.baseRef) {
-      throw new ApiError(
-        400,
-        "INVALID_REQUEST",
-        `base_ref must be ${this.deps.config.baseRef} for this pilot`,
-        { base_ref: input.base_ref },
-      );
+    const scoped = options.workspaceId !== undefined;
+    const binding =
+      options.workspaceId === undefined
+        ? deploymentRunBinding(this.deps.config)
+        : this.deps.workspaceBindings.resolve(options.workspaceId);
+    if (scoped) {
+      // The path workspace's binding is authority; the request body may only
+      // select inside it. Neither mismatch is enumerable beyond the workspace
+      // the caller already reached.
+      if (input.repository_id !== binding.repositoryId) {
+        throw new ApiError(
+          400,
+          "REPOSITORY_NOT_IN_WORKSPACE",
+          "repository_id is not the repository bound to this workspace",
+          { repository_id: input.repository_id },
+        );
+      }
+      if (input.base_ref !== binding.baseRef) {
+        throw new ApiError(
+          400,
+          "BASE_REF_NOT_SUPPORTED",
+          "base_ref is not the pinned base revision of this workspace's repository",
+          { base_ref: input.base_ref },
+        );
+      }
+    } else {
+      if (input.repository_id !== this.deps.config.repositoryId) {
+        throw new ApiError(
+          400,
+          "INVALID_REQUEST",
+          `repository_id must be ${this.deps.config.repositoryId} for this pilot`,
+          { repository_id: input.repository_id },
+        );
+      }
+      if (input.base_ref !== this.deps.config.baseRef) {
+        throw new ApiError(
+          400,
+          "INVALID_REQUEST",
+          `base_ref must be ${this.deps.config.baseRef} for this pilot`,
+          { base_ref: input.base_ref },
+        );
+      }
     }
     const summary = input.summary?.trim() ?? "";
     if (summary.length === 0) {
@@ -326,9 +419,15 @@ export class TaskService {
       ),
     };
 
-    const key = options.idempotencyKey?.trim();
+    const clientKey = options.idempotencyKey?.trim();
+    // A replay key is scoped to the workspace it was used in (DAT-245): the
+    // same client key in two workspaces names two independent creates rather
+    // than returning the other workspace's task. The legacy seam keeps the
+    // un-namespaced key so existing replay ledgers stay valid across upgrade.
+    const key =
+      clientKey === undefined || !scoped ? clientKey : `${binding.workspaceId}\u0000${clientKey}`;
     if (!key) {
-      return this.executeCreate(normalized);
+      return this.executeCreate(normalized, binding);
     }
     // The dsh run is bound to the client key too: even if Node's own ledger
     // were bypassed, dsh replays the recorded response instead of minting a
@@ -341,8 +440,8 @@ export class TaskService {
         throw new ApiError(
           409,
           "IDEMPOTENCY_CONFLICT",
-          `Idempotency-Key ${JSON.stringify(key)} was already used with a different payload.`,
-          { idempotency_key: key },
+          `Idempotency-Key ${JSON.stringify(clientKey)} was already used with a different payload.`,
+          { idempotency_key: clientKey },
         );
       }
       return pending.promise;
@@ -354,14 +453,14 @@ export class TaskService {
       throw new ApiError(
         409,
         "IDEMPOTENCY_CONFLICT",
-        `Idempotency-Key ${JSON.stringify(key)} was already used with a different payload.`,
-        { idempotency_key: key },
+        `Idempotency-Key ${JSON.stringify(clientKey)} was already used with a different payload.`,
+        { idempotency_key: clientKey },
       );
     }
     if (existing) {
       return this.replayCreatedTask(existing);
     }
-    const promise = this.executeCreate(normalized, dshIdempotencyKey)
+    const promise = this.executeCreate(normalized, binding, dshIdempotencyKey)
       .then((resource) => {
         this.store.rememberIdempotentTask(key, fingerprint, resource.id);
         return resource;
@@ -397,6 +496,7 @@ export class TaskService {
 
   private async executeCreate(
     input: CreateTaskInput,
+    binding: WorkspaceRunBinding,
     dshIdempotencyKey?: string,
   ): Promise<TaskResource> {
     const summary = input.summary;
@@ -412,11 +512,13 @@ export class TaskService {
             external_id: externalIdFrom(sourceReference, taskId),
             source_reference: sourceReference ?? `forgepilot://tasks/${taskId}`,
           },
+          // Per-run repository: the authoritative binding of the task's
+          // workspace, never the process's configured repository (DAT-245).
           repository: {
-            repository_id: this.deps.config.repositoryId,
-            url: this.deps.config.repositoryUrl,
-            base_ref: this.deps.config.baseRef,
-            base_sha: this.deps.config.baseSha,
+            repository_id: binding.repositoryId,
+            url: binding.repositoryUrl,
+            base_ref: binding.baseRef,
+            base_sha: binding.baseSha,
           },
           request: {
             summary,
@@ -437,6 +539,7 @@ export class TaskService {
       );
       const record = this.materializeCreatedTask(
         taskId,
+        binding,
         summary,
         sourceReference,
         acceptanceCriteria,
@@ -452,6 +555,7 @@ export class TaskService {
         // task so the evidence stays queryable, then surface the contract error.
         const record = this.materializeProhibitedTask(
           taskId,
+          binding,
           summary,
           sourceReference,
           acceptanceCriteria,
@@ -466,8 +570,12 @@ export class TaskService {
     }
   }
 
-  async approveTask(taskId: string, input: ApproveTaskInput): Promise<TaskResource> {
-    const record = this.requireRecord(taskId);
+  async approveTask(
+    taskId: string,
+    input: ApproveTaskInput,
+    workspaceId?: string,
+  ): Promise<TaskResource> {
+    const record = this.requireRecord(taskId, workspaceId);
     this.requireActive(record, "approve");
     if (record.status !== "awaiting_approval" || !record.runId) {
       throw new ApiError(
@@ -521,8 +629,8 @@ export class TaskService {
     }
   }
 
-  async cancelTask(taskId: string, reason?: string): Promise<TaskResource> {
-    const record = this.requireRecord(taskId);
+  async cancelTask(taskId: string, reason?: string, workspaceId?: string): Promise<TaskResource> {
+    const record = this.requireRecord(taskId, workspaceId);
     this.requireActive(record, "cancel");
     if (!record.runId) {
       throw new ApiError(409, "TASK_STATE_CONFLICT", `Task ${taskId} has no run to cancel`);
@@ -546,8 +654,8 @@ export class TaskService {
     }
   }
 
-  setTaskArchived(taskId: string, archived: boolean): TaskResource {
-    const record = this.requireRecord(taskId);
+  setTaskArchived(taskId: string, archived: boolean, workspaceId?: string): TaskResource {
+    const record = this.requireRecord(taskId, workspaceId);
     if (record.status !== "cancelled") {
       throw new ApiError(
         409,
@@ -565,8 +673,13 @@ export class TaskService {
     return toTaskResource(record);
   }
 
-  async sendMessage(taskId: string, mode: "steer" | "follow_up", content: string): Promise<void> {
-    const record = this.requireRecord(taskId);
+  async sendMessage(
+    taskId: string,
+    mode: "steer" | "follow_up",
+    content: string,
+    workspaceId?: string,
+  ): Promise<void> {
+    const record = this.requireRecord(taskId, workspaceId);
     this.requireActive(record, "send messages to");
     const runtime = this.runtimes.get(taskId);
     if (!runtime) {
@@ -593,8 +706,8 @@ export class TaskService {
     this.runPromptSafely(record, runtime, content);
   }
 
-  getTask(taskId: string): TaskResource {
-    return toTaskResource(this.requireRecord(taskId));
+  getTask(taskId: string, workspaceId?: string): TaskResource {
+    return toTaskResource(this.requireRecord(taskId, workspaceId));
   }
 
   /**
@@ -603,15 +716,23 @@ export class TaskService {
    * subscribe a client to a terminal task — including one whose replay has
    * nothing left to write (Last-Event-ID anchored at task.terminal).
    */
-  isTerminal(taskId: string): boolean {
-    return this.requireRecord(taskId).terminal;
+  isTerminal(taskId: string, workspaceId?: string): boolean {
+    return this.requireRecord(taskId, workspaceId).terminal;
   }
 
-  listTasks(cursor: string | null, status: string | null): TaskPage {
+  /**
+   * List tasks, optionally confined to one workspace. A workspace-scoped
+   * caller never sees a task outside it, and the cursor is resolved inside
+   * that same filtered set so a foreign id cannot be used as a cursor probe.
+   */
+  listTasks(cursor: string | null, status: string | null, workspaceId?: string): TaskPage {
     if (status !== null && !(UI_STATUSES as readonly string[]).includes(status)) {
       throw new ApiError(400, "INVALID_REQUEST", `Unknown status filter ${JSON.stringify(status)}`);
     }
-    let records = this.deps.store.list();
+    let records =
+      workspaceId === undefined
+        ? this.deps.store.list()
+        : this.deps.store.list().filter((record) => record.workspaceId === workspaceId);
     if (status !== null) {
       records = records.filter((record) => record.status === status);
     }
@@ -619,6 +740,12 @@ export class TaskService {
     if (cursor !== null) {
       const index = records.findIndex((record) => record.id === cursor);
       if (index === -1) {
+        // In a workspace-scoped list a cursor from another workspace is the
+        // same non-enumerating 404 as a foreign task id; the legacy list
+        // keeps its historical INVALID_CURSOR behavior.
+        if (workspaceId !== undefined) {
+          throw new ApiError(404, "TASK_NOT_FOUND", "Task was not found");
+        }
         throw new ApiError(400, "INVALID_CURSOR", `Unknown cursor ${JSON.stringify(cursor)}`);
       }
       startIndex = index + 1;
@@ -631,8 +758,8 @@ export class TaskService {
     };
   }
 
-  getRunSummaries(taskId: string) {
-    return this.requireRecord(taskId).runs;
+  getRunSummaries(taskId: string, workspaceId?: string) {
+    return this.requireRecord(taskId, workspaceId).runs;
   }
 
   /**
@@ -641,12 +768,16 @@ export class TaskService {
    * like the task's `pi_summary` (DAT-194). Records and durable bytes are
    * untouched — this returns gated copies in their recorded order.
    */
-  getTimeline(taskId: string): TimelineItem[] {
-    return this.requireRecord(taskId).events.map(projectEventForDisplay);
+  getTimeline(taskId: string, workspaceId?: string): TimelineItem[] {
+    return this.requireRecord(taskId, workspaceId).events.map(projectEventForDisplay);
   }
 
-  subscribe(taskId: string, listener: (event: TaskEvent) => void): () => void {
-    const record = this.requireRecord(taskId);
+  subscribe(
+    taskId: string,
+    listener: (event: TaskEvent) => void,
+    workspaceId?: string,
+  ): () => void {
+    const record = this.requireRecord(taskId, workspaceId);
     // Live events go through the same display gate as replayed ones, so a
     // subscriber sees one contract no matter how the event reaches it.
     const gated = (event: TaskEvent): void => listener(projectEventForDisplay(event));
@@ -665,8 +796,12 @@ export class TaskService {
     return this.diagnostics.read(caseRef, grant);
   }
 
-  async getArtifact(taskId: string, artifactId: string): Promise<Record<string, unknown>> {
-    const record = this.requireRecord(taskId);
+  async getArtifact(
+    taskId: string,
+    artifactId: string,
+    workspaceId?: string,
+  ): Promise<Record<string, unknown>> {
+    const record = this.requireRecord(taskId, workspaceId);
     if (!record.runId) {
       throw new ApiError(404, "TASK_NOT_FOUND", `Task ${taskId} has no run artifacts`);
     }
@@ -697,9 +832,15 @@ export class TaskService {
     }
   }
 
-  private requireRecord(taskId: string): TaskRecord {
+  /**
+   * Resolve a task, optionally under a workspace locator. A task that
+   * belongs to another workspace is indistinguishable from one that does not
+   * exist: both are 404 TASK_NOT_FOUND, so the scoped surface is not an
+   * enumeration oracle.
+   */
+  private requireRecord(taskId: string, workspaceId?: string): TaskRecord {
     const record = this.deps.store.get(taskId);
-    if (!record) {
+    if (!record || (workspaceId !== undefined && record.workspaceId !== workspaceId)) {
       throw new ApiError(404, "TASK_NOT_FOUND", `Task ${taskId} was not found`);
     }
     return record;
@@ -718,6 +859,7 @@ export class TaskService {
 
   private materializeCreatedTask(
     taskId: string,
+    binding: WorkspaceRunBinding,
     summary: string,
     sourceReference: string | null,
     acceptanceCriteria: string[],
@@ -730,11 +872,13 @@ export class TaskService {
   ): TaskRecord {
     const record = createTaskRecord({
       id: taskId,
+      workspaceId: binding.workspaceId,
+      enterpriseId: binding.enterpriseId,
       repository: {
-        id: this.deps.config.repositoryId,
-        display_name: this.deps.config.repositoryId.replace(/^github:/, ""),
-        base_ref: this.deps.config.baseRef,
-        base_sha: this.deps.config.baseSha,
+        id: binding.repositoryId,
+        display_name: binding.repositoryId.replace(/^github:/, ""),
+        base_ref: binding.baseRef,
+        base_sha: binding.baseSha,
       },
       summary,
       sourceReference,
@@ -770,6 +914,7 @@ export class TaskService {
 
   private materializeProhibitedTask(
     taskId: string,
+    binding: WorkspaceRunBinding,
     summary: string,
     sourceReference: string | null,
     acceptanceCriteria: string[],
@@ -777,11 +922,13 @@ export class TaskService {
   ): TaskRecord {
     const record = createTaskRecord({
       id: taskId,
+      workspaceId: binding.workspaceId,
+      enterpriseId: binding.enterpriseId,
       repository: {
-        id: this.deps.config.repositoryId,
-        display_name: this.deps.config.repositoryId.replace(/^github:/, ""),
-        base_ref: this.deps.config.baseRef,
-        base_sha: this.deps.config.baseSha,
+        id: binding.repositoryId,
+        display_name: binding.repositoryId.replace(/^github:/, ""),
+        base_ref: binding.baseRef,
+        base_sha: binding.baseSha,
       },
       summary,
       sourceReference,
@@ -880,11 +1027,13 @@ export class TaskService {
       model: this.deps.model,
       tools: [tool, reportTool],
       // Every model call this session makes goes through the gateway, bound to
-      // this run's identity. The session cannot reach a provider any other way:
-      // no env credential lookup, no SDK default endpoint, no caller-supplied key.
+      // this task's durable enterprise/workspace identity — never the process
+      // configuration (DAT-245). The session cannot reach a provider any other
+      // way: no env credential lookup, no SDK default endpoint, no
+      // caller-supplied key.
       streamFn: this.deps.gateway.bind({
-        enterpriseId: this.deps.config.enterpriseId,
-        workspaceId: this.deps.config.workspaceId,
+        enterpriseId: record.enterpriseId,
+        workspaceId: record.workspaceId,
         issueId: record.id,
         runId: record.runId,
         traceId: randomUUID(),

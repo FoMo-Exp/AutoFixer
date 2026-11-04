@@ -208,4 +208,67 @@ describe("provenance and effective folding", () => {
     expect(effectiveProviderRole("github", roster, "3002")?.provider_role).toBe("maintain");
     expect(effectiveProviderRole("github", roster, "nobody")).toBeNull();
   });
+
+  test("github aggregate access is normalized as effective_access, never as a direct grant", () => {
+    const entry = normalizeRole("github", {
+      subject: "1010",
+      login: "team-via-org-default",
+      kind: "effective_access",
+      provider_role: "write",
+      authority_ref: "repository:Luthiel/AutoFixer",
+    });
+    expect(entry.source_kind).toBe("effective_access");
+    expect(entry.authority_ref).toBe("repository:Luthiel/AutoFixer");
+    expect(entry.provenance.provider_role).toBe("write");
+  });
+
+  test("github effective_access without an authority_ref is refused", () => {
+    expect(() =>
+      normalizeRole("github", {
+        subject: "1011",
+        login: "unattributed",
+        kind: "effective_access",
+        provider_role: "read",
+        authority_ref: "",
+      }),
+    ).toThrow(NormalizationError);
+  });
+
+  test("github effective_access still validates the repository role vocabulary", () => {
+    expect(() =>
+      normalizeRole("github", {
+        subject: "1012",
+        login: "owner-claim",
+        kind: "effective_access",
+        provider_role: "owner",
+        authority_ref: "repository:Luthiel/AutoFixer",
+      }),
+    ).toThrow(NormalizationError);
+  });
+});
+
+describe("gitlab role normalization", () => {
+  test("gitlab aggregate access is accepted as effective_access with the project authority_ref", () => {
+    const entry = normalizeRole("gitlab", {
+      subject: "2001",
+      login: "shared-group-member",
+      kind: "effective_access",
+      provider_role: "developer",
+      authority_ref: "project:414",
+    });
+    expect(entry.source_kind).toBe("effective_access");
+    expect(entry.authority_ref).toBe("project:414");
+  });
+
+  test("gitlab effective_access without an authority_ref is refused", () => {
+    expect(() =>
+      normalizeRole("gitlab", {
+        subject: "2002",
+        login: "unattributed",
+        kind: "effective_access",
+        provider_role: "developer",
+        authority_ref: "",
+      }),
+    ).toThrow(NormalizationError);
+  });
 });

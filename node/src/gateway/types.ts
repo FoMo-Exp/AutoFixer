@@ -151,7 +151,13 @@ export type GatewayDenyReason =
   /** A deterministic policy change was claimed without its authorization. */
   | "AUTHORIZATION_MISSING"
   /** The request carries a data class the destination is not authorized for. */
-  | "DATA_CLASS_NOT_AUTHORIZED";
+  | "DATA_CLASS_NOT_AUTHORIZED"
+  /**
+   * The run's dependent work is held pending security case disposition
+   * (DAT-210): the hold is checked at the admission boundary and the run
+   * cannot proceed until an authorized human releases it.
+   */
+  | "DEPENDENT_WORK_HELD";
 
 /** Stable redacted error contract (ADR-0005): all gateway denials share it. */
 export const MODEL_EGRESS_DENIED = "MODEL_EGRESS_DENIED";
@@ -162,17 +168,44 @@ export const MODEL_EGRESS_DENIED = "MODEL_EGRESS_DENIED";
  */
 export const SENSITIVE_DATA_UNCERTAIN = "SENSITIVE_DATA_UNCERTAIN";
 
+/**
+ * Stable redacted error contract (ADR-0005): a security case is holding the
+ * run's dependent work. Not a retryable failure and never a bypass: only the
+ * case disposition releases the hold.
+ */
+export const SECURITY_REVIEW_REQUIRED = "SECURITY_REVIEW_REQUIRED";
+
 /** A policy, scan, or configuration denial. Never retried, never bypassable. */
 export class ModelEgressDeniedError extends Error {
   readonly code: string;
   readonly retryable = false;
   readonly reason: GatewayDenyReason;
+  /**
+   * Disposal-case correlation id opened for this block (DAT-210). An
+   * identifier like the trace id — never authority and never a credential.
+   */
+  readonly caseId?: string;
+  /**
+   * Audience-bound case reference minted for the blocked run (DAT-210).
+   * Non-transferable: it never verifies for another audience and never grants
+   * quarantine access.
+   */
+  readonly caseReference?: string;
 
-  constructor(reason: GatewayDenyReason, message: string, code: string = MODEL_EGRESS_DENIED) {
+  constructor(
+    reason: GatewayDenyReason,
+    message: string,
+    code: string = MODEL_EGRESS_DENIED,
+    caseRef?: { caseId: string; caseReference: string },
+  ) {
     super(message);
     this.name = "ModelEgressDeniedError";
     this.reason = reason;
     this.code = code;
+    if (caseRef) {
+      this.caseId = caseRef.caseId;
+      this.caseReference = caseRef.caseReference;
+    }
   }
 }
 
@@ -246,3 +279,46 @@ export type GatewayAttemptEvent =
 export interface GatewayEventSink {
   record(event: GatewayAttemptEvent): void | Promise<void>;
 }
+
+/**
+ * Post-block disposal-case seam (DAT-210, ADR-0005 §2), structurally
+ * satisfied by the security module's `SecurityCaseService`. The gateway calls
+ * it for every secret-gate block — uncertain sensitive content always needs
+ * human handling — and only for those: policy and configuration denials
+ * involve no request content to dispose. A failing intake never unblocks the
+ * request; the denial stands and an operational incident is raised.
+ */
+export interface GatewayCaseIntake {
+  recordGatewayBlock(input: {
+    identity: GatewayRequestIdentity;
+    reason: string;
+    safeDetail: string;
+    /** Raw blocked request for encrypted quarantine; never for logs. */
+    rawContent?: string;
+  }): Promise<{ caseId: string; caseReference: string }>;
+}
+
+/**
+ * The dependent-work hold to consult at the work-admission boundary (DAT-210).
+ * Structurally satisfied by the security module's `SecurityCaseService`. A
+ * held run's dependent work — its later gateway invocations included — is
+ * rejected until an authorized disposition releases the hold; unrelated runs
+ * are never affected.
+ */
+export interface DependentWorkHold {
+  /** The open security case holding this run's dependent work, if any. */
+  heldCaseFor(runId: string): { caseId: string; caseReference: string } | undefined;
+}
+
+/**
+ * Diagnostic type a provider transport uses to expose the provider's own
+ * usage payload on the terminal message (DAT-227). The gateway prefers it
+ * over the transport-derived usage report when present, records it as
+ * `provider_wire` evidence, and the metering adapter maps it with the
+ * provider's native semantics.
+ *
+ * The pi-ai SDK normalizes usage and exposes no wire payload, so pi-ai-backed
+ * terminal messages never carry this diagnostic and their attempts are
+ * recorded as transport reports instead — preserved verbatim either way.
+ */
+export const PROVIDER_USAGE_DIAGNOSTIC = "provider_usage";

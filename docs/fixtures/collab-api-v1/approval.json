@@ -1,0 +1,42 @@
+{
+  "contract_version": "1.0.0",
+  "approval_id": "apr_6a1c3e5b7d9f2048",
+  "issue_id": "iss_7f3c2a9e51b84d0fa1c6",
+  "candidate_id": "cand_2d6f8a0c4e1b7935",
+  "state": "pending",
+  "binding": {
+    "workspace": {
+      "enterprise_id": "ent_acme",
+      "workspace_id": "ws_payments"
+    },
+    "repository": {
+      "repository_id": "github:acme/payments-api",
+      "url": "https://github.com/acme/payments-api.git",
+      "base_ref": "main",
+      "base_sha": "5b1f0c2d9e7a4b6c8d0e2f1a3b5c7d9e0f1a2b3c"
+    },
+    "candidate_id": "cand_2d6f8a0c4e1b7935",
+    "head_sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+    "diff_digest": {
+      "algorithm": "sha256",
+      "value": "9f8e7d6c5b4a39281706f5e4d3c2b1a098765432"
+    },
+    "test_evidence_digest": {
+      "algorithm": "sha256",
+      "value": "0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6"
+    },
+    "target_branch": "main",
+    "policy_version": "delivery-approval-1"
+  },
+  "approver": {
+    "id": "usr_luthiel",
+    "display_name": "Luthiel"
+  },
+  "requested_at": "2026-11-02T11:41:00Z",
+  "decided_at": null,
+  "expires_at": "2026-11-03T11:41:00Z",
+  "decision": null,
+  "invalidated_at": null,
+  "invalidated_reason": null,
+  "consumed_by_delivery_id": null
+}

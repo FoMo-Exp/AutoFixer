@@ -1,0 +1,68 @@
+{
+  "run_id": "run_9c4e7a1b5d3f8024",
+  "issue_id": "iss_7f3c2a9e51b84d0fa1c6",
+  "task_id": "tsk_3b8e1c4a9d2f5067",
+  "role": "implementation",
+  "workspace": {
+    "enterprise_id": "ent_acme",
+    "workspace_id": "ws_payments"
+  },
+  "repository": {
+    "repository_id": "github:acme/payments-api",
+    "url": "https://github.com/acme/payments-api.git",
+    "base_ref": "main",
+    "base_sha": "5b1f0c2d9e7a4b6c8d0e2f1a3b5c7d9e0f1a2b3c"
+  },
+  "worktree": {
+    "worktree_id": "wt_run_9c4e7a1b5d3f8024",
+    "path": "/var/lib/autofixer/worktrees/run_9c4e7a1b5d3f8024"
+  },
+  "scope": {
+    "tools": ["dsh.read", "dsh.search", "dsh.edit", "dsh.test"],
+    "paths": ["src/", "test/"],
+    "network": []
+  },
+  "limits": {
+    "max_wall_clock_seconds": 1800,
+    "max_memory_mb": 2048,
+    "max_tokens": 120000
+  },
+  "state": "stopped",
+  "head_sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  "stop_reason": "Local preparation complete; candidate frozen and preserved.",
+  "stopped_at": "2026-11-02T11:40:00Z",
+  "lease": {
+    "holder": "worker-7",
+    "fencing_token": 3,
+    "acquired_at": "2026-11-02T11:37:00Z",
+    "expires_at": "2026-11-02T11:42:00Z"
+  },
+  "grants": [
+    {
+      "grant_id": "grt_1f5b9d3a7c2e4068",
+      "run_id": "run_9c4e7a1b5d3f8024",
+      "state": "revoked",
+      "capability_grant_version": "1.0.0",
+      "policy_version": "governance-1",
+      "issued_at": "2026-11-02T09:41:00Z",
+      "expires_at": "2026-11-02T11:41:00Z",
+      "may_create_patch": true,
+      "may_create_or_update_pr": false,
+      "scope_digest": "sha256:4b1c9e2a7d0f3856c4a2b1e9d7f6053a2c8b4e1d9a7f3c5b2e8d1a4f7c0b3e6d",
+      "revoked_at": "2026-11-02T11:40:00Z",
+      "revoked_reason": "Preparation run stopped and its grant revoked; delivery is a separate run/grant."
+    }
+  ],
+  "artifact_refs": [
+    {
+      "artifact_id": "art_patch_9c4e",
+      "kind": "patch",
+      "digest_algorithm": "sha256",
+      "digest": "9f8e7d6c5b4a39281706f5e4d3c2b1a098765432",
+      "base_sha": "5b1f0c2d9e7a4b6c8d0e2f1a3b5c7d9e0f1a2b3c",
+      "head_sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+    }
+  ],
+  "opened_at": "2026-11-02T09:30:00Z",
+  "updated_at": "2026-11-02T11:40:00Z"
+}

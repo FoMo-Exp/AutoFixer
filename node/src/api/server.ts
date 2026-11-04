@@ -6,6 +6,8 @@ import type { AuthService, SessionContext } from "./auth-service.js";
 import { handleAuthRequest, requireSessionActor } from "./auth-http.js";
 import { ApiError, apiErrorFromControlPlane } from "./errors.js";
 import { ControlPlaneError } from "../control-plane/errors.js";
+import { handleInvitationRequest } from "./invitation-http.js";
+import type { InvitationService } from "./invitation-service.js";
 import {
   isApiError,
   optionalStringArray,
@@ -13,7 +15,7 @@ import {
   requireString,
   writeJson,
 } from "./http-util.js";
-import type { TaskEvent } from "./task-store.js";
+import type { TaskEvent, TaskResource } from "./task-store.js";
 import type { TaskService } from "./task-service.js";
 import { actionForRequest } from "./request-authority.js";
 import type { RequestAuthority } from "./request-authority.js";
@@ -23,11 +25,18 @@ export interface ApiServerDeps {
   /** Per-process bearer token callers must present (401 otherwise). */
   apiToken: string;
   /**
+   * The deployment's configured workspace. The legacy `/api/v1/tasks...`
+   * family is a local-operator compatibility seam bound to it; a task in any
+   * other workspace is not reachable through that family.
+   */
+  legacyWorkspaceId: string;
+  /**
    * Provider-authority request boundary (DAT-203). When present, session
    * requests are checked against the effective-access gate for their action
    * class (read, stream, artifact, approval, write) whenever provider
    * authority is in play — a revoked provider subject loses every one of
-   * them at the request boundary.
+   * them at the request boundary. Workspace-scoped requests are evaluated in
+   * their path workspace's scope.
    */
   authority?: RequestAuthority;
   /**
@@ -37,6 +46,12 @@ export interface ApiServerDeps {
    * the local-operator bearer surface is unchanged.
    */
   auth?: AuthService;
+  /**
+   * Owner-created invitation surface (DAT-204). Served together with the
+   * identity subsystem; unset keeps /api/v1/workspaces and /api/v1/invitations
+   * unrouted.
+   */
+  invitations?: InvitationService;
   /** External origin override for OAuth redirects; loopback derives per request. */
   publicOrigin?: string;
 }
@@ -76,10 +91,10 @@ function authenticateRequest(req: http.IncomingMessage, deps: ApiServerDeps): Re
 function checkRequestBasics(req: http.IncomingMessage, localPort: number | undefined): void {
   const origin = req.headers.origin;
   if (typeof origin === "string" && origin !== "null" && origin.length > 0) {
-    const allowed = new Set(
-      ["127.0.0.1", "localhost", "[::1]"].map((host) => `http://${host}:${localPort ?? 0}`),
+    const allowed = ["127.0.0.1", "localhost", "[::1]"].map(
+      (host) => `http://${host}:${localPort ?? 0}`,
     );
-    if (!allowed.has(origin)) {
+    if (!allowed.includes(origin)) {
       throw new ApiError(403, "FORBIDDEN", `Origin ${origin} is not this API's loopback origin`);
     }
   }
@@ -97,6 +112,285 @@ function checkRequestBasics(req: http.IncomingMessage, localPort: number | undef
   }
 }
 
+interface TaskRequestContext {
+  req: http.IncomingMessage;
+  res: http.ServerResponse;
+  url: URL;
+  deps: ApiServerDeps;
+  actor: RequestActor;
+  /** Authoritative workspace for this route family (path or legacy binding). */
+  workspaceId: string;
+  /** Whether this request arrived on the workspace-scoped route family. */
+  scoped: boolean;
+}
+
+/**
+ * Present a task on the route family that served it. The scoped family links
+ * to its own workspace's run history, so following `run_history_url` cannot
+ * fall through to the configured-workspace compatibility seam and 404. The
+ * legacy family keeps its historical URL.
+ */
+function presentTask(ctx: TaskRequestContext, task: TaskResource): TaskResource {
+  if (!ctx.scoped) {
+    return task;
+  }
+  return {
+    ...task,
+    run_history_url: `/api/v1/workspaces/${ctx.workspaceId}/tasks/${task.id}/runs`,
+  };
+}
+
+/**
+ * Serve one task request. `tail` is the route suffix after the workspace
+ * prefix (`[]` for a list, `[task_id, sub, artifact_id?]` otherwise), which
+ * makes the legacy and workspace-scoped families share one implementation
+ * and therefore one isolation rule.
+ */
+async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promise<void> {
+  const { req, res, url, deps, actor, workspaceId } = ctx;
+  const { service } = deps;
+  const taskId = tail[0];
+
+  if (tail.length === 0) {
+    // POST /api/v1/tasks (legacy local-operator seam) and
+    // POST /api/v1/workspaces/{workspace_id}/tasks (DAT-245) share one
+    // handler: the latter passes the path workspace as the locator, and the
+    // service resolves the workspace's own repository/base/gateway binding.
+    if (req.method === "POST") {
+      const body = await readJsonBody(req);
+      const idempotencyKey = req.headers["idempotency-key"];
+      // The contract caps the key at 256 characters; enforce it here so the
+      // documented maxLength is real rather than aspirational.
+      if (typeof idempotencyKey === "string" && idempotencyKey.length > 256) {
+        throw new ApiError(
+          400,
+          "INVALID_REQUEST",
+          "Idempotency-Key must be at most 256 characters",
+          {
+            length: idempotencyKey.length,
+          },
+        );
+      }
+      const created = await service.createTask(
+        {
+          repository_id: requireString(body, "repository_id"),
+          base_ref: requireString(body, "base_ref"),
+          summary: requireString(body, "summary"),
+          ...(typeof body["source_reference"] === "string"
+            ? { source_reference: body["source_reference"] }
+            : {}),
+          acceptance_criteria: optionalStringArray(body, "acceptance_criteria"),
+        },
+        {
+          ...(typeof idempotencyKey === "string" && idempotencyKey.length > 0
+            ? { idempotencyKey }
+            : {}),
+          ...(ctx.scoped ? { workspaceId } : {}),
+        },
+      );
+      writeJson(res, 201, presentTask(ctx, created));
+      return;
+    }
+    if (req.method === "GET") {
+      const cursor = url.searchParams.get("cursor");
+      const status = url.searchParams.get("status");
+      const page = service.listTasks(cursor, status, workspaceId);
+      writeJson(res, 200, {
+        ...page,
+        items: page.items.map((task) => presentTask(ctx, task)),
+      });
+      return;
+    }
+  }
+
+  if (taskId === undefined) {
+    throw new ApiError(404, "TASK_NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+  }
+
+  // GET .../tasks/{task_id}
+  if (req.method === "GET" && tail.length === 1) {
+    writeJson(res, 200, presentTask(ctx, service.getTask(taskId, workspaceId)));
+    return;
+  }
+
+  const sub = tail[1];
+  if (tail.length === 2 && req.method === "POST" && sub === "messages") {
+    const body = await readJsonBody(req);
+    const mode = requireString(body, "mode");
+    if (mode !== "steer" && mode !== "follow_up") {
+      throw new ApiError(400, "INVALID_REQUEST", 'mode must be "steer" or "follow_up"');
+    }
+    const content = requireString(body, "content");
+    await service.sendMessage(taskId, mode, content, workspaceId);
+    writeJson(res, 202, { task_id: taskId, queued: true });
+    return;
+  }
+
+  if (tail.length === 2 && req.method === "POST" && sub === "approvals") {
+    const body = await readJsonBody(req);
+    const decision = requireString(body, "decision");
+    if (decision !== "approve" && decision !== "reject") {
+      throw new ApiError(400, "INVALID_REQUEST", 'decision must be "approve" or "reject"');
+    }
+    const approved = await service.approveTask(
+      taskId,
+      {
+        decision,
+        scope_digest: requireString(body, "scope_digest"),
+      },
+      workspaceId,
+    );
+    writeJson(res, 200, presentTask(ctx, approved));
+    return;
+  }
+
+  if (tail.length === 2 && req.method === "POST" && sub === "cancel") {
+    const body = await readJsonBody(req);
+    const reason = typeof body["reason"] === "string" ? body["reason"] : undefined;
+    writeJson(res, 202, presentTask(ctx, await service.cancelTask(taskId, reason, workspaceId)));
+    return;
+  }
+
+  if (tail.length === 2 && req.method === "POST" && (sub === "archive" || sub === "recover")) {
+    writeJson(
+      res,
+      200,
+      presentTask(ctx, service.setTaskArchived(taskId, sub === "archive", workspaceId)),
+    );
+    return;
+  }
+
+  if (tail.length === 2 && req.method === "GET" && sub === "runs") {
+    writeJson(res, 200, { items: service.getRunSummaries(taskId, workspaceId) });
+    return;
+  }
+
+  if (tail.length === 2 && req.method === "GET" && sub === "timeline") {
+    writeJson(res, 200, { items: service.getTimeline(taskId, workspaceId) });
+    return;
+  }
+
+  if (tail.length === 3 && req.method === "GET" && sub === "artifacts" && tail[2] !== undefined) {
+    writeJson(res, 200, await service.getArtifact(taskId, tail[2], workspaceId));
+    return;
+  }
+
+  if (tail.length === 2 && req.method === "GET" && sub === "stream") {
+    service.getTask(taskId, workspaceId); // 404 before headers are committed
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    const timeline = service.getTimeline(taskId, workspaceId);
+    const lastEventId = req.headers["last-event-id"];
+    let lastSequence = 0;
+    if (typeof lastEventId === "string" && lastEventId.length > 0) {
+      const known = timeline.find((item) => item.event_id === lastEventId);
+      // Unknown ids replay from the start: safer than silently skipping
+      // history for a reconnecting client.
+      lastSequence = known?.sequence ?? 0;
+    }
+    for (const item of timeline) {
+      if (item.sequence > lastSequence) {
+        writeSseEvent(res, item);
+      }
+    }
+    // A terminal task has no future events, so never subscribe to one.
+    // The replay above already covered whatever the client was missing;
+    // closing here handles every terminal shape — the browser EventSource
+    // auto-reconnect whose Last-Event-ID is anchored at task.terminal
+    // (nothing left to write), a record that predates the closing-frame
+    // invariant, and the fresh replay that just delivered the frame.
+    // Subscribing in any of these would dangle forever.
+    if (service.isTerminal(taskId, workspaceId)) {
+      res.end();
+      return;
+    }
+    // A session stream dies the moment its authority dies: logout,
+    // suspension, or revoked workspace membership ends the subscription
+    // instead of leaving a zombie stream behind. The workspace check is the
+    // one bound to this stream's own scope, so losing membership in another
+    // workspace cannot disturb it, and losing it here always does.
+    let unsubscribeAuth: (() => void) | undefined;
+    if (actor.kind === "session" && deps.auth !== undefined) {
+      const auth = deps.auth;
+      const sessionCtx = actor.ctx;
+      unsubscribeAuth = auth.hub.subscribe((event) => {
+        const losesAccess =
+          (event.type === "session.revoked" && event.session_id === sessionCtx.session.id) ||
+          (event.type === "user.suspended" && event.user_id === sessionCtx.user.id) ||
+          (event.type === "membership.revoked" &&
+            event.user_id === sessionCtx.user.id &&
+            event.workspace_id === workspaceId &&
+            auth.workspaceAccess(sessionCtx.user.id, workspaceId) === undefined);
+        if (losesAccess) {
+          res.end();
+        }
+      });
+      req.on("close", unsubscribeAuth);
+    }
+    // A provider revocation cuts live streams the same way: the stream
+    // re-checks its stream action on every authority change and closes the
+    // moment the gate denies it (DAT-203) — evaluated in this stream's
+    // workspace, not the deployment default.
+    if (actor.kind === "session" && deps.authority !== undefined) {
+      const authority = deps.authority;
+      const streamUser = actor.ctx.user.id;
+      const unsubscribeAuthority = authority.subscribe(() => {
+        if (!authority.check(streamUser, "stream", workspaceId).allowed) {
+          res.end();
+        }
+      });
+      req.on("close", unsubscribeAuthority);
+    }
+    const unsubscribe = service.subscribe(
+      taskId,
+      (event) => {
+        writeSseEvent(res, event);
+        if (event.type === "task.terminal") {
+          res.end();
+        }
+      },
+      workspaceId,
+    );
+    req.on("close", unsubscribe);
+    return;
+  }
+
+  throw new ApiError(404, "TASK_NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+}
+
+/**
+ * Authorize the workspace-scoped task family. The `{workspace_id}` segment is
+ * a locator: it only selects which live membership to evaluate. Anything but
+ * a live membership in this deployment's enterprise — unknown, revoked,
+ * cross-enterprise, foreign to the caller — is one indistinguishable 404, so
+ * the route cannot be used to enumerate workspaces or task ownership.
+ */
+function scopedWorkspaceAccess(
+  actor: RequestActor,
+  deps: ApiServerDeps,
+  workspaceId: string,
+): { readOnly: boolean } {
+  if (actor.kind === "local_operator") {
+    // The operator bearer is the deployment credential, scoped to the
+    // deployment's configured workspace exactly as the legacy family is.
+    if (workspaceId !== deps.legacyWorkspaceId) {
+      throw new ApiError(404, "NOT_FOUND", "Workspace was not found");
+    }
+    return { readOnly: false };
+  }
+  if (deps.auth === undefined) {
+    throw new ApiError(404, "NOT_FOUND", "Workspace was not found");
+  }
+  const access = deps.auth.workspaceAccess(actor.ctx.user.id, workspaceId);
+  if (access === undefined) {
+    throw new ApiError(404, "NOT_FOUND", "Workspace was not found");
+  }
+  return { readOnly: access.membership.role === "viewer" };
+}
+
 /**
  * forgepilot-api/v1 HTTP surface.
  *
@@ -104,8 +398,6 @@ function checkRequestBasics(req: http.IncomingMessage, localPort: number | undef
  * loopback address, never to dsh sockets or Pi credentials directly.
  */
 export function createApiServer(deps: ApiServerDeps): http.Server {
-  const { service } = deps;
-
   const handler = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     const requestId = `req_${randomUUID().replaceAll("-", "")}`;
     res.setHeader("X-Request-Id", requestId);
@@ -132,21 +424,95 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
         return;
       }
 
+      const method = req.method ?? "GET";
+
+      // GET /api/v1/workspaces — exactly the caller's live memberships.
+      if (segments[2] === "workspaces" && segments.length === 3) {
+        if (method !== "GET") {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
+        }
+        const actor = authenticateRequest(req, deps);
+        // The deployment operator holds no enterprise membership, so its
+        // honest answer is an empty page — not a fabricated workspace and not
+        // an error the contract does not define.
+        if (actor.kind !== "session" || deps.auth === undefined) {
+          writeJson(res, 200, { items: [], next_cursor: null });
+          return;
+        }
+        writeJson(
+          res,
+          200,
+          deps.auth.listWorkspaces(actor.ctx.user.id, url.searchParams.get("cursor")),
+        );
+        return;
+      }
+
+      // Owner-created invitations (DAT-204): workspace owner/admin surface
+      // plus the authenticated join-confirmation surface. The path's
+      // workspace id is only a locator; authority is the authenticated
+      // session plus its live membership (resolved inside the handler).
+      const isInvitationRoute =
+        segments[2] === "invitations" ||
+        (segments[2] === "workspaces" && segments[4] === "invitations");
+      if (isInvitationRoute) {
+        if (deps.auth === undefined || deps.invitations === undefined) {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+        }
+        await handleInvitationRequest(
+          {
+            auth: deps.auth,
+            invitations: deps.invitations,
+            ...(deps.publicOrigin !== undefined ? { publicOrigin: deps.publicOrigin } : {}),
+          },
+          { req, res, url, segments, requestId },
+        );
+        return;
+      }
+
+      // Workspace-scoped task family (DAT-244).
+      if (segments[2] === "workspaces") {
+        const workspaceId = segments[3];
+        if (workspaceId === undefined || segments[4] !== "tasks") {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
+        }
+        const actor = authenticateRequest(req, deps);
+        const access = scopedWorkspaceAccess(actor, deps, workspaceId);
+        if (access.readOnly && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+          throw new ApiError(403, "FORBIDDEN", "this session has read-only access");
+        }
+        const requestAction = actionForRequest(method, segments);
+        if (actor.kind === "session" && requestAction !== null && deps.authority !== undefined) {
+          deps.authority.require(actor.ctx.user.id, requestAction, workspaceId);
+        }
+        await handleTaskRequest(
+          {
+            req,
+            res,
+            url,
+            deps,
+            actor,
+            workspaceId,
+            scoped: true,
+          },
+          segments.slice(5),
+        );
+        return;
+      }
+
       if (segments[2] !== "tasks") {
-        throw new ApiError(404, "NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+        throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
       }
       const actor = authenticateRequest(req, deps);
-      // Session authority is bounded by the workspace membership: a revoked
-      // membership or a viewer role loses writes immediately; a lost
-      // membership loses reads as well.
-      const method = req.method ?? "GET";
-      const isWrite = method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
+      // Legacy seam: a session is still gated on the configured workspace's
+      // membership, and a viewer is read-only there exactly as before.
+      let readOnly = false;
       if (actor.kind === "session" && deps.auth !== undefined) {
         const role = deps.auth.workspaceRole(actor.ctx.user.id);
         if (role === undefined) {
           throw new ApiError(403, "FORBIDDEN", "an active workspace membership is required");
         }
-        if (role === "viewer" && isWrite) {
+        readOnly = role === "viewer";
+        if (readOnly && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
           throw new ApiError(403, "FORBIDDEN", "this session has read-only access");
         }
       }
@@ -154,199 +520,23 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
       // request boundary for every action class. Provider member removal,
       // revoked authority, and lost capability grants deny here — before any
       // route body runs — with no decision cache to outlive the revocation.
+      // The legacy family is bound to the configured workspace.
       const requestAction = actionForRequest(method, segments);
       if (actor.kind === "session" && requestAction !== null && deps.authority !== undefined) {
         deps.authority.require(actor.ctx.user.id, requestAction);
       }
-      const taskId = segments[3];
-
-      // POST /api/v1/tasks
-      if (req.method === "POST" && segments.length === 3) {
-        const body = await readJsonBody(req);
-        const idempotencyKey = req.headers["idempotency-key"];
-        // The contract caps the key at 256 characters; enforce it here so the
-        // documented maxLength is real rather than aspirational.
-        if (typeof idempotencyKey === "string" && idempotencyKey.length > 256) {
-          throw new ApiError(
-            400,
-            "INVALID_REQUEST",
-            "Idempotency-Key must be at most 256 characters",
-            { length: idempotencyKey.length },
-          );
-        }
-        const created = await service.createTask(
-          {
-            repository_id: requireString(body, "repository_id"),
-            base_ref: requireString(body, "base_ref"),
-            summary: requireString(body, "summary"),
-            ...(typeof body["source_reference"] === "string"
-              ? { source_reference: body["source_reference"] }
-              : {}),
-            acceptance_criteria: optionalStringArray(body, "acceptance_criteria"),
-          },
-          typeof idempotencyKey === "string" && idempotencyKey.length > 0 ? { idempotencyKey } : {},
-        );
-        writeJson(res, 201, created);
-        return;
-      }
-
-      // GET /api/v1/tasks
-      if (req.method === "GET" && segments.length === 3) {
-        const cursor = url.searchParams.get("cursor");
-        const status = url.searchParams.get("status");
-        writeJson(res, 200, service.listTasks(cursor, status));
-        return;
-      }
-
-      if (taskId === undefined) {
-        throw new ApiError(404, "TASK_NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
-      }
-
-      // GET /api/v1/tasks/{task_id}
-      if (req.method === "GET" && segments.length === 4) {
-        writeJson(res, 200, service.getTask(taskId));
-        return;
-      }
-
-      const sub = segments[4];
-      if (segments.length === 5 && req.method === "POST" && sub === "messages") {
-        const body = await readJsonBody(req);
-        const mode = requireString(body, "mode");
-        if (mode !== "steer" && mode !== "follow_up") {
-          throw new ApiError(400, "INVALID_REQUEST", 'mode must be "steer" or "follow_up"');
-        }
-        const content = requireString(body, "content");
-        await service.sendMessage(taskId, mode, content);
-        writeJson(res, 202, { task_id: taskId, queued: true });
-        return;
-      }
-
-      if (segments.length === 5 && req.method === "POST" && sub === "approvals") {
-        const body = await readJsonBody(req);
-        const decision = requireString(body, "decision");
-        if (decision !== "approve" && decision !== "reject") {
-          throw new ApiError(400, "INVALID_REQUEST", 'decision must be "approve" or "reject"');
-        }
-        const approved = await service.approveTask(taskId, {
-          decision,
-          scope_digest: requireString(body, "scope_digest"),
-        });
-        writeJson(res, 200, approved);
-        return;
-      }
-
-      if (segments.length === 5 && req.method === "POST" && sub === "cancel") {
-        const body = await readJsonBody(req);
-        const reason = typeof body["reason"] === "string" ? body["reason"] : undefined;
-        writeJson(res, 202, await service.cancelTask(taskId, reason));
-        return;
-      }
-
-      if (
-        segments.length === 5 &&
-        req.method === "POST" &&
-        (sub === "archive" || sub === "recover")
-      ) {
-        writeJson(res, 200, service.setTaskArchived(taskId, sub === "archive"));
-        return;
-      }
-
-      if (segments.length === 5 && req.method === "GET" && sub === "runs") {
-        writeJson(res, 200, { items: service.getRunSummaries(taskId) });
-        return;
-      }
-
-      if (segments.length === 5 && req.method === "GET" && sub === "timeline") {
-        writeJson(res, 200, { items: service.getTimeline(taskId) });
-        return;
-      }
-
-      if (
-        segments.length === 6 &&
-        req.method === "GET" &&
-        sub === "artifacts" &&
-        segments[5] !== undefined
-      ) {
-        writeJson(res, 200, await service.getArtifact(taskId, segments[5]));
-        return;
-      }
-
-      if (segments.length === 5 && req.method === "GET" && sub === "stream") {
-        service.getTask(taskId); // 404 before headers are committed
-        res.writeHead(200, {
-          "Content-Type": "text/event-stream; charset=utf-8",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        });
-        const timeline = service.getTimeline(taskId);
-        const lastEventId = req.headers["last-event-id"];
-        let lastSequence = 0;
-        if (typeof lastEventId === "string" && lastEventId.length > 0) {
-          const known = timeline.find((item) => item.event_id === lastEventId);
-          // Unknown ids replay from the start: safer than silently skipping
-          // history for a reconnecting client.
-          lastSequence = known?.sequence ?? 0;
-        }
-        for (const item of timeline) {
-          if (item.sequence > lastSequence) {
-            writeSseEvent(res, item);
-          }
-        }
-        // A terminal task has no future events, so never subscribe to one.
-        // The replay above already covered whatever the client was missing;
-        // closing here handles every terminal shape — the browser EventSource
-        // auto-reconnect whose Last-Event-ID is anchored at task.terminal
-        // (nothing left to write), a record that predates the closing-frame
-        // invariant, and the fresh replay that just delivered the frame.
-        // Subscribing in any of these would dangle forever.
-        if (service.isTerminal(taskId)) {
-          res.end();
-          return;
-        }
-        // A session stream dies the moment its authority dies: logout,
-        // suspension, or revoked membership ends the subscription instead of
-        // leaving a zombie stream behind.
-        let unsubscribeAuth: (() => void) | undefined;
-        if (actor.kind === "session" && deps.auth !== undefined) {
-          const auth = deps.auth;
-          const sessionCtx = actor.ctx;
-          unsubscribeAuth = auth.hub.subscribe((event) => {
-            const losesAccess =
-              (event.type === "session.revoked" && event.session_id === sessionCtx.session.id) ||
-              (event.type === "user.suspended" && event.user_id === sessionCtx.user.id) ||
-              (event.type === "membership.revoked" &&
-                event.user_id === sessionCtx.user.id &&
-                auth.workspaceRole(sessionCtx.user.id) === undefined);
-            if (losesAccess) {
-              res.end();
-            }
-          });
-          req.on("close", unsubscribeAuth);
-        }
-        // A provider revocation cuts live streams the same way: the stream
-        // re-checks its stream action on every authority change and closes
-        // the moment the gate denies it (DAT-203).
-        if (actor.kind === "session" && deps.authority !== undefined) {
-          const authority = deps.authority;
-          const streamUser = actor.ctx.user.id;
-          const unsubscribeAuthority = authority.subscribe(() => {
-            if (!authority.check(streamUser, "stream").allowed) {
-              res.end();
-            }
-          });
-          req.on("close", unsubscribeAuthority);
-        }
-        const unsubscribe = service.subscribe(taskId, (event) => {
-          writeSseEvent(res, event);
-          if (event.type === "task.terminal") {
-            res.end();
-          }
-        });
-        req.on("close", unsubscribe);
-        return;
-      }
-
-      throw new ApiError(404, "TASK_NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+      await handleTaskRequest(
+        {
+          req,
+          res,
+          url,
+          deps,
+          actor,
+          workspaceId: deps.legacyWorkspaceId,
+          scoped: false,
+        },
+        segments.slice(3),
+      );
     } catch (error) {
       if (res.headersSent) {
         res.end();

@@ -88,6 +88,13 @@ export interface MembershipRepository {
   list(scope: WorkspaceScope): Membership[];
   /** Every membership of one user across the scope's enterprise. */
   listForUser(scope: EnterpriseScope, userId: UserId): Membership[];
+  /**
+   * Every membership of one user across all enterprises, keyed only by the
+   * user. Request-scope resolution needs the complete set to reject ambiguous
+   * and cross-tenant principals; the rows are evidence of the user's own
+   * authority and grant no access to any other entity.
+   */
+  listAllForUser(userId: UserId): Membership[];
   updateRole(
     scope: WorkspaceScope,
     id: MembershipId,
@@ -831,6 +838,16 @@ class SqliteMembershipRepository implements MembershipRepository {
          WHERE m.user_id = ? AND w.enterprise_id = ? ORDER BY m.created_at`,
       )
       .all(userId, scope.enterprise_id) as unknown as MembershipRow[];
+    return rows.map(toMembership);
+  }
+
+  listAllForUser(userId: UserId): Membership[] {
+    const rows = this.db
+      .prepare(
+        `SELECT m.* FROM membership m JOIN workspace w ON m.workspace_id = w.id
+         WHERE m.user_id = ? ORDER BY m.created_at`,
+      )
+      .all(userId) as unknown as MembershipRow[];
     return rows.map(toMembership);
   }
 

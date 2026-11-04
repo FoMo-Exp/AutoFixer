@@ -87,6 +87,27 @@ describe("append and duplicate delivery deduplication", () => {
     expect(store.query(scopeA)).toHaveLength(1);
   });
 
+  test("payload and label text is scanned and redacted before persistence", () => {
+    // DAT-225 gate at the write boundary. Assembled fixtures on purpose:
+    // runnable secret-shaped literals would trip push protection.
+    const store = new TraceStore({ now: fixedNow() });
+    const assigned = ["api_", "key=verysecret", "value123"].join("");
+    const keyLike = ["sk-", "DEADBEEFDEADBEEFDEADBEEF"].join("");
+    const recorded = store.append(
+      newEvent({ event_id: "e1", payload: { note: assigned }, labels: { model: keyLike } }),
+    );
+    expect(recorded.event.payload).toEqual({ note: "api_key=[redacted]" });
+    expect(recorded.event.labels["model"]).toBe("[redacted]");
+
+    // A redelivery of the raw writer content deduplicates against the
+    // stored redacted form instead of reintroducing the secret.
+    const redelivery = store.append(
+      newEvent({ event_id: "e1", payload: { note: assigned }, labels: { model: keyLike } }),
+    );
+    expect(redelivery.status).toBe("duplicate");
+    expect(store.query(scopeA)[0]?.payload).toEqual({ note: "api_key=[redacted]" });
+  });
+
   test("append rejects payload-shaped metric labels", () => {
     const store = new TraceStore({ now: fixedNow() });
     expect(() =>

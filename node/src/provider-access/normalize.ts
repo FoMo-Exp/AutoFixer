@@ -83,6 +83,17 @@ export function normalizeRole(provider: ProviderType, raw: RawProviderRole): Nor
             throw new NormalizationError("github inherited role requires a team authority_ref");
           }
           break;
+        case "effective_access":
+          // The provider reports effective access but cannot attribute it to
+          // a direct grant, team inheritance, or organization default. The
+          // row says "has effective access" and nothing more; it still needs
+          // the repository it describes.
+          if (!raw.authority_ref) {
+            throw new NormalizationError(
+              "github effective_access requires a repository authority_ref",
+            );
+          }
+          break;
         case "direct_collaborator":
           // A GitHub repository has no owner user. Repository-level
           // collaborator vocabulary is read/triage/write/maintain/admin; a
@@ -117,7 +128,9 @@ export function normalizeRole(provider: ProviderType, raw: RawProviderRole): Nor
         );
       }
       if (
-        (raw.kind === "inherited_role" || raw.kind === "direct_collaborator") &&
+        (raw.kind === "inherited_role" ||
+          raw.kind === "direct_collaborator" ||
+          raw.kind === "effective_access") &&
         !GITHUB_REPO_ROLES.has(raw.provider_role)
       ) {
         throw new NormalizationError(
@@ -147,6 +160,17 @@ export function normalizeRole(provider: ProviderType, raw: RawProviderRole): Nor
           if (!raw.authority_ref) {
             throw new NormalizationError(
               "gitlab direct collaborator requires a project authority_ref",
+            );
+          }
+          break;
+        case "effective_access":
+          // GitLab's aggregate membership views mix project, group, and
+          // ancestor-group grants the same way; the source is accepted as
+          // "effective access", never as a direct grant. This issue only
+          // produces it for GitHub.
+          if (!raw.authority_ref) {
+            throw new NormalizationError(
+              "gitlab effective_access requires a project authority_ref",
             );
           }
           break;

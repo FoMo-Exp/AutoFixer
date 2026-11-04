@@ -42,5 +42,5 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: autofixer run --input <task.json|-> [--format text|json] [--timeout <duration>]")
 	fmt.Fprintln(w, "       autofixer demo [--format text|json] [--timeout <duration>]")
-	fmt.Fprintln(w, "       autofixer dsh serve --socket <path> [--approver <identity>]...")
+	fmt.Fprintln(w, "       autofixer dsh serve --socket <path> [--approver <identity>]... [--revision-source git]")
 }

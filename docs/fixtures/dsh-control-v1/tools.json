@@ -5,15 +5,16 @@
     ],
     "Exec": "echo",
     "ID": "echo",
+    "Kind": 0,
     "MinimumRisk": "low",
     "Params": [
       {
         "enum": [
           "hello"
         ],
+        "kind": "enum",
         "name": "message",
-        "required": true,
-        "type": "string"
+        "required": true
       }
     ]
   },
@@ -23,15 +24,130 @@
     ],
     "Exec": "sleep",
     "ID": "sleep",
+    "Kind": 0,
     "MinimumRisk": "low",
     "Params": [
       {
         "enum": [
           "5"
         ],
+        "kind": "enum",
         "name": "seconds",
-        "required": true,
-        "type": "string"
+        "required": true
+      }
+    ]
+  },
+  {
+    "AllowedPaths": [
+      "."
+    ],
+    "Exec": "repo.read",
+    "ID": "repo.read",
+    "Kind": 1,
+    "MinimumRisk": "low",
+    "Params": [
+      {
+        "kind": "path",
+        "name": "path",
+        "required": true
+      }
+    ]
+  },
+  {
+    "AllowedPaths": [
+      "."
+    ],
+    "Exec": "repo.search",
+    "ID": "repo.search",
+    "Kind": 2,
+    "MinimumRisk": "low",
+    "Params": [
+      {
+        "kind": "text",
+        "max_bytes": 256,
+        "name": "pattern",
+        "required": true
+      },
+      {
+        "kind": "path",
+        "name": "path",
+        "required": false
+      }
+    ]
+  },
+  {
+    "AllowedPaths": [
+      "."
+    ],
+    "Exec": "workspace.patch",
+    "ID": "workspace.patch",
+    "Kind": 3,
+    "MinimumRisk": "low",
+    "Params": [
+      {
+        "kind": "path",
+        "name": "path",
+        "required": true
+      },
+      {
+        "kind": "text",
+        "max_bytes": 262144,
+        "name": "content",
+        "required": true
+      }
+    ]
+  },
+  {
+    "AllowedPaths": [
+      "."
+    ],
+    "Exec": "test.run",
+    "ID": "test.run",
+    "Kind": 4,
+    "MinimumRisk": "low",
+    "Params": [
+      {
+        "enum": [
+          "go.test",
+          "node.test"
+        ],
+        "kind": "enum",
+        "name": "profile",
+        "required": true
+      },
+      {
+        "enum": [
+          "focused",
+          "suite"
+        ],
+        "kind": "enum",
+        "name": "mode",
+        "required": true
+      },
+      {
+        "kind": "path",
+        "name": "target",
+        "required": false
+      }
+    ]
+  },
+  {
+    "AllowedPaths": [
+      "."
+    ],
+    "Exec": "dep.prepare",
+    "ID": "dep.prepare",
+    "Kind": 5,
+    "MinimumRisk": "low",
+    "Params": [
+      {
+        "enum": [
+          "go.mod",
+          "node.package"
+        ],
+        "kind": "enum",
+        "name": "profile",
+        "required": true
       }
     ]
   }

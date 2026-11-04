@@ -13,6 +13,45 @@ npm test
 npm run build
 ```
 
+## Enterprise sign-in and workspace scope
+
+Browser and desktop share one authentication gate. A session token never enters
+a URL, referrer, `localStorage`, or renderer JavaScript.
+
+- **Browser (cookie session).** The page lists `GET /api/v1/auth/providers`,
+  navigates to `GET /api/v1/auth/login` with the chosen provider instance id and
+  a relative `return_to`, and reads `GET /api/v1/auth/session` after the
+  callback. The session lives in the HttpOnly `fp_session` cookie; mutating
+  requests echo the session's CSRF token in `X-CSRF-Token`. A rejected CSRF
+  token is refreshed once from the session endpoint and the request retried
+  once. Browser mode requires the workbench to be served from the API's own
+  loopback origin (the OAuth callback redirects there and the cookie is scoped
+  to it); it is not available from the cross-origin Vite dev server.
+- **Desktop (system browser).** Electron main creates
+  `POST /api/v1/auth/desktop/flows`, opens the returned `login_url` with the
+  operating system browser, and polls the single-use
+  `/desktop/flows/{flow_id}/exchange` until the browser completes sign-in. The
+  flow secret and the resulting bearer token stay in the main process; the API
+  proxy attaches the token per request. The token is held in memory only, so a
+  workbench restart requires signing in again.
+- **Legacy local-operator mode.** When the Node service has no identity
+  subsystem (`GET /api/v1/auth/providers` returns 404), the workbench keeps the
+  launch-time local-operator bearer token path.
+
+The workbench deliberately has no workspace switch yet. `GET/POST /api/v1/tasks`
+take no workspace selector, and Node resolves session authority against one
+configured workspace (`AuthService.workspaceRole`). Relabeling tasks from
+another membership would therefore show the same data under a different name —
+a false affordance. Real switching needs a workspace-scoped task contract and
+server enforcement first; until then the session's `memberships` only decide
+the "no workspace access" gate. A client-supplied workspace id is never treated
+as proof of access.
+
+A 401 from the task surface drops the credential and shows the recoverable
+"session expired" sign-in screen. A 403 keeps the session and reports a
+dismissible permission banner; a revoked membership surfaces as the
+"no workspace access" gate.
+
 ## Provider account binding (settings)
 
 The workbench Settings dialog binds GitHub or GitLab accounts so the task
@@ -138,3 +177,36 @@ timeline events that are not newer than `Task.version`, and a summary is used
 only when its `task_id` matches and its `run_id` equals the task's
 `current_run_id` — missing identity, a task without a current run, and a
 previous run all yield no summary. See `CONTRACT.md` for the exact rules.
+
+## Workspace administration and invitations
+
+The topbar **Workspaces** entry opens the identity surface when the session
+reports a workspace membership or enterprise role. It lists the workspaces the
+server resolved for this caller and shows members with their effective role and
+provider-role provenance (`MemberAuthority`), teams with their active leader
+and responsibility, and owner/admin invitations. Mutating controls (role
+changes, removal, team create/update/delete, invitation create/revoke) appear
+only for workspace owners/admins or enterprise administrators; every request is
+still authorized server-side, and a denial renders the envelope's message,
+next action, and `request_id` as the support case reference. Enterprise
+administrators also get the secret-free auth audit trail for the workspace's
+enterprise.
+
+Creating an invitation returns the only copy of the bearer token: the dialog
+shows a QR encoding `invite_url` plus a grouped copyable code and drops both
+when closed. Listed invitations are token-free. An invite link carries the
+token in the URL fragment; the landing page captures it, clears the fragment
+with `history.replaceState` before issuing any request, and shows the
+join-confirmation screen only after an authenticated `POST
+/api/v1/invitations/preview`. Nothing is consumed until the operator presses
+**Join workspace**, which calls `POST /api/v1/invitations/redeem`; every
+non-consumable state is the contract's single `INVITATION_NOT_ACCEPTED`
+denial. A sign-in round trip keeps the token in `sessionStorage` only for the
+length of that redirect and removes it on return.
+
+Cookie-authenticated deployments need the session's CSRF echo: after `GET
+/auth/session` the renderer attaches `X-CSRF-Token` to mutating requests, while
+bearer-authenticated requests never send it. API requests opt into cross-origin
+credentials so a loopback API on another port still receives `fp_session`;
+Electron's IPC fetch ignores that field and keeps its bearer attachment in the
+main process.

@@ -141,11 +141,71 @@ export interface DshActionRequest {
   };
 }
 
+/**
+ * The revision identity one structured result is bound to: the repository,
+ * the pinned base SHA, and the digest of the materialized working tree.
+ */
+export interface DshRevisionIdentity {
+  repository_url: string;
+  base_sha: string;
+  tree_digest: string;
+}
+
+/**
+ * The test environment identity one isolated execution ran in: the OS
+ * isolation backend, the digest of the applied profile, the enforced
+ * network policy, and the limits in force. Absent for in-process operations.
+ */
+export interface DshEnvironmentIdentity {
+  platform: string;
+  backend: string;
+  isolation_profile_digest: string;
+  network: string;
+  writable: string[];
+  max_wall_clock_seconds: number;
+  output_limit_bytes: number;
+  enforced_limits: {
+    max_memory_mb: number;
+    max_cpu_seconds: number;
+    /** How the caps are enforced: `supervisor_kill`, `supervisor_kill+rlimit_cpu`, or `none`. */
+    enforcement: string;
+  };
+}
+
+/**
+ * One structured operation's result, bound to the exact revision and test
+ * environment it ran in. `digest` covers every field including both
+ * identities, so a result cannot borrow another revision's or environment's
+ * identity.
+ */
+export interface DshExecutionResult {
+  tool: string;
+  revision: DshRevisionIdentity | null;
+  environment: DshEnvironmentIdentity | null;
+  exit_status?: number;
+  output_digest?: { algorithm: string; value: string };
+  timed_out?: boolean;
+  canceled?: boolean;
+  /**
+   * What terminated the execution: the granted resource cap that was
+   * crossed (`memory`, `cpu`), `accounting` when enforcement broke down
+   * and the execution was stopped rather than left uncapped, `supervision`
+   * when lifecycle supervision was lost mid-run, or `cleanup` when
+   * descendants of the execution survived every termination attempt.
+   */
+  resource_exceeded?: string;
+  digest: string;
+}
+
 export interface DshActionResponse {
   action_id: string;
   state: DshState;
   accepted_tool_id: string;
   audit_event_reference: string;
+  /** Bound result record for structured operations; absent for plain tools. */
+  result?: DshExecutionResult;
+  /** Redacted, bounded output (file content, search matches, tool output). */
+  output?: string;
 }
 
 export interface DshCancelRequest {

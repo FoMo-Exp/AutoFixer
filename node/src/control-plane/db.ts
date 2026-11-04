@@ -550,6 +550,89 @@ const MIGRATIONS: Migration[] = [
     ],
   },
   {
+    // DAT-247: `effective_access` joins the provenance vocabulary. GitHub's
+    // collaborator list mixes direct collaborators, team inheritance,
+    // organization default permissions, and organization owners without
+    // saying which — the provider has no way to attribute the row, so the
+    // schema must be able to say exactly that instead of forcing every row to
+    // claim a direct grant.
+    //
+    // SQLite cannot alter a CHECK constraint, so the table is rebuilt:
+    // create the new shape, copy every row verbatim (ids, timestamps and all),
+    // drop the old table, then recreate the index and UNIQUE constraint. The
+    // migration runner records the version, so this runs once per database
+    // and repeating `migrate()` is a no-op.
+    version: 5,
+    statements: [
+      `CREATE TABLE provider_member_role_v5 (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id),
+        integration_id TEXT NOT NULL REFERENCES service_integration(id),
+        subject TEXT NOT NULL,
+        login TEXT NOT NULL,
+        source_kind TEXT NOT NULL CHECK (
+          source_kind IN (
+            'org_owner', 'org_member', 'group', 'inherited_role',
+            'direct_collaborator', 'effective_access'
+          )
+        ),
+        provider_role TEXT NOT NULL,
+        authority_ref TEXT NOT NULL,
+        inherited_from TEXT,
+        observed_at TEXT NOT NULL,
+        last_verified_at TEXT NOT NULL,
+        UNIQUE (integration_id, subject, source_kind, authority_ref)
+      )`,
+      `INSERT INTO provider_member_role_v5 (
+         id, enterprise_id, workspace_id, integration_id, subject, login,
+         source_kind, provider_role, authority_ref, inherited_from,
+         observed_at, last_verified_at
+       )
+       SELECT
+         id, enterprise_id, workspace_id, integration_id, subject, login,
+         source_kind, provider_role, authority_ref, inherited_from,
+         observed_at, last_verified_at
+       FROM provider_member_role`,
+      `DROP TABLE provider_member_role`,
+      `ALTER TABLE provider_member_role_v5 RENAME TO provider_member_role`,
+      `CREATE INDEX IF NOT EXISTS idx_provider_member_role_subject
+        ON provider_member_role(integration_id, subject)`,
+    ],
+  },
+  {
+    // Owner-created invitations (DAT-204): one opaque bearer per row. Only the
+    // HMAC-SHA-256 keyed digest of the bearer is stored, so a leaked database
+    // never yields a redeemable token. Single use: `redeemed_at`/`redeemed_by`
+    // record the one redemption (and the idempotent-replay subject);
+    // `revoked_at`/`revoked_by` record owner revocation. The bound subject, when
+    // set, restricts redemption to that verified provider subject. Rows die
+    // with their workspace; the audit of an invitation outlives it in auth_audit.
+    version: 6,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS invitation (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK (role IN ('member')),
+        token_digest TEXT NOT NULL UNIQUE,
+        bound_provider_subject TEXT,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        revoked_at TEXT,
+        revoked_by TEXT,
+        redeemed_at TEXT,
+        redeemed_by TEXT,
+        version INTEGER NOT NULL DEFAULT 1
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_invitation_workspace
+        ON invitation(workspace_id)`,
+    ],
+  },
+  {
     // Candidate admission gate (DAT-234): the record of every validation
     // decision and every retirement candidate a contradiction produced.
     //
@@ -562,7 +645,13 @@ const MIGRATIONS: Migration[] = [
     // Every column here holds an opaque id, a fixed enum, a one-way content
     // digest, or a count. Candidate statements, matched lint text, and
     // free-text reasons are never persisted — the reason code is the reason.
-    version: 5,
+    //
+    // Numbering: DAT-247 took v5 and DAT-204 took v6 on main before this
+    // branch merged, so this block is v7 rather than colliding with them.
+    // Renumbering an unmerged block costs nothing; a merged one is never
+    // touched. It stays purely additive, so it is safe on a database that has
+    // already applied v6.
+    version: 7,
     statements: [
       `CREATE TABLE IF NOT EXISTS memory_admission_decisions (
         id TEXT PRIMARY KEY,
@@ -661,7 +750,7 @@ export function openControlPlaneDb(options: OpenOptions = {}): ControlPlaneDb {
  * skipped, so calling this on an up-to-date database is a no-op and calling it
  * on an older database applies only the missing versions.
  */
-export function migrate(db: ControlPlaneDb): void {
+export function migrate(db: ControlPlaneDb, options: { upTo?: number } = {}): void {
   // The schema_migrations table is created inside the first migration; create
   // it eagerly so the runner can query it before applying anything.
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -678,6 +767,9 @@ export function migrate(db: ControlPlaneDb): void {
 
   for (const migration of MIGRATIONS) {
     if (applied.has(migration.version)) {
+      continue;
+    }
+    if (options.upTo !== undefined && migration.version > options.upTo) {
       continue;
     }
     db.exec("BEGIN");

@@ -13,10 +13,12 @@ export {
   ConflictError,
   ControlPlaneError,
   NotFoundError,
+  RequestScopeError,
   ScopeError,
   ValidationError,
   VersionConflictError,
 } from "./errors.js";
+export type { RequestScopeErrorCode } from "./errors.js";
 
 export type {
   ControlPlaneRepositories,
@@ -27,6 +29,14 @@ export type {
   WorkspaceRepository,
 } from "./repositories.js";
 export { createRepositories } from "./repositories.js";
+
+export type {
+  AuthenticatedPrincipal,
+  RequestScopeDeps,
+  ResolvedRequestScope,
+  SessionContextLike,
+} from "./request-scope.js";
+export { principalFromSession, resolveRequestScope } from "./request-scope.js";
 
 export type {
   CreateEnterpriseInput,
@@ -88,6 +98,31 @@ export type {
   UserIdentity,
   UserStatus,
 } from "./identity-types.js";
+
+export type {
+  CreateInvitationInput,
+  Invitation,
+  InvitationDenialReason,
+  InvitationEvaluationInput,
+  InvitationId,
+  InvitationRedemptionDenied,
+  InvitationRedemptionOutcome,
+  InvitationRedemptionSuccess,
+  InvitationRole,
+  InvitationStatus,
+} from "./invitation-types.js";
+
+export type {
+  InvitationRepository,
+  RedemptionDecision,
+  RedemptionFacts,
+  RepositoryAccessFact,
+} from "./invitation-repositories.js";
+export {
+  createInvitationRepository,
+  evaluateRedemption,
+  hasCurrentRepositoryAccess,
+} from "./invitation-repositories.js";
 
 export type {
   AuthAuditRepository,

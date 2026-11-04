@@ -1,0 +1,13 @@
+{
+  "event_id": "evt_5e2f8a1c4b7d9063",
+  "sequence": 42,
+  "occurred_at": "2026-11-02T11:41:00Z",
+  "issue_id": "iss_7f3c2a9e51b84d0fa1c6",
+  "type": "approval.requested",
+  "data": {
+    "approval_id": "apr_6a1c3e5b7d9f2048",
+    "candidate_id": "cand_2d6f8a0c4e1b7935",
+    "state": "pending",
+    "expires_at": "2026-11-03T11:41:00Z"
+  }
+}

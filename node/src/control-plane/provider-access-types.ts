@@ -43,9 +43,22 @@ export type InstallStatus = "active" | "suspended" | "uninstalled";
  * - `inherited_role` — repository permission inherited through a team (GitHub)
  *   or a parent group (GitLab subgroups).
  * - `direct_collaborator` — direct repository/project collaborator.
+ * - `effective_access` — the provider reports that this subject currently has
+ *   effective access to the repository, but the endpoint mixes direct
+ *   collaborators, team/group inheritance, organization default permissions,
+ *   and organization owners, so the response cannot be attributed to one
+ *   source. The row records *effective access only* and never claims a direct
+ *   grant. GitHub's collaborator list is exactly this case: its documentation
+ *   states there is presently no way to differentiate an organization-level
+ *   grant from a repository-level grant in the response.
  */
 export type ProviderRoleSourceKind =
-  "org_owner" | "org_member" | "group" | "inherited_role" | "direct_collaborator";
+  | "org_owner"
+  | "org_member"
+  | "group"
+  | "inherited_role"
+  | "direct_collaborator"
+  | "effective_access";
 
 /**
  * Authority state of one provider subject on one repository.

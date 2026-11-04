@@ -13,6 +13,15 @@ import {
 } from "../pi/turn-report.js";
 import { DSH_STATES } from "../dsh/types.js";
 import {
+  APPROVAL_INVALIDATION_REASONS,
+  APPROVAL_STATES,
+  DELIVERY_STATES,
+  ISSUE_EVENT_TYPES,
+  TASK_EVIDENCE_CONTRACT_VERSION,
+} from "../collab/contract.js";
+import { PRODUCT_STATES } from "../collab/states.js";
+import { GRANT_STATES, ROLES, TASK_STATES } from "../collab/types.js";
+import {
   ERROR_CATEGORIES,
   ERROR_ENVELOPE_VERSION,
   ERROR_NEXT_ACTIONS,
@@ -326,6 +335,7 @@ const taskSchema: JsonObject = {
   type: "object",
   required: [
     "id",
+    "workspace_id",
     "version",
     "created_at",
     "updated_at",
@@ -345,11 +355,26 @@ const taskSchema: JsonObject = {
   ],
   properties: {
     id: { type: "string" },
+    workspace_id: {
+      type: "string",
+      description:
+        "Durable workspace ownership. Always equal to the workspace in the " +
+        "scoped path; a task can never be addressed through another " +
+        "workspace's route family.",
+    },
     version: { type: "integer" },
     created_at: { type: "string", format: "date-time" },
     updated_at: { type: "string", format: "date-time" },
     current_run_id: { type: ["string", "null"] },
-    run_history_url: { type: "string" },
+    run_history_url: {
+      type: "string",
+      description:
+        "Relative run-history URL on the route family that served the task: " +
+        "`/api/v1/tasks/{task_id}/runs` on the legacy family and " +
+        "`/api/v1/workspaces/{workspace_id}/tasks/{task_id}/runs` on the " +
+        "workspace-scoped family. Following it never crosses into another " +
+        "workspace's route family.",
+    },
     repository: {
       type: "object",
       required: ["id", "display_name", "base_ref", "base_sha"],
@@ -1001,6 +1026,699 @@ const invitationRedemptionSchema: JsonObject = {
   },
 };
 
+// --- Collaboration v1 schemas (DAT-221, ADR-0007) --------------------------
+//
+// The issue/task/run/candidate/approval/delivery surface. Product stages and
+// harness run states are separate vocabularies: an issue's `product_state`
+// describes the product lifecycle, while a run's `state` is the observed
+// dsh/FP-01 harness state. `awaiting_change_approval` is a product stage with
+// an immutable candidate and no PR; harness `awaiting_review` exists only once
+// a provider PR exists. The contract never lets one stand in for the other.
+
+const workspaceScopeSchema: JsonObject = {
+  type: "object",
+  description:
+    "The enterprise/workspace pair that owns an issue and everything derived " +
+    "from it (ADR-0006). Resolved server-side from the caller's authenticated " +
+    "membership; it is never accepted from a request body.",
+  required: ["enterprise_id", "workspace_id"],
+  properties: {
+    enterprise_id: { type: "string" },
+    workspace_id: { type: "string" },
+  },
+};
+
+const issueRepositorySchema: JsonObject = {
+  type: "object",
+  description:
+    "Immutable repository identity an issue, its runs, candidates, and " +
+    "deliveries are bound to (ADR-0006 binds an id, not a mutable URL).",
+  required: ["repository_id", "url", "base_ref", "base_sha"],
+  properties: {
+    repository_id: { type: "string" },
+    url: { type: "string" },
+    base_ref: { type: "string" },
+    base_sha: { type: "string" },
+  },
+};
+
+const digestSchema: JsonObject = {
+  type: "object",
+  description:
+    "A digest value with the algorithm that produced it; an unverifiable or " +
+    "algorithm-less digest is never a valid evidence reference.",
+  required: ["algorithm", "value"],
+  properties: { algorithm: { type: "string" }, value: { type: "string" } },
+};
+
+const artifactReferenceSchema: JsonObject = {
+  type: "object",
+  description:
+    "Immutable artifact reference (ADR-0007: handoffs carry artifact " +
+    "references and head identity, never raw memory). The digest binds the " +
+    "reference to exactly one artifact content; `base_sha`/`head_sha` bind it " +
+    "to the revision it was produced from.",
+  required: ["artifact_id", "kind", "digest_algorithm", "digest", "base_sha", "head_sha"],
+  properties: {
+    artifact_id: { type: "string" },
+    kind: { type: "string", examples: ["candidate", "patch", "report", "evidence_bundle"] },
+    digest_algorithm: { type: "string" },
+    digest: { type: "string" },
+    base_sha: { type: "string" },
+    head_sha: { type: ["string", "null"] },
+  },
+};
+
+const issueSchema: JsonObject = {
+  type: "object",
+  description:
+    "A product issue (ADR-0007): the durable aggregate the workspace triages, " +
+    "plans, implements, validates, approves, and delivers. `product_state` is " +
+    "the product lifecycle stage — never a harness run state — and terminal " +
+    "stages (`completed`, `cancelled`) have no outgoing edge. `completed` " +
+    "requires a provider-confirmed merge; a published PR alone is not " +
+    "completion. `needs_human` records a stop reason awaiting human " +
+    "disposition, with other `needs_human` exits requiring that disposition.",
+  required: [
+    "issue_id",
+    "workspace",
+    "repository",
+    "dedupe_key",
+    "summary",
+    "source_reference",
+    "product_state",
+    "state_reason",
+    "created_at",
+    "updated_at",
+  ],
+  properties: {
+    issue_id: { type: "string" },
+    workspace: { $ref: "#/components/schemas/WorkspaceScope" },
+    repository: { $ref: "#/components/schemas/IssueRepository" },
+    dedupe_key: {
+      type: "string",
+      description:
+        "Service-derived fingerprint (versioned for log signals) that binds a " +
+        "repeated alert to one issue instead of spawning unbounded tasks; a " +
+        "repeat updates the existing issue's evidence.",
+    },
+    summary: { type: "string" },
+    source_reference: {
+      type: ["string", "null"],
+      description: "Immutable originating signal or manual submission reference.",
+    },
+    product_state: { type: "string", enum: [...PRODUCT_STATES] },
+    state_reason: {
+      type: ["string", "null"],
+      description:
+        "Recorded reason for the current product stage; always set for a " +
+        "`needs_human` stop and for an explicit cancellation.",
+    },
+    created_at: { type: "string", format: "date-time" },
+    updated_at: { type: "string", format: "date-time" },
+  },
+};
+
+const issueStageSchema: JsonObject = {
+  type: "object",
+  description:
+    "The issue's product lifecycle stage and the stages it may move to next, " +
+    "derived from the ADR-0007 stage table. A transition is refused when the " +
+    "edge does not exist (409 TRANSITION_FORBIDDEN) or when the target stage " +
+    "is inconsistent with the observed harness states of the issue's runs " +
+    "(409 PRODUCT_HARNESS_CONFLICT). Leaving `needs_human` without a recorded " +
+    "human disposition is 428 DISPOSITION_REQUIRED.",
+  required: ["issue_id", "product_state", "state_reason", "allowed_transitions", "updated_at"],
+  properties: {
+    issue_id: { type: "string" },
+    product_state: { type: "string", enum: [...PRODUCT_STATES] },
+    state_reason: { type: ["string", "null"] },
+    allowed_transitions: {
+      type: "array",
+      items: { type: "string", enum: [...PRODUCT_STATES] },
+      description: "Exact outgoing edges of the current stage; empty for terminal stages.",
+    },
+    updated_at: { type: "string", format: "date-time" },
+  },
+};
+
+const issueTaskSchema: JsonObject = {
+  type: "object",
+  description:
+    "A child task of an issue: one bounded unit of work routed to a specific " +
+    "Pi role (ADR-0007), never an implicitly distributed squad. `depends_on` " +
+    "names tasks that must reach `done` first; a blocked dependency is 409 " +
+    "TASK_BLOCKED and an invalid dependency graph is 409 " +
+    "TASK_DEPENDENCY_INVALID.",
+  required: [
+    "task_id",
+    "issue_id",
+    "role",
+    "assignee_agent_id",
+    "depends_on",
+    "state",
+    "created_at",
+    "updated_at",
+  ],
+  properties: {
+    task_id: { type: "string" },
+    issue_id: { type: "string" },
+    role: { type: "string", enum: [...ROLES] },
+    assignee_agent_id: { type: ["string", "null"] },
+    depends_on: { type: "array", items: { type: "string" } },
+    state: { type: "string", enum: [...TASK_STATES] },
+    created_at: { type: "string", format: "date-time" },
+    updated_at: { type: "string", format: "date-time" },
+  },
+};
+
+const runWorktreeSchema: JsonObject = {
+  type: "object",
+  description:
+    "One run's isolated checkout. Different runs use separate worktrees; one " +
+    "worktree identity is never bound to two concurrent runs.",
+  required: ["worktree_id", "path"],
+  properties: { worktree_id: { type: "string" }, path: { type: "string" } },
+};
+
+const runScopeSchema: JsonObject = {
+  type: "object",
+  description:
+    "Tool, path, and network scope recorded for one bounded run. Missing " +
+    "scope means denied: the scope narrows what dsh may grant, never widens it.",
+  required: ["tools", "paths", "network"],
+  properties: {
+    tools: { type: "array", items: { type: "string" } },
+    paths: { type: "array", items: { type: "string" } },
+    network: { type: "array", items: { type: "string" } },
+  },
+};
+
+const runLimitsSchema: JsonObject = {
+  type: "object",
+  description: "Duration, resource, and token limits recorded for one bounded run.",
+  required: ["max_wall_clock_seconds", "max_memory_mb", "max_tokens"],
+  properties: {
+    max_wall_clock_seconds: { type: "integer" },
+    max_memory_mb: { type: "integer" },
+    max_tokens: { type: "integer" },
+  },
+};
+
+const runLeaseSchema: JsonObject = {
+  type: "object",
+  description:
+    "Lease with a monotonic fencing token. Only the current holder of the " +
+    "current fencing token may mutate the run; a token is never reused, so a " +
+    "worker that lost its lease (expiry, crash, restart) can never overwrite " +
+    "a newer writer.",
+  required: ["holder", "fencing_token", "acquired_at", "expires_at"],
+  properties: {
+    holder: { type: "string" },
+    fencing_token: { type: "integer" },
+    acquired_at: { type: "string", format: "date-time" },
+    expires_at: { type: "string", format: "date-time" },
+  },
+};
+
+const runGrantSchema: JsonObject = {
+  type: "object",
+  description:
+    "Capability grant recorded for one run (task-evidence-contract-v1 §2). " +
+    "The recorded grant mirrors what dsh issued and grants nothing by itself — " +
+    "dsh re-checks every operation. `state` is the effective state at read " +
+    "time: revocation is recorded and permanent, expiry is derived from the " +
+    "clock, and a stopped or terminal run's grants are revoked.",
+  required: [
+    "grant_id",
+    "run_id",
+    "state",
+    "capability_grant_version",
+    "policy_version",
+    "issued_at",
+    "expires_at",
+    "may_create_patch",
+    "may_create_or_update_pr",
+    "scope_digest",
+    "revoked_at",
+    "revoked_reason",
+  ],
+  properties: {
+    grant_id: { type: "string" },
+    run_id: { type: "string" },
+    state: { type: "string", enum: [...GRANT_STATES] },
+    capability_grant_version: { type: "string" },
+    policy_version: { type: "string" },
+    issued_at: { type: "string", format: "date-time" },
+    expires_at: { type: "string", format: "date-time" },
+    may_create_patch: { type: "boolean" },
+    may_create_or_update_pr: {
+      type: "boolean",
+      description:
+        "Whether this grant permits PR creation; PR capability never includes " +
+        "merge, self-review, or check waiver, and delivery still requires a " +
+        "current candidate-bound human approval.",
+    },
+    scope_digest: { type: "string" },
+    revoked_at: { type: ["string", "null"] },
+    revoked_reason: { type: ["string", "null"] },
+  },
+};
+
+const issueRunSchema: JsonObject = {
+  type: "object",
+  description:
+    "One bounded remediation run: isolated checkout, scope, limits, capability " +
+    "grants, lease, and the observed harness (FP-01) state. `state` is the " +
+    "harness state dsh reported and is never invented here. A `stopped` run " +
+    "requires human disposition and never resumes: it may become `cancelled`, " +
+    "or a new grant may move it to `approved` — stopped-to-running does not " +
+    "exist. `timed_out`, `expired`, `rejected`, `cancelled`, and `merged` are " +
+    "terminal for the grant; a later attempt is a new run id beginning in " +
+    "`requested`.",
+  required: [
+    "run_id",
+    "issue_id",
+    "task_id",
+    "role",
+    "workspace",
+    "repository",
+    "worktree",
+    "scope",
+    "limits",
+    "state",
+    "head_sha",
+    "stop_reason",
+    "stopped_at",
+    "lease",
+    "grants",
+    "artifact_refs",
+    "opened_at",
+    "updated_at",
+  ],
+  properties: {
+    run_id: { type: "string" },
+    issue_id: { type: "string" },
+    task_id: { type: ["string", "null"] },
+    role: { type: "string", enum: [...ROLES] },
+    workspace: { $ref: "#/components/schemas/WorkspaceScope" },
+    repository: { $ref: "#/components/schemas/IssueRepository" },
+    worktree: { $ref: "#/components/schemas/RunWorktree" },
+    scope: { $ref: "#/components/schemas/RunScope" },
+    limits: { $ref: "#/components/schemas/RunLimits" },
+    state: { type: "string", enum: [...DSH_STATES] },
+    head_sha: {
+      type: ["string", "null"],
+      description: "Candidate head identity produced by the run so far; null until one exists.",
+    },
+    stop_reason: {
+      type: ["string", "null"],
+      description:
+        "Why the run stopped (validation failure, policy/security stop, " +
+        "resource violation, …). A stop is an outcome, not a retry: " +
+        "continuation needs human disposition and a fresh run/grant.",
+    },
+    stopped_at: { type: ["string", "null"], format: "date-time" },
+    lease: {
+      oneOf: [{ $ref: "#/components/schemas/RunLease" }, { type: "null" }],
+    },
+    grants: { type: "array", items: { $ref: "#/components/schemas/RunGrant" } },
+    artifact_refs: {
+      type: "array",
+      items: { $ref: "#/components/schemas/ArtifactReference" },
+    },
+    opened_at: { type: "string", format: "date-time" },
+    updated_at: { type: "string", format: "date-time" },
+  },
+};
+
+const validationResultSchema: JsonObject = {
+  type: "object",
+  description:
+    "One validation attempt against the exact candidate revision: the tool " +
+    "invoked, its redacted exit status, the digest of its redacted output, and " +
+    "the matching append-only event reference.",
+  required: ["tool", "exit_status", "output_digest", "event_reference"],
+  properties: {
+    tool: { type: "string" },
+    exit_status: { type: ["integer", "null"] },
+    output_digest: {
+      oneOf: [{ $ref: "#/components/schemas/Digest" }, { type: "null" }],
+    },
+    event_reference: { type: "string" },
+  },
+};
+
+const changeRiskSchema: JsonObject = {
+  type: "object",
+  description:
+    "The pre-approval risk decision for the candidate's work. `prohibited` is " +
+    "never downgraded in the same run; an `elevated` assessment requires the " +
+    "recorded pre-grant human approval reference.",
+  required: ["class", "decision_code", "requires_human_approval"],
+  properties: {
+    class: { type: "string", enum: ["low", "elevated", "prohibited"] },
+    decision_code: { type: "string" },
+    requires_human_approval: { type: "boolean" },
+  },
+};
+
+const candidateSchema: JsonObject = {
+  type: "object",
+  description:
+    "An immutable frozen candidate (ADR-0007): the exact patch, revision " +
+    "identity, diff digest, changed paths, validation configuration/" +
+    "environment identity, test results, risk, and provenance a human reviews " +
+    "before any remote branch push or PR. Local preparation stops and the " +
+    "preparation run's grant is revoked while the candidate is preserved " +
+    "outside the ephemeral workspace. Nothing may be added or edited after " +
+    "validation, and no approval or delivery applies to any other revision. " +
+    "The review card shows `summary` and expands to the authorized diff " +
+    "(`diff`, artifacts), tests (`validation`), risks (`risk`), and provenance " +
+    "(`artifacts`, `audit_refs`).",
+  required: [
+    "contract_version",
+    "candidate_id",
+    "issue_id",
+    "run_id",
+    "repository",
+    "base_sha",
+    "head_sha",
+    "tree_sha",
+    "diff",
+    "summary",
+    "validation",
+    "risk",
+    "artifacts",
+    "audit_refs",
+    "created_at",
+  ],
+  properties: {
+    contract_version: { type: "string", enum: [TASK_EVIDENCE_CONTRACT_VERSION] },
+    candidate_id: { type: "string" },
+    issue_id: { type: "string" },
+    run_id: { type: "string", description: "The preparation run that produced the candidate." },
+    repository: { $ref: "#/components/schemas/IssueRepository" },
+    base_sha: { type: "string" },
+    head_sha: { type: "string", description: "Candidate commit identity (the frozen revision)." },
+    tree_sha: { type: "string" },
+    diff: {
+      type: "object",
+      description: "Digest and shape of the exact diff an approver reviews.",
+      required: ["digest_algorithm", "digest", "changed_paths", "insertions", "deletions"],
+      properties: {
+        digest_algorithm: { type: "string" },
+        digest: { type: "string" },
+        changed_paths: { type: "array", items: { type: "string" } },
+        insertions: { type: "integer" },
+        deletions: { type: "integer" },
+      },
+    },
+    summary: { type: "string", description: "Bounded change summary for the review card." },
+    validation: {
+      type: "object",
+      description:
+        "The validation evidence the approval is bound to: configuration " +
+        "digest, environment identity, and every validation attempt.",
+      required: ["config_digest", "environment", "results"],
+      properties: {
+        config_digest: { type: "string" },
+        environment: { type: "string" },
+        results: {
+          type: "array",
+          items: { $ref: "#/components/schemas/ValidationResult" },
+        },
+      },
+    },
+    risk: { $ref: "#/components/schemas/ChangeRisk" },
+    artifacts: {
+      type: "array",
+      items: { $ref: "#/components/schemas/ArtifactReference" },
+      description: "Patch, report, and evidence-bundle references, retained after cleanup.",
+    },
+    audit_refs: {
+      type: "array",
+      items: { type: "string" },
+      description: "References into the append-only audit/evidence records backing the candidate.",
+    },
+    created_at: { type: "string", format: "date-time" },
+  },
+};
+
+const approvalBindingSchema: JsonObject = {
+  type: "object",
+  description:
+    "Everything one approval is bound to (ADR-0007). Content, required test " +
+    "evidence, base advancement, target, approval policy, expiry, or relevant " +
+    "authority changes invalidate the approval; refresh/rebase and rerun tests, " +
+    "then request a new card. Never rebase after approval and push under the " +
+    "old one.",
+  required: [
+    "workspace",
+    "repository",
+    "candidate_id",
+    "head_sha",
+    "diff_digest",
+    "test_evidence_digest",
+    "target_branch",
+    "policy_version",
+  ],
+  properties: {
+    workspace: { $ref: "#/components/schemas/WorkspaceScope" },
+    repository: { $ref: "#/components/schemas/IssueRepository" },
+    candidate_id: { type: "string" },
+    head_sha: { type: "string" },
+    diff_digest: { $ref: "#/components/schemas/Digest" },
+    test_evidence_digest: { $ref: "#/components/schemas/Digest" },
+    target_branch: {
+      type: "string",
+      description:
+        "Intended PR target branch. Writes are restricted to the issue's " +
+        "autofixer branch and PR; direct main writes are never permitted.",
+    },
+    policy_version: { type: "string" },
+  },
+};
+
+const approvalDecisionSchema: JsonObject = {
+  type: "object",
+  description:
+    "A recorded approver decision. The approver is the authenticated caller — " +
+    "never a body field — and the decision must be a confirmed mutation.",
+  required: ["decision", "decided_by", "decided_at", "note"],
+  properties: {
+    decision: { type: "string", enum: ["approve", "reject"] },
+    decided_by: { $ref: "#/components/schemas/UserRef" },
+    decided_at: { type: "string", format: "date-time" },
+    note: { type: ["string", "null"] },
+  },
+};
+
+const approvalSchema: JsonObject = {
+  type: "object",
+  description:
+    "A candidate-bound pre-PR human approval request (ADR-0007). One named " +
+    "eligible human delivery approver — selected from workspace-configured " +
+    "maintainers — must approve the frozen candidate before any remote branch " +
+    "push or PR mutation; assignee/blame/team-leader status alone is " +
+    "insufficient, and current repository access plus explicit approval " +
+    "authority are checked. Approval is consumed by exactly one delivery " +
+    "operation; safe retries reconcile that same operation and never reuse the " +
+    "approval for a new candidate or PR. An approval never substitutes for the " +
+    "repository's own PR review, checks, or quorum.",
+  required: [
+    "contract_version",
+    "approval_id",
+    "issue_id",
+    "candidate_id",
+    "state",
+    "binding",
+    "approver",
+    "requested_at",
+    "decided_at",
+    "expires_at",
+    "decision",
+    "invalidated_at",
+    "invalidated_reason",
+    "consumed_by_delivery_id",
+  ],
+  properties: {
+    contract_version: { type: "string", enum: [TASK_EVIDENCE_CONTRACT_VERSION] },
+    approval_id: { type: "string" },
+    issue_id: { type: "string" },
+    candidate_id: { type: "string" },
+    state: { type: "string", enum: [...APPROVAL_STATES] },
+    binding: { $ref: "#/components/schemas/ApprovalBinding" },
+    approver: {
+      oneOf: [{ $ref: "#/components/schemas/UserRef" }, { type: "null" }],
+      description:
+        "The named human the request is addressed to; null while no eligible " +
+        "approver is available (the issue then awaits human triage, never an " +
+        "automatic approval).",
+    },
+    requested_at: { type: "string", format: "date-time" },
+    decided_at: { type: ["string", "null"], format: "date-time" },
+    expires_at: {
+      type: "string",
+      format: "date-time",
+      description: "Finite approval TTL; the proposed default is 24 hours.",
+    },
+    decision: {
+      oneOf: [{ $ref: "#/components/schemas/ApprovalDecision" }, { type: "null" }],
+    },
+    invalidated_at: { type: ["string", "null"], format: "date-time" },
+    invalidated_reason: {
+      type: ["string", "null"],
+      enum: [...APPROVAL_INVALIDATION_REASONS, null],
+    },
+    consumed_by_delivery_id: { type: ["string", "null"] },
+  },
+};
+
+const deliverySchema: JsonObject = {
+  type: "object",
+  description:
+    "One broker-controlled delivery operation (ADR-0007). Only the trusted " +
+    "delivery broker obtains provider write credentials; before each write it " +
+    "re-checks current human approval, enterprise/repository permissions, the " +
+    "dsh grant, audit availability, branch constraints, and exact candidate " +
+    "identity. Operation identity and intention are persisted before the " +
+    "write; ambiguous push/PR outcomes are reconciled by branch and provider " +
+    "operation evidence before any retry, so a retry never merges, " +
+    "self-approves, or creates a duplicate PR. A pushed branch whose PR " +
+    "creation failed remains an explicit `partial` delivery — neither success " +
+    "nor automatic deletion. No state change deploys the change or claims the " +
+    "incident is fixed in production.",
+  required: [
+    "delivery_id",
+    "operation_id",
+    "issue_id",
+    "candidate_id",
+    "approval_id",
+    "repository",
+    "target_branch",
+    "head_sha",
+    "provider",
+    "state",
+    "branch",
+    "pr_id",
+    "pr_url",
+    "error_code",
+    "created_at",
+    "updated_at",
+    "reconciled_at",
+  ],
+  properties: {
+    delivery_id: { type: "string" },
+    operation_id: {
+      type: "string",
+      description:
+        "Idempotent operation identity. Safe retries reconcile this same " +
+        "operation; they never authorize a new candidate or PR.",
+    },
+    issue_id: { type: "string" },
+    candidate_id: { type: "string" },
+    approval_id: { type: "string" },
+    repository: { $ref: "#/components/schemas/IssueRepository" },
+    target_branch: { type: "string" },
+    head_sha: { type: "string", description: "The exact approved candidate commit published." },
+    provider: {
+      type: "string",
+      enum: ["github", "gitlab"],
+      description:
+        "Provider the broker writes through. GitLab delivery requires a " +
+        "reviewed mapping to that provider's repository governance before " +
+        "enablement; unsupported governance or missing integration permissions " +
+        "leave delivery blocked rather than silently advertised.",
+    },
+    state: { type: "string", enum: [...DELIVERY_STATES] },
+    branch: {
+      type: ["string", "null"],
+      description: "The issue's autofixer branch once the push is verified; null before.",
+    },
+    pr_id: { type: ["string", "null"] },
+    pr_url: { type: ["string", "null"] },
+    error_code: {
+      type: ["string", "null"],
+      description:
+        "Safe machine code of the last provider failure (shared error " +
+        "vocabulary); raw provider text and credentials never appear.",
+    },
+    created_at: { type: "string", format: "date-time" },
+    updated_at: { type: "string", format: "date-time" },
+    reconciled_at: {
+      type: ["string", "null"],
+      format: "date-time",
+      description:
+        "When the latest unknown/partial outcome was reconciled against provider evidence.",
+    },
+  },
+};
+
+const issueEventSchema: JsonObject = {
+  type: "object",
+  description:
+    "One issue event on the SSE stream: the projection of exactly one durable " +
+    "audit record. Replay semantics: a reconnect sends the last delivered " +
+    "`event_id` in `Last-Event-ID`; the service replays every later event in " +
+    "`sequence` order from the durable projection (including events written " +
+    "while no client was connected, and across orchestrator restarts), so no " +
+    "business event is duplicated or lost. Delivery is at least once: " +
+    "`event_id` is stable and idempotent across replays — replayed frames " +
+    "carry the same id and payload — so a consumer MUST deduplicate on " +
+    "`event_id` and treat `sequence` as the ordering cursor. An unknown " +
+    "`Last-Event-ID` replays from the start of the retained log. The stream " +
+    "closes after `issue.terminal` is replayed, and a terminal issue's stream " +
+    "always closes after its replay even when the anchor is already at " +
+    "`issue.terminal`. A 404 ISSUE_NOT_FOUND is returned before any event is " +
+    "sent when the issue is not visible to the caller.",
+  required: ["event_id", "sequence", "occurred_at", "issue_id", "type", "data"],
+  properties: {
+    event_id: {
+      type: "string",
+      description:
+        "Stable, replay-stable event identity and the consumer's idempotency " +
+        "key. A new event never reuses an id; a replay never changes it.",
+    },
+    sequence: {
+      type: "integer",
+      description: "Monotonic, gap-free order within the issue's event log.",
+    },
+    occurred_at: { type: "string", format: "date-time" },
+    issue_id: { type: "string" },
+    type: { type: "string", enum: [...ISSUE_EVENT_TYPES] },
+    data: { type: "object", additionalProperties: true },
+  },
+};
+
+/** The replay-safe command identity every collaboration mutation carries. */
+const IDEMPOTENCY_KEY_PARAMETER: JsonObject = {
+  name: "Idempotency-Key",
+  in: "header",
+  required: false,
+  schema: { type: "string", maxLength: 256 },
+  description:
+    "Replay-safe command identity. Repeating the request with the same key " +
+    "and payload returns the recorded result instead of applying the command " +
+    "twice; the same key with a different payload is 409 " +
+    "IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a " +
+    "new one.",
+};
+
+const WORKSPACE_ID_PARAMETER: JsonObject = {
+  name: "workspace_id",
+  in: "path",
+  required: true,
+  schema: { type: "string" },
+};
+
+const ISSUE_ID_PARAMETER: JsonObject = {
+  name: "issue_id",
+  in: "path",
+  required: true,
+  schema: { type: "string" },
+};
+
 function errorResponse(description: string): JsonObject {
   return {
     description,
@@ -1452,6 +2170,390 @@ export function buildOpenApiDocument(): OpenApiDocument {
             },
           },
           404: errorResponse("Task not found"),
+        },
+      },
+    },
+
+    // --- Workspace-scoped tasks (DAT-244) ----------------------------------
+    //
+    // The `{workspace_id}` segment is a locator, never a grant: each
+    // operation resolves the caller's live membership for that workspace on
+    // the request path, and no-membership, revoked, cross-enterprise, and
+    // unknown are one indistinguishable 404 NOT_FOUND. A task owned by any
+    // other workspace is the same 404, so the family is not an enumeration
+    // oracle.
+
+    "/api/v1/workspaces/{workspace_id}/tasks": {
+      post: {
+        operationId: "createWorkspaceTask",
+        summary: "Create a task in one workspace",
+        description:
+          "Creates the task and its dsh run inside the path workspace. The " +
+          "workspace's own binding supplies the repository, base revision, " +
+          "and model-gateway enterprise/workspace identity; the deployment's " +
+          "configured repository is never a fallback. `repository_id` must " +
+          "equal the workspace's repository binding (`400 " +
+          "REPOSITORY_NOT_IN_WORKSPACE`) and `base_ref` must equal that " +
+          "binding's pinned base revision (`400 BASE_REF_NOT_SUPPORTED`). " +
+          "Unknown/archived workspaces and non-members are one " +
+          "`404 NOT_FOUND`; viewers are `403 FORBIDDEN`. A workspace whose " +
+          "repository has no pinned base revision in this deployment is " +
+          "`409 REPOSITORY_BINDING_UNAVAILABLE`, and a provider instance " +
+          "that is no longer registered is `409 " +
+          "PROVIDER_INSTANCE_NOT_APPROVED`; both refuse before any dsh " +
+          "dispatch. Each workspace has its own idempotency-key namespace.",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          {
+            name: "Idempotency-Key",
+            in: "header",
+            required: false,
+            schema: { type: "string", maxLength: 256 },
+            description:
+              "Replay-safe create scoped to this workspace. Repeating the " +
+              "request with the same key and payload returns the original " +
+              "task instead of minting a second run; the same key with a " +
+              "different payload is 409 IDEMPOTENCY_CONFLICT.",
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["repository_id", "base_ref", "summary"],
+                properties: {
+                  repository_id: { type: "string", examples: ["github:Luthiel/AutoFixer"] },
+                  base_ref: { type: "string", examples: ["main"] },
+                  summary: { type: "string" },
+                  source_reference: { type: "string" },
+                  acceptance_criteria: { type: "array", items: { type: "string" } },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: "Task created in this workspace",
+            ...jsonRef("#/components/schemas/Task"),
+          },
+          400: errorResponse(
+            "INVALID_REQUEST, REPOSITORY_NOT_IN_WORKSPACE, or BASE_REF_NOT_SUPPORTED",
+          ),
+          403: errorResponse("FORBIDDEN — viewer, or repository authority denied"),
+          404: errorResponse("NOT_FOUND — no live membership for this workspace"),
+          409: errorResponse(
+            "IDEMPOTENCY_CONFLICT, REPOSITORY_BINDING_UNAVAILABLE, or PROVIDER_INSTANCE_NOT_APPROVED",
+          ),
+          422: errorResponse(
+            "Prohibited work was rejected by dsh (details.task_id names the rejected task)",
+          ),
+          503: errorResponse("PI_UNAVAILABLE or DSH_UNAVAILABLE"),
+        },
+      },
+      get: {
+        operationId: "listWorkspaceTasks",
+        summary: "List tasks owned by one workspace",
+        description:
+          "Cursor/status semantics are identical to `GET /api/v1/tasks`, but " +
+          "only tasks whose durable `workspace_id` is this workspace are " +
+          "visible; a foreign task id is never a valid cursor.",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "cursor", in: "query", schema: { type: "string" } },
+          { name: "status", in: "query", schema: { type: "string", enum: [...UI_STATUSES] } },
+        ],
+        responses: {
+          200: {
+            description: "Workspace task page",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["items", "next_cursor"],
+                  properties: {
+                    items: { type: "array", items: { $ref: "#/components/schemas/Task" } },
+                    next_cursor: { type: ["string", "null"] },
+                  },
+                },
+              },
+            },
+          },
+          400: errorResponse("INVALID_REQUEST — unknown status filter"),
+          404: errorResponse(
+            "NOT_FOUND — no live membership for this workspace, or a cursor from another workspace",
+          ),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}": {
+      get: {
+        operationId: "getWorkspaceTask",
+        summary: "Read one task in a workspace",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: { description: "Task", ...jsonRef("#/components/schemas/Task") },
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/runs": {
+      get: {
+        operationId: "getWorkspaceTaskRuns",
+        summary: "List the task's runs in a workspace",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: {
+            description: "Run summaries",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["items"],
+                  properties: {
+                    items: { type: "array", items: { $ref: "#/components/schemas/RunSummary" } },
+                  },
+                },
+              },
+            },
+          },
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/messages": {
+      post: {
+        operationId: "sendWorkspaceTaskMessage",
+        summary: "Queue a steering or follow-up message for the task's Pi session",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["mode", "content"],
+                properties: {
+                  mode: { type: "string", enum: ["steer", "follow_up"] },
+                  content: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          202: {
+            description: "Message queued",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["task_id", "queued"],
+                  properties: { task_id: { type: "string" }, queued: { type: "boolean" } },
+                },
+              },
+            },
+          },
+          400: errorResponse("Invalid request"),
+          403: errorResponse("FORBIDDEN — viewer is read-only"),
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
+          409: errorResponse("Task state conflict"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/approvals": {
+      post: {
+        operationId: "approveWorkspaceTask",
+        summary: "Record the pre-grant approval decision for an elevated task",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["decision", "scope_digest"],
+                properties: {
+                  decision: { type: "string", enum: ["approve", "reject"] },
+                  scope_digest: { type: "string", examples: ["sha256:…"] },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Task after the decision",
+            ...jsonRef("#/components/schemas/Task"),
+          },
+          400: errorResponse("Invalid request"),
+          403: errorResponse("FORBIDDEN — viewer, provider authority, or dsh policy denial"),
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
+          409: errorResponse("Task state conflict"),
+          503: errorResponse("PI_UNAVAILABLE or DSH_UNAVAILABLE"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/cancel": {
+      post: {
+        operationId: "cancelWorkspaceTask",
+        summary: "Cancel a task",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: { reason: { type: "string" } },
+              },
+            },
+          },
+        },
+        responses: {
+          202: { description: "Cancellation requested", ...jsonRef("#/components/schemas/Task") },
+          403: errorResponse("FORBIDDEN — viewer is read-only"),
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
+          409: errorResponse("The task cannot be cancelled in its terminal state."),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/archive": {
+      post: {
+        operationId: "archiveWorkspaceTask",
+        summary: "Move a cancelled task to the archive",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: { description: "Task after archiving", ...jsonRef("#/components/schemas/Task") },
+          403: errorResponse("FORBIDDEN — viewer is read-only"),
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
+          409: errorResponse("Task is not cancelled"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/recover": {
+      post: {
+        operationId: "recoverWorkspaceTask",
+        summary: "Restore a cancelled task to the workspace",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: {
+            description: "Task after restoring its visibility",
+            ...jsonRef("#/components/schemas/Task"),
+          },
+          403: errorResponse("FORBIDDEN — viewer is read-only"),
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
+          409: errorResponse("Task is not cancelled"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/timeline": {
+      get: {
+        operationId: "getWorkspaceTaskTimeline",
+        summary: "Read the task's redacted event timeline",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: {
+            description: "Timeline items",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["items"],
+                  properties: {
+                    items: { type: "array", items: { $ref: "#/components/schemas/TaskEvent" } },
+                  },
+                },
+              },
+            },
+          },
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/artifacts/{artifact_id}": {
+      get: {
+        operationId: "getWorkspaceTaskArtifact",
+        summary: "Read one redacted artifact for the task's current run",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "artifact_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: {
+            description: "Redacted artifact, already redacted by dsh",
+            content: {
+              "application/json": { schema: { type: "object", additionalProperties: true } },
+            },
+          },
+          403: errorResponse("Artifact access denied"),
+          404: errorResponse("NOT_FOUND — workspace access, task ownership, or artifact missing"),
+          409: errorResponse("Artifact not finalized"),
+          410: errorResponse("Artifact expired"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/stream": {
+      get: {
+        operationId: "streamWorkspaceTaskEvents",
+        summary: "SSE stream of task events in one workspace",
+        description:
+          "Replay and Last-Event-ID semantics match `GET /api/v1/tasks/" +
+          "{task_id}/stream`. The subscription is bound to both the session " +
+          "and this workspace: logout, account suspension, or losing this " +
+          "workspace's membership closes it immediately, while membership " +
+          "changes in another workspace leave it untouched.",
+        parameters: [
+          { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+          {
+            name: "Last-Event-ID",
+            in: "header",
+            required: false,
+            schema: { type: "string" },
+            description: "Replay events after this event_id; unknown ids replay from the start.",
+          },
+        ],
+        responses: {
+          200: {
+            description:
+              "text/event-stream. Each event carries id (event_id), the event type, " +
+              "and data: the TaskEvent envelope. The stream ends after task.terminal " +
+              "or when the subscription's authority ends.",
+            content: {
+              "text/event-stream": {
+                schema: { $ref: "#/components/schemas/TaskEvent" },
+              },
+            },
+          },
+          404: errorResponse("NOT_FOUND — workspace access or task ownership missing"),
         },
       },
     },
@@ -2719,6 +3821,631 @@ export function buildOpenApiDocument(): OpenApiDocument {
         },
       },
     },
+    // --- Collaboration v1: issues, tasks, runs, candidates, approvals,
+    //     deliveries, and the issue event stream (DAT-221, ADR-0007) -------
+
+    "/api/v1/workspaces/{workspace_id}/issues": {
+      get: {
+        operationId: "listIssues",
+        summary: "List the workspace's issues (workbench)",
+        description:
+          "Exactly the issues visible in the caller's authenticated workspace " +
+          "scope, newest first, with opaque cursor pagination. `product_state` " +
+          "filters by product stage (never by harness run state).",
+        parameters: [
+          WORKSPACE_ID_PARAMETER,
+          CURSOR_PARAMETER,
+          {
+            name: "product_state",
+            in: "query",
+            required: false,
+            schema: { type: "string", enum: [...PRODUCT_STATES] },
+            description: "Only issues currently in this product stage.",
+          },
+        ],
+        responses: {
+          200: {
+            description: "Issue page",
+            content: {
+              "application/json": { schema: pageSchema("#/components/schemas/Issue") },
+            },
+          },
+          400: errorResponse("INVALID_CURSOR or INVALID_REQUEST"),
+          404: errorResponse(
+            "NOT_FOUND — non-enumerating: the workspace is not visible to the caller",
+          ),
+        },
+      },
+      post: {
+        operationId: "createIssue",
+        summary: "Submit an issue manually",
+        description:
+          "Manual issue submission (ADR-0007). The service derives the dedupe " +
+          "fingerprint and owns routing: the response is the durable issue, not " +
+          "an assignee assertion. A repeated signal or resubmission for the same " +
+          "repository and source reference is 409 ISSUE_DEDUPE_CONFLICT with " +
+          "`details.existing_issue_id` instead of spawning a second issue.",
+        parameters: [WORKSPACE_ID_PARAMETER, IDEMPOTENCY_KEY_PARAMETER],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["repository_id", "base_ref", "summary"],
+                properties: {
+                  repository_id: {
+                    type: "string",
+                    description: "Immutable provider repository id bound to the workspace.",
+                  },
+                  base_ref: { type: "string", examples: ["main"] },
+                  summary: { type: "string" },
+                  source_reference: {
+                    type: ["string", "null"],
+                    description: "Immutable report/signal reference; never a grant.",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: { description: "Issue created", ...jsonRef("#/components/schemas/Issue") },
+          400: errorResponse("INVALID_REQUEST"),
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND — the repository is not bound to this workspace"),
+          409: errorResponse(
+            "ISSUE_DEDUPE_CONFLICT — the fingerprint already maps to an open " +
+              "issue (`details.existing_issue_id`) — or IDEMPOTENCY_CONFLICT",
+          ),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}": {
+      get: {
+        operationId: "getIssue",
+        summary: "Read one issue",
+        description:
+          "404 ISSUE_NOT_FOUND is uniform — nonexistent, in another workspace, " +
+          "or not visible to the caller — and reveals no other issue's existence.",
+        parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER],
+        responses: {
+          200: { description: "Issue", ...jsonRef("#/components/schemas/Issue") },
+          404: errorResponse("ISSUE_NOT_FOUND"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/stage": {
+      get: {
+        operationId: "getIssueStage",
+        summary: "Read the issue's product stage and its allowed transitions",
+        description:
+          "The product lifecycle stage with the exact outgoing edges the " +
+          "workbench may render. Product stages are distinct from harness run " +
+          "states; `awaiting_change_approval` means an immutable candidate " +
+          "awaits a human change approval and no PR exists.",
+        parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER],
+        responses: {
+          200: { description: "Issue stage", ...jsonRef("#/components/schemas/IssueStage") },
+          404: errorResponse("ISSUE_NOT_FOUND"),
+        },
+      },
+      post: {
+        operationId: "transitionIssueStage",
+        summary: "Move the issue to another product stage",
+        description:
+          "Applies one edge of the ADR-0007 stage table. The service — not the " +
+          "client — enforces the edge, the product/harness consistency rules, " +
+          "and the candidate requirement: `awaiting_change_approval` requires a " +
+          "stopped preparation run that preserved a candidate, `pr_review` " +
+          "requires an observed PR, and `completed` requires a provider- " +
+          "confirmed merge. Leaving `needs_human` requires a recorded human " +
+          "disposition; it is a stop outcome, never a retry of the stopped run. " +
+          "A `needs_human` or `cancelled` transition revokes the issue's " +
+          "remaining grants.",
+        parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER, IDEMPOTENCY_KEY_PARAMETER],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["to"],
+                properties: {
+                  to: { type: "string", enum: [...PRODUCT_STATES] },
+                  reason: {
+                    type: ["string", "null"],
+                    description: "Required for a stop or cancellation.",
+                  },
+                  disposition: {
+                    type: "object",
+                    description:
+                      "Human disposition reference required when leaving " +
+                      "`needs_human`; the actor is the authenticated caller.",
+                    required: ["reference"],
+                    properties: { reference: { type: "string" } },
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Issue stage after the transition",
+            ...jsonRef("#/components/schemas/IssueStage"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          404: errorResponse("ISSUE_NOT_FOUND"),
+          409: errorResponse(
+            "TRANSITION_FORBIDDEN, PRODUCT_HARNESS_CONFLICT — the target stage " +
+              "contradicts the observed harness states — or IDEMPOTENCY_CONFLICT",
+          ),
+          428: errorResponse(
+            "DISPOSITION_REQUIRED — leaving `needs_human` needs a recorded human " +
+              "disposition; category `stop`, not retryable",
+          ),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks": {
+      get: {
+        operationId: "listIssueTasks",
+        summary: "List the issue's child tasks",
+        parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER, CURSOR_PARAMETER],
+        responses: {
+          200: {
+            description: "Task page",
+            content: {
+              "application/json": { schema: pageSchema("#/components/schemas/IssueTask") },
+            },
+          },
+          400: errorResponse("INVALID_CURSOR"),
+          404: errorResponse("ISSUE_NOT_FOUND"),
+        },
+      },
+      post: {
+        operationId: "addIssueTask",
+        summary: "Add a child task to the issue",
+        description:
+          "Routing a bounded unit of work to a Pi role. Dependencies must name " +
+          "tasks of the same issue and must not form a cycle.",
+        parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER, IDEMPOTENCY_KEY_PARAMETER],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["role"],
+                properties: {
+                  role: { type: "string", enum: [...ROLES] },
+                  assignee_agent_id: { type: ["string", "null"] },
+                  depends_on: { type: "array", items: { type: "string" } },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: { description: "Task added", ...jsonRef("#/components/schemas/IssueTask") },
+          400: errorResponse("INVALID_REQUEST"),
+          404: errorResponse("ISSUE_NOT_FOUND"),
+          409: errorResponse("TASK_DEPENDENCY_INVALID or IDEMPOTENCY_CONFLICT"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks/{task_id}": {
+      get: {
+        operationId: "getIssueTask",
+        summary: "Read one child task",
+        parameters: [
+          WORKSPACE_ID_PARAMETER,
+          ISSUE_ID_PARAMETER,
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: { description: "Task", ...jsonRef("#/components/schemas/IssueTask") },
+          404: errorResponse("TASK_NOT_FOUND"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks/{task_id}/state": {
+      post: {
+        operationId: "setIssueTaskState",
+        summary: "Move a child task to another state",
+        description:
+          "A task with unfinished dependencies cannot leave `open` " +
+          "(409 TASK_BLOCKED), and a terminal state has no outgoing edge.",
+        parameters: [
+          WORKSPACE_ID_PARAMETER,
+          ISSUE_ID_PARAMETER,
+          { name: "task_id", in: "path", required: true, schema: { type: "string" } },
+          IDEMPOTENCY_KEY_PARAMETER,
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["to"],
+                properties: { to: { type: "string", enum: [...TASK_STATES] } },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Task after the transition",
+            ...jsonRef("#/components/schemas/IssueTask"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          404: errorResponse("TASK_NOT_FOUND"),
+          409: errorResponse("TASK_STATE_CONFLICT, TASK_BLOCKED, or IDEMPOTENCY_CONFLICT"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/runs": {
+      get: {
+        operationId: "listIssueRuns",
+        summary: "List the issue's bounded remediation runs",
+        description:
+          "Runs in creation order, including terminal attempts. Each run's " +
+          "`state` is the observed harness state; a terminal run never resumes.",
+        parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER, CURSOR_PARAMETER],
+        responses: {
+          200: {
+            description: "Run page",
+            content: {
+              "application/json": { schema: pageSchema("#/components/schemas/IssueRun") },
+            },
+          },
+          400: errorResponse("INVALID_CURSOR"),
+          404: errorResponse("ISSUE_NOT_FOUND"),
+        },
+      },
+      post: {
+        operationId: "openIssueRun",
+        summary: "Open a bounded remediation run for the issue",
+        description:
+          "Records one bounded attempt: role, isolated worktree, tool/path/" +
+          "network scope, and duration/resource/token limits. The service " +
+          "allocates the worktree and resolves the issue's repository binding; " +
+          "the run begins in harness state `requested` and dsh remains the " +
+          "execution gate — opening a run grants nothing. Terminal or cancelled " +
+          "issues cannot open runs (409 RUN_OPEN_FORBIDDEN).",
+        parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER, IDEMPOTENCY_KEY_PARAMETER],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["role", "scope", "limits"],
+                properties: {
+                  task_id: { type: ["string", "null"] },
+                  role: { type: "string", enum: [...ROLES] },
+                  scope: { $ref: "#/components/schemas/RunScope" },
+                  limits: { $ref: "#/components/schemas/RunLimits" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: { description: "Run opened", ...jsonRef("#/components/schemas/IssueRun") },
+          400: errorResponse("INVALID_REQUEST"),
+          404: errorResponse("ISSUE_NOT_FOUND or TASK_NOT_FOUND"),
+          409: errorResponse("RUN_OPEN_FORBIDDEN or IDEMPOTENCY_CONFLICT"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/runs/{run_id}": {
+      get: {
+        operationId: "getIssueRun",
+        summary: "Read one run with its lease, grants, and artifacts",
+        parameters: [
+          WORKSPACE_ID_PARAMETER,
+          ISSUE_ID_PARAMETER,
+          { name: "run_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: { description: "Run", ...jsonRef("#/components/schemas/IssueRun") },
+          404: errorResponse("RUN_NOT_FOUND"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/candidates": {
+      get: {
+        operationId: "listIssueCandidates",
+        summary: "List the issue's frozen candidates",
+        description:
+          "Immutable candidates in freeze order. A candidate is produced by the " +
+          "service when local preparation stops; it is never client-authored or " +
+          "client-mutated.",
+        parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER, CURSOR_PARAMETER],
+        responses: {
+          200: {
+            description: "Candidate page",
+            content: {
+              "application/json": { schema: pageSchema("#/components/schemas/Candidate") },
+            },
+          },
+          400: errorResponse("INVALID_CURSOR"),
+          404: errorResponse("ISSUE_NOT_FOUND"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/candidates/{candidate_id}": {
+      get: {
+        operationId: "getIssueCandidate",
+        summary: "Read one candidate — the review card's source",
+        description:
+          "The full summary/diff/test/risk/provenance record the pre-PR " +
+          "reviewer confirms. Reading it never grants approval authority.",
+        parameters: [
+          WORKSPACE_ID_PARAMETER,
+          ISSUE_ID_PARAMETER,
+          { name: "candidate_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: { description: "Candidate", ...jsonRef("#/components/schemas/Candidate") },
+          404: errorResponse("CANDIDATE_NOT_FOUND"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals": {
+      get: {
+        operationId: "listIssueApprovals",
+        summary: "List the issue's approval requests",
+        description:
+          "Candidate-bound approval requests, including invalidated, expired, " +
+          "rejected, and consumed history; only a `pending` request addressed to " +
+          "the caller is actionable.",
+        parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER, CURSOR_PARAMETER],
+        responses: {
+          200: {
+            description: "Approval page",
+            content: {
+              "application/json": { schema: pageSchema("#/components/schemas/Approval") },
+            },
+          },
+          400: errorResponse("INVALID_CURSOR"),
+          404: errorResponse("ISSUE_NOT_FOUND"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}": {
+      get: {
+        operationId: "getIssueApproval",
+        summary: "Read one approval request",
+        parameters: [
+          WORKSPACE_ID_PARAMETER,
+          ISSUE_ID_PARAMETER,
+          { name: "approval_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: { description: "Approval", ...jsonRef("#/components/schemas/Approval") },
+          404: errorResponse("APPROVAL_NOT_FOUND"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}/decision": {
+      post: {
+        operationId: "decideIssueApproval",
+        summary: "Record the approver's confirmed decision on a candidate",
+        description:
+          "The one pre-PR human approval gate. The approver is the " +
+          "authenticated caller: agents cannot approve their own work, and a " +
+          "body field can never assert an identity. `diff_digest` must equal the " +
+          "candidate's reviewed diff digest — approving a different revision is " +
+          "409 APPROVAL_BINDING_STALE, and a stale, invalidated, expired, " +
+          "consumed, or already-decided request is 409 APPROVAL_STATE_CONFLICT. " +
+          "A `reject` decision refuses delivery for that candidate; a new " +
+          "candidate requires a new request.",
+        parameters: [
+          WORKSPACE_ID_PARAMETER,
+          ISSUE_ID_PARAMETER,
+          { name: "approval_id", in: "path", required: true, schema: { type: "string" } },
+          IDEMPOTENCY_KEY_PARAMETER,
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["decision", "diff_digest"],
+                properties: {
+                  decision: { type: "string", enum: ["approve", "reject"] },
+                  diff_digest: {
+                    $ref: "#/components/schemas/Digest",
+                  },
+                  note: { type: ["string", "null"] },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Approval after the decision",
+            ...jsonRef("#/components/schemas/Approval"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          403: errorResponse(
+            "FORBIDDEN — the caller is not the addressed approver or lacks " +
+              "current repository access/approval authority",
+          ),
+          404: errorResponse("APPROVAL_NOT_FOUND"),
+          409: errorResponse(
+            "APPROVAL_BINDING_STALE, APPROVAL_STATE_CONFLICT, or IDEMPOTENCY_CONFLICT",
+          ),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries": {
+      get: {
+        operationId: "listIssueDeliveries",
+        summary: "List the issue's delivery operations",
+        parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER, CURSOR_PARAMETER],
+        responses: {
+          200: {
+            description: "Delivery page",
+            content: {
+              "application/json": { schema: pageSchema("#/components/schemas/Delivery") },
+            },
+          },
+          400: errorResponse("INVALID_CURSOR"),
+          404: errorResponse("ISSUE_NOT_FOUND"),
+        },
+      },
+      post: {
+        operationId: "requestIssueDelivery",
+        summary: "Request broker-controlled delivery for an approved candidate",
+        description:
+          "Records the delivery operation (identity and intention) before any " +
+          "provider write and returns it in state `pending`; the trusted broker " +
+          "performs the push/PR. Delivery requires a current, valid " +
+          "candidate-bound approval (409 APPROVAL_NOT_APPROVED) — an assignee, " +
+          "blame author, or team leader is never sufficient — and consumes that " +
+          "approval: reusing a consumed approval is 409 APPROVAL_CONSUMED. A " +
+          "safe retry with the same Idempotency-Key reconciles the same " +
+          "operation instead of creating a second branch/PR. No direct main " +
+          "write, merge, self-review, or check waiver exists.",
+        parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER, IDEMPOTENCY_KEY_PARAMETER],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["approval_id"],
+                properties: { approval_id: { type: "string" } },
+              },
+            },
+          },
+        },
+        responses: {
+          202: {
+            description: "Delivery operation recorded",
+            ...jsonRef("#/components/schemas/Delivery"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          403: errorResponse(
+            "FORBIDDEN — missing delivery authority, unsupported governance, or " +
+              "missing integration permissions; delivery stays blocked",
+          ),
+          404: errorResponse("ISSUE_NOT_FOUND or APPROVAL_NOT_FOUND"),
+          409: errorResponse("APPROVAL_NOT_APPROVED, APPROVAL_CONSUMED, or IDEMPOTENCY_CONFLICT"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}": {
+      get: {
+        operationId: "getIssueDelivery",
+        summary: "Read one delivery operation and its provider evidence",
+        description:
+          "`state` distinguishes success (`delivered`), an explicit partial " +
+          "outcome (`partial`: branch pushed, PR creation failed or unconfirmed), " +
+          "and an unknown provider outcome (`unknown`: reconcile before any " +
+          "further write — never auto-retried). `delivered` is not a merge and " +
+          "never claims production recovery.",
+        parameters: [
+          WORKSPACE_ID_PARAMETER,
+          ISSUE_ID_PARAMETER,
+          { name: "delivery_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: { description: "Delivery", ...jsonRef("#/components/schemas/Delivery") },
+          404: errorResponse("DELIVERY_NOT_FOUND"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}/reconcile": {
+      post: {
+        operationId: "reconcileIssueDelivery",
+        summary: "Reconcile an ambiguous delivery outcome against provider evidence",
+        description:
+          "The only path out of `unknown` (and a supported retry out of " +
+          "`partial`): the service re-reads branch and provider operation " +
+          "evidence for this operation and records the reconciled state before " +
+          "any further write, so retries never duplicate a PR. Reconciliation " +
+          "is an `unknown`-outcome remedy, not a bounded retry: the request is " +
+          "never automatically retried. A delivery with nothing to reconcile is " +
+          "409 DELIVERY_STATE_CONFLICT.",
+        parameters: [
+          WORKSPACE_ID_PARAMETER,
+          ISSUE_ID_PARAMETER,
+          { name: "delivery_id", in: "path", required: true, schema: { type: "string" } },
+          IDEMPOTENCY_KEY_PARAMETER,
+        ],
+        requestBody: {
+          required: false,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: { note: { type: ["string", "null"] } },
+              },
+            },
+          },
+        },
+        responses: {
+          202: {
+            description: "Reconciliation recorded",
+            ...jsonRef("#/components/schemas/Delivery"),
+          },
+          404: errorResponse("DELIVERY_NOT_FOUND"),
+          409: errorResponse("DELIVERY_STATE_CONFLICT or IDEMPOTENCY_CONFLICT"),
+          502: errorResponse("PROVIDER_ERROR — retryable; no write was performed"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/stream": {
+      get: {
+        operationId: "streamIssueEvents",
+        summary:
+          "SSE stream of issue events; replays by Last-Event-ID from the durable " +
+          "projection in sequence order, with replay-stable event ids",
+        description:
+          "Reconnecting clients send the last delivered `event_id` in " +
+          "`Last-Event-ID`; the service replays every later event from the " +
+          "durable projection — including events written while disconnected and " +
+          "across orchestrator restarts — without duplicating or dropping a " +
+          "business event. Delivery is at least once and `event_id` is stable " +
+          "across replays (the consumer's idempotency key), so a client " +
+          "deduplicates on `event_id` and orders on `sequence`. An unknown id " +
+          "replays from the start of the retained log. The stream closes after " +
+          "`issue.terminal`, including when the anchor is already terminal.",
+        parameters: [
+          WORKSPACE_ID_PARAMETER,
+          ISSUE_ID_PARAMETER,
+          {
+            name: "Last-Event-ID",
+            in: "header",
+            required: false,
+            schema: { type: "string" },
+            description: "Replay events after this event_id; unknown ids replay from the start.",
+          },
+        ],
+        responses: {
+          200: {
+            description:
+              "text/event-stream. Each frame carries id (event_id), the event " +
+              "type, and data: the IssueEvent envelope. The stream ends after " +
+              "issue.terminal.",
+            content: {
+              "text/event-stream": {
+                schema: { $ref: "#/components/schemas/IssueEvent" },
+              },
+            },
+          },
+          404: errorResponse("ISSUE_NOT_FOUND"),
+        },
+      },
+    },
   };
 
   // Stamp the security requirement and 401 response onto every operation so
@@ -2729,7 +4456,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
     openapi: "3.1.0",
     info: {
       title: "ForgePilot orchestrator API",
-      version: "0.7.0",
+      version: "0.9.0",
       description:
         "forgepilot-api/v1: the Node-to-UI contract of the ForgePilot pilot, the " +
         "enterprise identity surface (DAT-202, ADR-0006), and the workspace, " +
@@ -2744,7 +4471,23 @@ export function buildOpenApiDocument(): OpenApiDocument {
         "failures and cross-scope reads are non-enumerating; session " +
         "invalidation terminates SSE subscriptions; and enterprise/workspace " +
         "scope is always resolved server-side from authenticated membership — " +
-        "client-supplied identifiers never grant access. Generated from the " +
+        "client-supplied identifiers never grant access. The collaboration " +
+        "surface (DAT-221, ADR-0007) defines durable issues, child tasks, bounded " +
+        "runs, immutable candidates, candidate-bound human pre-PR approvals, " +
+        "and broker-controlled deliveries; this contract is merged ahead of its " +
+        "serving implementation so dependent web work never invents fields, and " +
+        "it claims no running control until that implementation lands. Product " +
+        "stages and harness run " +
+        "states are separate vocabularies, and its outcome semantics are " +
+        "explicit: a `stopped` run or `needs_human` stop is a `stop` category — " +
+        "not retryable, requiring human disposition and a fresh run/grant; an " +
+        "`unknown` provider/delivery outcome is the `unknown` category — never " +
+        "auto-retried and requiring reconciliation before further writes; only " +
+        "service-decided bounded retries are `retry`, with `retryable` and " +
+        "`retry_after_seconds` on the shared envelope. Mutating collaboration " +
+        "commands are replay-safe by `Idempotency-Key`, and the issue SSE " +
+        "stream replays by `Last-Event-ID` with replay-stable event ids. " +
+        "Generated from the " +
         "orchestrator implementation; shapes are defined by " +
         "docs/contracts/forgepilot-api-v1.md.",
     },
@@ -2775,6 +4518,27 @@ export function buildOpenApiDocument(): OpenApiDocument {
         CreatedInvitation: createdInvitationSchema,
         InvitationPreview: invitationPreviewSchema,
         InvitationRedemption: invitationRedemptionSchema,
+        WorkspaceScope: workspaceScopeSchema,
+        IssueRepository: issueRepositorySchema,
+        Digest: digestSchema,
+        ArtifactReference: artifactReferenceSchema,
+        Issue: issueSchema,
+        IssueStage: issueStageSchema,
+        IssueTask: issueTaskSchema,
+        RunWorktree: runWorktreeSchema,
+        RunScope: runScopeSchema,
+        RunLimits: runLimitsSchema,
+        RunLease: runLeaseSchema,
+        RunGrant: runGrantSchema,
+        IssueRun: issueRunSchema,
+        ValidationResult: validationResultSchema,
+        ChangeRisk: changeRiskSchema,
+        Candidate: candidateSchema,
+        ApprovalBinding: approvalBindingSchema,
+        ApprovalDecision: approvalDecisionSchema,
+        Approval: approvalSchema,
+        Delivery: deliverySchema,
+        IssueEvent: issueEventSchema,
         SessionInfo: sessionInfoSchema,
         LoginProvider: loginProviderSchema,
         ProviderInstance: providerInstanceSchema,

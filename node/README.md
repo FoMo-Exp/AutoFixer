@@ -141,6 +141,39 @@ Policy file shape (credentials are referenced, never inlined):
 The `openai-compatible` provider uses `openai-completions` against the
 registered base URL and accepts any model ID approved for that endpoint.
 
+## Model cost accounting (ADR-0008)
+
+`src/cost` prices model usage against immutable, effective-dated rate-card
+revisions (`node/src/cost/types.ts` carries the record contract):
+
+- per-category cost = chargeable units × bound rate / divisor, computed in
+  fixed-precision scaled integers (12 fractional digits, half-up rounding —
+  no floats, and a per-token micro-rate can never round into a fake zero);
+- every posting snapshots the rate revision it bound per category. A new rate
+  revision prices new invocations only; recorded postings are never repriced
+  and a changed redelivery of the same attempt is refused;
+- provider corrections are linked adjustment entries that replay over the
+  untouched original — corrected units recompute under the posting's own rate
+  snapshot, explicit corrected amounts carry their currency, and a voided
+  figure becomes unknown again, never zero;
+- missing usage and missing rates stay `unknown` cost components (never 0);
+  unpriced models never default to a zero rate. Estimates are labeled
+  `estimated` and summarized apart from known amounts — nothing in this
+  domain produces an invoiced amount;
+- self-hosted tokens are priced only by administrator-assigned allocation
+  rates and summarized in their own cost class; measured infrastructure cost
+  is its own class and unit. Token cost is never total worker cost;
+- cross-currency totals stay separated per currency unless an explicit
+  versioned FX quote (source + source revision + quote time) is named for the
+  conversion; every converted amount records the quote that produced it.
+
+The `CostStore` is the durable seam: one append-only JSONL file (0600) of
+rate revisions, postings, adjustments and FX quotes, reads confined to the
+caller's authenticated enterprise/workspace scope, with the same torn-tail
+recovery contract as the usage ledger. Pricing consumes the invocation usage
+ledger's record shape structurally: token figures carry their inclusion
+relation and completeness, so included categories are never double-charged.
+
 ## Durability and restart recovery (M3)
 
 The orchestrator persists its task projection — statuses, the ordered event
@@ -197,6 +230,15 @@ reading that file. Additionally:
 - Browser-originated calls are pinned to this server's own loopback `Origin`,
   and request bodies must be `application/json`, so a cross-site page cannot
   ride a simple `text/plain` request.
+
+Session-authenticated callers resolve their enterprise/workspace/role scope
+through the server-authoritative helper `resolveRequestScope`
+(`node/src/control-plane/request-scope.ts`, DAT-241). The scope is derived
+from the caller's live membership on every call — never from
+client-provided enterprise/workspace IDs — and missing, revoked, ambiguous,
+or cross-tenant memberships fail closed with stable 401/403 codes. Request
+paths that need a scope (gateway, orchestrator, later projects) must use
+this helper instead of re-deriving scope from request input.
 
 ## Declared work and risk
 

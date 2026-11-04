@@ -53,16 +53,20 @@ export type {
 export {
   DATA_CLASSES,
   MODEL_EGRESS_DENIED,
+  PROVIDER_USAGE_DIAGNOSTIC,
   ModelDispatchError,
   ModelEgressDeniedError,
+  SECURITY_REVIEW_REQUIRED,
   SENSITIVE_DATA_UNCERTAIN,
 } from "./types.js";
 export type {
   ApprovedEndpoint,
   DataClass,
+  DependentWorkHold,
   GatewayAttemptDestination,
   GatewayAttemptEvent,
   GatewayBindingIdentity,
+  GatewayCaseIntake,
   GatewayDenyReason,
   GatewayEventSink,
   GatewayFallback,

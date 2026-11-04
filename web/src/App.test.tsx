@@ -9,6 +9,7 @@ import type { Task } from "./api/client";
 function task(id: string, summary: string): Task {
   return {
     id,
+    workspace_id: "wsp_test",
     version: 1,
     created_at: "2026-10-30T00:00:00Z",
     updated_at: "2026-10-30T00:00:00Z",
@@ -262,5 +263,37 @@ describe("workspace navigation", () => {
     render(<App />);
     await screen.findByRole("button", { name: "Repair alpha owner/repo" });
     expect(document.querySelector(".task-list")?.getAttribute("data-scroll")).toBe("stacked");
+  });
+});
+
+describe("invitation landing", () => {
+  const token = "inv_2ZxQ7mK9pR4tW8vY1uB6cD3eF5gH0jL";
+
+  afterEach(() => {
+    window.history.replaceState(null, "", "/");
+    window.sessionStorage.clear();
+    vi.unstubAllEnvs();
+  });
+
+  it("clears the fragment before every request and shows the join screen", async () => {
+    vi.stubEnv("VITE_FORGEPILOT_API_URL", "http://127.0.0.1:4599");
+    window.history.replaceState(null, "", `/#${token}`);
+    const hashAtRequest: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      hashAtRequest.push(window.location.hash);
+      return new Response(JSON.stringify({ items: [] }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Join a workspace" })).toBeTruthy();
+    expect(window.location.hash).toBe("");
+    expect(window.location.pathname).toBe("/");
+    expect(document.body.innerHTML).not.toContain(token);
+    // Auth and invitation requests both run only after the fragment is gone.
+    expect(hashAtRequest.length).toBeGreaterThan(0);
+    expect(hashAtRequest.every((hash) => hash === "")).toBe(true);
   });
 });

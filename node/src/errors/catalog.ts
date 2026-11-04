@@ -259,6 +259,16 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCodeSpec>> = Object.fre
         "Review the model egress policy for this workspace to approve the destination or model.",
       ),
       spec(
+        "SECURITY_REVIEW_REQUIRED",
+        "policy",
+        "denial",
+        "never",
+        "request_review",
+        "The run's dependent work is held pending security case disposition.",
+        "Stop. Dependent work stays held until an authorized human resolves the security case; continuing or re-sending the request is not permitted.",
+        "A security case has paused this run's dependent work; disposition it through the security case workflow to release the hold.",
+      ),
+      spec(
         "MODEL_DISPATCH_FAILED",
         "gateway",
         "retry",

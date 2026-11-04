@@ -234,16 +234,17 @@ func (r *Run) mergeEligibilityCurrent() bool {
 func (r *Run) EvaluateAndRecordAction(req ActionRequest) Decision {
 	d := EvaluateAction(ActionContext{
 		State: r.State, Grant: r.Grant, Revoked: r.Revoked, Now: r.now(),
+		RiskClass: r.Assessment.RiskClass,
 	}, req)
 
 	ev := r.baseEvent(EventTypeToolInvocation, r.State, r.State)
 	ev.RequestedTool = &ToolRecord{
 		Identity:  req.Tool,
-		Arguments: append([]string{}, req.Arguments...),
+		Arguments: req.evidenceArgs(),
 	}
 	ev.ActualTool = &ToolRecord{
 		Identity:  req.Tool,
-		Arguments: append([]string{}, req.Arguments...),
+		Arguments: req.evidenceArgs(),
 	}
 	code := d.Code
 	ev.DecisionOrStopCode = &code

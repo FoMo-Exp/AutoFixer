@@ -2399,3 +2399,643 @@ p {
 .scroll-preview-stacked i:nth-child(2) {
   opacity: 1;
 }
+
+/* ══════════════════════════════════════════════════════════════
+   Workspace administration (ADR-0006 identity surface).
+   Reuses the settings dialog shell, tabs, Select, and status tokens.
+   ══════════════════════════════════════════════════════════════ */
+
+.button-danger {
+  background: rgba(var(--red-rgb), 0.14);
+  border: 1px solid rgba(var(--red-rgb), 0.4);
+  color: var(--red);
+}
+
+.button-danger:hover:not(:disabled) {
+  background: rgba(var(--red-rgb), 0.2);
+  border-color: var(--red);
+}
+
+.identity-destructive {
+  color: var(--muted);
+}
+
+.identity-destructive:hover:not(:disabled) {
+  color: var(--red);
+}
+
+.modal-admin {
+  display: flex;
+  flex-direction: column;
+  height: min(620px, calc(100vh - 60px));
+  max-width: 880px;
+  overflow: hidden;
+  padding: 21px 23px;
+}
+
+.modal-admin .identity-error {
+  flex: 0 0 auto;
+  margin: var(--sp-3) 0 0;
+}
+
+.admin-layout {
+  display: grid;
+  flex: 1 1 auto;
+  gap: var(--sp-4);
+  grid-template-columns: 210px minmax(0, 1fr);
+  margin-top: var(--sp-3);
+  min-height: 0;
+}
+
+.admin-workspaces {
+  border-right: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  overflow-y: auto;
+  padding-right: var(--sp-3);
+}
+
+.admin-workspace {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
+  text-align: left;
+}
+
+.admin-workspace:hover {
+  background: var(--panel-hover);
+}
+
+.admin-workspace.active {
+  background: var(--panel);
+  border-color: var(--line);
+}
+
+.admin-workspace:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.admin-workspace-name {
+  color: var(--text);
+  font-size: var(--fs-body);
+  font-weight: 600;
+}
+
+.admin-workspace-meta {
+  align-items: center;
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.admin-detail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.admin-detail-heading {
+  align-items: flex-start;
+  display: flex;
+  gap: var(--sp-3);
+  justify-content: space-between;
+}
+
+.admin-detail-heading h3 {
+  font-size: var(--fs-card-title);
+  margin: 0 0 var(--sp-1);
+}
+
+.admin-panel-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: var(--sp-1);
+}
+
+.modal-admin .settings-tabs {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+
+.modal-admin .settings-tab {
+  flex: 0 0 auto;
+}
+
+.admin-panel-scroll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.identity-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding-bottom: var(--sp-4);
+}
+
+.identity-panel-status {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  margin: 0;
+}
+
+.identity-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.identity-row {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  display: flex;
+  gap: var(--sp-3);
+  justify-content: space-between;
+  padding: var(--sp-3);
+}
+
+.identity-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.identity-row-title {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.identity-row-title strong {
+  font-size: var(--fs-body);
+  font-weight: 600;
+}
+
+.identity-id {
+  color: var(--faint);
+  font-size: var(--fs-meta);
+}
+
+.identity-meta {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+}
+
+.identity-badge {
+  background: rgba(var(--panel-rgb), 0.6);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+
+.identity-badge-warn {
+  border-color: rgba(var(--amber-rgb), 0.45);
+  color: var(--amber);
+}
+
+.identity-badge-active {
+  border-color: rgba(var(--green-rgb), 0.45);
+  color: var(--green);
+}
+
+.identity-row-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--sp-2);
+}
+
+.identity-role-select {
+  width: 116px;
+}
+
+.identity-confirm {
+  align-items: center;
+  display: flex;
+  gap: var(--sp-1);
+}
+
+.identity-form {
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+}
+
+.identity-form label {
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  gap: var(--sp-1);
+}
+
+.identity-form input {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: var(--fs-body);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.identity-form input:hover {
+  border-color: var(--muted);
+}
+
+.identity-form input:focus {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.identity-form-grid {
+  display: grid;
+  gap: var(--sp-3);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.identity-form-actions {
+  align-items: center;
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.identity-create {
+  align-self: flex-start;
+}
+
+.identity-list-heading {
+  align-items: center;
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: space-between;
+}
+
+.identity-load-more {
+  align-self: flex-start;
+}
+
+.error-case {
+  color: var(--faint);
+  display: block;
+  font-size: var(--fs-meta);
+  margin-top: var(--sp-1);
+}
+
+/* ── One-time invitation reveal: QR + grouped copyable code ── */
+
+.invite-reveal {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  display: flex;
+  gap: var(--sp-4);
+  padding: var(--sp-3);
+}
+
+.invite-qr {
+  background: #ffffff;
+  border-radius: var(--r-xs);
+  flex: 0 0 auto;
+  height: 132px;
+  padding: var(--sp-2);
+  width: 132px;
+}
+
+.invite-qr-ground {
+  fill: #ffffff;
+}
+
+.invite-qr-ink {
+  fill: #101318;
+}
+
+.invite-reveal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.invite-code {
+  background: var(--panel-raised);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: var(--fs-body);
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  padding: var(--sp-2) var(--sp-3);
+  user-select: all;
+}
+
+.invite-reveal-actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+/* ── Invitation landing / join confirmation ── */
+
+.invite-screen {
+  align-items: center;
+  background: var(--bg);
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  padding: var(--sp-8);
+}
+
+.invite-card {
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  max-width: 480px;
+  padding: var(--sp-6);
+  width: 100%;
+}
+
+.invite-card-heading h1 {
+  font-size: var(--fs-title);
+  margin: var(--sp-2) 0 0;
+}
+
+.invite-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.invite-details {
+  display: grid;
+  gap: var(--sp-3);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.invite-details div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.invite-details dt {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+}
+
+.invite-details dd {
+  color: var(--text);
+  font-size: var(--fs-body);
+  margin: 0;
+}
+
+.invite-actions {
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+}
+
+.invite-providers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.invite-session {
+  border-top: 1px solid var(--line-soft);
+  padding-top: var(--sp-3);
+}
+
+@media (max-width: 900px) {
+  .modal-admin {
+    height: calc(100vh - 24px);
+  }
+
+  .modal-admin .settings-tabs {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+
+  .admin-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .admin-workspaces {
+    border-bottom: 1px solid var(--line-soft);
+    border-right: 0;
+    flex-direction: row;
+    flex-wrap: wrap;
+    overflow-x: visible;
+    padding-bottom: var(--sp-2);
+    padding-right: 0;
+  }
+
+  .admin-workspace {
+    flex: 0 0 auto;
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 430px) {
+  .invite-screen {
+    padding: var(--sp-3);
+  }
+
+  .invite-details,
+  .identity-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .invite-reveal {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .identity-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Enterprise sign-in (ADR-0006): one gate for browser and desktop.
+   Tokens never enter this surface — only provider choices and state.
+   ══════════════════════════════════════════════════════════════ */
+.auth-shell {
+  align-items: center;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(var(--accent-rgb), 0.08), transparent 34rem), var(--bg);
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 48px 20px;
+}
+
+.auth-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 36px;
+  width: min(460px, 100%);
+}
+
+.auth-brand {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.auth-card h1 {
+  font-size: 24px;
+  letter-spacing: -0.04em;
+  line-height: 1.18;
+}
+
+.auth-lede {
+  color: var(--muted);
+  font-size: var(--fs-body);
+  line-height: 1.55;
+}
+
+.auth-message {
+  background: rgba(var(--amber-rgb), 0.1);
+  border: 1px solid rgba(var(--amber-rgb), 0.28);
+  border-radius: var(--r-sm);
+  color: var(--amber);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  padding: 9px 11px;
+}
+
+.auth-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.button-provider {
+  align-items: flex-start;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 56px;
+  padding: 10px 14px;
+  text-align: left;
+}
+
+.button-provider:hover:not(:disabled) {
+  background: var(--panel-hover);
+  border-color: var(--accent);
+}
+
+.provider-name {
+  font-size: var(--fs-body);
+  font-weight: 650;
+}
+
+.provider-host {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+}
+
+.auth-empty {
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  font-size: var(--fs-meta);
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 8px;
+}
+
+.auth-footnote {
+  border-top: 1px solid var(--line-soft);
+  color: var(--faint);
+  font-size: 11px;
+  line-height: 1.5;
+  margin-top: 4px;
+  padding-top: 12px;
+}
+
+.account-chip {
+  align-items: center;
+  border-left: 1px solid var(--line-soft);
+  display: flex;
+  gap: 10px;
+  padding-left: 14px;
+}
+
+.account-name {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-banner {
+  background: rgba(var(--amber-rgb), 0.1);
+  border-color: rgba(var(--amber-rgb), 0.28);
+}
+
+.permission-banner .banner-dot {
+  background: var(--amber);
+}
+
+@media (max-width: 900px) {
+  .auth-card {
+    padding: 26px 20px;
+  }
+
+  .account-name {
+    display: none;
+  }
+}

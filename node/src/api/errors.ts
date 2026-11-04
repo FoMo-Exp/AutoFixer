@@ -3,6 +3,7 @@ import type { ControlPlaneError } from "../control-plane/errors.js";
 import {
   ConflictError,
   NotFoundError,
+  RequestScopeError,
   ValidationError,
   VersionConflictError,
 } from "../control-plane/errors.js";
@@ -129,6 +130,30 @@ const ERROR_SEMANTICS: Record<string, ErrorSemantics> = {
     category: "denial",
     retryable: false,
     next_action: "contact_admin",
+  },
+  ACCOUNT_SUSPENDED: {
+    stage: "auth",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  SCOPE_MISSING: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "request_review",
+  },
+  SCOPE_AMBIGUOUS: {
+    stage: "authorization",
+    category: "stop",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  SCOPE_CROSS_TENANT: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "request_review",
   },
   CSRF_TOKEN_INVALID: { stage: "auth", category: "stop", retryable: false, next_action: "refresh" },
   NOT_FOUND: { stage: "validation", category: "stop", retryable: false, next_action: null },
@@ -281,6 +306,112 @@ const ERROR_SEMANTICS: Record<string, ErrorSemantics> = {
     retryable: false,
     next_action: "request_review",
   },
+
+  // Collaboration v1 (DAT-221, ADR-0007). A deny-by-default domain outcome is
+  // a `stop` — never retried with the same intent — and the two outcomes the
+  // contract singles out are explicit: `needs_human` stops are `stop` with
+  // `request_review` (human disposition required before any continuation),
+  // and `unknown` provider outcomes are `unknown` with `reconcile` (never
+  // auto-retried, never guessed).
+  ISSUE_NOT_FOUND: { stage: "validation", category: "stop", retryable: false, next_action: null },
+  RUN_NOT_FOUND: { stage: "validation", category: "stop", retryable: false, next_action: null },
+  CANDIDATE_NOT_FOUND: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: null,
+  },
+  APPROVAL_NOT_FOUND: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: null,
+  },
+  DELIVERY_NOT_FOUND: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: null,
+  },
+  ISSUE_DEDUPE_CONFLICT: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  TRANSITION_FORBIDDEN: {
+    stage: "execution",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  PRODUCT_HARNESS_CONFLICT: {
+    stage: "execution",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  RUN_OPEN_FORBIDDEN: {
+    stage: "execution",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  TASK_BLOCKED: { stage: "execution", category: "stop", retryable: false, next_action: "refresh" },
+  TASK_DEPENDENCY_INVALID: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: "resubmit",
+  },
+  DISPOSITION_REQUIRED: {
+    stage: "policy",
+    category: "stop",
+    retryable: false,
+    next_action: "request_review",
+  },
+  APPROVAL_REQUIRED: {
+    stage: "policy",
+    category: "stop",
+    retryable: false,
+    next_action: "request_review",
+  },
+  APPROVAL_NOT_APPROVED: {
+    stage: "policy",
+    category: "stop",
+    retryable: false,
+    next_action: "request_review",
+  },
+  APPROVAL_CONSUMED: {
+    stage: "execution",
+    category: "stop",
+    retryable: false,
+    next_action: "reconcile",
+  },
+  APPROVAL_BINDING_STALE: {
+    stage: "policy",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  APPROVAL_STATE_CONFLICT: {
+    stage: "execution",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  DELIVERY_STATE_CONFLICT: {
+    stage: "delivery",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  DELIVERY_OUTCOME_UNKNOWN: {
+    stage: "delivery",
+    category: "unknown",
+    retryable: false,
+    next_action: "reconcile",
+  },
 };
 
 const UNKNOWN_SEMANTICS: ErrorSemantics = {
@@ -356,6 +487,11 @@ export function apiErrorFromControlPlane(error: ControlPlaneError): ApiError {
   }
   if (error instanceof ValidationError) {
     return new ApiError(400, "INVALID_REQUEST", error.message);
+  }
+  if (error instanceof RequestScopeError) {
+    // Scope failures carry their own 401/403 semantics and stable codes;
+    // flattening them into a generic FORBIDDEN would lose the 401 cases.
+    return new ApiError(error.status, error.code, error.message);
   }
   return new ApiError(403, "FORBIDDEN", error.message);
 }

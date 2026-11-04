@@ -1,6 +1,6 @@
 # forgepilot-api/v1
 
-**Status:** normative public API contract (v0.7)
+**Status:** normative public API contract (v0.8)
 
 This is the Node-to-UI API: the Node-to-Electron/React workbench surface (M0)
 and the enterprise identity surface (ADR-0006). The UI only calls Node — at an
@@ -120,7 +120,7 @@ Endpoints (details in the OpenAPI document):
 
 ```json
 {
-  "id":"tsk_01J...","version":12,"created_at":"2026-10-26T12:00:00Z","updated_at":"2026-10-26T12:03:00Z",
+  "id":"tsk_01J...","workspace_id":"wsp_01J...","version":12,"created_at":"2026-10-26T12:00:00Z","updated_at":"2026-10-26T12:03:00Z",
   "current_run_id":"run_01J...","run_history_url":"/api/v1/tasks/tsk_01J.../runs",
   "repository":{"id":"github:acme/payments","display_name":"acme/payments","base_ref":"main","base_sha":"ab12cd..."},
   "request":{"summary":"Fix export exception.","source_reference":"https://github.com/acme/payments/issues/1234"},
@@ -134,6 +134,16 @@ Endpoints (details in the OpenAPI document):
   "artifacts":{"patch":null,"report":null,"evidence_bundle_available":false,"index":[{"artifact_id":"patch_report","available":true,"digest":"sha256:…","head_sha":"9ef012..."}]}
 }
 ```
+
+`run_history_url` is relative to the route family that served the task:
+`/api/v1/tasks/{task_id}/runs` on the legacy compatibility family and
+`/api/v1/workspaces/{workspace_id}/tasks/{task_id}/runs` on the
+workspace-scoped family, so following it can never cross workspaces.
+
+`workspace_id` is the task's durable workspace ownership. It is always equal
+to the workspace in a workspace-scoped path, is never a request input, and can
+never be changed: a task read through another workspace's route family is
+`404 TASK_NOT_FOUND`.
 
 `association` and `revision` are the verifiable task/run/repository/base-SHA/
 head-SHA bindings. `run_id` and `head_sha` are projected from the
@@ -206,6 +216,18 @@ run summaries for that task; terminal grants are never reused.
 | `GET /api/v1/tasks/{task_id}/timeline` | none | `200 {items: TimelineEvent[]}` |
 | `GET /api/v1/tasks/{task_id}/artifacts/{artifact_id}` | none | `200 redacted artifact` |
 | `GET /api/v1/tasks/{task_id}/stream` | `Last-Event-ID` optional | `200 text/event-stream` |
+| `POST /api/v1/workspaces/{workspace_id}/tasks` | `repository_id`, `base_ref`, `summary`, `source_reference`, `acceptance_criteria[]`; optional `Idempotency-Key` header (workspace-scoped namespace) | `201 Task` bound to the workspace's repository and gateway identity |
+| `GET /api/v1/workspaces/{workspace_id}/tasks?cursor=&status=` | none | `200 {items: Task[], next_cursor}` confined to that workspace |
+| `GET /api/v1/workspaces/{workspace_id}/tasks/{task_id}` | none | `200 Task` |
+| `GET /api/v1/workspaces/{workspace_id}/tasks/{task_id}/runs` | none | `200 {items: redacted RunSummary[]}` |
+| `POST /api/v1/workspaces/{workspace_id}/tasks/{task_id}/messages` | `{mode:"steer"\|"follow_up",content:"..."}` | `202 {task_id, queued:true}` |
+| `POST /api/v1/workspaces/{workspace_id}/tasks/{task_id}/approvals` | `{decision:"approve"\|"reject",scope_digest:"sha256:..."}` | `200 Task` |
+| `POST /api/v1/workspaces/{workspace_id}/tasks/{task_id}/cancel` | optional reason | `202 Task` |
+| `POST /api/v1/workspaces/{workspace_id}/tasks/{task_id}/archive` | none | `200 Task` with `archived: true` |
+| `POST /api/v1/workspaces/{workspace_id}/tasks/{task_id}/recover` | none | `200 Task` with `archived: false` |
+| `GET /api/v1/workspaces/{workspace_id}/tasks/{task_id}/timeline` | none | `200 {items: TimelineEvent[]}` |
+| `GET /api/v1/workspaces/{workspace_id}/tasks/{task_id}/artifacts/{artifact_id}` | none | `200 redacted artifact` |
+| `GET /api/v1/workspaces/{workspace_id}/tasks/{task_id}/stream` | `Last-Event-ID` optional | `200 text/event-stream` |
 | `GET /api/v1/workspaces?cursor=` | none | `200 {items: Workspace[], next_cursor}` |
 | `POST /api/v1/workspaces` | `{name, repository_id, provider_instance_id}` | `201 Workspace` |
 | `GET /api/v1/workspaces/{workspace_id}` | none | `200 Workspace` |
@@ -228,6 +250,62 @@ run summaries for that task; terminal grants are never reused.
 | `DELETE /api/v1/workspaces/{workspace_id}/invitations/{invitation_id}` | none | `204` |
 | `POST /api/v1/invitations/preview` | `{token}` | `200 InvitationPreview` |
 | `POST /api/v1/invitations/redeem` | `{token}` | `200 InvitationRedemption` |
+
+### Workspace-scoped task access (DAT-244)
+
+`/api/v1/workspaces/{workspace_id}/tasks...` is the switching-capable task
+surface. `{workspace_id}` is a **locator, not authorization**: on every
+request the server resolves the caller's live membership for that workspace
+from authenticated session state. Non-membership, revoked membership,
+cross-enterprise, and unknown workspace are all one indistinguishable
+`404 NOT_FOUND`; the response never says which condition applied. A session
+with several memberships selects a workspace by the path only, and
+`Task.workspace_id` always equals that path value. `viewer` is read-only
+(`403 FORBIDDEN` for writes, reads allowed).
+
+Task ownership is durable and checked on every subresource: a task id from
+another workspace is `404 TASK_NOT_FOUND` for list cursors, detail, runs,
+messages, approvals, cancel, archive, recover, timeline, artifacts, and the
+SSE stream. SSE subscriptions are bound to both the session and this
+workspace, so logout, suspension, or losing this workspace's membership
+closes the stream immediately; losing membership elsewhere does not.
+
+`GET /api/v1/workspaces` returns exactly the workspaces the caller holds a
+live membership in — name, repository binding, and the caller's role — as
+`{items, next_cursor}` ordered by workspace creation time. Substituting or
+enumerating ids cannot widen it.
+
+The pre-existing `/api/v1/tasks...` family remains a **local-operator
+compatibility seam**: it is bound to the deployment's configured workspace
+for both the operator bearer and sessions, and a session still needs
+membership in that configured workspace. It is not an enterprise switcher
+path, and no client-supplied workspace id, header, or body field ever becomes
+an authorization input.
+
+### Creating a task in a workspace
+
+`POST /api/v1/workspaces/{workspace_id}/tasks` creates the task and its dsh
+run inside the path workspace. The workspace's binding is authority for the
+run's repository, base revision, and model-gateway enterprise/workspace
+identity; the deployment's configured repository is never a fallback.
+
+- `repository_id` must equal the workspace's repository binding; otherwise
+  `400 REPOSITORY_NOT_IN_WORKSPACE`.
+- `base_ref` must equal that binding's pinned base revision; otherwise
+  `400 BASE_REF_NOT_SUPPORTED`.
+- No live membership, unknown, archived, and cross-enterprise workspaces are
+  one indistinguishable `404 NOT_FOUND`; a viewer is `403 FORBIDDEN`.
+- A workspace whose repository has no pinned base revision in this deployment
+  is `409 REPOSITORY_BINDING_UNAVAILABLE`; a provider instance that is no
+  longer registered is `409 PROVIDER_INSTANCE_NOT_APPROVED`. Both refuse with
+  zero dsh dispatch.
+- `Idempotency-Key` is namespaced per workspace: the same key in two
+  workspaces names two independent creates; within one workspace, a repeated
+  key with a different payload is `409 IDEMPOTENCY_CONFLICT`.
+
+```json
+{"repository_id":"github:acme/payments","base_ref":"main","summary":"Fix the flaky retry","acceptance_criteria":["retry test is green"]}
+```
 
 Archive and recover apply only to cancelled tasks and return `409` for other
 statuses. These operations move the existing task between workspace views;
@@ -672,6 +750,103 @@ are rate-limited by actor and request origin
 (`RATE_LIMITED`, `retry_after_seconds` set). Audits record creation,
 revocation, attempted redemption, results, and effective roles — never the
 bearer token.
+
+## Collaboration v1 (DAT-221)
+
+Status: implementation contract defined ahead of its serving code. It defines
+the durable issue/task/run/candidate/approval/delivery resources and their
+event stream of ADR-0007 so dependent web work is built against a merged
+contract; it claims no running control until the implementation lands, and dsh
+remains the execution gate.
+
+Product stages and harness run states are separate vocabularies. An issue's
+`product_state` is the product lifecycle (`triage`, `planning`, `implementing`,
+`validating`, `awaiting_change_approval`, `delivering`, `pr_review`,
+`completed`, `needs_human`, `cancelled`); a run's `state` is the observed dsh /
+FP-01 harness state. `awaiting_change_approval` means an immutable candidate
+awaits a candidate-bound human change approval and no PR exists; harness
+`awaiting_review` exists only once a provider PR exists. A published PR is not
+completion — only a provider-confirmed merge is.
+
+Mutating operations accept an optional `Idempotency-Key` header: a repeated
+request with the same key and payload returns the recorded result, the same key
+with a different payload is `409 IDEMPOTENCY_CONFLICT`, and safe retries reuse
+the key. A candidate/approval/delivery record is never client-authored and
+never client-mutated; an approval decision carries the reviewed `diff_digest`
+and the approver is the authenticated caller, so an agent can never approve its
+own work. No branch push or PR exists before a current candidate-bound human
+approval, and only the trusted delivery broker performs provider writes — no
+direct main write, merge, self-review, or check waiver.
+
+| Request | Request body | Response |
+|---|---|---|
+| `GET /api/v1/workspaces/{workspace_id}/issues?cursor=&product_state=` | none | `200 {items: Issue[], next_cursor}` |
+| `POST /api/v1/workspaces/{workspace_id}/issues` | `repository_id`, `base_ref`, `summary`, `source_reference?`; optional `Idempotency-Key` | `201 Issue` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}` | none | `200 Issue` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stage` | none | `200 IssueStage` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stage` | `{to, reason?, disposition?}` | `200 IssueStage` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks?cursor=` | none | `200 {items: IssueTask[], next_cursor}` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks` | `{role, assignee_agent_id?, depends_on?}` | `201 IssueTask` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks/{task_id}` | none | `200 IssueTask` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks/{task_id}/state` | `{to}` | `200 IssueTask` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/runs?cursor=` | none | `200 {items: IssueRun[], next_cursor}` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/runs` | `{task_id?, role, scope, limits}` | `201 IssueRun` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/runs/{run_id}` | none | `200 IssueRun` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/candidates?cursor=` | none | `200 {items: Candidate[], next_cursor}` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/candidates/{candidate_id}` | none | `200 Candidate` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals?cursor=` | none | `200 {items: Approval[], next_cursor}` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}` | none | `200 Approval` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}/decision` | `{decision, diff_digest, note?}` | `200 Approval` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries?cursor=` | none | `200 {items: Delivery[], next_cursor}` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries` | `{approval_id}` | `202 Delivery` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}` | none | `200 Delivery` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}/reconcile` | optional `note` | `202 Delivery` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stream` | `Last-Event-ID` optional | `200 text/event-stream` |
+
+### Issue events and replay
+
+Issue events contain `event_id`, `sequence`, `occurred_at`, `issue_id`, `type`,
+and projected `data`. Types are `issue.created`, `issue.stage_changed`,
+`issue.terminal`, `task.created`, `task.state_changed`, `run.opened`,
+`run.state_changed`, `run.grant_recorded`, `run.grant_revoked`,
+`run.artifact_attached`, `candidate.frozen`, `approval.requested`,
+`approval.decided`, `approval.invalidated`, `delivery.requested`,
+`delivery.state_changed`, `delivery.reconciled`, and `operation.denied`.
+
+`event_id` is stable and idempotent across replays: a replayed or redelivered
+event keeps the same id and payload, a new event never reuses an id, and a
+consumer MUST deduplicate on `event_id`. `sequence` is monotonic and gap-free
+per issue and is the ordering cursor. On reconnect the client sends the last
+delivered `event_id` in `Last-Event-ID`; Node replays every later event in
+`sequence` order from the durable projection — including events written while
+disconnected and across orchestrator restarts — so no business event is
+duplicated or lost. An unknown id replays from the start of the retained log.
+The stream closes after `issue.terminal`, including when the anchor is already
+terminal.
+
+### Outcome semantics
+
+Every failure uses the shared versioned envelope
+(`docs/contracts/error-envelope-v1.md`). The collaboration surface fixes three
+outcome classes and their retryability:
+
+- `stop` — a `stopped` run or a `needs_human` issue stop. Not retryable with
+  the same intent; continuation requires human disposition and a fresh
+  run/grant (`stopped -> running` does not exist). `DISPOSITION_REQUIRED`
+  (428) is the needs-human stop (`stage: policy`, `next_action:
+  request_review`); `TRANSITION_FORBIDDEN`, `PRODUCT_HARNESS_CONFLICT`,
+  `TASK_BLOCKED`, and `APPROVAL_NOT_APPROVED` are ordinary stops.
+- `unknown` — an ambiguous provider/delivery outcome
+  (`DELIVERY_OUTCOME_UNKNOWN`): never auto-retried, `retryable: false`,
+  `next_action: reconcile`; reconcile against branch/provider evidence before
+  any further write, and a safe retry reconciles the same operation instead of
+  creating a duplicate PR.
+- `retry` — only service-decided bounded retries are retryable, with
+  `retryable: true` and `retry_after_seconds` on the envelope; a denial is
+  never rewritten as a retryable server error.
+
+`partial` delivery (a pushed branch without a PR) is an explicit recorded
+outcome, never success and never automatically deleted.
 
 ## Pagination
 

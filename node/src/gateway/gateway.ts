@@ -15,6 +15,12 @@ import type {
 import type { ProviderAdapter } from "./adapter.js";
 import { buildAdapterOptions } from "./adapter.js";
 import type { GatewayCredentialStore } from "./credentials.js";
+import { UsageLedgerWriteError } from "../ledger/errors.js";
+import type {
+  LedgerFinishStatus,
+  UsageLedgerSink,
+  UsageReportObservation,
+} from "../ledger/index.js";
 import { matchEndpoint, matchFallback } from "./policy.js";
 import type { GatewayPolicyResolver } from "./policy.js";
 import { scrubSecrets } from "./redact.js";
@@ -30,6 +36,7 @@ import type {
   GatewayAttemptDestination,
   GatewayAttemptEvent,
   GatewayBindingIdentity,
+  GatewayCaseIntake,
   GatewayEventSink,
   GatewayFallback,
   GatewayRequestIdentity,
@@ -39,9 +46,11 @@ import {
   ModelDispatchError,
   ModelEgressDeniedError,
   MODEL_EGRESS_DENIED,
+  PROVIDER_USAGE_DIAGNOSTIC,
+  SECURITY_REVIEW_REQUIRED,
   SENSITIVE_DATA_UNCERTAIN,
 } from "./types.js";
-import type { GatewayDenyReason } from "./types.js";
+import type { DependentWorkHold, GatewayDenyReason } from "./types.js";
 
 /**
  * Scan-gate denials about uncertain secret handling surface under the stable
@@ -72,6 +81,28 @@ export interface ModelGatewayDeps {
    * sent.
    */
   sink?: GatewayEventSink;
+  /**
+   * Disposal-case intake for secret-gate blocks (DAT-210): opening or
+   * associating the scoped human-handling case after the block. Required —
+   * the production gateway always configures it; an untyped caller that
+   * omits it still gets the full block and an explicit incident, never a
+   * silent skip of human handling.
+   */
+  caseIntake: GatewayCaseIntake;
+  /**
+   * Dependent-work hold consulted at the admission boundary (DAT-210):
+   * a held run's later invocations are rejected before any check or dispatch.
+   * Required like `caseIntake`; without hold state the gateway cannot admit
+   * work and fails closed.
+   */
+  dependentWorkHold: DependentWorkHold;
+  /**
+   * Invocation usage ledger (DAT-227). One usage record per actual dispatch
+   * attempt — successes, failures, retries and fallbacks — is written through
+   * this seam; attempts denied before dispatch record no usage. Unset leaves
+   * attempts unmetered, so a deployment that keeps cost accounting wires it.
+   */
+  usageLedger?: UsageLedgerSink;
   now?: () => Date;
   newInvocationId?: () => string;
   /** Operational-incident channel for post-outcome audit failures. */
@@ -87,9 +118,29 @@ interface DestinationSlot {
 
 type TerminalOutcome = { outcome: "dispatched" | "failed"; detail?: string };
 
+/**
+ * How one attempt closed, for both its audit outcome and its usage ledger
+ * record. `terminal` is the transport's terminal message — the only place a
+ * provider-reported usage, request id, or returned model can come from.
+ * Paths that never saw a provider message (a dispatch failure, a synthetic
+ * mid-stream error) pass none: the ledger records their usage as unknown
+ * rather than trusting a zero-filled stand-in.
+ */
+type AttemptClose = {
+  outcome: TerminalOutcome;
+  finish: LedgerFinishStatus;
+  terminal?: AssistantMessage;
+};
+
 type AttemptResult =
   | { status: "handed_off"; stream: AssistantMessageEventStream }
-  | { status: "failed"; detail: string; retryable: boolean };
+  | {
+      status: "failed";
+      detail: string;
+      retryable: boolean;
+      finish: LedgerFinishStatus;
+      terminal?: AssistantMessage;
+    };
 
 const CONTENT_EVENTS = new Set<AssistantMessageEvent["type"]>([
   "text_start",
@@ -122,7 +173,51 @@ function outcomeFromTerminal(event: AssistantMessageEvent): TerminalOutcome {
   return { outcome: "dispatched" };
 }
 
-/** Terminal error message for a mid-stream transport failure after handoff. */
+/** The terminal message a provider-reported usage can only ride on. */
+function messageOf(event: AssistantMessageEvent): AssistantMessage | undefined {
+  if (event.type === "done") {
+    return event.message;
+  }
+  if (event.type === "error") {
+    return event.error;
+  }
+  return undefined;
+}
+
+/** Ledger finish status derived from the provider terminal event. */
+function finishFromEvent(event: AssistantMessageEvent): LedgerFinishStatus {
+  if (event.type === "done") {
+    return event.reason === "toolUse" ? "tool_use" : event.reason;
+  }
+  if (event.type === "error") {
+    return event.reason;
+  }
+  return "unknown";
+}
+
+/**
+ * The usage evidence for one attempt's ledger record. A transport that sees
+ * the provider's own usage payload attaches it to the terminal message under
+ * {@link PROVIDER_USAGE_DIAGNOSTIC} and it is passed through as `provider_wire`
+ * evidence; otherwise the transport's own usage report is passed through.
+ * Either way the ledger preserves the payload verbatim for reconciliation.
+ */
+function usageReportOf(terminal: AssistantMessage): UsageReportObservation {
+  const wire = (terminal.diagnostics ?? []).find(
+    (diagnostic) => diagnostic.type === PROVIDER_USAGE_DIAGNOSTIC && diagnostic.details,
+  );
+  if (wire?.details) {
+    return { source: "provider_wire", payload: wire.details };
+  }
+  return { source: "transport_reported", payload: terminal.usage };
+}
+
+/**
+ * Terminal error message for a mid-stream transport failure after handoff.
+ * The zero-filled usage below is the pi-ai message-shape placeholder only —
+ * the provider never reported usage for this attempt, and the usage ledger
+ * records it as unknown rather than reading these zeros (DAT-227).
+ */
 function syntheticErrorMessage(model: Model<Api>, detail: string): AssistantMessage {
   return {
     role: "assistant",
@@ -177,6 +272,38 @@ export class ModelGateway {
     options: SimpleStreamOptions | undefined,
     binding: GatewayBindingIdentity,
   ): Promise<AssistantMessageEventStream> {
+    // Work-admission boundary (DAT-210): a run whose dependent work is held
+    // pending security case disposition never re-enters the gateway. The hold
+    // is scoped to the affected run alone; unrelated runs proceed untouched.
+    const holdState = this.deps.dependentWorkHold;
+    if (!holdState) {
+      // Defensive (typed construction always provides hold state): without it
+      // the gateway cannot establish that the run is unheld, so it fails
+      // closed rather than admitting unproven work.
+      this.incident("dependent-work hold state is not configured; refusing to admit run work");
+      throw this.deny(
+        this.mintIdentity(binding),
+        1,
+        "DEPENDENT_WORK_HELD",
+        "dependent-work hold state is unavailable; failing closed",
+        undefined,
+        undefined,
+        SECURITY_REVIEW_REQUIRED,
+      );
+    }
+    const hold = holdState.heldCaseFor(binding.runId);
+    if (hold) {
+      throw this.deny(
+        this.mintIdentity(binding),
+        1,
+        "DEPENDENT_WORK_HELD",
+        "the run's dependent work is held pending security case disposition",
+        undefined,
+        undefined,
+        SECURITY_REVIEW_REQUIRED,
+        hold,
+      );
+    }
     const scope = { enterpriseId: binding.enterpriseId, workspaceId: binding.workspaceId };
     const schedulePolicy = await this.deps.policyResolver.resolve(scope);
     if (!schedulePolicy) {
@@ -344,6 +471,11 @@ export class ModelGateway {
       ...(this.deps.scanTimeoutMs !== undefined ? { scanTimeoutMs: this.deps.scanTimeoutMs } : {}),
     });
     if (!gate.ok) {
+      // Every scan-gate denial blocks on uncertain sensitive content (or the
+      // inability to establish its absence) and needs human handling: open or
+      // idempotently associate the disposal case (DAT-210). The denial stands
+      // no matter what the intake does with it.
+      const caseRef = await this.openDisposalCase(identity, gate);
       return this.deny(
         identity,
         attempt,
@@ -352,6 +484,7 @@ export class ModelGateway {
         { policyRevision: policy.revision, destination },
         gate.evidence,
         scanDenyErrorCode(gate.reason),
+        caseRef,
       );
     }
     // Destination data-class authorization: a destination is enabled together
@@ -423,8 +556,13 @@ export class ModelGateway {
     context: Context;
   }): Promise<AttemptResult> {
     const { identity, attempt, endpoint, modelId, policyRevision, credential } = prepared;
-    const record = (outcome: TerminalOutcome): Promise<void> =>
-      this.recordOutcome(identity, attempt, policyRevision, endpoint, modelId, outcome);
+    const startedAt = this.timestamp();
+    // Closing an attempt means its audit outcome AND its usage record are
+    // written; record() settles only when both have.
+    const record = async (close: AttemptClose): Promise<void> => {
+      await this.recordOutcome(identity, attempt, policyRevision, endpoint, modelId, close.outcome);
+      await this.recordUsage(prepared, startedAt, close);
+    };
     try {
       const inner = await this.deps.adapter.stream(
         prepared.pinnedModel,
@@ -433,22 +571,48 @@ export class ModelGateway {
       );
       const head = await this.consumeHead(inner, prepared.pinnedModel, record);
       if (head.status === "failed") {
+        // The transport already gave this attempt its verdict: a ledger write
+        // failure must not rewrite its retryability (it surfaces as an
+        // incident), so the failure close is best-effort here.
         await record({
-          outcome: "failed",
-          detail: scrubSecrets(head.detail, [credential]),
-        });
+          outcome: { outcome: "failed", detail: scrubSecrets(head.detail, [credential]) },
+          finish: head.finish,
+          ...(head.terminal ? { terminal: head.terminal } : {}),
+        }).catch(() => undefined);
         return head;
       }
       return head;
     } catch (error) {
+      if (error instanceof UsageLedgerWriteError) {
+        // The attempt ran and its outcome is audited, but its usage record
+        // could not be persisted: fail closed instead of reporting a success
+        // whose metering is missing — and never re-dispatch over an
+        // accounting failure.
+        return {
+          status: "failed",
+          detail: "usage ledger write failed",
+          retryable: false,
+          finish: "unknown",
+        };
+      }
       const detail = error instanceof Error ? error.message : String(error);
       let retryable = isNetworkFailure(error);
       if (typeof error === "object" && error !== null && "retryable" in error) {
         const flagged = error.retryable;
         if (typeof flagged === "boolean") retryable = flagged;
       }
-      await record({ outcome: "failed", detail: scrubSecrets(detail, [credential]) });
-      return { status: "failed", detail: scrubSecrets(detail, [credential]), retryable };
+      // The transport failed before any provider message existed: no usage
+      // was reported, so the ledger records this attempt as unknown usage.
+      await record({
+        outcome: { outcome: "failed", detail: scrubSecrets(detail, [credential]) },
+        finish: "transport_failed",
+      }).catch(() => undefined);
+      return {
+        status: "failed",
+        detail: scrubSecrets(detail, [credential]),
+        retryable,
+        finish: "transport_failed",
+      };
     }
   }
 
@@ -463,7 +627,7 @@ export class ModelGateway {
   private async consumeHead(
     inner: AssistantMessageEventStream,
     model: Model<Api>,
-    record: (outcome: TerminalOutcome) => Promise<void>,
+    record: (close: AttemptClose) => Promise<void>,
   ): Promise<AttemptResult> {
     const out = createAssistantMessageEventStream();
     const iterator = inner[Symbol.asyncIterator]();
@@ -472,7 +636,9 @@ export class ModelGateway {
       const next = await iterator.next();
       if (next.done) {
         for (const event of buffered) out.push(event);
-        await record({ outcome: "dispatched" });
+        // The stream ended without a terminal event: there is no provider
+        // finish status and no usage to read, only the honest unknown.
+        await record({ outcome: { outcome: "dispatched" }, finish: "unknown" });
         out.end();
         return { status: "handed_off", stream: out };
       }
@@ -483,10 +649,16 @@ export class ModelGateway {
             status: "failed",
             detail: event.error.errorMessage ?? "provider stream failed",
             retryable: !NON_RETRYABLE_MARKERS.test(event.error.errorMessage ?? ""),
+            finish: finishFromEvent(event),
+            terminal: event.error,
           };
         }
         for (const bufferedEvent of buffered) out.push(bufferedEvent);
-        await record(outcomeFromTerminal(event));
+        await record({
+          outcome: outcomeFromTerminal(event),
+          finish: finishFromEvent(event),
+          ...(messageOf(event) ? { terminal: messageOf(event) } : {}),
+        });
         out.push(event);
         out.end();
         return { status: "handed_off", stream: out };
@@ -514,19 +686,29 @@ export class ModelGateway {
     iterator: AsyncIterator<AssistantMessageEvent>,
     out: AssistantMessageEventStream,
     model: Model<Api>,
-    record: (outcome: TerminalOutcome) => Promise<void>,
+    record: (close: AttemptClose) => Promise<void>,
   ): void {
     void (async () => {
+      // Post-handoff the content is already with the caller and cannot be
+      // retracted: a ledger write failure (already raised as an incident by
+      // recordUsage) never corrupts the delivered stream, so the closes here
+      // are best-effort.
+      const close = (attemptClose: AttemptClose): Promise<void> =>
+        record(attemptClose).catch(() => undefined);
       try {
         for (;;) {
           const next = await iterator.next();
           if (next.done) {
-            await record({ outcome: "dispatched" });
+            await close({ outcome: { outcome: "dispatched" }, finish: "unknown" });
             out.end();
             return;
           }
           if (isTerminalEvent(next.value)) {
-            await record(outcomeFromTerminal(next.value));
+            await close({
+              outcome: outcomeFromTerminal(next.value),
+              finish: finishFromEvent(next.value),
+              ...(messageOf(next.value) ? { terminal: messageOf(next.value) } : {}),
+            });
             out.push(next.value);
             out.end();
             return;
@@ -535,7 +717,10 @@ export class ModelGateway {
         }
       } catch (error) {
         const detail = scrubSecrets(error instanceof Error ? error.message : String(error));
-        await record({ outcome: "failed", detail });
+        // A mid-stream transport failure never produced a provider terminal
+        // message: record the attempt without usage instead of trusting the
+        // synthetic zero-filled stand-in below.
+        await close({ outcome: { outcome: "failed", detail }, finish: "transport_failed" });
         out.push({ type: "error", reason: "error", error: syntheticErrorMessage(model, detail) });
         out.end();
       }
@@ -568,11 +753,110 @@ export class ModelGateway {
     }
   }
 
+  /**
+   * Write this attempt's invocation usage record and wait for it to settle.
+   * The ledger is financial evidence: identity, timing, finish status and the
+   * usage the provider reported — preserved verbatim for reconciliation, with
+   * missing usage recorded as unknown, never as zeros.
+   *
+   * The write is awaited: a failure raises the operational incident and
+   * rejects with `UsageLedgerWriteError`, so no caller treats an unrecorded
+   * attempt as recorded. It never replays or drops the attempt's audit
+   * outcome, and it is never retried in a way that re-dispatches the model.
+   */
+  private async recordUsage(
+    prepared: {
+      identity: GatewayRequestIdentity;
+      attempt: number;
+      endpoint: ApprovedEndpoint;
+      modelId: string;
+    },
+    startedAt: string,
+    close: AttemptClose,
+  ): Promise<void> {
+    const sink = this.deps.usageLedger;
+    if (!sink) {
+      return;
+    }
+    const { identity, attempt, endpoint, modelId } = prepared;
+    const terminal = close.terminal;
+    try {
+      await sink.recordAttempt({
+        identity: {
+          enterprise_id: identity.enterpriseId,
+          workspace_id: identity.workspaceId,
+          issue_id: identity.issueId,
+          run_id: identity.runId,
+          invocation_id: identity.invocationId,
+          trace_id: identity.traceId,
+        },
+        attempt,
+        destination: {
+          endpoint_id: endpoint.endpointId,
+          provider: endpoint.provider,
+          model_id: modelId,
+          internal: endpoint.internal,
+        },
+        api: endpoint.api,
+        started_at: startedAt,
+        ended_at: this.timestamp(),
+        finish_status: close.finish,
+        provider_request_id: terminal?.responseId ?? null,
+        returned_model: terminal?.responseModel ?? null,
+        usage_report: terminal ? usageReportOf(terminal) : null,
+      });
+    } catch (error) {
+      const incident = error instanceof Error ? error.message : String(error);
+      this.incident(`gateway usage ledger write failed: ${scrubSecrets(incident)}`);
+      throw new UsageLedgerWriteError(`usage ledger write failed: ${scrubSecrets(incident)}`);
+    }
+  }
+
   private mintIdentity(binding: GatewayBindingIdentity): GatewayRequestIdentity {
     return {
       ...binding,
       invocationId: this.deps.newInvocationId ? this.deps.newInvocationId() : randomUUID(),
     };
+  }
+
+  /**
+   * Open the scoped disposal case for one secret-gate block (DAT-210). The
+   * raw blocked request goes to the intake for encrypted quarantine; the
+   * returned case reference is audience-bound to the blocked run. Intake
+   * failures raise an incident and return nothing — they never unblock.
+   */
+  private async openDisposalCase(
+    identity: GatewayRequestIdentity,
+    gate: { reason: GatewayDenyReason; detail: string; context?: Context },
+  ): Promise<{ caseId: string; caseReference: string } | undefined> {
+    const intake = this.deps.caseIntake;
+    if (!intake) {
+      // Typed construction always configures the intake; an untyped caller
+      // that omits it still gets the full block — plus a loud incident, never
+      // a silent skip of human handling (DAT-210).
+      this.incident("security case intake is not configured; the block stands without a case");
+      return undefined;
+    }
+    let rawContent: string | undefined;
+    if (gate.context !== undefined) {
+      try {
+        rawContent = JSON.stringify(gate.context);
+      } catch {
+        rawContent = undefined;
+      }
+    }
+    try {
+      return await intake.recordGatewayBlock({
+        identity,
+        reason: gate.reason,
+        safeDetail: gate.detail,
+        ...(rawContent !== undefined ? { rawContent } : {}),
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.incident(`security case intake failed after block: ${scrubSecrets(detail)}`);
+      return undefined;
+    }
   }
 
   private deny(
@@ -583,6 +867,7 @@ export class ModelGateway {
     resolved?: { policyRevision: string; destination?: GatewayAttemptDestination },
     scan?: RequestScanEvidence,
     code: string = MODEL_EGRESS_DENIED,
+    caseRef?: { caseId: string; caseReference: string },
   ): ModelEgressDeniedError {
     const event: GatewayAttemptEvent = {
       phase: "outcome",
@@ -603,6 +888,7 @@ export class ModelGateway {
       reason,
       `model egress denied (${reason}): ${scrubSecrets(detail)}`,
       code,
+      caseRef,
     );
   }
 

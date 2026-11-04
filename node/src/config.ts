@@ -57,6 +57,38 @@ export interface OrchestratorConfig {
   gatewayCredentialsFile?: string;
   /** Durable gateway audit/metering event sink (JSONL, 0600). */
   gatewayAuditFile?: string;
+  // --- Security disposal cases (DAT-210, ADR-0005) ------------------------
+  /**
+   * Durable state files for the security disposal machinery: append-only
+   * case history, the dependent-work hold ledger, and the encrypted
+   * quarantine index. Defaults keep holds and cases alive across restarts.
+   */
+  securityCaseStateFile?: string;
+  securityPauseStateFile?: string;
+  securityQuarantineStateFile?: string;
+  /**
+   * Protected file holding a base64 32-byte quarantine key. Unset (or an
+   * unreadable/invalid key) fails seals closed: nothing is ever stored in
+   * plaintext, and every seal raises an explicit incident.
+   */
+  quarantineKeyFile?: string;
+  /** Designated workspace security handlers and enterprise security admins. */
+  securityHandlerIds?: string[];
+  securityAdminIds?: string[];
+  /** Durable notification record sink (JSONL, 0600; non-secret content). */
+  securityNotificationsFile?: string;
+  /**
+   * Secret for minting authenticated, non-transferable case references.
+   * Unset uses a per-process secret (references then only verify within the
+   * process that minted them); a deployment sets it for cross-restart use.
+   */
+  securityReferenceSecret?: string;
+  /**
+   * Durable invocation usage ledger (JSON, 0600) — one reconcilable usage
+   * record per gateway invocation attempt (DAT-227). Separate from the audit
+   * stream: financial records are queried and retained on their own terms.
+   */
+  usageLedgerFile?: string;
   // --- Enterprise identity (ADR-0006) -------------------------------------
   /**
    * External origin for OAuth redirect URLs and desktop login links. Unset
@@ -71,6 +103,21 @@ export interface OrchestratorConfig {
   oauthClientsFile?: string;
   /** Durable control-plane database for identity/session state. */
   controlPlaneFile?: string;
+  /**
+   * Deployment-owned HMAC key file for the invitation token digest. Durable
+   * across restarts (invitations outlive processes); unset derives one next to
+   * the control-plane database. Losing the key fails closed — outstanding
+   * invitations become unredeemable.
+   */
+  invitationDigestKeyFile?: string;
+  /**
+   * Protected JSON file mapping service credential references to secrets
+   * (DAT-247 boundary). Invitation redemption point-refreshes the invitee's
+   * repository authority with the repository-scoped service credential; when
+   * unset the credential store is empty and every redemption fails closed
+   * (403) rather than falling back to any user credential.
+   */
+  providerServiceCredentialFile?: string;
   /** Deployment-owned bootstrap secret; unset disables admin bootstrap. */
   bootstrapToken?: string;
   /** Session lifetime in seconds (default 12 hours). */
@@ -125,6 +172,17 @@ function defaultGatewayAuditPath(): string {
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "gateway-audit.jsonl");
 }
 
+/** Default state-file path under the per-user forgepilot directory. */
+export function defaultSecurityStatePath(name: string): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, name);
+}
+
+function defaultUsageLedgerPath(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "usage-ledger.json");
+}
+
 function defaultControlPlanePath(): string {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "control-plane.sqlite");
@@ -173,7 +231,36 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     enterpriseId: env["FORGEPILOT_ENTERPRISE_ID"] ?? "ent_forgepilot_local",
     workspaceId: env["FORGEPILOT_WORKSPACE_ID"] ?? "ws_autofixer",
     gatewayAuditFile: env["FORGEPILOT_GATEWAY_AUDIT_FILE"] ?? defaultGatewayAuditPath(),
+    securityCaseStateFile:
+      env["FORGEPILOT_SECURITY_CASE_STATE_FILE"] ?? defaultSecurityStatePath("security-cases.json"),
+    securityPauseStateFile:
+      env["FORGEPILOT_SECURITY_PAUSE_STATE_FILE"] ??
+      defaultSecurityStatePath("security-pauses.json"),
+    securityQuarantineStateFile:
+      env["FORGEPILOT_SECURITY_QUARANTINE_STATE_FILE"] ??
+      defaultSecurityStatePath("security-quarantine.json"),
+    securityNotificationsFile:
+      env["FORGEPILOT_SECURITY_NOTIFICATIONS_FILE"] ??
+      defaultSecurityStatePath("security-notifications.jsonl"),
+    securityHandlerIds: csv(env["FORGEPILOT_SECURITY_HANDLER_IDS"], []),
+    securityAdminIds: csv(env["FORGEPILOT_SECURITY_ADMIN_IDS"], []),
+    usageLedgerFile: env["FORGEPILOT_USAGE_LEDGER_FILE"] ?? defaultUsageLedgerPath(),
   };
+  // Security disposal options (DAT-210). Absent values keep fail-closed
+  // defaults: no quarantine key means nothing is ever retained in plaintext,
+  // and no designated handlers escalates every notification to an explicit
+  // undeliverable incident.
+  const quarantineKeyFile = env["FORGEPILOT_QUARANTINE_KEY_FILE"]?.trim();
+  if (quarantineKeyFile) {
+    config.quarantineKeyFile = quarantineKeyFile;
+  }
+  const securityReferenceSecret = env["FORGEPILOT_SECURITY_REFERENCE_SECRET"];
+  if (securityReferenceSecret !== undefined && securityReferenceSecret !== "") {
+    if (securityReferenceSecret.length < 32) {
+      throw new Error("FORGEPILOT_SECURITY_REFERENCE_SECRET must be at least 32 characters");
+    }
+    config.securityReferenceSecret = securityReferenceSecret;
+  }
   if (env["FORGEPILOT_DSH_TOKEN_FILE"]) {
     config.dshTokenFile = env["FORGEPILOT_DSH_TOKEN_FILE"];
   }
@@ -211,6 +298,24 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     throw new Error(
       "FORGEPILOT_CONTROL_PLANE_DB requires FORGEPILOT_OAUTH_CLIENTS_FILE to enable the identity surfaces",
     );
+  }
+  const invitationDigestKeyFile = env["FORGEPILOT_INVITATION_DIGEST_KEY_FILE"]?.trim();
+  if (invitationDigestKeyFile) {
+    if (config.oauthClientsFile === undefined) {
+      throw new Error(
+        "FORGEPILOT_INVITATION_DIGEST_KEY_FILE requires FORGEPILOT_OAUTH_CLIENTS_FILE to enable the identity surfaces",
+      );
+    }
+    config.invitationDigestKeyFile = invitationDigestKeyFile;
+  }
+  const providerServiceCredentialFile = env["FORGEPILOT_SERVICE_CREDENTIAL_FILE"]?.trim();
+  if (providerServiceCredentialFile) {
+    if (config.oauthClientsFile === undefined) {
+      throw new Error(
+        "FORGEPILOT_SERVICE_CREDENTIAL_FILE requires FORGEPILOT_OAUTH_CLIENTS_FILE to enable the identity surfaces",
+      );
+    }
+    config.providerServiceCredentialFile = providerServiceCredentialFile;
   }
   const bootstrapToken = env["FORGEPILOT_BOOTSTRAP_TOKEN"];
   if (bootstrapToken !== undefined && bootstrapToken !== "") {
