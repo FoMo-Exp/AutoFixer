@@ -16,6 +16,7 @@ import type {
   GatewayCaseIntake,
   GatewayRequestIdentity,
   ModelEgressDeniedError,
+  SecretScanner,
 } from "../src/index.js";
 import {
   DependentWorkPauseLedger,
@@ -27,6 +28,8 @@ import {
   createPatternSecretScanner,
   createScopeBackedPolicyResolver,
   createStaticCredentialStore,
+  createStaticPolicyResolver,
+  staticDutyDirectory,
 } from "../src/index.js";
 import { TEST_MODEL } from "./helpers/scripted-stream.js";
 import {
@@ -145,6 +148,11 @@ function realIntake(): {
     quarantine,
     referenceSecret: Buffer.alloc(32, 1),
     onIncident: () => undefined,
+    duties: staticDutyDirectory({
+      handlers: ["human_handler"],
+      reviewers: ["human_reviewer"],
+      admins: ["human_admin"],
+    }),
   });
   return { intake: service, service, caseStore };
 }
@@ -156,6 +164,7 @@ function stubHold(): DependentWorkHold {
 function gatewayWith(
   security: { caseIntake: GatewayCaseIntake; dependentWorkHold: DependentWorkHold },
   onIncident?: (m: string) => void,
+  scanner?: SecretScanner,
 ) {
   const adapter = spyAdapter();
   const gateway = createModelGateway({
@@ -164,13 +173,54 @@ function gatewayWith(
     ]),
     credentials: createStaticCredentialStore({ [TEST_CREDENTIAL_REF]: TEST_CREDENTIAL }),
     adapter: adapter.adapter,
-    scanner: createPatternSecretScanner(),
+    scanner: scanner ?? createPatternSecretScanner(),
     sink: memorySink().sink,
     ...security,
     ...(onIncident ? { onIncident } : {}),
   });
   return { gateway, adapter };
 }
+
+describe("scope-scoped rule corrections at the gateway (DAT-211)", () => {
+  // A 32-character fixture-class token the stock detector flags as suspected.
+  const FIXTURE_TOKEN = "FixtureToken0123456789abcdefXYZ";
+  const FIXTURE_CONTEXT: Context = {
+    messages: [{ role: "user", content: `please process ${FIXTURE_TOKEN}`, timestamp: 1 }],
+  };
+  const CORRECTION = {
+    lineage: "high-entropy-token|ent_test|ws_test",
+    version: 1,
+    detectorId: "high-entropy-token",
+    scope: { enterpriseId: "ent_test", workspaceId: "ws_test" },
+    constraints: { minLength: 64 },
+  };
+
+  test("an approved correction narrows only its own scope's scans", async () => {
+    const { gateway, adapter } = gatewayWith(
+      { caseIntake: intakeSpy().intake, dependentWorkHold: stubHold() },
+      undefined,
+      createPatternSecretScanner({ corrections: () => [CORRECTION] }),
+    );
+    // TEST_BINDING resolves to ent_test/ws_test: the correction applies and
+    // the fixture-class token no longer blocks.
+    await gateway.dispatch(TEST_MODEL, FIXTURE_CONTEXT, undefined, TEST_BINDING);
+    expect(adapter.calls).toHaveLength(1);
+  });
+
+  test("a correction approved for another workspace never narrows this one", async () => {
+    const foreign = { ...CORRECTION, scope: { enterpriseId: "ent_test", workspaceId: "ws_other" } };
+    const { gateway, adapter } = gatewayWith(
+      { caseIntake: intakeSpy().intake, dependentWorkHold: stubHold() },
+      undefined,
+      createPatternSecretScanner({ corrections: () => [foreign] }),
+    );
+    const outcome = await gateway
+      .dispatch(TEST_MODEL, FIXTURE_CONTEXT, undefined, TEST_BINDING)
+      .catch((error: ModelEgressDeniedError) => error);
+    expect((outcome as ModelEgressDeniedError).reason).toBe("SENSITIVE_DATA_UNCERTAIN");
+    expect(adapter.calls).toHaveLength(0);
+  });
+});
 
 describe("gateway disposal cases (DAT-210)", () => {
   test("a secret-gate block opens a disposal case and still sends zero bytes", async () => {

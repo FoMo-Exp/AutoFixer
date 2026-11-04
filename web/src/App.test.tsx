@@ -297,3 +297,16 @@ describe("invitation landing", () => {
     expect(hashAtRequest.every((hash) => hash === "")).toBe(true);
   });
 });
+
+describe("surface navigation", () => {
+  it("switches to the workspace-scoped issue surface", async () => {
+    vi.spyOn(ForgePilotClient.prototype, "listWorkspaces").mockResolvedValue([]);
+    render(<App />);
+    await screen.findByRole("button", { name: "Repair alpha owner/repo" });
+
+    await userEvent.click(screen.getByRole("button", { name: "Issues" }));
+    expect(await screen.findByRole("heading", { name: "Issues" })).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "Workbench views" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /New task/ })).toBeNull();
+  });
+});

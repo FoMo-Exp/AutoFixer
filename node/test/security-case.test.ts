@@ -194,10 +194,17 @@ describe("SecurityCaseStore append-only transitions", () => {
     const transitions = events.filter((event) => event.type === "case.state_changed");
     expect(transitions.map((event) => event.detail["to"])).toEqual(["handling", "awaiting_review"]);
     expect(transitions[0]?.actor).toMatchObject({ actorId: "human_handler", actorKind: "human" });
-    // Failed review then re-review is still visible as its own appended events.
+    // Failed review then re-review is still visible as its own appended
+    // events: the review decision records its independent-review relationship
+    // alongside the state change, and past entries are never rewritten.
     store.transition(opened.caseId, "handling", REVIEWER);
-    expect(store.events(opened.caseId).length).toBe(events.length + 1);
-    expect(events.every((event) => store.events(opened.caseId).includes(event))).toBe(true);
+    const after = store.events(opened.caseId);
+    expect(after.length).toBeGreaterThan(events.length);
+    expect(events.every((event) => after.includes(event))).toBe(true);
+    const reviewEvents = after.filter((event) => event.type === "case.review_rejected");
+    expect(reviewEvents).toHaveLength(1);
+    expect(reviewEvents[0]?.actor).toMatchObject({ actorId: "human_reviewer" });
+    expect(reviewEvents[0]?.detail["subjects"]).toBe("human_handler");
   });
 
   test("a run actor never dispositions a case", () => {

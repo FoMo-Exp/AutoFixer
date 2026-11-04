@@ -127,6 +127,14 @@ export interface MemoryItemRepository {
     successorItemId: MemoryItemId,
     reason: string,
   ): MemoryLink;
+  /**
+   * Recompute the item's confidence counters from what is actually on record
+   * (DAT-234). Support is the number of distinct evidence references attached
+   * to the item; contradiction is the number of `contradicts` links it takes
+   * part in. Both are derived from rows, never from a model's self-assessment,
+   * so recounting is always safe and always the source of truth.
+   */
+  recountConfidence(scope: WorkspaceScope, itemId: MemoryItemId): MemoryItem;
   /** Bounded workspace export: items, versions, evidence, and links. */
   exportWorkspace(scope: WorkspaceScope, limit?: number): MemoryExport;
   /** Purge one item and its versions, evidence, links, and embeddings. */
@@ -1142,6 +1150,41 @@ class SqliteMemoryItemRepository implements MemoryItemRepository {
         }
       }
       return link;
+    });
+  }
+
+  recountConfidence(scope: WorkspaceScope, itemId: MemoryItemId): MemoryItem {
+    requireWorkspaceScope(scope);
+    return this.store.runAtomically(() => {
+      requireRow("MemoryItem", itemId, this.getRecord(scope, itemId));
+      const support = (
+        this.db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM (
+               SELECT DISTINCT evidence_type, reference
+                 FROM memory_evidence
+                WHERE enterprise_id = ? AND workspace_id = ? AND item_id = ?
+             )`,
+          )
+          .get(scope.enterprise_id, scope.workspace_id, itemId) as unknown as { n: number }
+      ).n;
+      const contradiction = (
+        this.db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM memory_links
+              WHERE enterprise_id = ? AND workspace_id = ?
+                AND link_type = 'contradicts'
+                AND (item_id = ? OR target_item_id = ?)`,
+          )
+          .get(scope.enterprise_id, scope.workspace_id, itemId, itemId) as unknown as { n: number }
+      ).n;
+      this.db
+        .prepare(
+          `UPDATE memory_items SET support_count = ?, contradiction_count = ?, updated_at = ?
+            WHERE id = ? AND enterprise_id = ? AND workspace_id = ?`,
+        )
+        .run(support, contradiction, nowIso(), itemId, scope.enterprise_id, scope.workspace_id);
+      return requireRow("MemoryItem", itemId, this.getRecord(scope, itemId)).item;
     });
   }
 
