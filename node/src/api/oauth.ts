@@ -39,37 +39,11 @@ export interface AuthorizeParams {
   codeChallenge: string;
 }
 
-/** One provider request asking whether a subject can reach a repository. */
-export interface RepositoryAccessRequest {
-  url: string;
-  headers: Record<string, string>;
-}
-
-export interface RepositoryAccessRequestInput {
-  origin: string;
-  accessToken: string;
-  /** Immutable provider-assigned repository id of the workspace binding. */
-  repositoryId: string;
-  /** Stable provider subject whose current access is being verified. */
-  subject: string;
-}
-
 export interface ProviderAdapter {
   authorizeUrl(params: AuthorizeParams): string;
   tokenUrl(origin: string): string;
   userUrl(origin: string): string;
   profileFromUser(payload: unknown): ProviderProfile;
-  /**
-   * Ask the provider whether `subject` can currently reach `repositoryId`,
-   * authenticated with the subject's own access token.
-   */
-  repositoryAccessRequest(input: RepositoryAccessRequestInput): RepositoryAccessRequest;
-  /**
-   * Interpret the provider's answer: `true`/`false` is a verified fact;
-   * `undefined` means the answer is not usable and no fact may be recorded
-   * (fail closed).
-   */
-  repositoryAccessFromResponse(status: number): boolean | undefined;
 }
 
 /** A failure talking to the provider; surfaces as a retryable 502. */
@@ -111,21 +85,6 @@ function profileFromPayload(payload: unknown): ProviderProfile {
   };
 }
 
-/**
- * Shared interpretation of a repository-access answer: 2xx is a verified
- * yes, 404 a verified no, everything else (401/403/5xx/…) is unusable and
- * must record no fact — fail closed.
- */
-function repositoryAccessFromStatus(status: number): boolean | undefined {
-  if (status >= 200 && status < 300) {
-    return true;
-  }
-  if (status === 404) {
-    return false;
-  }
-  return undefined;
-}
-
 /** github.com fronts its API on a separate host; GitHub Enterprise serves
  * the same API under the instance origin. */
 function githubApiBase(origin: string): string {
@@ -150,20 +109,6 @@ const githubAdapter: ProviderAdapter = {
     return `${githubApiBase(origin)}/user`;
   },
   profileFromUser: profileFromPayload,
-  repositoryAccessRequest(input) {
-    // The subject's own view of the bound repository: 200 means they can
-    // currently reach it, 404 means they cannot (a private-repo outsider
-    // gets 404). Finer affiliation roles are DAT-203's roster normalization
-    // and refine this same fact.
-    return {
-      url: `${githubApiBase(input.origin)}/repositories/${encodeURIComponent(input.repositoryId)}`,
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${input.accessToken}`,
-      },
-    };
-  },
-  repositoryAccessFromResponse: repositoryAccessFromStatus,
 };
 
 const gitlabAdapter: ProviderAdapter = {
@@ -184,18 +129,6 @@ const gitlabAdapter: ProviderAdapter = {
     return `${origin}/api/v4/user`;
   },
   profileFromUser: profileFromPayload,
-  repositoryAccessRequest(input) {
-    // Project membership including inherited memberships: GitLab's precise
-    // "is this subject currently a member of the bound project" answer.
-    return {
-      url: `${input.origin}/api/v4/projects/${encodeURIComponent(input.repositoryId)}/members/all/${encodeURIComponent(input.subject)}`,
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${input.accessToken}`,
-      },
-    };
-  },
-  repositoryAccessFromResponse: repositoryAccessFromStatus,
 };
 
 export const providerAdapters: Record<ProviderType, ProviderAdapter> = {
@@ -295,10 +228,6 @@ export interface FetchProfileInput {
   accessToken: string;
 }
 
-export interface ProbeRepositoryAccessInput extends RepositoryAccessRequestInput {
-  adapter: ProviderAdapter;
-}
-
 /**
  * Stateless provider HTTP client. Holds no token beyond the call it makes:
  * `exchangeCode` returns the access token for exactly one `fetchProfile` use.
@@ -376,29 +305,5 @@ export class ProviderOAuth {
       throw new ProviderError(`provider user endpoint failed (${response.status})`);
     }
     return input.adapter.profileFromUser(await response.json());
-  }
-
-  /**
-   * Ask the provider whether the subject can currently reach the repository.
-   *
-   * Tri-state: `true`/`false` is a verified answer; `undefined` means the
-   * check could not run (transport failure or unusable status) and no fact
-   * may be recorded — callers fail closed. Never throws and never lets the
-   * access token leave this call (redirects are refused, same as above).
-   */
-  async probeRepositoryAccess(input: ProbeRepositoryAccessInput): Promise<boolean | undefined> {
-    const request = input.adapter.repositoryAccessRequest(input);
-    let response: Response;
-    try {
-      response = await this.fetchImpl(request.url, {
-        method: "GET",
-        headers: request.headers,
-        redirect: "error",
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
-    } catch {
-      return undefined;
-    }
-    return input.adapter.repositoryAccessFromResponse(response.status);
   }
 }

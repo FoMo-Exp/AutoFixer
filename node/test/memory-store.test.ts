@@ -135,7 +135,7 @@ describe("Memory migrations", () => {
       .all()
       .map((row) => (row as { version: number }).version);
     // Full migration lineage: extend on every new migration version.
-    expect(applied).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(applied).toEqual([1, 2, 3, 4, 5, 6]);
   });
 });
 

@@ -1,9 +1,19 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
 import addFormatsImport from "ajv-formats";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 
 import { buildOpenApiDocument } from "../src/api/openapi.js";
-import { createRepositories } from "../src/control-plane/index.js";
+import {
+  createIdentityRepositories,
+  createProviderAccessRepositories,
+  createRepositories,
+} from "../src/control-plane/index.js";
+import type { ServiceIntegration } from "../src/control-plane/index.js";
+import { createIntegrationAdapter } from "../src/provider-access/adapters/index.js";
+import { createAuthorityEpoch } from "../src/provider-access/access-gate.js";
+import { createStaticServiceCredentialStore } from "../src/provider-access/credentials.js";
+import { GITHUB_REQUIRED_TOKEN_SCOPE } from "../src/provider-access/index.js";
+import { reconcileIntegration } from "../src/provider-access/reconcile.js";
 import type { DshServerHandle } from "./helpers/dsh-server.js";
 import { startDshServer } from "./helpers/dsh-server.js";
 import type { JsonResponse } from "./helpers/http.js";
@@ -11,11 +21,15 @@ import { cookieValue, getJson, getRaw, postJson, postRaw } from "./helpers/http.
 import type { AuthApp, LoggedInSession } from "./helpers/auth-app.js";
 import {
   BOOTSTRAP_TOKEN,
+  SERVICE_CREDENTIAL,
+  SERVICE_CREDENTIAL_REF,
   completeCallback,
   cookieSessionHeaders,
   startAuthApp,
   startLogin,
 } from "./helpers/auth-app.js";
+import type { RepoProvider } from "./helpers/repo-provider.js";
+import { startRepoProvider } from "./helpers/repo-provider.js";
 
 /**
  * End-to-end behavior of the owner-created invitation surface (DAT-204):
@@ -23,6 +37,12 @@ import {
  * fragment, join preview and redemption, owner revocation, uniform
  * non-enumerating denials, one-time use under concurrency, rate limiting, and
  * the no-bearer-in-logs/errors/audit guarantee.
+ *
+ * Repository authority is produced the way production produces it: DAT-247's
+ * point refresh runs inside redemption (real adapter over an HTTP fake
+ * provider, service credential boundary), and reconciliation is driven
+ * through DAT-247's `reconcileIntegration`. No test writes `subject_authority`
+ * rows directly.
  */
 
 // ajv-formats ships CJS: NodeNext types its default import as the module
@@ -80,9 +100,97 @@ const HIGH_LIMITS = {
 };
 
 let dsh: DshServerHandle;
+let repo: RepoProvider;
 const apps: AuthApp[] = [];
 let app: AuthApp;
 let owner: LoggedInSession;
+
+function controlPlaneOf(target: AuthApp) {
+  const controlPlane = target.orchestrator.controlPlane;
+  if (controlPlane === undefined) {
+    throw new Error("no control plane");
+  }
+  return controlPlane;
+}
+
+function accessOf(target: AuthApp) {
+  return createProviderAccessRepositories(controlPlaneOf(target));
+}
+
+function identitiesOf(target: AuthApp) {
+  return createIdentityRepositories(controlPlaneOf(target)).identities;
+}
+
+function integrationOf(target: AuthApp): ServiceIntegration {
+  if (target.integration === undefined) {
+    throw new Error("app has no repository-scoped integration");
+  }
+  return target.integration;
+}
+
+/**
+ * Drive DAT-247's reconciliation for one member: the fake provider's complete
+ * roster contains exactly that subject, so reconciliation writes `active`
+ * authority for it. Preview (a read) then sees a current fact; redemption
+ * performs its own point refresh.
+ */
+async function reconcileMember(
+  target: AuthApp,
+  subject: string,
+  login: string,
+  options: { at?: Date } = {},
+): Promise<void> {
+  const controlPlane = controlPlaneOf(target);
+  const access = createProviderAccessRepositories(controlPlane);
+  const identities = identitiesOf(target);
+  const integration = integrationOf(target);
+  const instance = createRepositories(controlPlane).providerInstances.getById(
+    { enterprise_id: target.enterpriseId, actor_id: "usr_test" },
+    integration.provider_instance_id,
+  );
+  repo.state.collaborators = [{ id: Number(subject), login, role_name: "push" }];
+  const adapter = createIntegrationAdapter({
+    integration,
+    canonical_repository_id: integration.repository_id,
+    credentials: createStaticServiceCredentialStore({
+      [SERVICE_CREDENTIAL_REF]: SERVICE_CREDENTIAL,
+    }),
+    provider_origin: instance?.origin_url ?? "https://github.com",
+    api_base_url: repo.base_url,
+    resolve_login: (candidate) =>
+      identities.getByProviderSubject(integration.provider_instance_id, candidate)?.login,
+  });
+  const at = options.at;
+  await reconcileIntegration(
+    {
+      access,
+      identities,
+      epoch: createAuthorityEpoch(),
+      available_token_scope: GITHUB_REQUIRED_TOKEN_SCOPE,
+      ...(at !== undefined ? { clock: () => at } : {}),
+    },
+    {
+      enterprise_id: target.enterpriseId,
+      workspace_id: target.workspaceId,
+      actor_id: "usr_test",
+    },
+    integration,
+    adapter,
+  );
+}
+
+/** The stored DAT-203 authority row for one identity subject. */
+function authorityOf(target: AuthApp, subject: string) {
+  return accessOf(target).roster.getAuthority(
+    {
+      enterprise_id: target.enterpriseId,
+      workspace_id: target.workspaceId,
+      actor_id: "usr_test",
+    },
+    integrationOf(target).id,
+    subject,
+  );
+}
 
 interface Profile {
   id: number;
@@ -119,33 +227,6 @@ async function grantRole(userId: string, role: string): Promise<number> {
     },
   );
   return response.status;
-}
-
-/**
- * Manipulate a stored verification for policy-boundary scenarios (aging the
- * fact past its freshness window). The real producer is the login-time
- * provider check; success paths rely on it rather than on this helper.
- */
-function verifyAccess(
-  subject: string,
-  overrides: { has_access?: boolean; verified_at?: string } = {},
-): void {
-  const controlPlane =
-    app.orchestrator.controlPlane ??
-    (() => {
-      throw new Error("no control plane");
-    })();
-  createRepositories(controlPlane).repositoryAccess.record(
-    { enterprise_id: app.enterpriseId, workspace_id: app.workspaceId, actor_id: "usr_test" },
-    {
-      provider_instance_id: app.providerInstanceId,
-      subject,
-      has_access: overrides.has_access ?? true,
-      ...(overrides.verified_at !== undefined ? { verified_at: overrides.verified_at } : {}),
-      verified_by_source: "provider_api",
-      actor_id: "usr_test",
-    },
-  );
 }
 
 interface CreatedBody {
@@ -200,17 +281,31 @@ function uniformPart(body: unknown): string {
 
 beforeAll(async () => {
   dsh = await startDshServer({ approver: "github:local-operator" });
-  app = await startAuthApp({ dsh, invitationRateLimits: HIGH_LIMITS });
+  repo = await startRepoProvider();
+  app = await startAuthApp({
+    dsh,
+    invitationRateLimits: HIGH_LIMITS,
+    repositoryIntegration: true,
+    providerApiBaseUrl: repo.base_url,
+  });
   apps.push(app);
   owner = await loginAs({ id: 1001, login: "octo" });
   expect(await grantRole(owner.userId, "owner")).toBe(200);
 }, 120_000);
 
+beforeEach(() => {
+  // Each test starts from a provider that confirms current access; tests
+  // that exercise denial switch the verdict explicitly.
+  repo.state.permission = "granted";
+  repo.state.roster = "complete";
+});
+
 afterAll(async () => {
-  await dsh.stop();
   while (apps.length > 0) {
     await apps.pop()?.stop();
   }
+  await repo.close();
+  await dsh.stop();
 });
 
 // ---------------------------------------------------------------------------
@@ -328,6 +423,9 @@ describe("join surface", () => {
   test("preview never consumes; redeem joins once and replays idempotently", async () => {
     const created = await inviteUrl(owner);
     const invitee = await loginAs({ id: 5005, login: "margaret" });
+    // Preview is a read: it consumes the stored DAT-203 authority, which
+    // reconciliation produced for this member.
+    await reconcileMember(app, "5005", "margaret");
 
     const previewed = await preview(invitee, created.body.token);
     expect(previewed.status).toBe(200);
@@ -482,81 +580,81 @@ describe("join surface", () => {
     expect(denied.status).toBe(403);
   });
 
-  test("the real service carries provider verification into redemption end to end", async () => {
-    // The production path with no test seeding: login runs the provider
-    // check, the verified fact lands in the store, and the redemption
-    // transaction consumes it.
+  test("redemption point-refreshes the invitee's authority through DAT-247 and succeeds", async () => {
+    // The production consumer path with no seeding: the invitee logs in with
+    // no stored authority, then redemption asks DAT-247 for a point refresh.
+    // The real GitHub adapter calls the fake provider with the integration's
+    // service credential and writes `active` authority through DAT-203; the
+    // transaction re-reads that authority and joins.
     const created = await inviteUrl(owner);
     const invitee = await loginAs({ id: 10_022, login: "zoe" });
-    const controlPlane =
-      app.orchestrator.controlPlane ??
-      (() => {
-        throw new Error("no control plane");
-      })();
-    const fact = createRepositories(controlPlane).repositoryAccess.get(
-      {
-        enterprise_id: app.enterpriseId,
-        workspace_id: app.workspaceId,
-        actor_id: "usr_test",
-      },
-      app.providerInstanceId,
-      "10022",
+    expect(authorityOf(app, "10022")).toBeUndefined();
+
+    repo.requests().length = 0;
+    repo.state.permission = "granted";
+    const joined = await redeem(invitee, created.body.token);
+    expect(joined.status).toBe(200);
+
+    // The provider was asked at redemption time, over the exact routes the
+    // adapter documents, with the service credential — never a user token.
+    const requests = repo.requests();
+    expect(requests.some((request) => request.url === "/repos/Luthiel/AutoFixer")).toBe(true);
+    const permission = requests.find((request) =>
+      request.url.endsWith("/collaborators/zoe/permission"),
     );
-    expect(fact).toMatchObject({ has_access: true, verified_by_source: "provider_api" });
-    expect((await redeem(invitee, created.body.token)).status).toBe(200);
+    expect(permission).toBeDefined();
+    expect(permission?.headers["authorization"]).toBe(`Bearer ${SERVICE_CREDENTIAL}`);
+    for (const request of requests) {
+      expect(JSON.stringify(request)).not.toContain(invitee.session);
+    }
+
+    const authority = authorityOf(app, "10022");
+    expect(authority?.state).toBe("active");
+    expect(authority?.last_verified_at).toBeTruthy();
   });
 
-  test("a provider identity without verified repository access is rejected", async () => {
-    // The forwarded-to-ineligible case: the provider says the subject cannot
-    // reach the workspace's repository — the login-time check records the
-    // negative fact and the join stays denied.
+  test("provider-denied and unavailable verification both fail closed", async () => {
+    // Provider says the subject is not a member (404): authority becomes
+    // `removed`, preview denies, redemption denies, and nothing is consumed.
+    const removedInvite = await inviteUrl(owner);
+    const removed = await loginAs({ id: 10_019, login: "wendy" });
+    repo.state.permission = "none";
+    expect((await redeem(removed, removedInvite.body.token)).status).toBe(403);
+    expect(authorityOf(app, "10019")?.state).toBe("removed");
+
+    // The provider cannot answer (500): the refresh writes nothing and the
+    // redemption fails closed.
+    const unavailableInvite = await inviteUrl(owner);
+    const unavailable = await loginAs({ id: 10_020, login: "xavier" });
+    repo.state.permission = "unavailable";
+    expect((await redeem(unavailable, unavailableInvite.body.token)).status).toBe(403);
+    expect(authorityOf(app, "10020")).toBeUndefined();
+
+    // Missing scope (401) is the same fail-closed path.
+    const unscopedInvite = await inviteUrl(owner);
+    const unscoped = await loginAs({ id: 10_024, login: "brenda" });
+    repo.state.permission = "unauthorized";
+    expect((await redeem(unscoped, unscopedInvite.body.token)).status).toBe(403);
+    expect(authorityOf(app, "10024")).toBeUndefined();
+
+    // A later successful point refresh opens the same (unconsumed) invitation.
+    repo.state.permission = "granted";
+    expect((await redeem(unavailable, unavailableInvite.body.token)).status).toBe(200);
+  });
+
+  test("stale authority denies preview; redemption refreshes it before the transaction", async () => {
     const created = await inviteUrl(owner);
-    app.provider.repoAccess = false;
-    const withoutAccess = await loginAs({ id: 10_019, login: "wendy" });
-    app.provider.repoAccess = true;
-    expect((await preview(withoutAccess, created.body.token)).status).toBe(403);
-    expect((await redeem(withoutAccess, created.body.token)).status).toBe(403);
-
-    // The same invitation joins for a user the provider confirms access for…
-    const eligible = await loginAs({ id: 10_020, login: "xavier" });
-    expect((await redeem(eligible, created.body.token)).status).toBe(200);
-
-    // …and a stale verification stops counting as current access until the
-    // provider is asked again (re-login here; DAT-203 reconciles periodically).
-    const stale = await inviteUrl(owner);
-    const staleUser = await loginAs({ id: 10_021, login: "yvonne" });
-    verifyAccess("10021", {
-      verified_at: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+    const invitee = await loginAs({ id: 10_021, login: "yvonne" });
+    // Reconciliation verifies the member, but with a clock outside DAT-247's
+    // freshness window: the stored fact is `active` yet no longer current.
+    await reconcileMember(app, "10021", "yvonne", {
+      at: new Date(Date.now() - 16 * 60 * 1000),
     });
-    expect((await redeem(staleUser, stale.body.token)).status).toBe(403);
-    await loginAs({ id: 10_021, login: "yvonne" });
-    expect((await redeem(staleUser, stale.body.token)).status).toBe(200);
-  });
-
-  test("an unusable provider check records no fact and fails closed", async () => {
-    const created = await inviteUrl(owner);
-    app.provider.repoAccess = "error";
-    const unverified = await loginAs({ id: 10_023, login: "amir" });
-    app.provider.repoAccess = true;
-    const controlPlane =
-      app.orchestrator.controlPlane ??
-      (() => {
-        throw new Error("no control plane");
-      })();
-    const fact = createRepositories(controlPlane).repositoryAccess.get(
-      {
-        enterprise_id: app.enterpriseId,
-        workspace_id: app.workspaceId,
-        actor_id: "usr_test",
-      },
-      app.providerInstanceId,
-      "10023",
-    );
-    expect(fact).toBeUndefined();
-    expect((await redeem(unverified, created.body.token)).status).toBe(403);
-    // A later successful check (re-login) opens the invitation.
-    await loginAs({ id: 10_023, login: "amir" });
-    expect((await redeem(unverified, created.body.token)).status).toBe(200);
+    // Preview never calls the provider, so the stale fact denies it.
+    expect((await preview(invitee, created.body.token)).status).toBe(403);
+    // Redemption performs the point refresh first, so the join succeeds.
+    repo.state.permission = "granted";
+    expect((await redeem(invitee, created.body.token)).status).toBe(200);
   });
 });
 
@@ -631,6 +729,7 @@ describe("non-enumeration and hygiene", () => {
     };
 
     const invitee = await loginAs({ id: 10_017, login: "olive" });
+    await reconcileMember(app, "10017", "olive");
     capture(await preview(invitee, token));
     capture(await redeem(invitee, token));
     capture(await redeem(invitee, token));
@@ -690,6 +789,8 @@ describe("rate limiting", () => {
   test("creation, preview, and redemption are limited per actor and origin", async () => {
     const limitedApp = await startAuthApp({
       dsh,
+      repositoryIntegration: true,
+      providerApiBaseUrl: repo.base_url,
       invitationRateLimits: {
         windowSeconds: 900,
         createPerWindow: 2,
@@ -717,6 +818,7 @@ describe("rate limiting", () => {
       expect(body.error.retry_after_seconds).toBeGreaterThan(0);
 
       const invitee = await loginAs({ id: 20_021, login: "rosa" });
+      await reconcileMember(limitedApp, "20021", "rosa");
       expect((await preview(invitee, first.body.token)).status).toBe(200);
       expect((await preview(invitee, first.body.token)).status).toBe(200);
       const limitedPreview = await preview(invitee, first.body.token);

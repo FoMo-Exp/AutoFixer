@@ -6,6 +6,7 @@ import type { Api, Model } from "@mariozechner/pi-ai";
 import { buildOpenApiDocument } from "./api/openapi.js";
 import { readOrCreateApiToken } from "./api/auth.js";
 import { AuthService } from "./api/auth-service.js";
+import { createInvitationAuthority } from "./api/invitation-authority.js";
 import { InvitationService, readOrCreateInvitationDigestKey } from "./api/invitation-service.js";
 import type { InvitationRateLimits } from "./api/invitation-service.js";
 import { ProviderOAuth, readOAuthCredentialsFile } from "./api/oauth.js";
@@ -43,6 +44,11 @@ import {
 import type { ModelGateway } from "./gateway/index.js";
 import { createUsageLedgerStore } from "./ledger/index.js";
 import { resolveConfiguredModel } from "./pi/model.js";
+import {
+  createStaticServiceCredentialStore,
+  readServiceCredentialFile,
+} from "./provider-access/credentials.js";
+import type { ServiceCredentialStore } from "./provider-access/credentials.js";
 
 export interface OrchestratorOptions {
   config: OrchestratorConfig;
@@ -60,6 +66,10 @@ export interface OrchestratorOptions {
   authDnsLookup?: (hostname: string) => Promise<string[]>;
   /** Rate-limit overrides for the invitation surface (tests). */
   invitationRateLimits?: InvitationRateLimits;
+  /** DAT-247 service credentials for the redemption point refresh (tests). */
+  providerServiceCredentials?: ServiceCredentialStore;
+  /** Provider API base override for the point refresh (tests: fake provider). */
+  providerApiBaseUrl?: string;
 }
 
 export interface OrchestratorHandle {
@@ -190,8 +200,9 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     // Provider authority (DAT-203) shares the control plane with identity:
     // the request boundary enforces effective access for session requests
     // whenever a service integration is installed for this workspace.
+    const providerAccess = createProviderAccessRepositories(controlPlane);
     providerAuthority = createRequestAuthority({
-      access: createProviderAccessRepositories(controlPlane),
+      access: providerAccess,
       memberships: repos.memberships,
       workspaces: repos.workspaces,
       users: identity.users,
@@ -216,10 +227,27 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
         : config.controlPlaneFile !== undefined
           ? readOrCreateInvitationDigestKey(`${config.controlPlaneFile}.invitation-key`)
           : randomBytes(32);
+    // DAT-247's service credential boundary: secrets come from a protected
+    // file (or explicit injection), never from a user OAuth token. An empty
+    // store makes the point refresh fail closed.
+    const serviceCredentials =
+      options.providerServiceCredentials ??
+      (config.providerServiceCredentialFile !== undefined
+        ? readServiceCredentialFile(config.providerServiceCredentialFile)
+        : createStaticServiceCredentialStore({}));
+    const providerApiBaseUrl = options.providerApiBaseUrl;
     invitations = new InvitationService({
       repos,
       identity,
-      invitations: createInvitationRepository(controlPlane),
+      invitations: createInvitationRepository(controlPlane, providerAccess),
+      authority: createInvitationAuthority({
+        access: providerAccess,
+        identities: identity.identities,
+        providerInstances: repos.providerInstances,
+        credentials: serviceCredentials,
+        epoch: providerAuthority.epoch,
+        ...(providerApiBaseUrl !== undefined ? { apiBaseUrl: () => providerApiBaseUrl } : {}),
+      }),
       config: {
         enterpriseId: config.enterpriseId,
         digestKey,

@@ -7,10 +7,17 @@
  * only locator. Redemption runs in one `BEGIN IMMEDIATE` transaction that
  * re-checks every fact the decision needs — expiry, revocation, remaining
  * use, subject binding, the inviter's current role, the invitee's current
- * repository access, and existing membership — and then adds the membership
+ * repository authority, and existing membership — and then adds the membership
  * and consumes the invitation together, so concurrent redeemers cannot both
  * succeed and a crash can never leave a consumed invitation without its
  * membership (or a member without the consumed invitation).
+ *
+ * Current repository authority is DAT-203's single source of truth: the
+ * workspace's active repository-scoped integration and the invitee's
+ * `subject_authority` row are read through DAT-247's `repositoryAccessFor`
+ * read model inside the transaction. The point refresh against the provider
+ * runs before the transaction (see the invitation service); this file only
+ * consumes the stored fact, so a missing/removed/stale authority fails closed.
  */
 
 import type { ControlPlaneDb } from "./db.js";
@@ -24,7 +31,8 @@ import type {
   InvitationId,
   InvitationRedemptionOutcome,
 } from "./invitation-types.js";
-import { REPOSITORY_ACCESS_MAX_AGE_SECONDS } from "./repository-access.js";
+import type { ProviderAccessRepositories } from "./provider-access-repositories.js";
+import { repositoryAccessFor } from "../provider-access/subject-refresh.js";
 import type { UserId, WorkspaceRole, WorkspaceScope } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -36,18 +44,21 @@ export type RedemptionDecision =
   | { kind: "replay"; membership_id: string }
   | { kind: "deny"; reason: InvitationDenialReason };
 
-/** The latest repository-access verification for the invitee's subject. */
+/**
+ * The invitee's current repository authority, as read from DAT-247's
+ * authority store: `current` is true only for `active` authority verified
+ * inside the freshness window.
+ */
 export interface RepositoryAccessFact {
-  has_access: boolean;
-  verified_at: string;
+  current: boolean;
 }
 
 /**
  * Every fact the decision reads, gathered from one consistent snapshot.
  * Callers never pass authority or eligibility in: those are control-plane
- * state (memberships, identities, repository-access verifications) read in
- * the same transaction as the consume, so the decision is valid at
- * redemption time — not at request-assembly time.
+ * state (memberships, identities, repository authority) read in the same
+ * transaction as the consume, so the decision is valid at redemption time —
+ * not at request-assembly time.
  */
 export interface RedemptionFacts {
   invitee_user_id: UserId;
@@ -62,21 +73,15 @@ export interface RedemptionFacts {
 }
 
 /**
- * Eligibility policy: the invitee's current repository access counts only as
- * a positive verification that is still fresh at the decision moment. A
- * missing, negative, or stale fact denies the join — an old or absent check
- * is never evidence of current access (ADR-0006: redemption checks the
- * invitee's current repository access).
+ * Eligibility policy: only current repository authority permits the join. A
+ * missing, removed, unknown, or stale authority denies it — the promise that
+ * authority was current at some earlier point is not evidence of access now
+ * (ADR-0006: redemption checks the invitee's current repository access).
+ * Freshness and state are DAT-247's `repositoryAccessFor` policy; this
+ * function only consumes its verdict.
  */
-export function hasCurrentRepositoryAccess(
-  fact: RepositoryAccessFact | null,
-  now: string,
-): boolean {
-  if (fact === null || !fact.has_access) {
-    return false;
-  }
-  const ageSeconds = (Date.parse(now) - Date.parse(fact.verified_at)) / 1000;
-  return ageSeconds >= 0 && ageSeconds <= REPOSITORY_ACCESS_MAX_AGE_SECONDS;
+export function hasCurrentRepositoryAccess(fact: RepositoryAccessFact | null): boolean {
+  return fact !== null && fact.current;
 }
 
 /**
@@ -125,7 +130,7 @@ export function evaluateRedemption(
   if (facts.workspace_status !== "active") {
     return { kind: "deny", reason: "workspace_archived" };
   }
-  if (!hasCurrentRepositoryAccess(facts.repository_access, facts.now)) {
+  if (!hasCurrentRepositoryAccess(facts.repository_access)) {
     return { kind: "deny", reason: "ineligible" };
   }
   if (facts.invitee_membership_id !== null) {
@@ -221,7 +226,10 @@ function toInvitation(row: InvitationRow): Invitation {
 // ---------------------------------------------------------------------------
 
 class SqliteInvitationRepository implements InvitationRepository {
-  constructor(private readonly db: ControlPlaneDb) {}
+  constructor(
+    private readonly db: ControlPlaneDb,
+    private readonly providerAccess: ProviderAccessRepositories,
+  ) {}
 
   create(scope: WorkspaceScope, input: CreateInvitationInput): Invitation {
     const at = nowIso();
@@ -419,26 +427,45 @@ class SqliteInvitationRepository implements InvitationRepository {
     const inviterMembership = this.db
       .prepare("SELECT role FROM membership WHERE workspace_id = ? AND user_id = ?")
       .get(invitation.workspace_id, invitation.created_by) as { role: string } | undefined;
-    const access = this.db
-      .prepare(
-        `SELECT has_access, verified_at FROM repository_access_verification
-         WHERE workspace_id = ? AND enterprise_id = ? AND provider_instance_id = ? AND subject = ?`,
-      )
-      .get(
-        invitation.workspace_id,
-        invitation.enterprise_id,
-        workspace?.provider_instance_id ?? "",
-        subject?.subject ?? "",
-      ) as { has_access: number; verified_at: string } | undefined;
+    // The workspace's active repository-scoped integration is the only
+    // authority source: retargeting the workspace to another provider
+    // instance, or having no active integration at all, leaves nothing to
+    // verify against and therefore denies the join.
+    const integration =
+      workspace !== undefined && subject !== undefined
+        ? (this.db
+            .prepare(
+              `SELECT id FROM service_integration
+               WHERE enterprise_id = ? AND workspace_id = ? AND provider_instance_id = ?
+                 AND install_status = 'active'
+               ORDER BY created_at LIMIT 1`,
+            )
+            .get(
+              invitation.enterprise_id,
+              invitation.workspace_id,
+              workspace.provider_instance_id,
+            ) as { id: string } | undefined)
+        : undefined;
+    const access =
+      integration !== undefined && subject !== undefined
+        ? repositoryAccessFor(
+            this.providerAccess,
+            {
+              enterprise_id: invitation.enterprise_id,
+              workspace_id: invitation.workspace_id,
+              actor_id: inviteeUserId,
+            },
+            integration.id,
+            subject.subject,
+            { now: new Date(now) },
+          )
+        : undefined;
     return {
       invitee_user_id: inviteeUserId,
       invitee_provider_subject: subject?.subject ?? null,
       inviter_role: (inviterMembership?.role as WorkspaceRole | undefined) ?? null,
       invitee_membership_id: inviteeMembership?.id ?? null,
-      repository_access:
-        access !== undefined
-          ? { has_access: access.has_access === 1, verified_at: access.verified_at }
-          : null,
+      repository_access: access !== undefined ? { current: access.current } : null,
       workspace_status:
         workspace === undefined ? "missing" : workspace.status === "active" ? "active" : "archived",
       now,
@@ -446,6 +473,9 @@ class SqliteInvitationRepository implements InvitationRepository {
   }
 }
 
-export function createInvitationRepository(db: ControlPlaneDb): InvitationRepository {
-  return new SqliteInvitationRepository(db);
+export function createInvitationRepository(
+  db: ControlPlaneDb,
+  providerAccess: ProviderAccessRepositories,
+): InvitationRepository {
+  return new SqliteInvitationRepository(db, providerAccess);
 }

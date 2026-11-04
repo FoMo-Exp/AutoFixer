@@ -32,7 +32,10 @@ export type InvitationDenialReason =
   | "wrong_subject"
   | "inviter_authority_lost"
   | "workspace_archived"
+  /** No current repository authority could be verified for the invitee. */
   | "ineligible"
+  /** The point refresh against the provider could not run (fail closed). */
+  | "repository_access_unverified"
   | "already_member";
 
 // ---------------------------------------------------------------------------
@@ -86,9 +89,10 @@ export interface CreateInvitationInput {
  * Everything the redemption decision needs is control-plane state, read by the
  * repository inside the same transaction as the consume — the invitee's
  * verified provider subject, the inviter's current role, the invitee's
- * existing membership, and the fresh repository-access verification the
- * eligibility policy requires. Callers supply only the locator and the
- * subject redeeming.
+ * existing membership, and the invitee's current repository authority as
+ * recorded by DAT-203's subject-authority store. Callers supply only the
+ * locator and the subject redeeming; the point refresh that makes that
+ * authority current is the service's responsibility, before the transaction.
  */
 export interface InvitationEvaluationInput {
   token_digest: string;

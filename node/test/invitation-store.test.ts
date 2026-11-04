@@ -8,11 +8,11 @@ import { describe, expect, test } from "vitest";
 import {
   createIdentityRepositories,
   createInvitationRepository,
+  createProviderAccessRepositories,
   createRepositories,
   evaluateRedemption,
   hasCurrentRepositoryAccess,
   openControlPlaneDb,
-  REPOSITORY_ACCESS_MAX_AGE_SECONDS,
   seedEnterprise,
   seedProviderInstance,
   seedWorkspace,
@@ -22,7 +22,9 @@ import type {
   ControlPlaneRepositories,
   IdentityRepositories,
   InvitationRepository,
+  ProviderAccessRepositories,
   RedemptionFacts,
+  ServiceIntegration,
   UserId,
   Workspace,
   WorkspaceScope,
@@ -36,8 +38,13 @@ import {
 /**
  * Storage-level behavior of owner-created invitations (DAT-204): keyed
  * digests, atomic one-time redemption, idempotent same-subject replay, every
- * denial reason (including the repository-access eligibility policy), and
+ * denial reason (including the repository-authority eligibility policy), and
  * idempotent revocation.
+ *
+ * Authority facts are produced through DAT-203's authority store — the same
+ * API reconciliation and the DAT-247 point refresh use — never by writing
+ * `subject_authority` rows directly. The HTTP point refresh itself is
+ * exercised end to end in invitation-api.test.ts.
  */
 
 const KEY = randomBytes(32);
@@ -47,15 +54,20 @@ interface World {
   db: ControlPlaneDb;
   repos: ControlPlaneRepositories;
   identity: IdentityRepositories;
+  access: ProviderAccessRepositories;
   invitations: InvitationRepository;
   workspace: Workspace;
+  integration: ServiceIntegration;
   scope: WorkspaceScope;
   providerInstanceId: string;
   /** A user with a verified identity on the workspace's provider instance. */
   makeUser(subject: string): UserId;
   /**
-   * Record a repository-access verification the way DAT-203's provider
-   * integration does — the only way eligibility facts enter storage.
+   * Record repository authority through DAT-203's store — the same write
+   * reconciliation and DAT-247's subject refresh perform.
+   *
+   * `verified_at` controls freshness: DAT-247's read model treats anything
+   * older than its freshness window as not current.
    */
   verifyAccess(
     subject: string,
@@ -68,7 +80,7 @@ function world(): World {
   const db = openControlPlaneDb();
   const repos = createRepositories(db);
   const identity = createIdentityRepositories(db);
-  const invitations = createInvitationRepository(db);
+  const access = createProviderAccessRepositories(db);
   const { enterprise, admin_scope } = seedEnterprise(db, {
     enterprise_name: "Test Enterprise",
     enterprise_slug: `test-ent-${randomBytes(4).toString("hex")}`,
@@ -88,14 +100,25 @@ function world(): World {
     workspace_id: workspace.id,
     actor_id: ACTOR,
   };
+  const integration = access.integrations.create(scope, {
+    provider_instance_id: provider.id,
+    repository_id: "github:Luthiel/AutoFixer",
+    repository_name: "Luthiel/AutoFixer",
+    source_credential_ref: "svc-source-1",
+    permission_visibility: "full",
+    actor_id: ACTOR,
+  });
+  const invitations = createInvitationRepository(db, access);
   // The invitation creator holds current repository administration authority.
   repos.memberships.create(scope, { user_id: ACTOR, role: "owner" });
   return {
     db,
     repos,
     identity,
+    access,
     invitations,
     workspace,
+    integration,
     scope,
     providerInstanceId: provider.id,
     makeUser(subject: string): UserId {
@@ -110,13 +133,30 @@ function world(): World {
       return user.id;
     },
     verifyAccess(subject, overrides = {}) {
-      repos.repositoryAccess.record(scope, {
-        provider_instance_id: provider.id,
-        subject: overrides.subjectOverride ?? subject,
-        has_access: overrides.has_access ?? true,
-        ...(overrides.verified_at !== undefined ? { verified_at: overrides.verified_at } : {}),
-        verified_by_source: "provider_api",
-        actor_id: ACTOR,
+      const recordedSubject = overrides.subjectOverride ?? subject;
+      const verifiedAt = overrides.verified_at ?? new Date().toISOString();
+      if (overrides.has_access === false) {
+        access.roster.setAuthorityState(
+          scope,
+          integration.id,
+          recordedSubject,
+          "removed",
+          verifiedAt,
+        );
+        return;
+      }
+      access.roster.applySnapshot(scope, integration.id, {
+        roles: [
+          {
+            subject: recordedSubject,
+            login: `login-${recordedSubject}`,
+            source_kind: "direct_collaborator",
+            provider_role: "push",
+            authority_ref: "repository:Luthiel/AutoFixer",
+            inherited_from: null,
+          },
+        ],
+        verified_at: verifiedAt,
       });
     },
     redeem(userId: UserId, token: string) {
@@ -260,72 +300,91 @@ describe("atomic redemption", () => {
   });
 });
 
-describe("repository-access eligibility policy", () => {
-  test("a verified identity without repository access is ineligible", () => {
+describe("repository-authority eligibility policy", () => {
+  /** DAT-247's default sensitive-action freshness window is 15 minutes. */
+  const STALE_AFTER_MS = 15 * 60 * 1000;
+
+  test("a verified identity without repository authority is ineligible", () => {
     const w = world();
     // The QA scenario: the invitee has a provider identity on the workspace's
-    // provider instance but no one has verified repository access for them.
+    // provider instance but DAT-203's authority store knows nothing about
+    // them for the workspace's active integration.
     const invitee = w.makeUser("6001");
     expectDenied(w.redeem(invitee, mint(w).token), "ineligible");
     w.db.close();
   });
 
-  test("a negative verification and a stale verification both deny", () => {
+  test("removed and stale authority both deny; a fresh refresh opens the invitation", () => {
     const w = world();
     const invitee = w.makeUser("6002");
+    // The provider positively says the subject is not a member.
     w.verifyAccess("6002", { has_access: false });
     expectDenied(w.redeem(invitee, mint(w).token), "ineligible");
 
-    const staleAt = new Date(
-      Date.now() - (REPOSITORY_ACCESS_MAX_AGE_SECONDS + 60) * 1000,
-    ).toISOString();
+    // `active` but verified outside DAT-247's freshness window is stale.
+    const staleAt = new Date(Date.now() - STALE_AFTER_MS - 60_000).toISOString();
     w.verifyAccess("6002", { verified_at: staleAt });
     expectDenied(w.redeem(invitee, mint(w).token), "ineligible");
 
-    // A fresh re-verification (the DAT-203 reconciliation loop) opens the
-    // same invitation again — the denial never consumed it.
+    // A fresh re-verification (the DAT-247 point refresh at redemption)
+    // opens the same invitation again — the denial never consumed it.
     w.verifyAccess("6002");
     expect(w.redeem(invitee, mint(w).token).status).toBe("joined");
     w.db.close();
   });
 
-  test("a verification for another subject or provider instance does not count", () => {
+  test("authority for another subject or integration does not count", () => {
     const w = world();
     const invitee = w.makeUser("6003");
-    // Verified for a different subject…
+    // Authority for a different subject…
     w.verifyAccess("6003", { subjectOverride: "someone-else" });
     expectDenied(w.redeem(invitee, mint(w).token), "ineligible");
-    // …and for the workspace's subject on a different provider instance.
-    w.repos.repositoryAccess.record(
-      { enterprise_id: w.scope.enterprise_id, workspace_id: w.workspace.id, actor_id: ACTOR },
-      {
-        provider_instance_id: w.repos.providerInstances.create(
-          { enterprise_id: w.scope.enterprise_id, actor_id: ACTOR },
-          { provider_type: "gitlab", origin_url: "https://gitlab.example.com" },
-        ).id,
-        subject: "6003",
-        has_access: true,
-        verified_by_source: "provider_api",
-        actor_id: ACTOR,
-      },
-    );
+    // …and for the same subject under a different workspace integration.
+    const otherIntegration = w.access.integrations.create(w.scope, {
+      provider_instance_id: w.providerInstanceId,
+      repository_id: "github:Luthiel/Other",
+      repository_name: "Luthiel/Other",
+      source_credential_ref: "svc-source-2",
+      permission_visibility: "full",
+      actor_id: ACTOR,
+    });
+    w.access.roster.applySnapshot(w.scope, otherIntegration.id, {
+      roles: [
+        {
+          subject: "6003",
+          login: "login-6003",
+          source_kind: "direct_collaborator",
+          provider_role: "push",
+          authority_ref: "repository:Luthiel/Other",
+          inherited_from: null,
+        },
+      ],
+      verified_at: new Date().toISOString(),
+    });
     expectDenied(w.redeem(invitee, mint(w).token), "ineligible");
     w.verifyAccess("6003");
     expect(w.redeem(invitee, mint(w).token).status).toBe("joined");
     w.db.close();
   });
 
-  test("eligibility is re-checked inside the transaction: policy helpers match", () => {
-    const now = new Date().toISOString();
-    expect(hasCurrentRepositoryAccess(null, now)).toBe(false);
-    expect(hasCurrentRepositoryAccess({ has_access: false, verified_at: now }, now)).toBe(false);
-    expect(hasCurrentRepositoryAccess({ has_access: true, verified_at: now }, now)).toBe(true);
-    const stale = new Date(
-      Date.now() - (REPOSITORY_ACCESS_MAX_AGE_SECONDS + 1) * 1000,
-    ).toISOString();
-    expect(hasCurrentRepositoryAccess({ has_access: true, verified_at: stale }, now)).toBe(false);
-    const future = new Date(Date.now() + 60_000).toISOString();
-    expect(hasCurrentRepositoryAccess({ has_access: true, verified_at: future }, now)).toBe(false);
+  test("a workspace without an active integration is ineligible (fail closed)", () => {
+    const w = world();
+    const invitee = w.makeUser("6006");
+    w.verifyAccess("6006");
+    w.access.integrations.setStatus(
+      w.scope,
+      w.integration.id,
+      { install_status: "suspended", actor_id: ACTOR },
+      w.integration.version,
+    );
+    expectDenied(w.redeem(invitee, mint(w).token), "ineligible");
+    w.db.close();
+  });
+
+  test("the invitation consumes DAT-247's verdict, not its own freshness policy", () => {
+    expect(hasCurrentRepositoryAccess(null)).toBe(false);
+    expect(hasCurrentRepositoryAccess({ current: false })).toBe(false);
+    expect(hasCurrentRepositoryAccess({ current: true })).toBe(true);
   });
 });
 
@@ -408,7 +467,7 @@ describe("denial reasons", () => {
       invitee_membership_id: "mbr_x",
       invitee_provider_subject: null,
       inviter_role: null,
-      repository_access: null,
+      repository_access: { current: false },
       workspace_status: "archived",
       now: new Date().toISOString(),
     };

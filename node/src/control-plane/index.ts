@@ -125,17 +125,6 @@ export {
 } from "./invitation-repositories.js";
 
 export type {
-  RecordRepositoryAccessInput,
-  RepositoryAccessVerification,
-  RepositoryAccessVerificationRepository,
-  RepositoryAccessVerificationSource,
-} from "./repository-access.js";
-export {
-  createRepositoryAccessVerificationRepository,
-  REPOSITORY_ACCESS_MAX_AGE_SECONDS,
-} from "./repository-access.js";
-
-export type {
   AuthAuditRepository,
   DesktopFlowRepository,
   EnterpriseRoleRepository,

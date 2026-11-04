@@ -339,10 +339,9 @@ export class AuthService {
       );
     }
     let profile: ProviderProfile;
-    let accessToken: string;
     try {
       const adapter = providerAdapters[provider.provider_type];
-      accessToken = await this.#oauth.exchangeCode({
+      const accessToken = await this.#oauth.exchangeCode({
         adapter,
         origin: provider.origin_url,
         credentials,
@@ -382,11 +381,6 @@ export class AuthService {
       });
       throw new ApiError(403, "FORBIDDEN", "this account is suspended");
     }
-
-    // The one moment a provider credential exists server-side: verify the
-    // user's current repository access against the provider while the token
-    // is in hand, and record the verified fact (or none at all, fail closed).
-    await this.#verifyRepositoryAccess(user, provider, profile, accessToken);
 
     if (flow.kind === "desktop") {
       const desktopFlowId = flow.desktop_flow_id ?? "";
@@ -964,79 +958,6 @@ export class AuthService {
       details: { subject: profile.subject },
     });
     return user;
-  }
-
-  /**
-   * Trusted repository-access fact producer (DAT-204 eligibility).
-   *
-   * For every active workspace bound to the provider instance the user just
-   * authenticated to, ask the provider — with the user's own access token —
-   * whether they can currently reach the workspace's bound repository, and
-   * record the verified fact. An unusable answer records nothing: a missing
-   * fact keeps invitation redemption fail closed until a later verification
-   * (re-login, or DAT-203's periodic reconciliation) succeeds. The token is
-   * used only inside this call and never logged.
-   */
-  async #verifyRepositoryAccess(
-    user: AppUser,
-    provider: LoginProvider,
-    profile: ProviderProfile,
-    accessToken: string,
-  ): Promise<void> {
-    const scope = { enterprise_id: provider.enterprise_id, actor_id: SYSTEM_ACTOR };
-    const workspaces = this.#repos.workspaces
-      .list(scope)
-      .filter(
-        (workspace) =>
-          workspace.provider_instance_id === provider.id && workspace.status === "active",
-      );
-    const adapter = providerAdapters[provider.provider_type];
-    for (const workspace of workspaces) {
-      let hasAccess: boolean | undefined;
-      try {
-        hasAccess = await this.#oauth.probeRepositoryAccess({
-          adapter,
-          origin: provider.origin_url,
-          accessToken,
-          repositoryId: workspace.repository_id,
-          subject: profile.subject,
-        });
-      } catch {
-        hasAccess = undefined;
-      }
-      const detail = { workspace_id: workspace.id, subject: profile.subject };
-      if (hasAccess === undefined) {
-        this.#audit({
-          event: "repository_access.unverified",
-          enterprise_id: provider.enterprise_id,
-          actor_kind: "user",
-          actor_user_id: user.id,
-          subject_user_id: user.id,
-          provider_instance_id: provider.id,
-          details: { ...detail, reason: "provider_check_unavailable" },
-        });
-        continue;
-      }
-      this.#repos.repositoryAccess.record(
-        { ...scope, workspace_id: workspace.id },
-        {
-          provider_instance_id: provider.id,
-          subject: profile.subject,
-          has_access: hasAccess,
-          verified_by_source: "provider_api",
-          actor_id: SYSTEM_ACTOR,
-        },
-      );
-      this.#audit({
-        event: "repository_access.verified",
-        enterprise_id: provider.enterprise_id,
-        actor_kind: "user",
-        actor_user_id: user.id,
-        subject_user_id: user.id,
-        provider_instance_id: provider.id,
-        details: { ...detail, has_access: hasAccess },
-      });
-    }
   }
 
   #createSession(input: Omit<CreateSessionInput, "token_hash" | "csrf_token" | "expires_at">): {

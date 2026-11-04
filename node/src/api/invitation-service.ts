@@ -36,6 +36,7 @@ import type {
   WorkspaceScope,
 } from "../control-plane/index.js";
 import { ApiError } from "./errors.js";
+import type { InvitationAuthority } from "./invitation-authority.js";
 import type {
   EnterpriseRefView,
   MembershipView,
@@ -238,6 +239,8 @@ export interface InvitationServiceDeps {
   repos: ControlPlaneRepositories;
   identity: IdentityRepositories;
   invitations: InvitationRepository;
+  /** DAT-247 point refresh used before redemption (consume-only). */
+  authority: InvitationAuthority;
   config: InvitationServiceConfig;
 }
 
@@ -252,6 +255,7 @@ export class InvitationService {
   readonly #repos: ControlPlaneRepositories;
   readonly #identity: IdentityRepositories;
   readonly #invitations: InvitationRepository;
+  readonly #authority: InvitationAuthority;
   readonly #config: Required<InvitationServiceConfig>;
   readonly #limiter = new FixedWindowRateLimiter();
 
@@ -259,6 +263,7 @@ export class InvitationService {
     this.#repos = deps.repos;
     this.#identity = deps.identity;
     this.#invitations = deps.invitations;
+    this.#authority = deps.authority;
     this.#config = {
       enterpriseId: deps.config.enterpriseId,
       digestKey: deps.config.digestKey,
@@ -376,8 +381,9 @@ export class InvitationService {
       actor.user_id,
     );
     // The same decision procedure the redeem transaction runs, with no side
-    // effects: eligibility is the fresh repository-access verification the
-    // policy requires, read from the control plane at this moment.
+    // effects: eligibility is the invitee's stored repository authority
+    // (DAT-203's `subject_authority`), read at this moment. Only redemption
+    // performs the DAT-247 point refresh; preview never calls the provider.
     const decision = this.#invitations.evaluate({
       token_digest: invitation.token_digest,
       invitee_user_id: actor.user_id,
@@ -403,20 +409,64 @@ export class InvitationService {
     };
   }
 
-  redeemInvitation(actor: InvitationRequestContext, token: string): InvitationRedemptionView {
+  async redeemInvitation(
+    actor: InvitationRequestContext,
+    token: string,
+  ): Promise<InvitationRedemptionView> {
     this.#rateLimit("redeem", actor);
     const { invitation, workspace } = this.#resolveByToken(
       token,
       "invitation.redeem",
       actor.user_id,
     );
-    // The transaction re-reads every decision fact — including the invitee's
-    // current repository access and the inviter's current authority — and
-    // consumes atomically, so the decision is valid at redemption time.
-    const outcome: InvitationRedemptionOutcome = this.#invitations.redeem({
+    const evaluation = {
       token_digest: invitation.token_digest,
       invitee_user_id: actor.user_id,
-    });
+    };
+    // Facts that need no provider call settle the attempt first: an unknown,
+    // revoked, expired, wrong-subject, or already-member invitation never
+    // reaches the provider. A replay of the caller's own join needs no fresh
+    // authority either — the transaction short-circuits it.
+    const preliminary = this.#invitations.evaluate(evaluation);
+    if (preliminary.kind === "deny" && preliminary.reason !== "ineligible") {
+      this.#auditAttempt(
+        "invitation.redeem",
+        invitation,
+        actor.user_id,
+        "denied",
+        preliminary.reason,
+      );
+      throw invitationNotAccepted();
+    }
+    if (preliminary.kind !== "replay") {
+      // Point refresh before the transaction: DAT-247 asks the provider
+      // about this subject with the integration's service credential and
+      // writes the answer through the DAT-203 authority store. A provider
+      // that cannot answer, lacks scope, is rate limited, or a workspace
+      // without an active integration / linked identity fails closed — the
+      // invitation is not consumed and the caller sees the uniform denial.
+      try {
+        await this.#authority.refreshFor(
+          this.#workspaceScope(workspace, actor.user_id),
+          workspace,
+          actor.user_id,
+        );
+      } catch {
+        this.#auditAttempt(
+          "invitation.redeem",
+          invitation,
+          actor.user_id,
+          "denied",
+          "repository_access_unverified",
+        );
+        throw invitationNotAccepted();
+      }
+    }
+    // The transaction re-reads every decision fact — including the invitee's
+    // now-refreshed repository authority and the inviter's current
+    // authority — and consumes atomically, so the decision is valid at
+    // redemption time.
+    const outcome: InvitationRedemptionOutcome = this.#invitations.redeem(evaluation);
     if (outcome.status === "denied") {
       this.#auditAttempt("invitation.redeem", invitation, actor.user_id, "denied", outcome.reason);
       throw invitationNotAccepted();

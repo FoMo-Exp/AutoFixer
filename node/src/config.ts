@@ -84,6 +84,14 @@ export interface OrchestratorConfig {
    * invitations become unredeemable.
    */
   invitationDigestKeyFile?: string;
+  /**
+   * Protected JSON file mapping service credential references to secrets
+   * (DAT-247 boundary). Invitation redemption point-refreshes the invitee's
+   * repository authority with the repository-scoped service credential; when
+   * unset the credential store is empty and every redemption fails closed
+   * (403) rather than falling back to any user credential.
+   */
+  providerServiceCredentialFile?: string;
   /** Deployment-owned bootstrap secret; unset disables admin bootstrap. */
   bootstrapToken?: string;
   /** Session lifetime in seconds (default 12 hours). */
@@ -239,6 +247,15 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
       );
     }
     config.invitationDigestKeyFile = invitationDigestKeyFile;
+  }
+  const providerServiceCredentialFile = env["FORGEPILOT_SERVICE_CREDENTIAL_FILE"]?.trim();
+  if (providerServiceCredentialFile) {
+    if (config.oauthClientsFile === undefined) {
+      throw new Error(
+        "FORGEPILOT_SERVICE_CREDENTIAL_FILE requires FORGEPILOT_OAUTH_CLIENTS_FILE to enable the identity surfaces",
+      );
+    }
+    config.providerServiceCredentialFile = providerServiceCredentialFile;
   }
   const bootstrapToken = env["FORGEPILOT_BOOTSTRAP_TOKEN"];
   if (bootstrapToken !== undefined && bootstrapToken !== "") {

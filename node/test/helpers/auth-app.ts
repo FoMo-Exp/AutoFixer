@@ -7,11 +7,14 @@ import type { OrchestratorHandle } from "../../src/index.js";
 import type { OrchestratorConfig } from "../../src/config.js";
 import type { InvitationRateLimits } from "../../src/api/invitation-service.js";
 import {
+  createProviderAccessRepositories,
   openControlPlaneDb,
   seedEnterprise,
   seedProviderInstance,
   seedWorkspace,
 } from "../../src/control-plane/index.js";
+import type { ServiceIntegration } from "../../src/control-plane/index.js";
+import { createStaticServiceCredentialStore } from "../../src/provider-access/credentials.js";
 import type { DshServerHandle } from "./dsh-server.js";
 import { scriptedStream, TEST_MODEL } from "./scripted-stream.js";
 import { scriptedGateway } from "./test-gateway.js";
@@ -26,7 +29,10 @@ import type { RawResponse } from "./http.js";
 
 export const BOOTSTRAP_TOKEN = "test-bootstrap-token-0123456789abcdef0123456789abcdef";
 export const GITHUB_ORIGIN = "https://github.com";
-const REPOSITORY_ID = "github:Luthiel/AutoFixer";
+export const REPOSITORY_ID = "github:Luthiel/AutoFixer";
+/** Service credential the seeded repository integration references (DAT-247). */
+export const SERVICE_CREDENTIAL_REF = "svc-source-1";
+export const SERVICE_CREDENTIAL = "ghs_test_service_credential_0123456789";
 const APPROVER = "github:local-operator";
 
 export interface FakeProfile {
@@ -40,19 +46,13 @@ export interface FakeProvider {
   fetchImpl: typeof fetch;
   /** Profile returned by the user endpoint; swap between logins. */
   profile: FakeProfile;
-  /**
-   * Answer for repository-access probes (login-time verification of the
-   * workspace's bound repository): `true`/`false` is the provider's verdict,
-   * `"error"` simulates an unusable provider answer (fail closed).
-   */
-  repoAccess: true | false | "error";
   /** Every provider request seen, for leak assertions. */
   requests: Array<{ url: string; method: string; body: string }>;
 }
 
 export function fakeProvider(profile: FakeProfile): FakeProvider {
   const requests: FakeProvider["requests"] = [];
-  const state = { profile, repoAccess: true as FakeProvider["repoAccess"] };
+  const state = { profile };
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = String(input);
     const body = String(init?.body ?? "");
@@ -66,22 +66,6 @@ export function fakeProvider(profile: FakeProfile): FakeProvider {
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
-    }
-    // Repository-access probes: the provider's verdict on whether the
-    // authenticated subject can reach the workspace's bound repository.
-    if (url.includes("/repositories/") || url.includes("/members/all/")) {
-      if (state.repoAccess === "error") {
-        return new Response("provider unavailable", { status: 500 });
-      }
-      return state.repoAccess
-        ? new Response(JSON.stringify({ id: 1, private: true }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          })
-        : new Response(JSON.stringify({ message: "Not Found" }), {
-            status: 404,
-            headers: { "Content-Type": "application/json" },
-          });
     }
     return new Response(
       JSON.stringify({
@@ -101,12 +85,6 @@ export function fakeProvider(profile: FakeProfile): FakeProvider {
     set profile(next: FakeProfile) {
       state.profile = next;
     },
-    get repoAccess() {
-      return state.repoAccess;
-    },
-    set repoAccess(next: FakeProvider["repoAccess"]) {
-      state.repoAccess = next;
-    },
     requests,
   };
 }
@@ -118,6 +96,8 @@ export interface AuthApp {
   workspaceId: string;
   /** Seeded, already-approved GitHub provider instance. */
   providerInstanceId: string;
+  /** Repository-scoped service integration (set with `repositoryIntegration`). */
+  integration: ServiceIntegration | undefined;
   provider: FakeProvider;
   stop(): Promise<void>;
 }
@@ -129,6 +109,13 @@ export interface AuthAppOptions {
   lookup?: (hostname: string) => Promise<string[]>;
   /** Rate-limit overrides for the invitation surface (tests). */
   invitationRateLimits?: InvitationRateLimits;
+  /**
+   * Seed a repository-scoped service integration for the workspace, so the
+   * DAT-247 point refresh has something to verify against.
+   */
+  repositoryIntegration?: boolean;
+  /** Provider API base override for the point refresh (fake provider). */
+  providerApiBaseUrl?: string;
 }
 
 let appCounter = 0;
@@ -168,6 +155,23 @@ export async function startAuthApp(options: AuthAppOptions): Promise<AuthApp> {
     repository_id: REPOSITORY_ID,
     provider_instance_id: instance.id,
   });
+  const integration = options.repositoryIntegration
+    ? createProviderAccessRepositories(db).integrations.create(
+        {
+          enterprise_id: enterprise.id,
+          workspace_id: workspace.id,
+          actor_id: "usr_seed",
+        },
+        {
+          provider_instance_id: instance.id,
+          repository_id: REPOSITORY_ID,
+          repository_name: "Luthiel/AutoFixer",
+          source_credential_ref: SERVICE_CREDENTIAL_REF,
+          permission_visibility: "full",
+          actor_id: "usr_seed",
+        },
+      )
+    : undefined;
   db.close();
 
   const config: OrchestratorConfig = {
@@ -206,6 +210,16 @@ export async function startAuthApp(options: AuthAppOptions): Promise<AuthApp> {
     ...(options.invitationRateLimits !== undefined
       ? { invitationRateLimits: options.invitationRateLimits }
       : {}),
+    ...(options.repositoryIntegration
+      ? {
+          providerServiceCredentials: createStaticServiceCredentialStore({
+            [SERVICE_CREDENTIAL_REF]: SERVICE_CREDENTIAL,
+          }),
+        }
+      : {}),
+    ...(options.providerApiBaseUrl !== undefined
+      ? { providerApiBaseUrl: options.providerApiBaseUrl }
+      : {}),
   });
   const { port } = await orchestrator.start();
   return {
@@ -214,6 +228,7 @@ export async function startAuthApp(options: AuthAppOptions): Promise<AuthApp> {
     enterpriseId: enterprise.id,
     workspaceId: workspace.id,
     providerInstanceId: instance.id,
+    integration,
     provider,
     stop: () => orchestrator.stop(),
   };

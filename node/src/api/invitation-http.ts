@@ -151,13 +151,13 @@ export async function handleInvitationRequest(
     const actor = requestContextOf(deps, res, session);
     const body = await readJsonBody(req);
     const token = requireString(body, "token");
-    writeJson(
-      res,
-      200,
-      isPreview
-        ? deps.invitations.previewInvitation(actor, token)
-        : deps.invitations.redeemInvitation(actor, token),
-    );
+    // Redemption point-refreshes repository authority before its
+    // transaction, so it is asynchronous; await it (a promise serialized by
+    // writeJson would answer 200 with an empty object).
+    const result = isPreview
+      ? deps.invitations.previewInvitation(actor, token)
+      : await deps.invitations.redeemInvitation(actor, token);
+    writeJson(res, 200, result);
     return;
   }
 
