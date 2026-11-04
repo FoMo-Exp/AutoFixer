@@ -16,6 +16,7 @@ import {
   SecurityCaseService,
   SecurityError,
   SecurityNotifier,
+  staticDutyDirectory,
   type NotificationSink,
   type QuarantineKeyProvider,
   type SecurityActor,
@@ -34,6 +35,7 @@ const IDENTITY = {
 
 const HANDLER: SecurityActor = { actorId: "human_handler", actorKind: "human" };
 const REVIEWER: SecurityActor = { actorId: "human_reviewer", actorKind: "human" };
+const ADMIN: SecurityActor = { actorId: "human_admin", actorKind: "human" };
 
 const KEY = Buffer.alloc(32, 5);
 const KEY_PROVIDER: QuarantineKeyProvider = { keyId: "key_1", currentKey: () => KEY };
@@ -75,6 +77,12 @@ function buildService(options: { rawContent?: string; noKey?: boolean } = {}) {
     quarantine,
     referenceSecret: KEY,
     onIncident: (message: string) => void incidents.push(message),
+    duties: staticDutyDirectory({
+      handlers: ["human_handler"],
+      reviewers: ["human_reviewer"],
+      admins: ["human_admin"],
+      taskOwners: ["human_owner"],
+    }),
   });
   return { service, sent, caseStore, pauses, quarantine, incidents };
 }
@@ -152,7 +160,7 @@ describe("SecurityCaseService.recordBlock", () => {
     const grant = service.grantQuarantineAccess(
       second.quarantineId as string,
       "human_handler",
-      HANDLER,
+      ADMIN,
     );
     expect(
       service.inspectQuarantine(second.quarantineId as string, HANDLER, grant.grantId),
@@ -252,7 +260,7 @@ describe("SecurityCaseService quarantine inspection", () => {
     });
     const quarantineId = result.case.quarantineIds[0] as string;
     expect(() => service.inspectQuarantine(quarantineId, HANDLER)).toThrow(SecurityError);
-    const grant = service.grantQuarantineAccess(quarantineId, "human_handler", HANDLER);
+    const grant = service.grantQuarantineAccess(quarantineId, "human_handler", ADMIN);
     const content = service.inspectQuarantine(quarantineId, HANDLER, grant.grantId);
     expect(content).toContain(SECRET_VALUE);
     const types = caseStore.events(result.case.caseId).map((event) => event.type);

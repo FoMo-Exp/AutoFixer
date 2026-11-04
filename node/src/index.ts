@@ -48,10 +48,12 @@ import { resolveConfiguredModel } from "./pi/model.js";
 import {
   DependentWorkPauseLedger,
   EncryptedQuarantine,
+  RuleCorrectionService,
   SecurityCaseService,
   SecurityCaseStore,
   SecurityNotifier,
   createFileNotificationSink,
+  staticDutyDirectory,
 } from "./security/index.js";
 import type { QuarantineKeyProvider, SecurityRoleDirectory } from "./security/index.js";
 import {
@@ -130,13 +132,18 @@ function fileQuarantineKeyProvider(keyFile: string | undefined): QuarantineKeyPr
 }
 
 /**
- * The deployment security disposal machinery (DAT-210): durable case
- * history, durable dependent-work holds, encrypted quarantine, and handler
- * notification with escalation. The production gateway receives this service
- * as both its disposal-case intake and its admission-boundary hold — the
- * gateway cannot be deployed without either.
+ * The deployment security disposal machinery (DAT-210, DAT-211): durable
+ * case history, durable dependent-work holds, encrypted quarantine, handler
+ * notification with escalation, and the versioned rule-correction lifecycle
+ * behind the separated security duties. The production gateway receives the
+ * case service as both its disposal-case intake and its admission-boundary
+ * hold — the gateway cannot be deployed without either — and scans under the
+ * currently activated rule corrections.
  */
-function deploymentSecurity(config: OrchestratorConfig): SecurityCaseService {
+function deploymentSecurity(config: OrchestratorConfig): {
+  security: SecurityCaseService;
+  rules: RuleCorrectionService;
+} {
   const referenceSecret = config.securityReferenceSecret
     ? Buffer.from(config.securityReferenceSecret, "utf8")
     : randomBytes(32);
@@ -152,31 +159,46 @@ function deploymentSecurity(config: OrchestratorConfig): SecurityCaseService {
       })),
     }),
   };
-  return new SecurityCaseService({
-    caseStore: new SecurityCaseStore(
-      config.securityCaseStateFile ? { persistencePath: config.securityCaseStateFile } : {},
-    ),
-    pauses: new DependentWorkPauseLedger(
-      config.securityPauseStateFile ? { persistencePath: config.securityPauseStateFile } : {},
-    ),
-    notifier: new SecurityNotifier({
-      directory,
-      sink: createFileNotificationSink(
-        config.securityNotificationsFile ??
-          defaultSecurityStatePath("security-notifications.jsonl"),
-      ),
-      referenceSecret,
-    }),
-    quarantine: new EncryptedQuarantine({
-      keyProvider: fileQuarantineKeyProvider(config.quarantineKeyFile),
-      // Bounded retention; the enterprise lifecycle governs longer terms.
-      retentionSeconds: 30 * 24 * 60 * 60,
-      ...(config.securityQuarantineStateFile
-        ? { persistencePath: config.securityQuarantineStateFile }
-        : {}),
-    }),
-    referenceSecret,
+  // Duties (DAT-211) are granted only by explicit listing; missing handlers,
+  // reviewers, or admins leave their actions unavailable — never waived.
+  const duties = staticDutyDirectory({
+    taskOwners: config.securityTaskOwnerIds ?? [],
+    handlers: config.securityHandlerIds ?? [],
+    reviewers: config.securityReviewerIds ?? [],
+    admins: config.securityAdminIds ?? [],
   });
+  return {
+    security: new SecurityCaseService({
+      caseStore: new SecurityCaseStore(
+        config.securityCaseStateFile ? { persistencePath: config.securityCaseStateFile } : {},
+      ),
+      pauses: new DependentWorkPauseLedger(
+        config.securityPauseStateFile ? { persistencePath: config.securityPauseStateFile } : {},
+      ),
+      notifier: new SecurityNotifier({
+        directory,
+        sink: createFileNotificationSink(
+          config.securityNotificationsFile ??
+            defaultSecurityStatePath("security-notifications.jsonl"),
+        ),
+        referenceSecret,
+      }),
+      quarantine: new EncryptedQuarantine({
+        keyProvider: fileQuarantineKeyProvider(config.quarantineKeyFile),
+        // Bounded retention; the enterprise lifecycle governs longer terms.
+        retentionSeconds: 30 * 24 * 60 * 60,
+        ...(config.securityQuarantineStateFile
+          ? { persistencePath: config.securityQuarantineStateFile }
+          : {}),
+      }),
+      referenceSecret,
+      duties,
+    }),
+    rules: new RuleCorrectionService({
+      directory: duties,
+      ...(config.securityRuleStateFile ? { persistencePath: config.securityRuleStateFile } : {}),
+    }),
+  };
 }
 
 /**
@@ -200,7 +222,7 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
   const scope = { enterpriseId: config.enterpriseId, workspaceId: config.workspaceId };
   // Secret-gate blocks always open a disposal case and hold the affected
   // run's dependent work (DAT-210): the production gateway carries both.
-  const security = deploymentSecurity(config);
+  const { security, rules } = deploymentSecurity(config);
   return createModelGateway({
     policyResolver: config.gatewayPolicyFile
       ? loadGatewayPolicyFile(config.gatewayPolicyFile, scope)
@@ -211,8 +233,10 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
     adapter: piAiProviderAdapter,
     // Complete-request secret scanning is part of the egress boundary: the
     // deployment always scans with the built-in deterministic detector set
-    // (DAT-209); a deployment may swap in another SecretScanner backend.
-    scanner: createPatternSecretScanner(),
+    // (DAT-209), narrowed only by the currently activated, independently
+    // reviewed rule corrections (DAT-211). A deployment may swap in another
+    // SecretScanner backend.
+    scanner: createPatternSecretScanner({ corrections: () => rules.activeCorrections() }),
     ...(config.gatewayAuditFile ? { sink: createFileEventSink(config.gatewayAuditFile) } : {}),
     caseIntake: security,
     dependentWorkHold: security,

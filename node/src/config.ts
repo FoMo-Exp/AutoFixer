@@ -75,6 +75,16 @@ export interface OrchestratorConfig {
   /** Designated workspace security handlers and enterprise security admins. */
   securityHandlerIds?: string[];
   securityAdminIds?: string[];
+  /**
+   * Separated security duties (DAT-211): task owners and independent
+   * reviewers alongside handlers and admins. Duties are granted only by
+   * explicit listing; an empty reviewer list keeps cases blocked and
+   * escalated, never waived.
+   */
+  securityTaskOwnerIds?: string[];
+  securityReviewerIds?: string[];
+  /** Durable versioned rule-correction state (DAT-211). */
+  securityRuleStateFile?: string;
   /** Durable notification record sink (JSONL, 0600; non-secret content). */
   securityNotificationsFile?: string;
   /**
@@ -245,6 +255,10 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     securityHandlerIds: csv(env["FORGEPILOT_SECURITY_HANDLER_IDS"], []),
     securityAdminIds: csv(env["FORGEPILOT_SECURITY_ADMIN_IDS"], []),
     usageLedgerFile: env["FORGEPILOT_USAGE_LEDGER_FILE"] ?? defaultUsageLedgerPath(),
+    securityTaskOwnerIds: csv(env["FORGEPILOT_SECURITY_TASK_OWNER_IDS"], []),
+    securityReviewerIds: csv(env["FORGEPILOT_SECURITY_REVIEWER_IDS"], []),
+    securityRuleStateFile:
+      env["FORGEPILOT_SECURITY_RULE_STATE_FILE"] ?? defaultSecurityStatePath("security-rules.json"),
   };
   // Security disposal options (DAT-210). Absent values keep fail-closed
   // defaults: no quarantine key means nothing is ever retained in plaintext,

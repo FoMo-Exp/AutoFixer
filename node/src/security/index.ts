@@ -67,3 +67,50 @@ export type {
   RecordBlockResult,
   SecurityCaseIntake,
 } from "./service.js";
+
+export {
+  SECURITY_DUTY_MATRIX,
+  assertIndependentReview,
+  assertSeparateAdministrator,
+  requireDuty,
+  requireScope,
+  staticDutyDirectory,
+} from "./duties.js";
+export type {
+  ReviewIndependence,
+  SecurityAction,
+  SecurityDuty,
+  SecurityDutyDirectory,
+  SecurityDutyScope,
+} from "./duties.js";
+
+export {
+  constrainDetector,
+  correctionLineage,
+  findDisguisedExemptions,
+  scanDisguisedExemptions,
+  validateRuleCorrection,
+} from "./rules.js";
+export type {
+  ActiveRuleCorrection,
+  DetectorConstraints,
+  DisguisedExemptionScan,
+  RegressionEvidence,
+  RuleCorrectionDraft,
+  RuleEvent,
+  RuleEventType,
+  RuleRevision,
+  RuleRevisionStatus,
+  RuleReview,
+  TrueSecretSample,
+} from "./rules.js";
+
+export {
+  corpusDigest,
+  defaultRegressionSamples,
+  ruleDigest,
+  runRegressionEvidence,
+} from "./regression.js";
+
+export { RuleCorrectionService } from "./rule-service.js";
+export type { RuleServiceDeps } from "./rule-service.js";

@@ -13,6 +13,8 @@
 
 import { scrubSecrets } from "../gateway/redact.js";
 import type { SecurityCaseStore } from "./case-store.js";
+import { requireDuty, requireScope } from "./duties.js";
+import type { SecurityAction, SecurityDutyDirectory } from "./duties.js";
 import { mintCaseReference } from "./notify.js";
 import type { NotifyResult, SecurityNotifier } from "./notify.js";
 import type { DependentWorkPauseLedger, RunPause } from "./pause.js";
@@ -71,8 +73,25 @@ export interface CaseServiceDeps {
   quarantine: EncryptedQuarantine;
   /** Service secret for minting audience-bound case references. */
   referenceSecret: Buffer;
+  /** ADR-0006 seam behind the duty matrix (DAT-211). */
+  duties: SecurityDutyDirectory;
   onIncident?: (message: string) => void;
 }
+
+/**
+ * Which matrix action each case-state edge requires (DAT-211, ADR-0005 §3).
+ * Handling and submission are handler work, review edges are reviewer work,
+ * and termination is handler/administrator work — never the paused run.
+ */
+const TRANSITION_ACTIONS: Record<string, SecurityAction> = {
+  "pending>handling": "case.handle",
+  "handling>awaiting_review": "case.submit_for_review",
+  "awaiting_review>resolved": "case.review_decide",
+  "awaiting_review>handling": "case.review_decide",
+  "pending>terminated": "case.terminate",
+  "handling>terminated": "case.terminate",
+  "awaiting_review>terminated": "case.terminate",
+};
 
 export class SecurityCaseService implements SecurityCaseIntake {
   private readonly deps: CaseServiceDeps;
@@ -187,25 +206,94 @@ export class SecurityCaseService implements SecurityCaseIntake {
   }
 
   /**
-   * Human/service case disposition. Reaching `resolved` or `terminated`
-   * releases the affected run's dependent work under the same actor — the run
-   * itself is rejected at the store and the pause ledger, so it can never
-   * resume itself. Case states never redefine harness stop-condition or
-   * terminal semantics; this only lifts the dependent-work hold.
+   * Duty-gated case disposition (DAT-211). Each edge requires its matrix
+   * duty — handler work for handling/submission, reviewer work for review
+   * decisions, handler/admin work for termination — and the store enforces
+   * the independent-review relationship on the review edges. Reaching
+   * `resolved` or `terminated` releases the affected run's dependent work
+   * under the same actor: the run itself is rejected at the store and the
+   * pause ledger, so it can never resume itself. Case states never redefine
+   * harness stop-condition or terminal semantics; this only lifts the
+   * dependent-work hold.
    */
   transition(caseId: string, to: CaseState, actor: SecurityActor): SecurityCase {
-    const record = this.deps.caseStore.transition(caseId, to, actor);
+    const record = this.requireCase(caseId);
+    const action = TRANSITION_ACTIONS[`${record.state}>${to}`];
+    if (action === undefined) {
+      // Let the store produce the canonical forbidden-edge error.
+      return this.deps.caseStore.transition(caseId, to, actor);
+    }
+    try {
+      requireDuty(action, actor, this.deps.duties, requireScope(record.scope));
+    } catch (error) {
+      // A denied review attempt is a review result and belongs in the audit
+      // trail whether the duty gate or the independence gate refused it.
+      if (action === "case.review_decide") {
+        this.deps.caseStore.appendEvent(caseId, "case.review_denied", actor, {
+          code: error instanceof SecurityError ? error.code : "SOD_REVIEW_DENIED",
+        });
+      }
+      throw error;
+    }
+    const updated = this.deps.caseStore.transition(caseId, to, actor);
+    if (to === "awaiting_review") {
+      // No independent reviewer available: the case stays blocked in review
+      // and escalates — unavailability is never a waiver (ADR-0005 §3).
+      const reviewers = this.deps.duties.reviewersIn(requireScope(updated.scope)) ?? [];
+      if (reviewers.length === 0) {
+        this.deps.caseStore.appendEvent(caseId, "case.reviewer_unavailable", actor, {
+          runId: updated.scope.runId,
+        });
+        this.incident(
+          `no independent reviewer available for case ${caseId}; it remains blocked and escalates`,
+        );
+      }
+    }
     if (to === "resolved" || to === "terminated") {
-      const pause = this.deps.pauses.pauseFor(record.scope.runId);
+      const pause = this.deps.pauses.pauseFor(updated.scope.runId);
       if (pause && pause.state === "active") {
         this.deps.pauses.release(pause.pauseId, actor, `case ${to}`);
         this.deps.caseStore.appendEvent(caseId, "run.pause_released", actor, {
           pauseId: pause.pauseId,
-          runId: record.scope.runId,
+          runId: updated.scope.runId,
           via: to,
         });
       }
     }
+    return updated;
+  }
+
+  /**
+   * A task owner *requests* termination — ownership alone never dispositions
+   * a case (ADR-0005 §3). The request is recorded; handler or enterprise
+   * administrator work executes it via {@link transition}.
+   */
+  requestTermination(caseId: string, actor: SecurityActor): void {
+    this.recordOwnerRequest(
+      caseId,
+      actor,
+      "case.request_termination",
+      "case.termination_requested",
+    );
+  }
+
+  /** A task owner requests reassignment of the handling; recorded only. */
+  requestReassignment(caseId: string, actor: SecurityActor): void {
+    this.recordOwnerRequest(
+      caseId,
+      actor,
+      "case.request_reassignment",
+      "case.reassignment_requested",
+    );
+  }
+
+  /**
+   * Redacted case status for any duty holder. The record is non-secret by
+   * construction; quarantined values stay behind their own grant boundary.
+   */
+  redactedStatus(caseId: string, actor: SecurityActor): SecurityCase {
+    const record = this.requireCase(caseId);
+    requireDuty("case.read_redacted_status", actor, this.deps.duties, requireScope(record.scope));
     return record;
   }
 
@@ -230,16 +318,32 @@ export class SecurityCaseService implements SecurityCaseIntake {
 
   /**
    * Grant one subject separately scoped, time-limited quarantine inspection.
-   * The grant is not case authority and not a case reference.
+   * The grant is not case authority and not a case reference. Issuing grants
+   * is enterprise-security-administrator work; the subject must hold handler
+   * or reviewer duties — a task owner is never granted quarantined values.
    */
   grantQuarantineAccess(
     quarantineId: string,
     subject: string,
     actor: SecurityActor,
   ): QuarantineAccessGrant {
+    const caseRecord = this.requireCase(this.caseOfQuarantine(quarantineId));
+    const scope = requireScope(caseRecord.scope);
+    requireDuty("quarantine.grant_access", actor, this.deps.duties, scope);
+    const subjectDuties =
+      this.deps.duties.dutiesOf(requireNonEmpty(subject, "subject"), scope) ?? [];
+    if (
+      !subjectDuties.includes("security_handler") &&
+      !subjectDuties.includes("independent_reviewer")
+    ) {
+      throw new SecurityError(
+        "SOD_DUTY_REQUIRED",
+        "quarantine inspection is granted only to handlers or independent reviewers",
+        { quarantineId, subject },
+      );
+    }
     const grant = this.deps.quarantine.grantAccess(quarantineId, subject, actor);
-    const caseId = this.caseOfQuarantine(quarantineId);
-    this.deps.caseStore.appendEvent(caseId, "quarantine.access_granted", actor, {
+    this.deps.caseStore.appendEvent(caseRecord.caseId, "quarantine.access_granted", actor, {
       quarantineId,
       grantId: grant.grantId,
       subject,
@@ -249,24 +353,48 @@ export class SecurityCaseService implements SecurityCaseIntake {
 
   /**
    * Inspect quarantined raw context under the id of a grant the quarantine
-   * store actually issued. Denied attempts are audited onto the case as well
-   * — every view attempt leaves a trace.
+   * store actually issued — and only as a handler or independent reviewer.
+   * Denied attempts are audited onto the case as well — every view attempt
+   * leaves a trace.
    */
   inspectQuarantine(quarantineId: string, actor: SecurityActor, grantId?: string): string {
-    const caseId = this.caseOfQuarantine(quarantineId);
+    const caseRecord = this.requireCase(this.caseOfQuarantine(quarantineId));
     try {
+      requireDuty("quarantine.view", actor, this.deps.duties, requireScope(caseRecord.scope));
       const content = this.deps.quarantine.read(quarantineId, grantId ?? "", actor);
-      this.deps.caseStore.appendEvent(caseId, "quarantine.accessed", actor, {
+      this.deps.caseStore.appendEvent(caseRecord.caseId, "quarantine.accessed", actor, {
         quarantineId,
         ...(grantId !== undefined && grantId !== "" ? { grantId } : {}),
       });
       return content;
     } catch (error) {
-      this.deps.caseStore.appendEvent(caseId, "quarantine.access_denied", actor, {
+      // Duty denials and grant failures alike leave a trace: every view
+      // attempt is auditable.
+      this.deps.caseStore.appendEvent(caseRecord.caseId, "quarantine.access_denied", actor, {
         quarantineId,
       });
       throw error;
     }
+  }
+
+  /** Task-owner requests are recorded and never execute the disposition. */
+  private recordOwnerRequest(
+    caseId: string,
+    actor: SecurityActor,
+    action: SecurityAction,
+    event: "case.termination_requested" | "case.reassignment_requested",
+  ): void {
+    const record = this.requireCase(caseId);
+    requireDuty(action, actor, this.deps.duties, requireScope(record.scope));
+    this.deps.caseStore.appendEvent(caseId, event, actor, { requestedBy: actor.actorId });
+  }
+
+  private requireCase(caseId: string): SecurityCase {
+    const record = this.deps.caseStore.get(caseId);
+    if (!record) {
+      throw new SecurityError("CASE_NOT_FOUND", `no security case ${caseId}`, { caseId });
+    }
+    return record;
   }
 
   private async dispatchNotifications(
