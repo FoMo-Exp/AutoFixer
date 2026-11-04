@@ -29,6 +29,7 @@ import {
   TEST_CREDENTIAL_REF,
   TEST_SCOPE,
   memorySink,
+  securityStubs,
   testPolicyFor,
 } from "./helpers/test-gateway.js";
 
@@ -119,6 +120,7 @@ function gatewayWith(
     // the test deliberately omits it.
     sink: extras.sink ?? memorySink().sink,
     ...(extras.onIncident ? { onIncident: extras.onIncident } : {}),
+    ...securityStubs(),
     newInvocationId: () => "inv_test",
     now: () => new Date("2026-11-03T00:00:00Z"),
   });
@@ -542,6 +544,7 @@ describe("scanner failure, unknown classification, missing audit sink block (acc
       credentials: createStaticCredentialStore({ [TEST_CREDENTIAL_REF]: TEST_CREDENTIAL }),
       adapter,
       scanner: createPatternSecretScanner(),
+      ...securityStubs(),
     });
     await expectScanDenial(
       gateway.bind(TEST_BINDING)(TEST_MODEL, CLEAN_CONTEXT, undefined),

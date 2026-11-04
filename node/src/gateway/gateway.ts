@@ -36,6 +36,7 @@ import type {
   GatewayAttemptDestination,
   GatewayAttemptEvent,
   GatewayBindingIdentity,
+  GatewayCaseIntake,
   GatewayEventSink,
   GatewayFallback,
   GatewayRequestIdentity,
@@ -46,9 +47,10 @@ import {
   ModelEgressDeniedError,
   MODEL_EGRESS_DENIED,
   PROVIDER_USAGE_DIAGNOSTIC,
+  SECURITY_REVIEW_REQUIRED,
   SENSITIVE_DATA_UNCERTAIN,
 } from "./types.js";
-import type { GatewayDenyReason } from "./types.js";
+import type { DependentWorkHold, GatewayDenyReason } from "./types.js";
 
 /**
  * Scan-gate denials about uncertain secret handling surface under the stable
@@ -79,6 +81,21 @@ export interface ModelGatewayDeps {
    * sent.
    */
   sink?: GatewayEventSink;
+  /**
+   * Disposal-case intake for secret-gate blocks (DAT-210): opening or
+   * associating the scoped human-handling case after the block. Required —
+   * the production gateway always configures it; an untyped caller that
+   * omits it still gets the full block and an explicit incident, never a
+   * silent skip of human handling.
+   */
+  caseIntake: GatewayCaseIntake;
+  /**
+   * Dependent-work hold consulted at the admission boundary (DAT-210):
+   * a held run's later invocations are rejected before any check or dispatch.
+   * Required like `caseIntake`; without hold state the gateway cannot admit
+   * work and fails closed.
+   */
+  dependentWorkHold: DependentWorkHold;
   /**
    * Invocation usage ledger (DAT-227). One usage record per actual dispatch
    * attempt — successes, failures, retries and fallbacks — is written through
@@ -255,6 +272,38 @@ export class ModelGateway {
     options: SimpleStreamOptions | undefined,
     binding: GatewayBindingIdentity,
   ): Promise<AssistantMessageEventStream> {
+    // Work-admission boundary (DAT-210): a run whose dependent work is held
+    // pending security case disposition never re-enters the gateway. The hold
+    // is scoped to the affected run alone; unrelated runs proceed untouched.
+    const holdState = this.deps.dependentWorkHold;
+    if (!holdState) {
+      // Defensive (typed construction always provides hold state): without it
+      // the gateway cannot establish that the run is unheld, so it fails
+      // closed rather than admitting unproven work.
+      this.incident("dependent-work hold state is not configured; refusing to admit run work");
+      throw this.deny(
+        this.mintIdentity(binding),
+        1,
+        "DEPENDENT_WORK_HELD",
+        "dependent-work hold state is unavailable; failing closed",
+        undefined,
+        undefined,
+        SECURITY_REVIEW_REQUIRED,
+      );
+    }
+    const hold = holdState.heldCaseFor(binding.runId);
+    if (hold) {
+      throw this.deny(
+        this.mintIdentity(binding),
+        1,
+        "DEPENDENT_WORK_HELD",
+        "the run's dependent work is held pending security case disposition",
+        undefined,
+        undefined,
+        SECURITY_REVIEW_REQUIRED,
+        hold,
+      );
+    }
     const scope = { enterpriseId: binding.enterpriseId, workspaceId: binding.workspaceId };
     const schedulePolicy = await this.deps.policyResolver.resolve(scope);
     if (!schedulePolicy) {
@@ -422,6 +471,11 @@ export class ModelGateway {
       ...(this.deps.scanTimeoutMs !== undefined ? { scanTimeoutMs: this.deps.scanTimeoutMs } : {}),
     });
     if (!gate.ok) {
+      // Every scan-gate denial blocks on uncertain sensitive content (or the
+      // inability to establish its absence) and needs human handling: open or
+      // idempotently associate the disposal case (DAT-210). The denial stands
+      // no matter what the intake does with it.
+      const caseRef = await this.openDisposalCase(identity, gate);
       return this.deny(
         identity,
         attempt,
@@ -430,6 +484,7 @@ export class ModelGateway {
         { policyRevision: policy.revision, destination },
         gate.evidence,
         scanDenyErrorCode(gate.reason),
+        caseRef,
       );
     }
     // Destination data-class authorization: a destination is enabled together
@@ -764,6 +819,46 @@ export class ModelGateway {
     };
   }
 
+  /**
+   * Open the scoped disposal case for one secret-gate block (DAT-210). The
+   * raw blocked request goes to the intake for encrypted quarantine; the
+   * returned case reference is audience-bound to the blocked run. Intake
+   * failures raise an incident and return nothing — they never unblock.
+   */
+  private async openDisposalCase(
+    identity: GatewayRequestIdentity,
+    gate: { reason: GatewayDenyReason; detail: string; context?: Context },
+  ): Promise<{ caseId: string; caseReference: string } | undefined> {
+    const intake = this.deps.caseIntake;
+    if (!intake) {
+      // Typed construction always configures the intake; an untyped caller
+      // that omits it still gets the full block — plus a loud incident, never
+      // a silent skip of human handling (DAT-210).
+      this.incident("security case intake is not configured; the block stands without a case");
+      return undefined;
+    }
+    let rawContent: string | undefined;
+    if (gate.context !== undefined) {
+      try {
+        rawContent = JSON.stringify(gate.context);
+      } catch {
+        rawContent = undefined;
+      }
+    }
+    try {
+      return await intake.recordGatewayBlock({
+        identity,
+        reason: gate.reason,
+        safeDetail: gate.detail,
+        ...(rawContent !== undefined ? { rawContent } : {}),
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.incident(`security case intake failed after block: ${scrubSecrets(detail)}`);
+      return undefined;
+    }
+  }
+
   private deny(
     identity: GatewayRequestIdentity,
     attempt: number,
@@ -772,6 +867,7 @@ export class ModelGateway {
     resolved?: { policyRevision: string; destination?: GatewayAttemptDestination },
     scan?: RequestScanEvidence,
     code: string = MODEL_EGRESS_DENIED,
+    caseRef?: { caseId: string; caseReference: string },
   ): ModelEgressDeniedError {
     const event: GatewayAttemptEvent = {
       phase: "outcome",
@@ -792,6 +888,7 @@ export class ModelGateway {
       reason,
       `model egress denied (${reason}): ${scrubSecrets(detail)}`,
       code,
+      caseRef,
     );
   }
 

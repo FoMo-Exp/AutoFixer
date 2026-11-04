@@ -247,7 +247,18 @@ export interface ScanGateDeps {
 
 export type ScanGateResult =
   | { ok: true; context: Context; evidence: RequestScanEvidence }
-  | { ok: false; reason: ScanDenyReason; detail: string; evidence: RequestScanEvidence };
+  | {
+      ok: false;
+      reason: ScanDenyReason;
+      detail: string;
+      evidence: RequestScanEvidence;
+      /**
+       * The exact scanned request copy that was blocked (DAT-210): handed to
+       * encrypted quarantine as raw retained context, never to logs or errors.
+       * Absent only when the request could not be collected at all.
+       */
+      context?: Context;
+    };
 
 const DEFAULT_SCAN_TIMEOUT_MS = 10_000;
 
@@ -991,6 +1002,7 @@ export async function runRequestScanGate(
       ok: false,
       reason: "SCANNER_UNAVAILABLE",
       detail: scan.unavailable,
+      context: collected.context,
       evidence: evidenceOf(
         scannerId,
         scannerRuleVersion,
@@ -1018,6 +1030,7 @@ export async function runRequestScanGate(
       ok: false,
       reason: evaluation.blocked.reason,
       detail: evaluation.blocked.detail,
+      context: collected.context,
       evidence: firstEvidence(evaluation.overall),
     };
   }
@@ -1054,6 +1067,7 @@ export async function runRequestScanGate(
     reason: "SENSITIVE_DATA_UNCERTAIN",
     detail:
       "removal of suspected secret material could not be confirmed; the request stays blocked",
+    context: collected.context,
     evidence: evidenceOf(
       scan.report.scanner,
       scan.report.ruleVersion,
@@ -1091,6 +1105,7 @@ export async function runRequestScanGate(
       ok: false,
       reason: "SCANNER_UNAVAILABLE",
       detail: rescan.unavailable,
+      context: collected.context,
       evidence: evidenceOf(
         scan.report.scanner,
         scan.report.ruleVersion,
@@ -1115,6 +1130,7 @@ export async function runRequestScanGate(
       detail:
         revaluation.blocked?.detail ??
         "removal of suspected secret material could not be confirmed; the request stays blocked",
+      context: collected.context,
       evidence: evidenceOf(
         rescan.report.scanner,
         rescan.report.ruleVersion,

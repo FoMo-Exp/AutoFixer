@@ -57,6 +57,32 @@ export interface OrchestratorConfig {
   gatewayCredentialsFile?: string;
   /** Durable gateway audit/metering event sink (JSONL, 0600). */
   gatewayAuditFile?: string;
+  // --- Security disposal cases (DAT-210, ADR-0005) ------------------------
+  /**
+   * Durable state files for the security disposal machinery: append-only
+   * case history, the dependent-work hold ledger, and the encrypted
+   * quarantine index. Defaults keep holds and cases alive across restarts.
+   */
+  securityCaseStateFile?: string;
+  securityPauseStateFile?: string;
+  securityQuarantineStateFile?: string;
+  /**
+   * Protected file holding a base64 32-byte quarantine key. Unset (or an
+   * unreadable/invalid key) fails seals closed: nothing is ever stored in
+   * plaintext, and every seal raises an explicit incident.
+   */
+  quarantineKeyFile?: string;
+  /** Designated workspace security handlers and enterprise security admins. */
+  securityHandlerIds?: string[];
+  securityAdminIds?: string[];
+  /** Durable notification record sink (JSONL, 0600; non-secret content). */
+  securityNotificationsFile?: string;
+  /**
+   * Secret for minting authenticated, non-transferable case references.
+   * Unset uses a per-process secret (references then only verify within the
+   * process that minted them); a deployment sets it for cross-restart use.
+   */
+  securityReferenceSecret?: string;
   /**
    * Durable invocation usage ledger (JSON, 0600) — one reconcilable usage
    * record per gateway invocation attempt (DAT-227). Separate from the audit
@@ -146,6 +172,12 @@ function defaultGatewayAuditPath(): string {
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "gateway-audit.jsonl");
 }
 
+/** Default state-file path under the per-user forgepilot directory. */
+export function defaultSecurityStatePath(name: string): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, name);
+}
+
 function defaultUsageLedgerPath(): string {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "usage-ledger.json");
@@ -199,8 +231,36 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     enterpriseId: env["FORGEPILOT_ENTERPRISE_ID"] ?? "ent_forgepilot_local",
     workspaceId: env["FORGEPILOT_WORKSPACE_ID"] ?? "ws_autofixer",
     gatewayAuditFile: env["FORGEPILOT_GATEWAY_AUDIT_FILE"] ?? defaultGatewayAuditPath(),
+    securityCaseStateFile:
+      env["FORGEPILOT_SECURITY_CASE_STATE_FILE"] ?? defaultSecurityStatePath("security-cases.json"),
+    securityPauseStateFile:
+      env["FORGEPILOT_SECURITY_PAUSE_STATE_FILE"] ??
+      defaultSecurityStatePath("security-pauses.json"),
+    securityQuarantineStateFile:
+      env["FORGEPILOT_SECURITY_QUARANTINE_STATE_FILE"] ??
+      defaultSecurityStatePath("security-quarantine.json"),
+    securityNotificationsFile:
+      env["FORGEPILOT_SECURITY_NOTIFICATIONS_FILE"] ??
+      defaultSecurityStatePath("security-notifications.jsonl"),
+    securityHandlerIds: csv(env["FORGEPILOT_SECURITY_HANDLER_IDS"], []),
+    securityAdminIds: csv(env["FORGEPILOT_SECURITY_ADMIN_IDS"], []),
     usageLedgerFile: env["FORGEPILOT_USAGE_LEDGER_FILE"] ?? defaultUsageLedgerPath(),
   };
+  // Security disposal options (DAT-210). Absent values keep fail-closed
+  // defaults: no quarantine key means nothing is ever retained in plaintext,
+  // and no designated handlers escalates every notification to an explicit
+  // undeliverable incident.
+  const quarantineKeyFile = env["FORGEPILOT_QUARANTINE_KEY_FILE"]?.trim();
+  if (quarantineKeyFile) {
+    config.quarantineKeyFile = quarantineKeyFile;
+  }
+  const securityReferenceSecret = env["FORGEPILOT_SECURITY_REFERENCE_SECRET"];
+  if (securityReferenceSecret !== undefined && securityReferenceSecret !== "") {
+    if (securityReferenceSecret.length < 32) {
+      throw new Error("FORGEPILOT_SECURITY_REFERENCE_SECRET must be at least 32 characters");
+    }
+    config.securityReferenceSecret = securityReferenceSecret;
+  }
   if (env["FORGEPILOT_DSH_TOKEN_FILE"]) {
     config.dshTokenFile = env["FORGEPILOT_DSH_TOKEN_FILE"];
   }
