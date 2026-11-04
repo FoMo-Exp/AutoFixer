@@ -51,7 +51,12 @@ export type { RevocationEffects, RevocationTarget } from "./revocation.js";
 export { revokeAuthority } from "./revocation.js";
 
 export type { EventSyncResult, ReconcileDeps, ReconcileSummary } from "./reconcile.js";
-export { applyProviderEvent, reconcileIntegration, ReconcileIncompleteError } from "./reconcile.js";
+export {
+  applyProviderEvent,
+  reconcileIntegration,
+  ReconcileIncompleteError,
+  rosterVisibility,
+} from "./reconcile.js";
 
 export type { CapabilityHandle, ServiceCredentialStore } from "./credentials.js";
 export {

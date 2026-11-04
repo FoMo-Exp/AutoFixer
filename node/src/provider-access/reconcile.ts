@@ -13,11 +13,21 @@
  *   or exhausted rate limit makes the run `incomplete`, marks authority
  *   `stale` (sensitive actions now require reconciliation), and changes no
  *   roster row. An incomplete roster is an error, never an empty member list.
+ * - **Partial visibility** (DAT-248). When the integration or the adapter
+ *   declares `partial`, a successful fetch is still not the whole truth:
+ *   some access path cannot be enumerated. Absence from such a roster is
+ *   therefore *not* evidence of loss. Unobserved subjects keep their stored
+ *   authority row (and their capability grants are not revoked); the row is
+ *   marked `stale` so sensitive actions require a per-subject verification,
+ *   and provenance rows are not pruned either. Only `full` visibility may
+ *   turn absence into `removed`, because only then does the roster claim to
+ *   enumerate every subject that has access.
  */
 
 import type { ProviderAccessRepositories } from "../control-plane/provider-access-repositories.js";
 import type { IdentityRepository } from "../control-plane/identity-repositories.js";
 import type {
+  PermissionVisibility,
   ProviderEvent,
   ProviderEventType,
   ServiceIntegration,
@@ -52,11 +62,19 @@ export interface ReconcileDeps {
 export interface ReconcileSummary {
   run_id: string;
   status: "completed" | "incomplete";
+  /** Effective roster visibility this run was allowed to rely on (DAT-248). */
+  visibility: PermissionVisibility;
   pages_seen: number;
   roster_size: number;
   members_added: number;
   members_removed: number;
   roles_changed: number;
+  /**
+   * Subjects absent from the roster whose stored authority was kept instead of
+   * revoked. Always `0` under `full` visibility; under `partial` it is the
+   * count of facts a full roster would have been allowed to call `removed`.
+   */
+  authority_unobserved: number;
   /**
    * Rows dropped because their provenance key disappeared from a complete
    * roster. Reported here only: the persisted run record tracks provider
@@ -80,6 +98,28 @@ export class ReconcileIncompleteError extends ProviderIntegrationError {
   ) {
     super(cause.code, `reconciliation incomplete: ${cause.message}`);
   }
+}
+
+const VISIBILITY_RANK: Readonly<Record<PermissionVisibility, number>> = Object.freeze({
+  none: 0,
+  partial: 1,
+  full: 2,
+});
+
+/**
+ * Effective roster visibility for one run: the more restrictive of what the
+ * integration was installed as and what the adapter can actually prove. An
+ * operator who recorded `partial` at install time keeps that guarantee even
+ * if a later adapter claims more; an adapter that only proves part of the
+ * roster bounds it even when the integration row says `full`.
+ */
+export function rosterVisibility(
+  integration: ServiceIntegration,
+  adapter: ProviderAdapter,
+): PermissionVisibility {
+  const installed = integration.permission_visibility;
+  const declared = adapter.capabilities.effective_permission_visibility;
+  return VISIBILITY_RANK[installed] <= VISIBILITY_RANK[declared] ? installed : declared;
 }
 
 function markAllStale(
@@ -131,6 +171,12 @@ export async function reconcileIntegration(
     started_at: at,
   });
 
+  // How much of the truth this run may rely on. `none` cannot verify anything,
+  // so the run is incomplete before a single page is fetched. `partial`
+  // applies the rows it does see but must never turn absence into removal.
+  const visibility = rosterVisibility(integration, adapter);
+  const partial = visibility === "partial";
+
   const finish = (fields: {
     status: "completed" | "incomplete";
     pages_seen: number;
@@ -139,6 +185,7 @@ export async function reconcileIntegration(
     members_removed?: number;
     roles_changed?: number;
     roles_pruned?: number;
+    authority_unobserved?: number;
     authority_reset?: number;
     failure_code?: string;
     revocations: readonly RevocationEffects[];
@@ -158,17 +205,39 @@ export async function reconcileIntegration(
     return {
       run_id: run.id,
       status: fields.status,
+      visibility,
       pages_seen: fields.pages_seen,
       roster_size: fields.roster_size,
       members_added: fields.members_added ?? 0,
       members_removed: fields.members_removed ?? 0,
       roles_changed: fields.roles_changed ?? 0,
       roles_pruned: fields.roles_pruned ?? 0,
+      authority_unobserved: fields.authority_unobserved ?? 0,
       authority_reset: fields.authority_reset ?? 0,
       revocations: fields.revocations,
       ...(fields.failure_code ? { failure_code: fields.failure_code } : {}),
     };
   };
+
+  if (visibility === "none") {
+    // The integration cannot see effective permissions at all. Prior authority
+    // degrades to `stale`; nothing is written, nothing is removed.
+    markAllStale(access, scope, integration.id, at);
+    const summary = finish({
+      status: "incomplete",
+      pages_seen: 0,
+      roster_size: 0,
+      failure_code: "PROVIDER_PERMISSION_MISSING",
+      revocations: [],
+    });
+    throw new ReconcileIncompleteError(
+      summary,
+      new MissingPermissionError(
+        "visibility",
+        `integration ${integration.id} declares permission visibility "none"`,
+      ),
+    );
+  }
 
   let raw: RawProviderRole[];
   let pagesSeen: number;
@@ -256,39 +325,64 @@ export async function reconcileIntegration(
   // would otherwise keep displaying the old provenance forever. This belongs
   // here and not in `applySnapshot`: subject refresh also applies snapshots,
   // and pruning there would wipe the rest of the roster.
-  const rolesPruned = access.roster.pruneRoles(
-    scope,
-    integration.id,
-    normalized.map((entry) => ({
-      subject: entry.subject,
-      source_kind: entry.source_kind,
-      authority_ref: entry.authority_ref,
-    })),
-  );
+  //
+  // A partial roster is not a complete set of provenance keys either, so the
+  // same rule as for removal applies: prune nothing, keep the last known
+  // provenance until a roster that claims completeness contradicts it.
+  const rolesPruned = partial
+    ? 0
+    : access.roster.pruneRoles(
+        scope,
+        integration.id,
+        normalized.map((entry) => ({
+          subject: entry.subject,
+          source_kind: entry.source_kind,
+          authority_ref: entry.authority_ref,
+        })),
+      );
 
   // 3. Revoke everyone recorded locally but absent from the complete roster.
+  // Under partial visibility absence is not a fact at all (the roster cannot
+  // enumerate every access path), so the stored authority is kept and only
+  // marked `stale`: sensitive actions then require a per-subject verification,
+  // capability grants survive, and nothing is revoked on a guess.
   const present = new Set(normalized.map((entry) => entry.subject));
   const revocations: RevocationEffects[] = [];
   let membersRemoved = 0;
+  let authorityUnobserved = 0;
   for (const authority of access.roster.listAuthority(scope, integration.id)) {
-    if (!present.has(authority.subject) && authority.state !== "removed") {
-      revocations.push(
-        revokeAuthority(
-          access,
-          epoch,
-          scope,
-          {
-            integration_id: integration.id,
-            subject: authority.subject,
-            user_id: authority.user_id,
-          },
-          "reconcile: absent from provider roster",
-          at,
-        ),
-      );
-      access.roster.removeSubject(scope, integration.id, authority.subject);
-      membersRemoved += 1;
+    if (present.has(authority.subject)) {
+      continue;
     }
+    if (partial) {
+      if (authority.state === "removed") {
+        continue;
+      }
+      authorityUnobserved += 1;
+      if (authority.state === "active") {
+        access.roster.setAuthorityState(scope, integration.id, authority.subject, "stale", at);
+      }
+      continue;
+    }
+    if (authority.state === "removed") {
+      continue;
+    }
+    revocations.push(
+      revokeAuthority(
+        access,
+        epoch,
+        scope,
+        {
+          integration_id: integration.id,
+          subject: authority.subject,
+          user_id: authority.user_id,
+        },
+        "reconcile: absent from provider roster",
+        at,
+      ),
+    );
+    access.roster.removeSubject(scope, integration.id, authority.subject);
+    membersRemoved += 1;
   }
 
   return finish({
@@ -299,6 +393,7 @@ export async function reconcileIntegration(
     members_removed: membersRemoved,
     roles_changed: snapshot.changed,
     roles_pruned: rolesPruned,
+    authority_unobserved: authorityUnobserved,
     revocations,
   });
 }
