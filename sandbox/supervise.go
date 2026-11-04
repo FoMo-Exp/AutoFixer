@@ -19,20 +19,26 @@ import (
 //
 // The supervisor also owns the execution's process lifecycle: it records
 // every domain member it ever observes (pid plus start-time identity), and
-// when the execution ends it terminates all of them — including background
-// children the command left behind and children that created their own
-// session to escape the process group — then keeps enforcing the caps until
-// nothing of the execution is still alive. Discovery of a daemonized child
-// never depends on the parent chain surviving: a child seen while attached
-// stays in the tracked set, and a child that detaches before any
-// observation is found by the workspace-fingerprint pass in the final
-// sweep.
+// when the execution ends it terminates every member it can attribute —
+// including background children the command left behind and children that
+// created their own session to escape the process group — then keeps
+// enforcing the caps until nothing of the execution is still alive.
+// Discovery of a daemonized child never depends on the parent chain
+// surviving: a child seen while attached stays in the tracked set, and a
+// child that detaches before any observation is found by the
+// workspace-fingerprint pass in the final sweep. On macOS this lifecycle
+// control is best-effort: a child that forks, calls setsid, is reparented,
+// and moves its working directory out of the workspace between two
+// observations is not attributable without a cgroup or PID namespace
+// (DAT-253); the OS sandbox still bounds what it can reach.
 //
 // A platform that cannot account a process domain refuses an execution with
 // declared limits instead of running it uncapped (fail closed), and
 // accounting that breaks down mid-run terminates the execution rather than
-// silently losing enforcement. The environment identity reports which
-// enforcement applied.
+// silently losing enforcement. The same rule applies to the macOS fork
+// watcher: if it cannot be created or armed, the execution is refused; if it
+// degrades mid-run, the execution is stopped. The environment identity
+// reports which enforcement applied.
 const (
 	// EnforcementNone is recorded when no resource cap is declared.
 	EnforcementNone = "none"
@@ -53,12 +59,17 @@ const (
 	// CodeExecutionDescendantsSurvived records an execution whose
 	// surviving descendants could not all be terminated when it ended.
 	CodeExecutionDescendantsSurvived = "execution_descendants_survived"
+	// CodeExecutionSupervisionUnavailable records an execution terminated
+	// because its lifecycle supervision (the fork watcher) became
+	// unavailable mid-run, instead of continuing unsupervised.
+	CodeExecutionSupervisionUnavailable = "execution_supervision_unavailable"
 
 	// Breach kinds recorded on the result.
-	BreachMemory     = "memory"
-	BreachCPU        = "cpu"
-	BreachAccounting = "accounting"
-	BreachCleanup    = "cleanup"
+	BreachMemory      = "memory"
+	BreachCPU         = "cpu"
+	BreachAccounting  = "accounting"
+	BreachCleanup     = "cleanup"
+	BreachSupervision = "supervision"
 
 	// supervisorInterval is the usage poll period; the enforcement
 	// overshoot is bounded by it.

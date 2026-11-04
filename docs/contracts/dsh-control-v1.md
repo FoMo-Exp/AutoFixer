@@ -97,10 +97,22 @@ resource limits are enforced, never merely recorded: the whole process
 domain (group plus descendants) is killed on a memory or CPU breach, a
 kernel CPU cap is pinned where the platform has one, and an execution whose
 caps cannot be enforced is blocked instead of running uncapped. An
-execution's process lifecycle ends with the execution: every surviving
-descendant is terminated when the command ends — background children and
-children that created their own session included — and supervision keeps
-enforcing the caps until nothing of the execution is still alive.
+execution's process lifecycle ends with the execution: supervision keeps
+enforcing the caps until nothing of the execution is alive, and every
+descendant it can attribute — background children and children that created
+their own session included — is terminated when the command ends. On Linux
+the execution runs in its own PID namespace (bubblewrap), so the kernel
+removes every remaining process when the namespace dies: that guarantee is
+absolute. On macOS, which has no cgroup or PID namespace, lifecycle
+containment is best-effort: a child that forks, calls setsid, is reparented,
+and moves its working directory out of the run's workspace between two
+observations is no longer attributable (tracked separately as DAT-253). It
+remains bound by the inherited Seatbelt rules, which no descendant can drop,
+so it still cannot read control-plane secrets or host credentials, reach
+unapproved networks, or write outside the workspace. Supervision that cannot
+be established — no process accounting, or a fork watcher that cannot be
+created or armed — blocks the execution with `503 DSH_SANDBOX_UNAVAILABLE`
+instead of running it unsupervised.
 
 Returns `202` with `action_id`, `state`, `accepted_tool_id`, an audit event
 reference, and — for structured operations — `result` and `output`.

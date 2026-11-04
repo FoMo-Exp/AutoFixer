@@ -204,8 +204,10 @@ type ExecutionResult struct {
 	TimedOut     bool                 `json:"timed_out,omitempty"`
 	Canceled     bool                 `json:"canceled,omitempty"`
 	// ResourceExceeded names the granted resource cap that terminated the
-	// execution ("memory", "cpu"), or "accounting" when enforcement broke
-	// down and the execution was stopped rather than left uncapped.
+	// execution ("memory", "cpu"), or why supervision itself ended it:
+	// "accounting" when enforcement could no longer measure the caps,
+	// "supervision" when lifecycle supervision was lost mid-run, or
+	// "cleanup" when descendants survived every termination attempt.
 	ResourceExceeded string `json:"resource_exceeded,omitempty"`
 	Digest           string `json:"digest"`
 }

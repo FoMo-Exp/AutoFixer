@@ -600,7 +600,7 @@ func (r *Runner) runCommand(execCtx, ctx context.Context, cmd *exec.Cmd, req har
 		_ = cmd.Wait()
 		if supervisor != nil {
 			// The execution is not over while anything of it is still
-			// alive: finish removes every surviving descendant —
+			// alive: finish removes every descendant it can attribute —
 			// including background children and session escapees — and
 			// keeps enforcing the caps until the domain is empty.
 			breach = supervisor.finish()
@@ -739,12 +739,21 @@ func resourceLimitsFrom(grant *harness.CapabilityGrant) resourceLimits {
 	return limits
 }
 
+// forkWatch arms the platform's fork notification for one execution. It is a
+// variable so the fail-closed path (the watcher cannot be created or armed)
+// is testable on every platform.
+var forkWatch = startForkWatch
+
 // supervise pins the grant's resource caps on a started execution and arms
 // its process-lifecycle supervision: the supervisor over the execution
 // domain (accounting, kill-on-breach, and the end-of-execution sweep), plus
 // a fork watcher where the platform can notify on forks so newborn children
 // are tracked before they can detach. A nil supervisor with a nil error
 // means there is nothing to enforce or clean up on this platform.
+//
+// A watcher that cannot be established refuses the execution: lifecycle
+// supervision that does not exist must never be assumed. A watcher that
+// degrades mid-run stops the execution through the supervisor.
 func (r *Runner) supervise(cmd *exec.Cmd, limits resourceLimits) (*limitSupervisor, func(), error) {
 	if limits.declared() {
 		if err := applyKernelLimits(cmd.Process.Pid, limits); err != nil {
@@ -773,7 +782,16 @@ func (r *Runner) supervise(cmd *exec.Cmd, limits resourceLimits) (*limitSupervis
 		return cwd == workspace || strings.HasPrefix(cwd, workspace+separator)
 	}
 	supervisor.start()
-	stop := startForkWatch(cmd.Process.Pid, supervisor.trackedPids, supervisor.poke)
+	stop, err := forkWatch(cmd.Process.Pid, supervisor.trackedPids, supervisor.poke, func() {
+		supervisor.trigger(BreachSupervision)
+	})
+	if err != nil {
+		// The watcher could not be established: terminate what already
+		// started and refuse the execution rather than run it with
+		// lifecycle supervision that does not exist.
+		supervisor.finish()
+		return nil, nil, fmt.Errorf("%w: fork watcher unavailable for %q: %v", ErrIsolationUnavailable, cmd.Path, err)
+	}
 	return supervisor, stop, nil
 }
 
@@ -794,6 +812,8 @@ func breachCode(breach string) string {
 	switch breach {
 	case BreachAccounting:
 		return CodeExecutionUnenforcedLimit
+	case BreachSupervision:
+		return CodeExecutionSupervisionUnavailable
 	case BreachCleanup:
 		return CodeExecutionDescendantsSurvived
 	default:

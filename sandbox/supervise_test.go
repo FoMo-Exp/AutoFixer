@@ -304,6 +304,56 @@ func mustBeGone(t *testing.T, pid int) {
 	t.Errorf("pid %d survived the execution", pid)
 }
 
+// TestExecuteRefusesWhenForkWatcherCannotBeArmed pins the fail-closed rule
+// at the execution boundary: the command has started, but lifecycle
+// supervision cannot be armed, so the execution is terminated and refused
+// (the handler maps the isolation error to 503 DSH_SANDBOX_UNAVAILABLE)
+// instead of running unsupervised.
+func TestExecuteRefusesWhenForkWatcherCannotBeArmed(t *testing.T) {
+	if err := NewIsolator().Available(); err != nil {
+		t.Skipf("OS isolation backend unavailable: %v", err)
+	}
+	profiles := []ExecProfile{{
+		ID:                  "probe.test",
+		Kind:                ProfileTest,
+		Command:             "/bin/sleep",
+		Modes:               []string{"focused"},
+		MaxWallClockSeconds: 60,
+		OutputLimitBytes:    1 << 20,
+		Build: func(mode, target string) ([]string, error) {
+			return []string{"30"}, nil
+		},
+	}}
+	runner, _ := structuredFixture(t, func(o *Options) { o.Profiles = profiles })
+
+	old := forkWatch
+	forkWatch = func(int, func() []int, func(), func()) (func(), error) {
+		return nil, errors.New("kqueue unavailable")
+	}
+	t.Cleanup(func() { forkWatch = old })
+
+	started := time.Now()
+	_, err := runner.Execute(context.Background(), Spec{
+		Tool:              "test.run",
+		Arguments:         []string{"probe.test", "focused", "path:target"},
+		EvidenceArguments: []string{"probe.test", "focused", "web/src/export.ts"},
+		Paths:             []string{"web/src/export.ts"},
+		Kind:              DispatchProfile,
+		Process:           &ProcessRequest{ProfileID: "probe.test", Mode: "focused", Target: "web/src/export.ts"},
+	})
+	if !errors.Is(err, ErrIsolationUnavailable) {
+		t.Fatalf("Execute error = %v, want ErrIsolationUnavailable (blocked)", err)
+	}
+	if !strings.Contains(err.Error(), "fork watcher") {
+		t.Errorf("error = %v, want the fork-watcher failure", err)
+	}
+	// The started command must not be left running: the refusal returns
+	// immediately instead of waiting out the 30s sleep.
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Errorf("refusal took %v; the started execution was not terminated", elapsed)
+	}
+}
+
 // TestExecuteProfileTerminatesSurvivingChildren runs a command that spawns a
 // background child and exits normally, and verifies the child does not
 // outlive the execution.
