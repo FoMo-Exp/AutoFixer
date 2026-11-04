@@ -28,10 +28,11 @@ function client(
   fetchImpl: Mock,
   options: { token?: string; csrfToken?: string } = {},
 ): IdentityClient {
+  const csrfToken = options.csrfToken;
   return new IdentityClient({
     baseUrl: "http://127.0.0.1:4567/",
     token: options.token ?? "",
-    ...(options.csrfToken === undefined ? {} : { csrfToken: options.csrfToken }),
+    ...(csrfToken === undefined ? {} : { csrfToken: () => csrfToken }),
     fetchImpl: fetchImpl as unknown as JsonFetch,
   });
 }
@@ -69,12 +70,15 @@ describe("IdentityClient", () => {
     expect(JSON.parse(init.body as string)).toEqual({ role: "admin", version: 4 });
   });
 
-  it("echoes the CSRF token only for cookie-authenticated requests", async () => {
-    const cookieFetch = vi.fn().mockResolvedValue(json({ items: [] }));
-    await client(cookieFetch, { csrfToken: "csrf_9f2c" }).listWorkspaces();
+  it("echoes the CSRF token only on cookie-authenticated writes", async () => {
+    const cookieFetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    await client(cookieFetch, { csrfToken: "csrf_9f2c" }).revokeInvitation("ws_1", "inv_1");
 
-    const bearerFetch = vi.fn().mockResolvedValue(json({ items: [] }));
-    await client(bearerFetch, { token: "local-secret", csrfToken: "csrf_9f2c" }).listWorkspaces();
+    const bearerFetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    await client(bearerFetch, { token: "local-secret", csrfToken: "csrf_9f2c" }).revokeInvitation(
+      "ws_1",
+      "inv_1",
+    );
 
     expect(
       (cookieFetch.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>,
@@ -171,5 +175,14 @@ describe("IdentityClient", () => {
     expect(fetchImpl.mock.calls[0]?.[0]).toBe(
       "http://127.0.0.1:4567/api/v1/admin/enterprises/ent_1/auth-audit?limit=25",
     );
+  });
+
+  it("builds the sign-in URL on the configured API origin, not the page origin", () => {
+    const api = client(vi.fn());
+    expect(api.loginUrl("pi_github_main")).toBe(
+      "http://127.0.0.1:4567/api/v1/auth/login?provider_instance_id=pi_github_main&return_to=%2F",
+    );
+    // return_to stays a relative same-deployment path.
+    expect(api.loginUrl("pi_github_main", "https://evil.example/steal")).toContain("return_to=%2F");
   });
 });

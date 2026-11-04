@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
-import type { IdentityClient, SessionInfo, Workspace } from "../api/identity";
+import type { IdentityClient, Workspace, WorkspaceSession } from "../api/identity";
 import { AuditPanel } from "./AuditPanel";
 import { ErrorNotice } from "./ErrorNotice";
 import type { ErrorDescription } from "./identity-format";
@@ -17,7 +17,7 @@ import { TeamsPanel } from "./TeamsPanel";
 
 interface WorkspaceAdminDialogProps {
   client: IdentityClient;
-  session: SessionInfo;
+  session: WorkspaceSession;
   onClose: () => void;
 }
 

@@ -139,8 +139,9 @@ export class ApiTransport {
     });
 
     // A cookie session's CSRF token can rotate (for example after another
-    // tab signs in again). Retry the mutating request exactly once with a
-    // refreshed token; a genuinely forbidden request keeps its 403.
+    // tab signs in again). The contract reports a missing or wrong token as
+    // 403 CSRF_TOKEN_INVALID: refresh and retry that mutating request exactly
+    // once. A genuine authority denial (FORBIDDEN) never triggers a retry.
     if (
       allowCsrfRetry &&
       !this.token &&
@@ -153,7 +154,7 @@ export class ApiTransport {
         .clone()
         .json()
         .catch(() => undefined)) as ErrorPayload | undefined;
-      if (payload?.error.code === "FORBIDDEN") {
+      if (payload?.error.code === "CSRF_TOKEN_INVALID") {
         const refreshed = await this.refreshCsrfToken();
         if (refreshed && refreshed !== usedCsrf) {
           return this.raw(path, init, false, refreshed);

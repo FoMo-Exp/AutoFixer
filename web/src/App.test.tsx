@@ -3,8 +3,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import { ApiConfigurationError, ForgePilotClient } from "./api/client";
-import { IdentityClient } from "./api/identity";
+import { ForgePilotClient } from "./api/client";
 import type { Task } from "./api/client";
 
 function task(id: string, summary: string): Task {
@@ -273,27 +272,28 @@ describe("invitation landing", () => {
   afterEach(() => {
     window.history.replaceState(null, "", "/");
     window.sessionStorage.clear();
+    vi.unstubAllEnvs();
   });
 
-  it("clears the fragment before the session request and shows the join screen", async () => {
+  it("clears the fragment before every request and shows the join screen", async () => {
+    vi.stubEnv("VITE_FORGEPILOT_API_URL", "http://127.0.0.1:4599");
     window.history.replaceState(null, "", `/#${token}`);
-    const hashAtSession: string[] = [];
-    vi.spyOn(IdentityClient.prototype, "getSession").mockImplementation(async () => {
-      hashAtSession.push(window.location.hash);
-      throw new ApiConfigurationError("not configured for the landing smoke");
+    const hashAtRequest: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      hashAtRequest.push(window.location.hash);
+      return new Response(JSON.stringify({ items: [] }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
     });
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Join a workspace" })).toBeTruthy();
     expect(window.location.hash).toBe("");
     expect(window.location.pathname).toBe("/");
     expect(document.body.innerHTML).not.toContain(token);
-    // The fragment is captured and cleared before any request can observe it.
-    expect(hashAtSession.length).toBeGreaterThan(0);
-    expect(hashAtSession.every((hash) => hash === "")).toBe(true);
-    for (const [input] of fetchSpy.mock.calls) {
-      expect(String(input)).not.toContain(token);
-    }
+    // Auth and invitation requests both run only after the fragment is gone.
+    expect(hashAtRequest.length).toBeGreaterThan(0);
+    expect(hashAtRequest.every((hash) => hash === "")).toBe(true);
   });
 });

@@ -13,6 +13,8 @@ import type { components, operations } from "./contracts/schema";
  */
 
 export type SessionInfo = components["schemas"]["SessionInfo"];
+/** The renderer-safe projection used for role gating: no CSRF token. */
+export type WorkspaceSession = Pick<SessionInfo, "user" | "enterprise_roles" | "memberships">;
 export type Workspace = components["schemas"]["Workspace"];
 export type Membership = components["schemas"]["Membership"];
 export type MemberAuthority = components["schemas"]["MemberAuthority"];
@@ -236,17 +238,22 @@ export class IdentityClient extends ApiTransport {
       { signal: options.signal },
     );
   }
+
+  /**
+   * Absolute sign-in URL on the configured API origin. The workbench and a
+   * loopback API may live on different origins; a relative `/api/v1/auth/login`
+   * would navigate the renderer's origin and never reach the auth service.
+   * `return_to` stays a relative same-deployment path.
+   */
+  loginUrl(providerInstanceId: string, returnTo = "/"): string {
+    const params = new URLSearchParams({
+      provider_instance_id: providerInstanceId,
+      return_to: returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/",
+    });
+    return `${this.baseUrl}/api/v1/auth/login?${params.toString()}`;
+  }
 }
 
 function cursorQuery(cursor?: string): string {
   return cursor ? `?${new URLSearchParams({ cursor })}` : "";
-}
-
-/** Relative login path for cookie-authenticated browser sign-in. */
-export function loginPath(providerInstanceId: string, returnTo = "/"): string {
-  const params = new URLSearchParams({
-    provider_instance_id: providerInstanceId,
-    return_to: returnTo,
-  });
-  return `/api/v1/auth/login?${params.toString()}`;
 }

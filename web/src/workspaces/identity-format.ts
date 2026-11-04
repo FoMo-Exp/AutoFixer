@@ -3,9 +3,9 @@ import type {
   InvitationStatus,
   MemberAuthority,
   Membership,
-  SessionInfo,
   Workspace,
   WorkspaceRole,
+  WorkspaceSession,
 } from "../api/identity";
 
 export const ROLE_LABELS: Record<WorkspaceRole, string> = {
@@ -83,7 +83,10 @@ export function isUnauthenticated(caught: unknown): boolean {
   return caught instanceof ApiError && caught.status === 401;
 }
 
-export function isEnterpriseAdmin(session: SessionInfo | undefined, enterpriseId: string): boolean {
+export function isEnterpriseAdmin(
+  session: WorkspaceSession | undefined,
+  enterpriseId: string,
+): boolean {
   return Boolean(
     session?.enterprise_roles.some(
       (entry) => entry.enterprise_id === enterpriseId && entry.role === "admin",
@@ -97,7 +100,7 @@ export function isEnterpriseAdmin(session: SessionInfo | undefined, enterpriseId
  */
 export function canManageWorkspace(
   workspace: Workspace | undefined,
-  session: SessionInfo | undefined,
+  session: WorkspaceSession | undefined,
 ): boolean {
   if (!workspace) return false;
   return (

@@ -10,6 +10,7 @@ import { ApiError } from "../api/client";
 import type { components } from "../api/contracts/schema";
 import type { CreatedInvitation, IdentityClient, SessionInfo } from "../api/identity";
 import { InviteJoin } from "./InviteJoin";
+import { INVITE_TOKEN_STORAGE_KEY } from "./invite-token";
 
 const fixtureDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -30,6 +31,7 @@ interface JoinClient {
   listLoginProviders: Mock;
   previewInvitation: Mock;
   redeemInvitation: Mock;
+  loginUrl: Mock;
 }
 
 function fakeClient(): JoinClient {
@@ -38,6 +40,10 @@ function fakeClient(): JoinClient {
     listLoginProviders: vi.fn().mockResolvedValue([]),
     previewInvitation: vi.fn().mockResolvedValue(preview),
     redeemInvitation: vi.fn().mockResolvedValue(redemption),
+    loginUrl: vi.fn(
+      (providerId: string) =>
+        `http://127.0.0.1:4599/api/v1/auth/login?provider_instance_id=${providerId}&return_to=%2F`,
+    ),
   };
 }
 
@@ -55,6 +61,7 @@ function renderJoin(token = created.token, client: JoinClient = fakeClient()) {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  window.sessionStorage.clear();
 });
 
 describe("InviteJoin", () => {
@@ -77,6 +84,24 @@ describe("InviteJoin", () => {
     expect(await screen.findByText(/Sign in/)).toBeTruthy();
     expect(client.previewInvitation).not.toHaveBeenCalled();
     expect(client.redeemInvitation).not.toHaveBeenCalled();
+  });
+
+  it("sends sign-in to the configured API origin and keeps the invitation for the return", async () => {
+    const client = fakeClient();
+    client.getSession.mockRejectedValue(
+      new ApiError(401, fixture("error-unauthenticated.json"), "Unauthorized"),
+    );
+    client.listLoginProviders.mockResolvedValue([fixture("login-provider.json")]);
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => undefined);
+    renderJoin(created.token, client);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Continue with GitHub" }));
+
+    expect(client.loginUrl).toHaveBeenCalledWith("pi_github_main", "/");
+    expect(assign).toHaveBeenCalledWith(
+      "http://127.0.0.1:4599/api/v1/auth/login?provider_instance_id=pi_github_main&return_to=%2F",
+    );
+    expect(window.sessionStorage.getItem(INVITE_TOKEN_STORAGE_KEY)).toBe(created.token);
   });
 
   it("joins only after the explicit confirmation and shows the membership role", async () => {

@@ -7,7 +7,6 @@ import type {
   LoginProvider,
   SessionInfo,
 } from "../api/identity";
-import { loginPath } from "../api/identity";
 import { ErrorNotice } from "./ErrorNotice";
 import type { ErrorDescription } from "./identity-format";
 import { describeError, formatTimestamp, isUnauthenticated } from "./identity-format";
@@ -92,7 +91,7 @@ export function InviteJoin({ client, token, onDismiss }: InviteJoinProps): React
 
   function startLogin(providerInstanceId: string): void {
     stashInviteToken(token, typeof window === "undefined" ? undefined : window.sessionStorage);
-    window.location.assign(loginPath(providerInstanceId, "/"));
+    window.location.assign(client.loginUrl(providerInstanceId, "/"));
   }
 
   const browserSignIn = typeof window !== "undefined" && /^https?:$/.test(window.location.protocol);
