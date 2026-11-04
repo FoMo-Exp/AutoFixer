@@ -632,6 +632,88 @@ const MIGRATIONS: Migration[] = [
         ON invitation(workspace_id)`,
     ],
   },
+  {
+    // Candidate admission gate (DAT-234): the record of every validation
+    // decision and every retirement candidate a contradiction produced.
+    //
+    // Both tables are purely additive — no existing table is rebuilt, so the
+    // migration is safe to run against a populated database. Like
+    // `memory_events`, they carry plain scope IDs without foreign keys: the
+    // record of a decision must outlive the item it describes, and it must
+    // survive workspace erasure the same way the rest of the audit trail does.
+    //
+    // Every column here holds an opaque id, a fixed enum, a one-way content
+    // digest, or a count. Candidate statements, matched lint text, and
+    // free-text reasons are never persisted — the reason code is the reason.
+    //
+    // Numbering: DAT-247 took v5 and DAT-204 took v6 on main before this
+    // branch merged, so this block is v7 rather than colliding with them.
+    // Renumbering an unmerged block costs nothing; a merged one is never
+    // touched. It stays purely additive, so it is safe on a database that has
+    // already applied v6.
+    version: 7,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS memory_admission_decisions (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        candidate_hash TEXT NOT NULL,
+        item_id TEXT,
+        item_version INTEGER,
+        disposition TEXT NOT NULL CHECK (
+          disposition IN ('admitted', 'held', 'discarded', 'merged')
+        ),
+        reason_codes TEXT NOT NULL,
+        check_results TEXT NOT NULL,
+        duplicate_of_item_id TEXT,
+        contradicts_item_ids TEXT NOT NULL,
+        retrieval_eligible INTEGER NOT NULL CHECK (retrieval_eligible IN (0, 1)),
+        factual_injection_allowed INTEGER NOT NULL CHECK (factual_injection_allowed IN (0, 1)),
+        run_id TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_admission_decisions_scope
+        ON memory_admission_decisions(enterprise_id, workspace_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_admission_decisions_item
+        ON memory_admission_decisions(item_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_admission_decisions_hash
+        ON memory_admission_decisions(workspace_id, candidate_hash)`,
+      // A contradiction never silently overwrites anything. It produces a
+      // proposal to deprecate or supersede one exact item, which a human or
+      // the consolidation job accepts or rejects. `status` is that decision.
+      `CREATE TABLE IF NOT EXISTS memory_retirement_candidates (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        successor_item_id TEXT,
+        proposed_action TEXT NOT NULL CHECK (proposed_action IN ('deprecate', 'supersede')),
+        reason_code TEXT NOT NULL,
+        decision_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'rejected')),
+        resolved_at TEXT,
+        resolved_by TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      // Idempotency for re-evaluated candidates. `successor_item_id` is NULL
+      // for a plain deprecation, and SQLite treats NULLs as distinct in a
+      // table-level UNIQUE — so the uniqueness lives in an expression index
+      // that folds NULL to ''.
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_retirement_candidates_unique
+        ON memory_retirement_candidates(
+          workspace_id, item_id, proposed_action, decision_id,
+          COALESCE(successor_item_id, '')
+        )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_retirement_candidates_scope
+        ON memory_retirement_candidates(enterprise_id, workspace_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_retirement_candidates_item
+        ON memory_retirement_candidates(item_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_retirement_candidates_status
+        ON memory_retirement_candidates(workspace_id, status)`,
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
