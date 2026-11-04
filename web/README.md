@@ -177,3 +177,36 @@ timeline events that are not newer than `Task.version`, and a summary is used
 only when its `task_id` matches and its `run_id` equals the task's
 `current_run_id` — missing identity, a task without a current run, and a
 previous run all yield no summary. See `CONTRACT.md` for the exact rules.
+
+## Workspace administration and invitations
+
+The topbar **Workspaces** entry opens the identity surface when the session
+reports a workspace membership or enterprise role. It lists the workspaces the
+server resolved for this caller and shows members with their effective role and
+provider-role provenance (`MemberAuthority`), teams with their active leader
+and responsibility, and owner/admin invitations. Mutating controls (role
+changes, removal, team create/update/delete, invitation create/revoke) appear
+only for workspace owners/admins or enterprise administrators; every request is
+still authorized server-side, and a denial renders the envelope's message,
+next action, and `request_id` as the support case reference. Enterprise
+administrators also get the secret-free auth audit trail for the workspace's
+enterprise.
+
+Creating an invitation returns the only copy of the bearer token: the dialog
+shows a QR encoding `invite_url` plus a grouped copyable code and drops both
+when closed. Listed invitations are token-free. An invite link carries the
+token in the URL fragment; the landing page captures it, clears the fragment
+with `history.replaceState` before issuing any request, and shows the
+join-confirmation screen only after an authenticated `POST
+/api/v1/invitations/preview`. Nothing is consumed until the operator presses
+**Join workspace**, which calls `POST /api/v1/invitations/redeem`; every
+non-consumable state is the contract's single `INVITATION_NOT_ACCEPTED`
+denial. A sign-in round trip keeps the token in `sessionStorage` only for the
+length of that redirect and removes it on return.
+
+Cookie-authenticated deployments need the session's CSRF echo: after `GET
+/auth/session` the renderer attaches `X-CSRF-Token` to mutating requests, while
+bearer-authenticated requests never send it. API requests opt into cross-origin
+credentials so a loopback API on another port still receives `fp_session`;
+Electron's IPC fetch ignores that field and keeps its bearer attachment in the
+main process.

@@ -83,10 +83,10 @@ describe("ForgePilotClient cookie sessions", () => {
     expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({ "X-CSRF-Token": "csrf-1" });
   });
 
-  it("refreshes a rotated CSRF token and retries the write once", async () => {
+  it("refreshes a rotated CSRF token on CSRF_TOKEN_INVALID and retries the write once", async () => {
     const fetchImpl = vi
       .fn()
-      .mockResolvedValueOnce(errorResponse(403, "FORBIDDEN"))
+      .mockResolvedValueOnce(errorResponse(403, "CSRF_TOKEN_INVALID"))
       .mockResolvedValueOnce(jsonResponse(task, 201));
     const refresh = vi.fn().mockResolvedValue("csrf-2");
     const client = new ForgePilotClient({
@@ -104,9 +104,9 @@ describe("ForgePilotClient cookie sessions", () => {
     expect(fetchImpl.mock.calls[1]?.[1]?.headers).toMatchObject({ "X-CSRF-Token": "csrf-2" });
   });
 
-  it("does not loop when the refreshed token is unchanged", async () => {
+  it("keeps a real authority denial without refreshing the CSRF token", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(errorResponse(403, "FORBIDDEN"));
-    const refresh = vi.fn().mockResolvedValue("csrf-1");
+    const refresh = vi.fn().mockResolvedValue("csrf-2");
     const client = new ForgePilotClient({
       baseUrl: "http://127.0.0.1:4567",
       token: "",
@@ -118,6 +118,24 @@ describe("ForgePilotClient cookie sessions", () => {
     await expect(
       client.createTask({ repository_id: "repo", base_ref: "main", summary: "Repair" }, "key"),
     ).rejects.toMatchObject({ status: 403, code: "FORBIDDEN" });
+    expect(refresh).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not loop when the refreshed token is unchanged", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(errorResponse(403, "CSRF_TOKEN_INVALID"));
+    const refresh = vi.fn().mockResolvedValue("csrf-1");
+    const client = new ForgePilotClient({
+      baseUrl: "http://127.0.0.1:4567",
+      token: "",
+      csrfToken: () => "csrf-1",
+      refreshCsrfToken: refresh,
+      fetchImpl,
+    });
+
+    await expect(
+      client.createTask({ repository_id: "repo", base_ref: "main", summary: "Repair" }, "key"),
+    ).rejects.toMatchObject({ status: 403, code: "CSRF_TOKEN_INVALID" });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 

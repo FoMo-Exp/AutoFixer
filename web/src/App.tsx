@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
 import { ApiConfigurationError, ApiError, ForgePilotClient } from "./api/client";
 import type { ArtifactMetadata, RunSummary, Task, TaskEvent, TaskStatus } from "./api/client";
+import { IdentityClient } from "./api/identity";
 import { resolveApiConfig } from "./api/config";
 import type { ApiConfig } from "./api/config";
 import { useAuth } from "./auth/useAuth";
@@ -11,6 +12,9 @@ import { useTaskStream } from "./api/hooks";
 import { CreateIdempotencyKeys } from "./api/idempotency";
 import { RepositoryPicker } from "./settings/RepositoryPicker";
 import { SettingsDialog } from "./settings/SettingsDialog";
+import { captureInviteToken } from "./workspaces/invite-token";
+import { InviteJoin } from "./workspaces/InviteJoin";
+import { WorkspaceAdminDialog } from "./workspaces/WorkspaceAdminDialog";
 import {
   approvalScopeDigest,
   buildTimelineRows,
@@ -69,14 +73,60 @@ function isTaskArchived(task: Task): boolean {
 interface WorkbenchProps {
   config: ApiConfig;
   auth: AuthApi;
+  identityClient: IdentityClient;
 }
 
 export default function App(): ReactElement {
   const config = useMemo(resolveApiConfig, []);
-  const auth = useAuth(config);
+  const [inviteToken, setInviteToken] = useState<string>();
+  const inviteTokenRef = useRef<string | undefined>(undefined);
 
+  // Registered before useAuth so the fragment is captured and cleared before
+  // the auth controller's session request can observe it.
+  useEffect(() => {
+    const token = captureInviteToken(
+      window.location.hash,
+      window.history,
+      window.sessionStorage,
+      `${window.location.pathname}${window.location.search}`,
+    );
+    if (!token) return;
+    inviteTokenRef.current = token;
+    setInviteToken(token);
+  }, []);
+
+  const auth = useAuth(config);
+  const authRef = useRef(auth);
+  authRef.current = auth;
+  const identityClient = useMemo(
+    () =>
+      new IdentityClient({
+        baseUrl: config.baseUrl,
+        token: config.token,
+        ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
+        csrfToken: () => authRef.current.csrfToken(),
+        refreshCsrfToken: () => authRef.current.refreshCsrfToken(),
+        onUnauthorized: () => authRef.current.handleUnauthorized(),
+        onForbidden: (error) => authRef.current.handleForbidden(error.message),
+      }),
+    [config],
+  );
+
+  if (inviteToken) {
+    return (
+      <InviteJoin
+        client={identityClient}
+        token={inviteToken}
+        onDismiss={() => {
+          inviteTokenRef.current = undefined;
+          setInviteToken(undefined);
+          void auth.retry();
+        }}
+      />
+    );
+  }
   if (config.startupError && auth.status !== "signed_in" && auth.status !== "legacy") {
-    return <Workbench config={config} auth={auth} />;
+    return <Workbench config={config} auth={auth} identityClient={identityClient} />;
   }
   if (auth.status === "checking") return <AuthLoadingScreen />;
   if (auth.status === "no_workspace") {
@@ -106,10 +156,10 @@ export default function App(): ReactElement {
       />
     );
   }
-  return <Workbench config={config} auth={auth} />;
+  return <Workbench config={config} auth={auth} identityClient={identityClient} />;
 }
 
-function Workbench({ config, auth }: WorkbenchProps): ReactElement {
+function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactElement {
   const authRef = useRef(auth);
   authRef.current = auth;
   const client = useMemo(
@@ -148,6 +198,7 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
   const [filter, setFilter] = useState<"all" | TaskStatus>("all");
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showWorkspaces, setShowWorkspaces] = useState(false);
   // Bumped whenever the settings dialog closes so open pickers re-run
   // discovery against the (possibly changed) account set.
   const [settingsEpoch, setSettingsEpoch] = useState(0);
@@ -510,11 +561,37 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
             </svg>
             <span className="action-label">Settings</span>
           </button>
+          {auth.session &&
+            (auth.session.memberships.length > 0 || auth.session.enterprise_roles.length > 0) && (
+              <button
+                className="button button-quiet button-small"
+                onClick={() => setShowWorkspaces(true)}
+                aria-label="Open workspace administration"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                  <circle cx="9" cy="7" r="4" />
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+                </svg>
+                <span className="action-label">Workspaces</span>
+              </button>
+            )}
           <button
             className="button button-primary button-small"
             onClick={() => setShowCreate(true)}
+            aria-label="New task"
           >
-            <span aria-hidden="true">＋</span> New task
+            <span aria-hidden="true">＋</span> <span className="action-label">New task</span>
           </button>
         </div>
       </header>
@@ -690,6 +767,16 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
             const { task, action } = confirmTaskAction;
             closeTaskConfirmation();
             void (action === "archive" ? handleQuickCancel(task) : handleQuickRecovery(task));
+          }}
+        />
+      )}
+      {showWorkspaces && auth.session && (
+        <WorkspaceAdminDialog
+          client={identityClient}
+          session={auth.session}
+          onClose={() => {
+            setShowWorkspaces(false);
+            void auth.retry();
           }}
         />
       )}

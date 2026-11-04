@@ -15,6 +15,11 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
   readonly retryable: boolean;
+  /** Trace/case reference from the shared envelope; quote it in support cases. */
+  readonly requestId: string | undefined;
+  readonly nextAction: string | null | undefined;
+  readonly retryAfterSeconds: number | null | undefined;
+  readonly details: Record<string, unknown>;
 
   constructor(status: number, payload: ErrorPayload | undefined, fallback: string) {
     super(payload?.error.message || fallback);
@@ -22,6 +27,10 @@ export class ApiError extends Error {
     this.status = status;
     this.code = payload?.error.code || "REQUEST_FAILED";
     this.retryable = payload?.error.retryable ?? status >= 500;
+    this.requestId = payload?.error.request_id;
+    this.nextAction = payload?.error.next_action;
+    this.retryAfterSeconds = payload?.error.retry_after_seconds;
+    this.details = payload?.error.details ?? {};
   }
 }
 
@@ -46,7 +55,7 @@ export function isLoopbackApiUrl(value: string): boolean {
   }
 }
 
-export interface ForgePilotClientOptions {
+export interface ApiTransportOptions {
   baseUrl: string;
   /** Desktop bearer credential. Empty for cookie-authenticated browsers. */
   token: string;
@@ -57,6 +66,137 @@ export interface ForgePilotClientOptions {
   refreshCsrfToken?: () => Promise<string | undefined>;
   onUnauthorized?: (error: ApiError) => void;
   onForbidden?: (error: ApiError) => void;
+}
+
+export type ForgePilotClientOptions = ApiTransportOptions;
+
+/**
+ * Loopback-only HTTP transport shared by the task surface and the identity
+ * surface: one place enforces the loopback guard, redirect refusal, bearer
+ * attachment, the session cookie, CSRF echo/refresh, and the shared error
+ * envelope.
+ */
+export class ApiTransport {
+  protected readonly baseUrl: string;
+  private readonly token: string;
+  private readonly csrfToken?: () => string | undefined;
+  private readonly refreshCsrfToken?: () => Promise<string | undefined>;
+  private readonly onUnauthorized?: (error: ApiError) => void;
+  private readonly onForbidden?: (error: ApiError) => void;
+  protected readonly fetchImpl: JsonFetch;
+
+  constructor(options: ApiTransportOptions) {
+    this.baseUrl = options.baseUrl.replace(/\/$/, "");
+    this.token = options.token;
+    // Bind the window method: Chromium rejects an unbound `fetch` invoked as an
+    // object property ("Illegal invocation").
+    this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+    this.csrfToken = options.csrfToken;
+    this.refreshCsrfToken = options.refreshCsrfToken;
+    this.onUnauthorized = options.onUnauthorized;
+    this.onForbidden = options.onForbidden;
+  }
+
+  protected headers(
+    extra: Record<string, string> = {},
+    method = "GET",
+    csrfOverride?: string,
+  ): Record<string, string> {
+    const mutating = method !== "GET" && method !== "HEAD";
+    const csrf = !this.token && mutating ? (csrfOverride ?? this.csrfToken?.()) : undefined;
+    return {
+      ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+      ...(csrf ? { "X-CSRF-Token": csrf } : {}),
+      ...extra,
+    };
+  }
+
+  protected async raw(
+    path: string,
+    init: RequestInit = {},
+    allowCsrfRetry = true,
+    csrfOverride?: string,
+  ): Promise<Response> {
+    if (!this.baseUrl) throw new ApiConfigurationError();
+    if (!isLoopbackApiUrl(this.baseUrl)) {
+      throw new ApiConfigurationError("ForgePilot only permits an HTTP loopback Node service.");
+    }
+    const method = (init.method ?? "GET").toUpperCase();
+    const usedCsrf = this.headers({}, method, csrfOverride)["X-CSRF-Token"];
+    const headers = {
+      ...this.headers({}, method, csrfOverride),
+      ...headerRecord(init.headers),
+    };
+    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      ...init,
+      // Cookie sessions need cross-origin credentials so a loopback API on a
+      // different port still receives fp_session; bearer transports omit
+      // cookies entirely. Electron's IPC fetch ignores the field and attaches
+      // its own bearer credential in the main process.
+      credentials: this.token ? "omit" : "include",
+      redirect: "error",
+      headers,
+    });
+
+    // A cookie session's CSRF token can rotate (for example after another
+    // tab signs in again). The contract reports a missing or wrong token as
+    // 403 CSRF_TOKEN_INVALID: refresh and retry that mutating request exactly
+    // once. A genuine authority denial (FORBIDDEN) never triggers a retry.
+    if (
+      allowCsrfRetry &&
+      !this.token &&
+      method !== "GET" &&
+      method !== "HEAD" &&
+      response.status === 403 &&
+      this.refreshCsrfToken !== undefined
+    ) {
+      const payload = (await response
+        .clone()
+        .json()
+        .catch(() => undefined)) as ErrorPayload | undefined;
+      if (payload?.error.code === "CSRF_TOKEN_INVALID") {
+        const refreshed = await this.refreshCsrfToken();
+        if (refreshed && refreshed !== usedCsrf) {
+          return this.raw(path, init, false, refreshed);
+        }
+      }
+    }
+    return response;
+  }
+
+  protected async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const response = await this.raw(path, init);
+    if (!response.ok) {
+      const error = await errorFromResponse(response, "Node service request failed.");
+      this.notifyAuthFailure(error);
+      throw error;
+    }
+    return (await response.json()) as T;
+  }
+
+  protected async requestNoContent(path: string, init: RequestInit = {}): Promise<void> {
+    const response = await this.raw(path, init);
+    if (!response.ok) {
+      const error = await errorFromResponse(response, "Node service request failed.");
+      this.notifyAuthFailure(error);
+      throw error;
+    }
+  }
+
+  protected notifyAuthFailure(error: ApiError): void {
+    if (error.status === 401) this.onUnauthorized?.(error);
+    else if (error.status === 403) this.onForbidden?.(error);
+  }
+}
+
+async function errorFromResponse(response: Response, fallback: string): Promise<ApiError> {
+  let payload: ErrorPayload | undefined;
+  try {
+    payload = (await response.json()) as ErrorPayload;
+  } catch {
+    // Keep the status-specific fallback when the server closes without JSON.
+  }
+  return new ApiError(response.status, payload, fallback);
 }
 
 export interface CreateTaskInput {
@@ -83,25 +223,7 @@ export interface StreamResult {
   terminal: boolean;
 }
 
-export class ForgePilotClient {
-  private readonly baseUrl: string;
-  private readonly token: string;
-  private readonly fetchImpl: JsonFetch;
-  private readonly csrfToken?: () => string | undefined;
-  private readonly refreshCsrfToken?: () => Promise<string | undefined>;
-  private readonly onUnauthorized?: (error: ApiError) => void;
-  private readonly onForbidden?: (error: ApiError) => void;
-
-  constructor(options: ForgePilotClientOptions) {
-    this.baseUrl = options.baseUrl.replace(/\/$/, "");
-    this.token = options.token;
-    this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
-    this.csrfToken = options.csrfToken;
-    this.refreshCsrfToken = options.refreshCsrfToken;
-    this.onUnauthorized = options.onUnauthorized;
-    this.onForbidden = options.onForbidden;
-  }
-
+export class ForgePilotClient extends ApiTransport {
   async listTasks(status?: TaskStatus, cursor?: string): Promise<TaskPage> {
     const params = new URLSearchParams();
     if (status) params.set("status", status);
@@ -193,7 +315,7 @@ export class ForgePilotClient {
       signal: options.signal,
     });
     if (!response.ok) {
-      const error = await this.errorFromResponse(response, "Unable to connect to task stream.");
+      const error = await errorFromResponse(response, "Unable to connect to task stream.");
       this.notifyAuthFailure(error);
       throw error;
     }
@@ -225,93 +347,6 @@ export class ForgePilotClient {
     }
 
     return { lastEventId, terminal };
-  }
-
-  private headers(
-    extra: Record<string, string> = {},
-    method = "GET",
-    csrfOverride?: string,
-  ): Record<string, string> {
-    const mutating = method !== "GET" && method !== "HEAD";
-    const csrf = !this.token && mutating ? (csrfOverride ?? this.csrfToken?.()) : undefined;
-    return {
-      ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
-      ...(csrf ? { "X-CSRF-Token": csrf } : {}),
-      ...extra,
-    };
-  }
-
-  private async raw(
-    path: string,
-    init: RequestInit = {},
-    allowCsrfRetry = true,
-    csrfOverride?: string,
-  ): Promise<Response> {
-    if (!this.baseUrl) throw new ApiConfigurationError();
-    if (!isLoopbackApiUrl(this.baseUrl)) {
-      throw new ApiConfigurationError("ForgePilot only permits an HTTP loopback Node service.");
-    }
-    const method = (init.method ?? "GET").toUpperCase();
-    const usedCsrf = this.headers({}, method, csrfOverride)["X-CSRF-Token"];
-    const headers = {
-      ...this.headers({}, method, csrfOverride),
-      ...headerRecord(init.headers),
-    };
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
-      ...init,
-      credentials: this.token ? "omit" : "include",
-      redirect: "error",
-      headers,
-    });
-
-    // A cookie session's CSRF token can rotate (for example after another
-    // tab signs in again). Retry the mutating request exactly once with a
-    // refreshed token; a genuinely forbidden request keeps its 403.
-    if (
-      allowCsrfRetry &&
-      !this.token &&
-      method !== "GET" &&
-      method !== "HEAD" &&
-      response.status === 403 &&
-      this.refreshCsrfToken !== undefined
-    ) {
-      const payload = (await response
-        .clone()
-        .json()
-        .catch(() => undefined)) as ErrorPayload | undefined;
-      if (payload?.error.code === "FORBIDDEN") {
-        const refreshed = await this.refreshCsrfToken();
-        if (refreshed && refreshed !== usedCsrf) {
-          return this.raw(path, init, false, refreshed);
-        }
-      }
-    }
-    return response;
-  }
-
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const response = await this.raw(path, init);
-    if (!response.ok) {
-      const error = await this.errorFromResponse(response, "Node service request failed.");
-      this.notifyAuthFailure(error);
-      throw error;
-    }
-    return (await response.json()) as T;
-  }
-
-  private notifyAuthFailure(error: ApiError): void {
-    if (error.status === 401) this.onUnauthorized?.(error);
-    else if (error.status === 403) this.onForbidden?.(error);
-  }
-
-  private async errorFromResponse(response: Response, fallback: string): Promise<ApiError> {
-    let payload: ErrorPayload | undefined;
-    try {
-      payload = (await response.json()) as ErrorPayload;
-    } catch {
-      // Keep the status-specific fallback when the server closes without JSON.
-    }
-    return new ApiError(response.status, payload, fallback);
   }
 }
 
