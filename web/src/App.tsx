@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
 import { ApiConfigurationError, ApiError, ForgePilotClient } from "./api/client";
-import type { ArtifactMetadata, RunSummary, Task, TaskEvent, TaskStatus } from "./api/client";
+import type {
+  ArtifactMetadata,
+  RunSummary,
+  Task,
+  TaskEvent,
+  TaskStatus,
+  Workspace,
+} from "./api/client";
 import { resolveApiConfig } from "./api/config";
 import type { ApiConfig } from "./api/config";
 import { useAuth } from "./auth/useAuth";
@@ -9,6 +16,17 @@ import type { AuthApi } from "./auth/useAuth";
 import { AuthLoadingScreen, LoginScreen, NoWorkspaceScreen } from "./auth/LoginScreen";
 import { useTaskStream } from "./api/hooks";
 import { CreateIdempotencyKeys } from "./api/idempotency";
+import {
+  clearStoredWorkspaceId,
+  readStoredWorkspaceId,
+  resolveWorkspace,
+  storeWorkspaceId,
+} from "./workspace/selection";
+import {
+  WorkspaceChooser,
+  WorkspaceSwitcher,
+  WorkspaceUnavailableScreen,
+} from "./workspace/WorkspaceSwitcher";
 import { RepositoryPicker } from "./settings/RepositoryPicker";
 import { SettingsDialog } from "./settings/SettingsDialog";
 import {
@@ -60,6 +78,12 @@ const INITIAL_FORM: CreateTaskForm = {
   acceptanceCriteria: "",
 };
 
+/** A workspace task is created against the workspace's own repository binding. */
+function initialForm(workspace: Workspace | undefined): CreateTaskForm {
+  if (workspace === undefined) return INITIAL_FORM;
+  return { ...INITIAL_FORM, repositoryId: workspace.repository.repository_id };
+}
+
 type ServiceStatus = "connecting" | "connected" | "offline";
 
 function isTaskArchived(task: Task): boolean {
@@ -69,6 +93,34 @@ function isTaskArchived(task: Task): boolean {
 interface WorkbenchProps {
   config: ApiConfig;
   auth: AuthApi;
+  /** Undefined only for the legacy local-operator seam and startup failures. */
+  workspace?: Workspace;
+  workspaces: Workspace[];
+  onSelectWorkspace: (workspaceId: string) => void;
+  onWorkspaceUnavailable: () => void;
+}
+
+const NOOP = (): void => undefined;
+
+function useApiClient(
+  config: ApiConfig,
+  authRef: { current: AuthApi },
+  workspaceId: string | null,
+): ForgePilotClient {
+  return useMemo(
+    () =>
+      new ForgePilotClient({
+        baseUrl: config.baseUrl,
+        token: config.token,
+        workspaceId,
+        ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
+        csrfToken: () => authRef.current.csrfToken(),
+        refreshCsrfToken: () => authRef.current.refreshCsrfToken(),
+        onUnauthorized: () => authRef.current.handleUnauthorized(),
+        onForbidden: (error) => authRef.current.handleForbidden(error.message),
+      }),
+    [authRef, config, workspaceId],
+  );
 }
 
 export default function App(): ReactElement {
@@ -76,7 +128,15 @@ export default function App(): ReactElement {
   const auth = useAuth(config);
 
   if (config.startupError && auth.status !== "signed_in" && auth.status !== "legacy") {
-    return <Workbench config={config} auth={auth} />;
+    return (
+      <Workbench
+        config={config}
+        auth={auth}
+        workspaces={[]}
+        onSelectWorkspace={NOOP}
+        onWorkspaceUnavailable={NOOP}
+      />
+    );
   }
   if (auth.status === "checking") return <AuthLoadingScreen />;
   if (auth.status === "no_workspace") {
@@ -106,25 +166,154 @@ export default function App(): ReactElement {
       />
     );
   }
-  return <Workbench config={config} auth={auth} />;
+  if (auth.status === "legacy") {
+    // No identity subsystem: the Node service serves the legacy task family
+    // for its deployment-configured workspace, so there is nothing to switch.
+    return (
+      <Workbench
+        config={config}
+        auth={auth}
+        workspaces={[]}
+        onSelectWorkspace={NOOP}
+        onWorkspaceUnavailable={NOOP}
+      />
+    );
+  }
+  return <WorkspaceGate config={config} auth={auth} />;
 }
 
-function Workbench({ config, auth }: WorkbenchProps): ReactElement {
+type WorkspaceLoadStatus = "loading" | "ready" | "error";
+
+/**
+ * Resolves the caller's accessible workspaces before any task request runs.
+ * The task surface is not mounted until a workspace is chosen, so a task
+ * call can never fall back to another workspace's scope.
+ */
+function WorkspaceGate({ config, auth }: { config: ApiConfig; auth: AuthApi }): ReactElement {
   const authRef = useRef(auth);
   authRef.current = auth;
-  const client = useMemo(
-    () =>
-      new ForgePilotClient({
-        baseUrl: config.baseUrl,
-        token: config.token,
-        ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
-        csrfToken: () => authRef.current.csrfToken(),
-        refreshCsrfToken: () => authRef.current.refreshCsrfToken(),
-        onUnauthorized: () => authRef.current.handleUnauthorized(),
-        onForbidden: (error) => authRef.current.handleForbidden(error.message),
-      }),
-    [config],
+  const userId = auth.session?.user.id ?? "";
+  const directory = useApiClient(config, authRef, null);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [status, setStatus] = useState<WorkspaceLoadStatus>("loading");
+  const [error, setError] = useState<string>();
+  const [selectedId, setSelectedId] = useState<string | undefined>(() =>
+    typeof window === "undefined" ? undefined : readStoredWorkspaceId(window.localStorage, userId),
   );
+  const requestRef = useRef(0);
+
+  const load = useCallback(
+    async (mode: "initial" | "refresh"): Promise<void> => {
+      const requestId = ++requestRef.current;
+      if (mode === "initial") setStatus("loading");
+      try {
+        const items = await directory.listWorkspaces();
+        if (requestId !== requestRef.current) return;
+        setWorkspaces(items);
+        setStatus("ready");
+        setError(undefined);
+      } catch (caught) {
+        if (requestId !== requestRef.current) return;
+        // 401 flips the auth gate; a silent refresh keeps the current view.
+        if (caught instanceof ApiError && caught.status === 401) return;
+        if (mode === "refresh") return;
+        setStatus("error");
+        setError(errorMessage(caught));
+      }
+    },
+    [directory],
+  );
+
+  useEffect(() => {
+    void load("initial");
+  }, [load]);
+
+  const selected = resolveWorkspace(workspaces, selectedId);
+
+  // A stored selection that is no longer a live membership is cleared rather
+  // than left to resurrect if the membership returns later.
+  useEffect(() => {
+    if (status !== "ready" || typeof window === "undefined") return;
+    const stored = readStoredWorkspaceId(window.localStorage, userId);
+    if (stored !== undefined && !workspaces.some((item) => item.id === stored)) {
+      clearStoredWorkspaceId(window.localStorage, userId);
+      setSelectedId((current) => (current === stored ? undefined : current));
+    }
+  }, [status, workspaces, userId]);
+
+  const selectWorkspace = useCallback(
+    (workspaceId: string): void => {
+      if (!workspaces.some((item) => item.id === workspaceId)) return;
+      storeWorkspaceId(window.localStorage, userId, workspaceId);
+      setSelectedId(workspaceId);
+    },
+    [userId, workspaces],
+  );
+
+  const reload = useCallback(async (): Promise<void> => {
+    await load("initial");
+  }, [load]);
+
+  const refreshWorkspaces = useCallback((): void => {
+    void load("refresh");
+  }, [load]);
+
+  // Coming back to the window re-reads live memberships, so a grant or a
+  // revocation made elsewhere updates the switcher without a task request.
+  useEffect(() => {
+    const onFocus = (): void => refreshWorkspaces();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refreshWorkspaces]);
+
+  if (status === "loading") return <AuthLoadingScreen />;
+  if (status === "error") {
+    return <WorkspaceUnavailableScreen message={error} onRetry={reload} onSignOut={auth.signOut} />;
+  }
+  if (workspaces.length === 0) {
+    return (
+      <NoWorkspaceScreen
+        displayName={auth.session?.user.display_name}
+        onRetry={reload}
+        onSignOut={auth.signOut}
+      />
+    );
+  }
+  if (selected === undefined) {
+    return (
+      <WorkspaceChooser
+        workspaces={workspaces}
+        displayName={auth.session?.user.display_name}
+        onSelect={selectWorkspace}
+        onSignOut={auth.signOut}
+      />
+    );
+  }
+  return (
+    <Workbench
+      key={selected.id}
+      config={config}
+      auth={auth}
+      workspace={selected}
+      workspaces={workspaces}
+      onSelectWorkspace={selectWorkspace}
+      onWorkspaceUnavailable={refreshWorkspaces}
+    />
+  );
+}
+
+function Workbench({
+  config,
+  auth,
+  workspace,
+  workspaces,
+  onSelectWorkspace,
+  onWorkspaceUnavailable,
+}: WorkbenchProps): ReactElement {
+  const authRef = useRef(auth);
+  authRef.current = auth;
+  const client = useApiClient(config, authRef, workspace?.id ?? null);
+  const readOnly = workspace?.role === "viewer";
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   /** 窄屏钻取视图：list ↔ detail（≤900px 生效，桌面始终双栏并存） */
@@ -151,7 +340,7 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
   // Bumped whenever the settings dialog closes so open pickers re-run
   // discovery against the (possibly changed) account set.
   const [settingsEpoch, setSettingsEpoch] = useState(0);
-  const [form, setForm] = useState<CreateTaskForm>(INITIAL_FORM);
+  const [form, setForm] = useState<CreateTaskForm>(() => initialForm(workspace));
   const [isCreating, setIsCreating] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const [cancellingTaskId, setCancellingTaskId] = useState<string>();
@@ -196,11 +385,20 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
     setDetailEpoch((n) => n + 1);
   }, []);
 
-  const reportRequestError = useCallback((caught: unknown): void => {
-    // 401 flips the auth gate; 403 is reported by the permission banner.
-    if (caught instanceof ApiError && (caught.status === 401 || caught.status === 403)) return;
-    setActionError(errorMessage(caught));
-  }, []);
+  const reportRequestError = useCallback(
+    (caught: unknown): void => {
+      // 401 flips the auth gate; 403 is reported by the permission banner.
+      if (caught instanceof ApiError && (caught.status === 401 || caught.status === 403)) return;
+      // A scoped 404 means this locator is no longer the caller's workspace:
+      // re-read the live membership list instead of showing a task error.
+      if (workspace && caught instanceof ApiError && caught.code === "NOT_FOUND") {
+        onWorkspaceUnavailable();
+        return;
+      }
+      setActionError(errorMessage(caught));
+    },
+    [onWorkspaceUnavailable, workspace],
+  );
 
   const loadTasks = useCallback(
     async (showConnecting = false): Promise<void> => {
@@ -216,6 +414,10 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
       } catch (caught) {
         if (requestId !== listRequestRef.current) return;
         if (caught instanceof ApiError && caught.status === 401) return;
+        if (workspace && caught instanceof ApiError && caught.code === "NOT_FOUND") {
+          onWorkspaceUnavailable();
+          return;
+        }
         if (caught instanceof ApiError && caught.status === 403) {
           setServiceStatus("connected");
           setServiceError(undefined);
@@ -225,7 +427,7 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
         setServiceError(errorMessage(caught));
       }
     },
-    [client],
+    [client, onWorkspaceUnavailable, workspace],
   );
 
   const loadMoreTasks = useCallback(async (): Promise<void> => {
@@ -319,6 +521,7 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
 
   async function handleQuickCancel(task: Task): Promise<void> {
     if (
+      readOnly ||
       (TERMINAL_STATUSES.has(task.status) && task.status !== "cancelled") ||
       isTaskArchived(task) ||
       cancellingTaskId
@@ -347,7 +550,8 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
   }
 
   async function handleQuickRecovery(task: Task): Promise<void> {
-    if (task.status !== "cancelled" || !isTaskArchived(task) || cancellingTaskId) return;
+    if (readOnly || task.status !== "cancelled" || !isTaskArchived(task) || cancellingTaskId)
+      return;
     setCancellingTaskId(task.id);
     setActionError(undefined);
     try {
@@ -380,7 +584,7 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
 
   async function handleCreate(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (!form.summary.trim()) return;
+    if (readOnly || !form.summary.trim()) return;
     setIsCreating(true);
     setActionError(undefined);
     try {
@@ -398,7 +602,7 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
       createKeyRef.current.complete(input);
       selectTask(task);
       setShowCreate(false);
-      setForm(INITIAL_FORM);
+      setForm(initialForm(workspace));
       await loadTasks();
     } catch (caught) {
       reportRequestError(caught);
@@ -411,7 +615,7 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
     action: "approve" | "reject" | "cancel",
     digest?: string,
   ): Promise<void> {
-    if (!selectedTask) return;
+    if (readOnly || !selectedTask) return;
     const taskId = selectedTask.id;
     setActionBusy(action);
     setActionError(undefined);
@@ -510,20 +714,30 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
             </svg>
             <span className="action-label">Settings</span>
           </button>
-          <button
-            className="button button-primary button-small"
-            onClick={() => setShowCreate(true)}
-          >
-            <span aria-hidden="true">＋</span> New task
-          </button>
+          {!readOnly && (
+            <button
+              className="button button-primary button-small"
+              onClick={() => setShowCreate(true)}
+            >
+              <span aria-hidden="true">＋</span> New task
+            </button>
+          )}
         </div>
       </header>
 
       <div className="workspace" data-view={mobileView}>
         <aside className="sidebar">
           <div className="sidebar-heading">
-            <div>
-              <span className="eyebrow">Workspace</span>
+            <div className="sidebar-heading-main">
+              {workspace ? (
+                <WorkspaceSwitcher
+                  workspace={workspace}
+                  workspaces={workspaces}
+                  onSelect={onSelectWorkspace}
+                />
+              ) : (
+                <span className="eyebrow">Local operator</span>
+              )}
               <h1>Tasks</h1>
             </div>
             <span className="task-count">{visibleTasks.length}</span>
@@ -550,11 +764,15 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
                 <p>
                   {serviceStatus === "offline"
                     ? "Node service is offline."
-                    : "No tasks in this view."}
+                    : readOnly
+                      ? "Viewer access is read-only."
+                      : "No tasks in this view."}
                 </p>
-                <button className="button button-quiet" onClick={() => setShowCreate(true)}>
-                  Start a task
-                </button>
+                {!readOnly && (
+                  <button className="button button-quiet" onClick={() => setShowCreate(true)}>
+                    Start a task
+                  </button>
+                )}
               </div>
             ) : (
               visibleTasks.map((task) => (
@@ -562,6 +780,7 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
                   key={task.id}
                   task={task}
                   selected={task.id === selectedId}
+                  readOnly={readOnly}
                   onClick={() => selectTask(task)}
                   onArchive={() => requestTaskAction(task, "archive")}
                   onRecovery={() => requestTaskAction(task, "recovery")}
@@ -637,6 +856,8 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
             <TaskDetail
               key={selectedTask.id}
               task={selectedTask}
+              workspaceName={workspace?.name}
+              readOnly={readOnly}
               runs={runs}
               events={stream.events.filter((event) => event.task_id === selectedTask.id)}
               streamConnection={stream.connection}
@@ -653,6 +874,7 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
             />
           ) : (
             <WelcomePanel
+              readOnly={readOnly}
               onCreate={() => setShowCreate(true)}
               onBack={() => setMobileView("list")}
             />
@@ -662,6 +884,7 @@ function Workbench({ config, auth }: WorkbenchProps): ReactElement {
 
       {showCreate && (
         <CreateTaskDialog
+          workspace={workspace}
           form={form}
           isCreating={isCreating}
           onChange={setForm}
@@ -799,6 +1022,7 @@ function TaskActionDialog({
 function TaskListItem({
   task,
   selected,
+  readOnly,
   onClick,
   onArchive,
   onRecovery,
@@ -806,14 +1030,17 @@ function TaskListItem({
 }: {
   task: Task;
   selected: boolean;
+  readOnly: boolean;
   onClick: () => void;
   onArchive: () => void;
   onRecovery: () => void;
   busy: boolean;
 }): ReactElement {
-  const canRecover = task.status === "cancelled" && isTaskArchived(task);
+  const canRecover = !readOnly && task.status === "cancelled" && isTaskArchived(task);
   const canArchive =
-    !canRecover && (!TERMINAL_STATUSES.has(task.status) || task.status === "cancelled");
+    !readOnly &&
+    !canRecover &&
+    (!TERMINAL_STATUSES.has(task.status) || task.status === "cancelled");
   return (
     <article
       className={`task-list-item ${selected ? "task-list-item-selected" : ""} ${canArchive || canRecover ? "task-list-item-actionable" : ""}`}
@@ -851,9 +1078,11 @@ function TaskListItem({
 }
 
 function WelcomePanel({
+  readOnly,
   onCreate,
   onBack,
 }: {
+  readOnly: boolean;
   onCreate: () => void;
   onBack: () => void;
 }): ReactElement {
@@ -869,9 +1098,11 @@ function WelcomePanel({
         ForgePilot keeps the operator in control. Start a task to follow risk, approval, execution,
         and evidence from one local workspace.
       </p>
-      <button className="button button-primary" onClick={onCreate}>
-        Create your first task <span aria-hidden="true">→</span>
-      </button>
+      {!readOnly && (
+        <button className="button button-primary" onClick={onCreate}>
+          Create your first task <span aria-hidden="true">→</span>
+        </button>
+      )}
       <div className="welcome-principles">
         <span>Least privilege</span>
         <span>Redacted timeline</span>
@@ -883,6 +1114,8 @@ function WelcomePanel({
 
 interface TaskDetailProps {
   task: Task;
+  workspaceName?: string;
+  readOnly: boolean;
   runs: RunSummary[];
   events: TaskEvent[];
   streamConnection: ReturnType<typeof useTaskStream>["connection"];
@@ -898,6 +1131,8 @@ interface TaskDetailProps {
 
 function TaskDetail({
   task,
+  workspaceName,
+  readOnly,
   runs,
   events,
   streamConnection,
@@ -922,7 +1157,7 @@ function TaskDetail({
   const timelineRows = buildTimelineRows(events);
   const piSummary = resolvePiSummary(task, events);
   const percentage = progressPercent(task.progress.actions_completed, task.progress.actions_total);
-  const canCancel = !TERMINAL_STATUSES.has(task.status);
+  const canCancel = !readOnly && !TERMINAL_STATUSES.has(task.status);
 
   async function browseArtifact(metadata: ArtifactMetadata): Promise<void> {
     if (!metadata.available) return;
@@ -963,6 +1198,12 @@ function TaskDetail({
           <div className="breadcrumb">TASK / {shortId(task.id, 18)}</div>
           <h2>{redactText(task.request.summary)}</h2>
           <div className="detail-subline">
+            {workspaceName && (
+              <>
+                <span>{workspaceName}</span>
+                <span className="divider">/</span>
+              </>
+            )}
             <span>{redactText(task.repository.display_name)}</span>
             <span className="divider">/</span>
             <span className="mono">{redactText(task.repository.base_ref)}</span>
@@ -989,7 +1230,13 @@ function TaskDetail({
       <div className="detail-grid">
         <div className="detail-main-column">
           {task.status === "awaiting_approval" && (
-            <ApprovalCard task={task} digest={digest} busy={actionBusy} onAction={onAction} />
+            <ApprovalCard
+              task={task}
+              digest={digest}
+              busy={actionBusy}
+              readOnly={readOnly}
+              onAction={onAction}
+            />
           )}
           {task.status_reason && (
             <div className="reason-card">
@@ -1096,7 +1343,7 @@ function TaskDetail({
             )}
           </section>
 
-          {!TERMINAL_STATUSES.has(task.status) && (
+          {!TERMINAL_STATUSES.has(task.status) && !readOnly && (
             <form className="card message-card" onSubmit={(event) => void submitMessage(event)}>
               <div className="card-heading">
                 <div>
@@ -1224,11 +1471,13 @@ function ApprovalCard({
   task,
   digest,
   busy,
+  readOnly,
   onAction,
 }: {
   task: Task;
   digest: string | undefined;
   busy: string | undefined;
+  readOnly: boolean;
   onAction: (action: "approve" | "reject", digest?: string) => Promise<void>;
 }): ReactElement {
   const glowRef = useRef<HTMLDivElement>(null);
@@ -1249,22 +1498,29 @@ function ApprovalCard({
           <span>◈</span>
           <span>{digest ? "Scope locked to this exact run" : "Waiting for the scope digest"}</span>
         </div>
-        <div className="approval-actions">
-          <button
-            className="button button-primary"
-            disabled={!digest || !!busy}
-            onClick={() => void onAction("approve", digest)}
-          >
-            {busy === "approve" ? "Recording…" : "Approve run"}
-          </button>
-          <button
-            className="button button-secondary"
-            disabled={!digest || !!busy}
-            onClick={() => void onAction("reject", digest)}
-          >
-            {busy === "reject" ? "Recording…" : "Reject"}
-          </button>
-        </div>
+        {readOnly ? (
+          <div className="approval-lock">
+            <span>◈</span>
+            <span>Viewer access cannot record an approval</span>
+          </div>
+        ) : (
+          <div className="approval-actions">
+            <button
+              className="button button-primary"
+              disabled={!digest || !!busy}
+              onClick={() => void onAction("approve", digest)}
+            >
+              {busy === "approve" ? "Recording…" : "Approve run"}
+            </button>
+            <button
+              className="button button-secondary"
+              disabled={!digest || !!busy}
+              onClick={() => void onAction("reject", digest)}
+            >
+              {busy === "reject" ? "Recording…" : "Reject"}
+            </button>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -1354,6 +1610,7 @@ function InfoRow({
 }
 
 function CreateTaskDialog({
+  workspace,
   form,
   isCreating,
   onChange,
@@ -1362,6 +1619,7 @@ function CreateTaskDialog({
   onSubmit,
   refreshToken,
 }: {
+  workspace?: Workspace;
   form: CreateTaskForm;
   isCreating: boolean;
   onChange: (form: CreateTaskForm) => void;
@@ -1391,13 +1649,31 @@ function CreateTaskDialog({
           begins.
         </p>
         <form onSubmit={(event) => void onSubmit(event)}>
-          <RepositoryPicker
-            repositoryId={form.repositoryId}
-            baseRef={form.baseRef}
-            onChange={(patch) => onChange({ ...form, ...patch })}
-            onOpenSettings={onOpenSettings}
-            refreshToken={refreshToken}
-          />
+          {workspace ? (
+            <div className="form-grid">
+              <label>
+                Repository
+                <input value={workspace.repository.repository_id} readOnly />
+              </label>
+              <label>
+                Base ref
+                <input
+                  value={form.baseRef}
+                  onChange={(event) => onChange({ ...form, baseRef: event.target.value })}
+                  placeholder="main"
+                  required
+                />
+              </label>
+            </div>
+          ) : (
+            <RepositoryPicker
+              repositoryId={form.repositoryId}
+              baseRef={form.baseRef}
+              onChange={(patch) => onChange({ ...form, ...patch })}
+              onOpenSettings={onOpenSettings}
+              refreshToken={refreshToken}
+            />
+          )}
           <label>
             <span className="label-text">
               Task summary <span className="required-dot">*</span>

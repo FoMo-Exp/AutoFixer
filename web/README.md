@@ -38,14 +38,22 @@ a URL, referrer, `localStorage`, or renderer JavaScript.
   subsystem (`GET /api/v1/auth/providers` returns 404), the workbench keeps the
   launch-time local-operator bearer token path.
 
-The workbench deliberately has no workspace switch yet. `GET/POST /api/v1/tasks`
-take no workspace selector, and Node resolves session authority against one
-configured workspace (`AuthService.workspaceRole`). Relabeling tasks from
-another membership would therefore show the same data under a different name —
-a false affordance. Real switching needs a workspace-scoped task contract and
-server enforcement first; until then the session's `memberships` only decide
-the "no workspace access" gate. A client-supplied workspace id is never treated
-as proof of access.
+A signed-in session enters one workspace at a time. `GET /api/v1/workspaces`
+lists exactly the caller's live, active memberships; the sidebar switcher shows
+the workspace name, its repository binding, and the server-computed role. The
+choice is persisted per user as the non-sensitive locator
+`fp-workspace:<user id>` and restored on reload: one accessible workspace is
+selected automatically, several require an explicit choice, and a workspace
+that disappears from the live list is cleared (back to the chooser, or the
+single remaining workspace, or the "no workspace access" gate).
+
+Every task call — list, create, detail, runs, messages, approvals, cancel,
+archive/recover, timeline, artifact, and the SSE stream — uses the
+`/api/v1/workspaces/{workspace_id}/tasks...` family of the selected workspace.
+Switching closes the previous stream and loads the new workspace's tasks. A
+`404 NOT_FOUND` from the scoped family re-reads the membership list. Viewer
+roles get a read-only surface; the server remains the authority, and a
+client-supplied workspace id is never treated as proof of access.
 
 A 401 from the task surface drops the credential and shows the recoverable
 "session expired" sign-in screen. A 403 keeps the session and reports a

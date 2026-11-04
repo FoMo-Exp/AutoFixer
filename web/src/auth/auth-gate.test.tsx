@@ -66,7 +66,25 @@ function installDesktopAuth(initial: DesktopAuthState) {
   return handle;
 }
 
+const workspace = {
+  id: "ws_alpha",
+  enterprise_id: "ent_1",
+  name: "Alpha",
+  status: "active" as const,
+  repository: {
+    repository_id: "github:Luthiel/AutoFixer",
+    provider_instance_id: "pi_github",
+    provider_type: "github" as const,
+  },
+  role: "member" as const,
+  version: 1,
+  created_at: "2026-11-01T00:00:00Z",
+  updated_at: "2026-11-01T00:00:00Z",
+};
+
 beforeEach(() => {
+  window.localStorage.setItem("fp-workspace:usr_1", "ws_alpha");
+  vi.spyOn(ForgePilotClient.prototype, "listWorkspaces").mockResolvedValue([workspace]);
   vi.spyOn(ForgePilotClient.prototype, "listTasks").mockResolvedValue({
     items: [],
     next_cursor: null,
@@ -76,6 +94,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  window.localStorage.removeItem("fp-workspace:usr_1");
   delete window.forgePilotConfig;
   delete window.forgePilotAuth;
   delete window.forgePilotApi;
@@ -94,15 +113,15 @@ describe("auth gate", () => {
     expect(handle.bridge.signIn).toHaveBeenCalledWith({ provider_instance_id: "pi_github" });
   });
 
-  it("renders the workbench for a signed-in session without a client-side scope switch", async () => {
+  it("renders the workbench scoped to the caller's live workspace", async () => {
     installDesktopAuth({ status: "signed_in", providers, session });
 
     render(<App />);
 
     expect(await screen.findByText("Ada Lovelace")).toBeTruthy();
-    expect(ForgePilotClient.prototype.listTasks).toHaveBeenCalled();
-    // Task workspace scope is server-resolved; no label-only switcher is shown.
-    expect(screen.queryByRole("combobox", { name: "Workspace" })).toBeNull();
+    await waitFor(() => expect(ForgePilotClient.prototype.listTasks).toHaveBeenCalled());
+    expect(await screen.findByRole("combobox", { name: "Workspace" })).toBeTruthy();
+    expect(ForgePilotClient.prototype.listWorkspaces).toHaveBeenCalled();
   });
 
   it("turns a revoked desktop session into the recoverable expired gate", async () => {
@@ -123,6 +142,7 @@ describe("auth gate", () => {
 
   it("routes a 401 from the task surface to the expired gate", async () => {
     const handle = installDesktopAuth({ status: "signed_in", providers, session });
+    vi.mocked(ForgePilotClient.prototype.listWorkspaces).mockRestore();
     vi.mocked(ForgePilotClient.prototype.listTasks).mockRestore();
     window.forgePilotApi = {
       request: vi.fn(async () => ({

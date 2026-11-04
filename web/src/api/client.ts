@@ -5,8 +5,12 @@ export type TaskEvent = components["schemas"]["TaskEvent"];
 export type PiSummary = components["schemas"]["PiSummary"];
 export type RunSummary = components["schemas"]["RunSummary"];
 export type ArtifactMetadata = components["schemas"]["ArtifactMetadata"];
+export type Workspace = components["schemas"]["Workspace"];
+export type WorkspaceRole = Workspace["role"];
 export type TaskStatus = Task["status"];
 export type TaskPage = operations["listTasks"]["responses"][200]["content"]["application/json"];
+export type WorkspacePage =
+  operations["listWorkspaces"]["responses"][200]["content"]["application/json"];
 
 type ErrorPayload = components["schemas"]["Error"];
 export type JsonFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -50,6 +54,12 @@ export interface ForgePilotClientOptions {
   baseUrl: string;
   /** Desktop bearer credential. Empty for cookie-authenticated browsers. */
   token: string;
+  /**
+   * Locator for the workspace-scoped task route family. `null` selects the
+   * legacy local-operator family, which the Node service serves only for its
+   * deployment-configured workspace (no identity subsystem).
+   */
+  workspaceId: string | null;
   fetchImpl?: JsonFetch;
   /** Reads the session CSRF token supplied with cookie-authenticated writes. */
   csrfToken?: () => string | undefined;
@@ -86,6 +96,7 @@ export interface StreamResult {
 export class ForgePilotClient {
   private readonly baseUrl: string;
   private readonly token: string;
+  private readonly workspaceId: string | null;
   private readonly fetchImpl: JsonFetch;
   private readonly csrfToken?: () => string | undefined;
   private readonly refreshCsrfToken?: () => Promise<string | undefined>;
@@ -95,6 +106,7 @@ export class ForgePilotClient {
   constructor(options: ForgePilotClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.token = options.token;
+    this.workspaceId = options.workspaceId;
     this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
     this.csrfToken = options.csrfToken;
     this.refreshCsrfToken = options.refreshCsrfToken;
@@ -102,16 +114,46 @@ export class ForgePilotClient {
     this.onForbidden = options.onForbidden;
   }
 
+  /** The contract's workspace-scoped task family, or the legacy seam. */
+  private get taskRoutes(): string {
+    return this.workspaceId === null
+      ? "/api/v1/tasks"
+      : `/api/v1/workspaces/${encodeURIComponent(this.workspaceId)}/tasks`;
+  }
+
+  /**
+   * Every workspace the caller's live memberships grant, read from
+   * `GET /api/v1/workspaces`. Pages are walked here so the switcher always
+   * sees the complete set; a repeated cursor ends the walk instead of
+   * looping on a malformed server response.
+   */
+  async listWorkspaces(): Promise<Workspace[]> {
+    const items: Workspace[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | null = null;
+    do {
+      const query: string = cursor === null ? "" : `?cursor=${encodeURIComponent(cursor)}`;
+      const page: WorkspacePage = await this.request<WorkspacePage>(`/api/v1/workspaces${query}`);
+      items.push(...page.items);
+      cursor = page.next_cursor;
+      if (cursor !== null) {
+        if (seenCursors.has(cursor)) break;
+        seenCursors.add(cursor);
+      }
+    } while (cursor !== null);
+    return items;
+  }
+
   async listTasks(status?: TaskStatus, cursor?: string): Promise<TaskPage> {
     const params = new URLSearchParams();
     if (status) params.set("status", status);
     if (cursor) params.set("cursor", cursor);
     const query = params.size > 0 ? `?${params.toString()}` : "";
-    return this.request<TaskPage>(`/api/v1/tasks${query}`);
+    return this.request<TaskPage>(`${this.taskRoutes}${query}`);
   }
 
   async createTask(input: CreateTaskInput, idempotencyKey: string): Promise<Task> {
-    return this.request<Task>("/api/v1/tasks", {
+    return this.request<Task>(this.taskRoutes, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -122,13 +164,13 @@ export class ForgePilotClient {
   }
 
   async getTask(taskId: string): Promise<Task> {
-    return this.request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}`);
+    return this.request<Task>(`${this.taskRoutes}/${encodeURIComponent(taskId)}`);
   }
 
   async getRuns(taskId: string): Promise<RunSummary[]> {
     const result = await this.request<
       operations["getTaskRuns"]["responses"][200]["content"]["application/json"]
-    >(`/api/v1/tasks/${encodeURIComponent(taskId)}/runs`);
+    >(`${this.taskRoutes}/${encodeURIComponent(taskId)}/runs`);
     return result.items;
   }
 
@@ -136,7 +178,7 @@ export class ForgePilotClient {
     taskId: string,
     input: operations["sendMessage"]["requestBody"]["content"]["application/json"],
   ): Promise<{ task_id: string; queued: boolean }> {
-    return this.request(`/api/v1/tasks/${encodeURIComponent(taskId)}/messages`, {
+    return this.request(`${this.taskRoutes}/${encodeURIComponent(taskId)}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -144,7 +186,7 @@ export class ForgePilotClient {
   }
 
   async approveTask(taskId: string, input: ApprovalInput): Promise<Task> {
-    return this.request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}/approvals`, {
+    return this.request<Task>(`${this.taskRoutes}/${encodeURIComponent(taskId)}/approvals`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -152,7 +194,7 @@ export class ForgePilotClient {
   }
 
   async cancelTask(taskId: string, reason?: string): Promise<Task> {
-    return this.request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`, {
+    return this.request<Task>(`${this.taskRoutes}/${encodeURIComponent(taskId)}/cancel`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: reason ? JSON.stringify({ reason }) : undefined,
@@ -160,13 +202,13 @@ export class ForgePilotClient {
   }
 
   async archiveTask(taskId: string): Promise<Task> {
-    return this.request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}/archive`, {
+    return this.request<Task>(`${this.taskRoutes}/${encodeURIComponent(taskId)}/archive`, {
       method: "POST",
     });
   }
 
   async recoverTask(taskId: string): Promise<Task> {
-    return this.request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}/recover`, {
+    return this.request<Task>(`${this.taskRoutes}/${encodeURIComponent(taskId)}/recover`, {
       method: "POST",
     });
   }
@@ -174,13 +216,13 @@ export class ForgePilotClient {
   async getTimeline(taskId: string): Promise<TaskEvent[]> {
     const result = await this.request<
       operations["getTaskTimeline"]["responses"][200]["content"]["application/json"]
-    >(`/api/v1/tasks/${encodeURIComponent(taskId)}/timeline`);
+    >(`${this.taskRoutes}/${encodeURIComponent(taskId)}/timeline`);
     return result.items;
   }
 
   async getArtifact(taskId: string, artifactId: string): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>(
-      `/api/v1/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}`,
+      `${this.taskRoutes}/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}`,
     );
   }
 
