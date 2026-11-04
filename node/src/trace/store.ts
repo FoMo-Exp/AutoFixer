@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import { redactEventContent } from "./content.js";
 import { TraceAccessError, TraceConflictError, TraceValidationError } from "./errors.js";
 import { METRIC_DIMENSION_KEYS } from "./labels.js";
 import { TRACE_SCHEMA_VERSION, buildTraceEvent, isTimestamp, migrateTraceEvent } from "./schema.js";
@@ -157,12 +158,16 @@ export class TraceStore {
   }
 
   /**
-   * Record one event. Redelivery of identical content is deduplicated and
-   * re-notifies nobody; redelivery that changes content is refused so
-   * recorded evidence can never be rewritten through the delivery path.
+   * Record one event. The DAT-225 content policy is enforced here, at the
+   * write boundary: payload strings and label values are scanned and
+   * redacted before ordinary persistence, so no secret-bearing material can
+   * rest in the store whatever the writer sends. Redelivery of identical
+   * content is deduplicated and re-notifies nobody; redelivery that changes
+   * content is refused so recorded evidence can never be rewritten through
+   * the delivery path.
    */
   append(input: NewTraceEvent): AppendResult {
-    const event = buildTraceEvent(input, this.now().toISOString());
+    const event = redactEventContent(buildTraceEvent(input, this.now().toISOString()));
     const key = identityKey(event.source, event.event_id);
     const fingerprint = fingerprintOf(event);
     const existing = this.entries.get(key);
