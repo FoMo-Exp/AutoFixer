@@ -73,6 +73,12 @@ export interface RuleServiceDeps {
     samples?: readonly TrueSecretSample[];
     detectors?: readonly SecretDetector[];
   };
+  /**
+   * Unified security-audit hook (DAT-213). Called for every appended rule
+   * event; a throwing hook rolls the transaction back, so a rule action whose
+   * audit record cannot be written never reports success.
+   */
+  onEvent?: (event: RuleEvent) => void;
 }
 
 const SCHEMA_VERSION = 1;
@@ -795,6 +801,7 @@ export class RuleCorrectionService {
     };
     history.push(event);
     this.events.set(lineage, history);
+    this.deps.onEvent?.(event);
     return event;
   }
 

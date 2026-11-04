@@ -161,6 +161,20 @@ const EXPECTED: Record<SecurityAction, Record<SecurityDuty, boolean>> = {
     independent_reviewer: false,
     enterprise_security_admin: true,
   },
+  // Audit access (DAT-213): handlers, reviewers, and administrators read the
+  // security trail; only the administrator may export it out of the service.
+  "audit.read": {
+    task_owner: false,
+    security_handler: true,
+    independent_reviewer: true,
+    enterprise_security_admin: true,
+  },
+  "audit.export": {
+    task_owner: false,
+    security_handler: false,
+    independent_reviewer: false,
+    enterprise_security_admin: true,
+  },
 };
 
 const PRINCIPALS: Record<SecurityDuty, SecurityActor> = {

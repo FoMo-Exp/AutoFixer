@@ -28,6 +28,8 @@ import {
   TURN_REPORT_AREAS,
   TURN_REPORT_OUTCOMES,
 } from "../src/pi/turn-report.js";
+import { SECURITY_AUDIT_EVENT_TYPES, SECURITY_AUDIT_RESULTS } from "../src/security/audit.js";
+import { CASE_STATES } from "../src/security/types.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const committedPath = path.join(repoRoot, "web", "src", "api", "contracts", "openapi.json");
@@ -160,6 +162,37 @@ const RSI_ENDPOINTS: Array<[method: string, path: string]> = [
   ["patch", "/api/v1/workspaces/{workspace_id}/memory/rsi/controls"],
 ];
 
+/** Model-egress gateway, security case, rule, recovery, and audit surface (DAT-213). */
+const SECURITY_ENDPOINTS: Array<[method: string, path: string]> = [
+  ["get", "/api/v1/workspaces/{workspace_id}/security/cases"],
+  ["get", "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}"],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}/transitions"],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}/termination-requests"],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}/reassignment-requests"],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}/quarantine-grants"],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/quarantine/{quarantine_id}/views"],
+  ["get", "/api/v1/workspaces/{workspace_id}/security/rules"],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/rules/proposals"],
+  [
+    "post",
+    "/api/v1/workspaces/{workspace_id}/security/rules/{lineage}/revisions/{version}/reviews",
+  ],
+  [
+    "post",
+    "/api/v1/workspaces/{workspace_id}/security/rules/{lineage}/revisions/{version}/activation",
+  ],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/rules/{lineage}/rollbacks"],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/cases/{case_id}/recovery-approvals"],
+  ["get", "/api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}"],
+  ["delete", "/api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}"],
+  [
+    "post",
+    "/api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}/dispatch",
+  ],
+  ["get", "/api/v1/workspaces/{workspace_id}/security/audit"],
+  ["post", "/api/v1/workspaces/{workspace_id}/security/audit/exports"],
+];
+
 const ALL_ENDPOINTS = [
   ...M0_ENDPOINTS,
   ...AUTH_ENDPOINTS,
@@ -168,6 +201,7 @@ const ALL_ENDPOINTS = [
   ...COLLAB_ENDPOINTS,
   ...MEMORY_ENDPOINTS,
   ...RSI_ENDPOINTS,
+  ...SECURITY_ENDPOINTS,
 ];
 
 describe("forgepilot-api/v1 OpenAPI document", () => {
@@ -699,6 +733,97 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
     const unmapped = new ApiError(500, "SOMETHING_NEW", "unexpected").toBody("req_4");
     expect(unmapped.error).toMatchObject({ category: "unknown", retryable: false });
     expect(ERROR_CATEGORIES).toContain(unmapped.error.category);
+  });
+
+  test("documents every model-egress security endpoint", () => {
+    for (const [method, path] of SECURITY_ENDPOINTS) {
+      expect(document.paths[path], `missing path ${path}`).toBeDefined();
+      expect(document.paths[path]?.[method], `missing ${method} ${path}`).toBeDefined();
+    }
+  });
+
+  test("the security surface reuses the case and audit vocabularies", () => {
+    const caseSchema = document.components.schemas["SecurityCase"] as {
+      properties: { state: { enum: string[] }; allowed_transitions: { items: { enum: string[] } } };
+    };
+    expect(caseSchema.properties.state.enum).toEqual([...CASE_STATES]);
+    expect(caseSchema.properties.allowed_transitions.items.enum).toEqual([...CASE_STATES]);
+
+    const event = document.components.schemas["SecurityAuditEvent"] as {
+      properties: { event: { enum: string[] }; result: { enum: string[] } };
+    };
+    expect(event.properties.event.enum).toEqual([...SECURITY_AUDIT_EVENT_TYPES]);
+    expect(event.properties.result.enum).toEqual([...SECURITY_AUDIT_RESULTS]);
+  });
+
+  test("the security error codes carry stable, non-leaking guidance and refs", () => {
+    for (const [code, status, nextAction] of [
+      ["MODEL_EGRESS_DENIED", 403, "request_review"],
+      ["SENSITIVE_DATA_UNCERTAIN", 422, "enter_security_case"],
+      ["SECURITY_REVIEW_REQUIRED", 428, "request_review"],
+      ["RECOVERY_APPROVAL_INVALID", 409, "request_review"],
+    ] as Array<[string, number, string]>) {
+      const body = new ApiError(status, code, "blocked").toBody("req_sec");
+      expect(body.error, code).toMatchObject({
+        code,
+        stage: "policy",
+        category: "denial",
+        retryable: false,
+        next_action: nextAction,
+        request_id: "req_sec",
+      });
+      expect(ERROR_NEXT_ACTIONS).toContain(body.error.next_action);
+    }
+
+    const envelope = document.components.schemas["Error"] as {
+      properties: { error: { properties: Record<string, unknown> } };
+    };
+    expect(Object.keys(envelope.properties.error.properties)).toEqual(
+      expect.arrayContaining([
+        "code",
+        "stage",
+        "category",
+        "retryable",
+        "next_action",
+        "case_ref",
+        "trace_ref",
+      ]),
+    );
+  });
+
+  test("the audit trail is append-only and read/export are purpose-bound", () => {
+    const auditPath = "/api/v1/workspaces/{workspace_id}/security/audit";
+    const operations = document.paths[auditPath] as Record<string, unknown>;
+    expect(Object.keys(operations).sort()).toEqual(["get"]);
+
+    const read = operations["get"] as {
+      parameters: Array<{ name: string; in: string; required?: boolean }>;
+    };
+    expect(
+      read.parameters.some(
+        (parameter) =>
+          parameter.name === "purpose" && parameter.in === "query" && parameter.required === true,
+      ),
+    ).toBe(true);
+
+    const exported = document.paths[`${auditPath}/exports`]?.["post"] as {
+      requestBody: { content: { "application/json": { schema: { $ref: string } } } };
+    };
+    expect(exported.requestBody.content["application/json"].schema.$ref).toBe(
+      "#/components/schemas/SecurityAuditExportRequest",
+    );
+  });
+
+  test("no security response or request advertises a bypass or a reusable approval", () => {
+    for (const [path, methods] of Object.entries(document.paths)) {
+      if (!path.includes("/security/")) {
+        continue;
+      }
+      const text = JSON.stringify(methods);
+      // Prose may say "no operation offers a bypass"; no field may deliver one.
+      expect(text, path).not.toMatch(/"(send_anyway|bypass|exempt_from_scan)"\s*:/i);
+      expect(text, path).not.toMatch(/"reusable"\s*:|"reuse"\s*:\s*true/i);
+    }
   });
 
   test("the committed contract file matches a fresh generation (regenerate on drift)", () => {

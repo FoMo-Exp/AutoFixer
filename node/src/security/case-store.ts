@@ -46,6 +46,12 @@ export interface CaseStoreOptions {
   persistencePath?: string;
   now?: () => Date;
   newCaseId?: () => string;
+  /**
+   * Unified security-audit hook (DAT-213). Called for every appended case
+   * event after it is durable. A throwing hook fails the case operation:
+   * evidence that cannot be recorded must not be reported as filed.
+   */
+  onEvent?: (event: CaseEvent, record: SecurityCase) => void;
 }
 
 export interface OpenBlockResult {
@@ -94,11 +100,13 @@ export class SecurityCaseStore {
   private readonly persistencePath: string | undefined;
   private readonly now: () => Date;
   private readonly newCaseId: () => string;
+  private readonly onEvent: ((event: CaseEvent, record: SecurityCase) => void) | undefined;
 
   constructor(options: CaseStoreOptions = {}) {
     this.persistencePath = options.persistencePath;
     this.now = options.now ?? (() => new Date());
     this.newCaseId = options.newCaseId ?? (() => randomUUID());
+    this.onEvent = options.onEvent;
     this.load();
   }
 
@@ -291,6 +299,12 @@ export class SecurityCaseStore {
     history.push(event);
     this.history.set(caseId, history);
     this.persist();
+    if (this.onEvent) {
+      // The record exists at this point (opened cases are inserted before
+      // their first event), so the hook always sees a complete correlation.
+      const record = this.cases.get(caseId);
+      if (record) this.onEvent(event, record);
+    }
     return event;
   }
 

@@ -29,6 +29,7 @@ import {
 } from "./errors.js";
 import { MEMORY_OPENAPI_SCHEMAS, memoryOpenApiPaths } from "./openapi-memory.js";
 import { RSI_OPENAPI_SCHEMAS, rsiOpenApiPaths } from "./openapi-rsi.js";
+import { SECURITY_OPENAPI_SCHEMAS, securityOpenApiPaths } from "./openapi-security.js";
 import type { JsonObject } from "./openapi-types.js";
 
 /** Loosely-typed OpenAPI 3.1 document; schemas stay plain JSON objects. */
@@ -122,6 +123,17 @@ const errorSchema: JsonObject = {
         request_id: {
           type: "string",
           description: "Trace/case reference to quote in support and security cases.",
+        },
+        case_ref: {
+          type: ["string", "null"],
+          description:
+            "Authenticated security-case identifier, when the failure belongs " +
+            "to one (ADR-0005). A correlation handle only: it authorizes " +
+            "nothing and never grants access to quarantined content.",
+        },
+        trace_ref: {
+          type: ["string", "null"],
+          description: "Trace identifier for correlation, when one exists.",
         },
         details: {
           type: "object",
@@ -4549,6 +4561,11 @@ export function buildOpenApiDocument(): OpenApiDocument {
   // rollback, budgets, kill switch. Mounted under the same memory surface.
   Object.assign(paths, rsiOpenApiPaths());
 
+  // Security case/rule/recovery/audit surface (DAT-213, ADR-0005): redacted
+  // cases, separated disposition, versioned rule corrections, one-time
+  // rechecked recovery, and the tamper-evident non-secret audit trail.
+  Object.assign(paths, securityOpenApiPaths());
+
   // Stamp the security requirement and 401 response onto every operation so
   // auth coverage cannot silently miss an endpoint.
   stampAuth(paths);
@@ -4653,6 +4670,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
         AuthAuditRecord: authAuditRecordSchema,
         ...MEMORY_OPENAPI_SCHEMAS,
         ...RSI_OPENAPI_SCHEMAS,
+        ...SECURITY_OPENAPI_SCHEMAS,
         Error: errorSchema,
       },
       securitySchemes: {
