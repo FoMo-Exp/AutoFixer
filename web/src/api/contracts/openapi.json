@@ -8819,8 +8819,8 @@
     "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/events": {
       "get": {
         "operationId": "getMemoryItemEvents",
-        "summary": "Item audit timeline",
-        "description": "Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Merges memory events, promotion decisions, and consolidation operations into one ascending timeline with actor, action, version, time, and a fixed reason code. `detail` carries only enums, counts, and opaque ids. Events about versions above the caller's ceiling are absent.",
+        "summary": "Item audit timeline, paged",
+        "description": "Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Merges memory events, promotion decisions, and consolidation operations into one ascending timeline with actor, action, version, time, and a fixed reason code. `detail` carries only enums, counts, and opaque ids. Events about versions above the caller's ceiling are absent. The timeline is paginated rather than truncated: pass `limit` (default 50, max 200) and follow `next_cursor` until it is null to read the complete audit history.",
         "parameters": [
           {
             "name": "workspace_id",
@@ -8839,6 +8839,28 @@
               "type": "string"
             },
             "description": "Memory item id. Ids never grant access; a foreign id answers 404."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "description": "Timeline page size."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 512
+            },
+            "description": "Opaque `next_cursor` from the previous page."
           }
         ],
         "responses": {
@@ -14816,9 +14838,11 @@
       },
       "MemoryItemEvents": {
         "type": "object",
+        "description": "One page of the merged audit timeline. The timeline is traversable: `next_cursor` is non-null exactly when older-to-newer traversal has more rows, so a client can always reach the complete history.",
         "required": [
           "item_id",
-          "events"
+          "events",
+          "next_cursor"
         ],
         "additionalProperties": false,
         "properties": {
@@ -14831,6 +14855,17 @@
             "items": {
               "$ref": "#/components/schemas/MemoryItemEvent"
             }
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Opaque cursor for the next page; null at the end of the timeline. A bounded page is never presented as the complete audit history."
           }
         }
       },

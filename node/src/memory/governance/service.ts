@@ -43,10 +43,14 @@ import {
   ValidationError,
   VersionConflictError,
 } from "../../control-plane/errors.js";
-import type { MemoryItemRecord, MemoryItemVersion, MemoryStatus } from "../types.js";
+import type { MemoryEvent, MemoryItemRecord, MemoryItemVersion, MemoryStatus } from "../types.js";
 import { MEMORY_SCHEMA_VERSION } from "../types.js";
-import type { MemoryRepositories } from "../repositories.js";
-import type { MemoryLifecycleStore } from "../lifecycle/repositories.js";
+import type { MemoryRepositories, MemoryTimelinePosition } from "../repositories.js";
+import type {
+  ConsolidationOpRecordWithTime,
+  MemoryLifecycleStore,
+  PromotionDecisionRecord,
+} from "../lifecycle/repositories.js";
 import { approveAndPromote } from "../lifecycle/promotion.js";
 import type { MemoryRetrievalService } from "../retrieval/service.js";
 import { tierOf } from "../retrieval/types.js";
@@ -60,6 +64,7 @@ import type {
   MemoryGovernanceReasonCode,
   MemoryGovernanceResult,
   MemoryItemEventView,
+  MemoryItemEventsQuery,
   MemoryItemEventsView,
   MemoryItemVersionView,
   MemoryItemVersionsView,
@@ -89,7 +94,17 @@ export interface MemoryGovernanceServiceDeps {
 export interface MemoryGovernanceService {
   getItem(scope: WorkspaceScope, role: WorkspaceRole, itemId: string): MemoryItemView;
   versions(scope: WorkspaceScope, role: WorkspaceRole, itemId: string): MemoryItemVersionsView;
-  events(scope: WorkspaceScope, role: WorkspaceRole, itemId: string): MemoryItemEventsView;
+  /**
+   * One page of the merged audit timeline. The timeline is traversable: a page
+   * returns `next_cursor` while more rows remain, so a client never mistakes a
+   * bounded page for the complete audit history.
+   */
+  events(
+    scope: WorkspaceScope,
+    role: WorkspaceRole,
+    itemId: string,
+    query?: MemoryItemEventsQuery,
+  ): MemoryItemEventsView;
   promote(
     scope: WorkspaceScope,
     actor: MemoryGovernanceActor,
@@ -203,6 +218,187 @@ function mayGovern(role: WorkspaceRole, ledTeamIds: readonly string[], teamId?: 
 // Implementation
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Timeline pagination
+// ---------------------------------------------------------------------------
+
+/** Default and maximum page size of the merged audit timeline. */
+export const MEMORY_TIMELINE_DEFAULT_LIMIT = 50;
+export const MEMORY_TIMELINE_MAX_LIMIT = 200;
+
+/** Rows read per source per merge refill; bounded independently of the page. */
+const TIMELINE_CHUNK = 100;
+
+type TimelineStreamSource = MemoryItemEventView["source"];
+
+/** Stable source order for events that share an instant. */
+const timelineSourceOrder: Record<TimelineStreamSource, number> = {
+  memory_event: 0,
+  promotion_decision: 1,
+  consolidation_op: 2,
+};
+
+interface TimelineRow {
+  at: string;
+  /** SQLite rowid within the source stream; breaks timestamp/action ties. */
+  sequence: number;
+  /** False when the row is about a version above the caller's ceiling. */
+  visible: boolean;
+  view: MemoryItemEventView;
+}
+
+interface TimelineStream {
+  source: TimelineStreamSource;
+  rank: number;
+  rows: TimelineRow[];
+  index: number;
+  done: boolean;
+  /** Last consumed row; the exclusive resume point for the next read. */
+  position: MemoryTimelinePosition | undefined;
+  fetch: (after: MemoryTimelinePosition | undefined, limit: number) => TimelineRow[];
+}
+
+type TimelineCursor = Partial<Record<TimelineStreamSource, MemoryTimelinePosition>>;
+
+const TIMELINE_CURSOR_KEY: Record<TimelineStreamSource, string> = {
+  memory_event: "e",
+  promotion_decision: "p",
+  consolidation_op: "c",
+};
+
+function timelineLimit(value: number | undefined): number {
+  if (value === undefined) {
+    return MEMORY_TIMELINE_DEFAULT_LIMIT;
+  }
+  if (!Number.isInteger(value) || value < 1 || value > MEMORY_TIMELINE_MAX_LIMIT) {
+    throw new ValidationError(
+      `limit must be an integer between 1 and ${MEMORY_TIMELINE_MAX_LIMIT}`,
+    );
+  }
+  return value;
+}
+
+function decodeTimelineCursor(cursor: string | undefined): TimelineCursor {
+  if (cursor === undefined || cursor.length === 0) {
+    return {};
+  }
+  if (cursor.length > 512) {
+    throw new ValidationError("cursor is invalid");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    throw new ValidationError("cursor is invalid");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ValidationError("cursor is invalid");
+  }
+  const source = parsed as Record<string, unknown>;
+  const decoded: TimelineCursor = {};
+  for (const [streamSource, key] of Object.entries(TIMELINE_CURSOR_KEY) as Array<
+    [TimelineStreamSource, string]
+  >) {
+    const value = source[key];
+    if (value === undefined) {
+      continue;
+    }
+    if (
+      !Array.isArray(value) ||
+      value.length !== 2 ||
+      typeof value[0] !== "string" ||
+      value[0].length === 0 ||
+      value[0].length > 64 ||
+      typeof value[1] !== "number" ||
+      !Number.isInteger(value[1]) ||
+      value[1] < 0
+    ) {
+      throw new ValidationError("cursor is invalid");
+    }
+    decoded[streamSource] = { at: value[0], sequence: value[1] };
+  }
+  if (Object.keys(decoded).length === 0) {
+    throw new ValidationError("cursor is invalid");
+  }
+  return decoded;
+}
+
+function encodeTimelineCursor(streams: readonly TimelineStream[]): string | null {
+  const encoded: Record<string, [string, number]> = {};
+  for (const stream of streams) {
+    if (stream.position === undefined) {
+      continue;
+    }
+    encoded[TIMELINE_CURSOR_KEY[stream.source]] = [stream.position.at, stream.position.sequence];
+  }
+  if (Object.keys(encoded).length === 0) {
+    return null;
+  }
+  return Buffer.from(JSON.stringify(encoded), "utf8").toString("base64url");
+}
+
+/** Refill the stream from storage when its buffer is exhausted. */
+function peekTimelineRow(stream: TimelineStream): TimelineRow | undefined {
+  while (stream.index >= stream.rows.length) {
+    if (stream.done) {
+      return undefined;
+    }
+    const fetched = stream.fetch(stream.position, TIMELINE_CHUNK);
+    stream.rows = fetched;
+    stream.index = 0;
+    if (fetched.length < TIMELINE_CHUNK) {
+      stream.done = true;
+    }
+    if (fetched.length === 0) {
+      return undefined;
+    }
+  }
+  return stream.rows[stream.index];
+}
+
+function consumeTimelineRow(stream: TimelineStream): void {
+  const row = stream.rows[stream.index];
+  if (row === undefined) {
+    return;
+  }
+  stream.position = { at: row.at, sequence: row.sequence };
+  stream.index += 1;
+}
+
+function compareTimelineRows(
+  left: { stream: TimelineStream; row: TimelineRow },
+  right: { stream: TimelineStream; row: TimelineRow },
+): number {
+  if (left.row.at !== right.row.at) {
+    return left.row.at < right.row.at ? -1 : 1;
+  }
+  if (left.stream.rank !== right.stream.rank) {
+    return left.stream.rank - right.stream.rank;
+  }
+  if (left.row.view.action !== right.row.view.action) {
+    return left.row.view.action < right.row.view.action ? -1 : 1;
+  }
+  return left.row.sequence - right.row.sequence;
+}
+
+/** The smallest unconsumed row across the three streams. */
+function pickTimelineHead(
+  streams: readonly TimelineStream[],
+): { stream: TimelineStream; row: TimelineRow } | undefined {
+  let best: { stream: TimelineStream; row: TimelineRow } | undefined;
+  for (const stream of streams) {
+    const row = peekTimelineRow(stream);
+    if (row === undefined) {
+      continue;
+    }
+    const candidate = { stream, row };
+    if (best === undefined || compareTimelineRows(candidate, best) < 0) {
+      best = candidate;
+    }
+  }
+  return best;
+}
+
 class SqliteMemoryGovernanceService implements MemoryGovernanceService {
   constructor(private readonly deps: MemoryGovernanceServiceDeps) {}
 
@@ -229,8 +425,15 @@ class SqliteMemoryGovernanceService implements MemoryGovernanceService {
     };
   }
 
-  events(scope: WorkspaceScope, role: WorkspaceRole, itemId: string): MemoryItemEventsView {
+  events(
+    scope: WorkspaceScope,
+    role: WorkspaceRole,
+    itemId: string,
+    query: MemoryItemEventsQuery = {},
+  ): MemoryItemEventsView {
     const record = this.visibleRecord(scope, role, itemId);
+    const limit = timelineLimit(query.limit);
+    const cursor = decodeTimelineCursor(query.cursor);
     const allVersions = this.deps.memory.items.listVersions(scope, record.item.id);
     const versionSensitivity = new Map<number, MemoryItemVersion>(
       allVersions.map((version) => [version.version, version]),
@@ -246,20 +449,83 @@ class SqliteMemoryGovernanceService implements MemoryGovernanceService {
       return version !== undefined && withinSensitivityCeiling(version.sensitivity, role);
     };
 
+    const streams: TimelineStream[] = [
+      {
+        source: "memory_event",
+        rank: timelineSourceOrder.memory_event,
+        rows: [],
+        index: 0,
+        done: false,
+        position: cursor.memory_event,
+        fetch: (after, count) =>
+          this.deps.memory.audit
+            .listTimelinePage(scope, record.item.id, after, count)
+            .map((entry) => this.memoryEventRow(entry.event, entry.sequence, visibleVersion)),
+      },
+      {
+        source: "promotion_decision",
+        rank: timelineSourceOrder.promotion_decision,
+        rows: [],
+        index: 0,
+        done: false,
+        position: cursor.promotion_decision,
+        fetch: (after, count) =>
+          this.deps.lifecycle
+            .listPromotionDecisionsPage(scope, record.item.id, after, count)
+            .map((entry) =>
+              this.promotionDecisionRow(entry.decision, entry.sequence, visibleVersion),
+            ),
+      },
+      {
+        source: "consolidation_op",
+        rank: timelineSourceOrder.consolidation_op,
+        rows: [],
+        index: 0,
+        done: false,
+        position: cursor.consolidation_op,
+        fetch: (after, count) =>
+          this.deps.lifecycle
+            .listConsolidationOpsForItem(scope, record.item.id, after, count)
+            .map((entry) => this.consolidationOpRow(entry.op, entry.sequence, visibleVersion)),
+      },
+    ];
+
+    // Merge the three ordered streams. A row the caller may not see still
+    // advances that stream's position, so it is never re-read and never stalls
+    // traversal — it simply never reaches the response.
     const events: MemoryItemEventView[] = [];
-    for (const event of this.deps.memory.audit.list(scope, {
-      item_id: record.item.id,
-      limit: 500,
-    })) {
-      if (!visibleVersion(event.item_version)) {
-        continue;
+    while (events.length < limit) {
+      const best = pickTimelineHead(streams);
+      if (best === undefined) {
+        break;
       }
-      const detail = sanitizedDetail(event.detail);
-      const from = statusOrUndefined(detail?.["from"]);
-      const to = statusOrUndefined(detail?.["to"]);
-      const reason =
-        typeof detail?.["reason_code"] === "string" ? detail["reason_code"] : undefined;
-      events.push({
+      consumeTimelineRow(best.stream);
+      if (best.row.visible) {
+        events.push(best.row.view);
+      }
+    }
+
+    // A bounded page is not a complete history: when more rows remain, the
+    // caller receives a cursor for the rest.
+    const more = streams.some((stream) => peekTimelineRow(stream) !== undefined);
+    const next_cursor = events.length === limit && more ? encodeTimelineCursor(streams) : null;
+    return { item_id: record.item.id, events, next_cursor };
+  }
+
+  private memoryEventRow(
+    event: MemoryEvent,
+    sequence: number,
+    visibleVersion: (itemVersion: number | null) => boolean,
+  ): TimelineRow {
+    const detail = sanitizedDetail(event.detail);
+    const from = statusOrUndefined(detail?.["from"]);
+    const to = statusOrUndefined(detail?.["to"]);
+    const reason = typeof detail?.["reason_code"] === "string" ? detail["reason_code"] : undefined;
+    return {
+      at: event.created_at,
+      sequence,
+      visible: visibleVersion(event.item_version),
+      view: {
         at: event.created_at,
         source: "memory_event",
         action: event.event_type,
@@ -269,17 +535,20 @@ class SqliteMemoryGovernanceService implements MemoryGovernanceService {
         ...(to !== undefined ? { to_status: to } : {}),
         ...(reason !== undefined ? { reason_code: reason } : {}),
         ...(detail !== undefined ? { detail } : {}),
-      });
-    }
+      },
+    };
+  }
 
-    for (const decision of this.deps.lifecycle.listPromotionDecisions(scope, {
-      item_id: record.item.id,
-      limit: 500,
-    })) {
-      if (!visibleVersion(decision.item_version)) {
-        continue;
-      }
-      events.push({
+  private promotionDecisionRow(
+    decision: PromotionDecisionRecord,
+    sequence: number,
+    visibleVersion: (itemVersion: number | null) => boolean,
+  ): TimelineRow {
+    return {
+      at: decision.created_at,
+      sequence,
+      visible: visibleVersion(decision.item_version),
+      view: {
         at: decision.created_at,
         source: "promotion_decision",
         action: "promotion_decision",
@@ -295,14 +564,20 @@ class SqliteMemoryGovernanceService implements MemoryGovernanceService {
             ? { evaluation_delta: decision.evaluation_delta }
             : {}),
         },
-      });
-    }
+      },
+    };
+  }
 
-    for (const op of this.deps.lifecycle.listConsolidationOpsForItem(scope, record.item.id, 500)) {
-      if (!visibleVersion(op.item_version)) {
-        continue;
-      }
-      events.push({
+  private consolidationOpRow(
+    op: ConsolidationOpRecordWithTime,
+    sequence: number,
+    visibleVersion: (itemVersion: number | null) => boolean,
+  ): TimelineRow {
+    return {
+      at: op.created_at,
+      sequence,
+      visible: visibleVersion(op.item_version),
+      view: {
         at: op.created_at,
         source: "consolidation_op",
         action: op.op,
@@ -316,27 +591,8 @@ class SqliteMemoryGovernanceService implements MemoryGovernanceService {
           ...(op.target_item_id !== null ? { target_item_id: op.target_item_id } : {}),
           ...op.detail,
         },
-      });
-    }
-
-    // Ascending: a timeline reads forward. Ties keep a stable source order.
-    const sourceOrder: Record<MemoryItemEventView["source"], number> = {
-      memory_event: 0,
-      promotion_decision: 1,
-      consolidation_op: 2,
+      },
     };
-    events.sort((left, right) => {
-      if (left.at !== right.at) {
-        return left.at.localeCompare(right.at);
-      }
-      const bySource = sourceOrder[left.source] - sourceOrder[right.source];
-      if (bySource !== 0) {
-        return bySource;
-      }
-      return left.action.localeCompare(right.action);
-    });
-
-    return { item_id: record.item.id, events };
   }
 
   promote(

@@ -177,8 +177,36 @@ export interface MemoryEmbeddingRepository {
   listByItem(scope: WorkspaceScope, itemId: MemoryItemId): MemoryEmbedding[];
 }
 
+/**
+ * A resume point in a per-item audit stream (DAT-251 timeline pagination).
+ * `at` is the row's canonical UTC timestamp and `sequence` is its SQLite
+ * rowid; together they form a total order that survives equal timestamps.
+ */
+export interface MemoryTimelinePosition {
+  at: string;
+  sequence: number;
+}
+
+/** One audit row with its stream position. */
+export interface MemoryTimelineEntry {
+  event: MemoryEvent;
+  sequence: number;
+}
+
 export interface MemoryAuditRepository {
   list(scope: WorkspaceScope, filter?: MemoryEventFilter): MemoryEvent[];
+  /**
+   * Keyset page of one item's audit events, oldest first. `after` is exclusive
+   * so a caller can traverse the whole history without an offset: the
+   * governance timeline pages across `memory_events`, promotion decisions, and
+   * consolidation ops, and never silently stops at a fixed count.
+   */
+  listTimelinePage(
+    scope: WorkspaceScope,
+    itemId: MemoryItemId,
+    after: MemoryTimelinePosition | undefined,
+    limit: number,
+  ): MemoryTimelineEntry[];
 }
 
 export interface MemoryTombstoneRepository {
@@ -1692,6 +1720,32 @@ class SqliteMemoryEmbeddingRepository implements MemoryEmbeddingRepository {
 
 class SqliteMemoryAuditRepository implements MemoryAuditRepository {
   constructor(private readonly db: ControlPlaneDb) {}
+
+  listTimelinePage(
+    scope: WorkspaceScope,
+    itemId: MemoryItemId,
+    after: MemoryTimelinePosition | undefined,
+    limit: number,
+  ): MemoryTimelineEntry[] {
+    requireWorkspaceScope(scope);
+    const bounded = Math.min(Math.max(limit, 1), 500);
+    const keyset =
+      after === undefined ? "" : " AND (created_at > ? OR (created_at = ? AND rowid > ?))";
+    const params: (string | number)[] = [scope.enterprise_id, scope.workspace_id, itemId];
+    if (after !== undefined) {
+      params.push(after.at, after.at, after.sequence);
+    }
+    params.push(bounded);
+    const rows = this.db
+      .prepare(
+        `SELECT rowid AS sequence, * FROM memory_events
+          WHERE enterprise_id = ? AND workspace_id = ? AND item_id = ?${keyset}
+          ORDER BY created_at, rowid
+          LIMIT ?`,
+      )
+      .all(...params) as unknown as (MemoryEventRow & { sequence: number })[];
+    return rows.map((row) => ({ event: toMemoryEvent(row), sequence: row.sequence }));
+  }
 
   list(scope: WorkspaceScope, filter: MemoryEventFilter = {}): MemoryEvent[] {
     requireWorkspaceScope(scope);

@@ -253,7 +253,7 @@ run summaries for that task; terminal grants are never reused.
 | `GET /api/v1/workspaces/{workspace_id}/memory/items?kind=&status=&tier=&team_id=&path_prefix=&language=&task_family=&trust=&sensitivity=&limit=&cursor=` | none | `200 {items: MemoryItemView[], next_cursor}` |
 | `GET /api/v1/workspaces/{workspace_id}/memory/items/{item_id}` | none | `200 MemoryItemView` |
 | `GET /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/versions` | none | `200 MemoryItemVersions` |
-| `GET /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/events` | none | `200 MemoryItemEvents` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/events?limit=&cursor=` | none | `200 MemoryItemEvents` (paged; `next_cursor` until null) |
 | `POST /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/promote` | `{version, expected_version}` | `200 MemoryGovernanceResult` (candidate → active) |
 | `POST /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/deprecate` | `{version, expected_version, reason_code}` | `200 MemoryGovernanceResult` (active\|candidate → deprecated) |
 | `POST /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/quarantine` | `{version, expected_version, reason_code}` | `200 MemoryGovernanceResult` (any non-terminal → quarantined; content redacted) |

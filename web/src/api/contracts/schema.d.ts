@@ -1431,8 +1431,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Item audit timeline
-         * @description Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Merges memory events, promotion decisions, and consolidation operations into one ascending timeline with actor, action, version, time, and a fixed reason code. `detail` carries only enums, counts, and opaque ids. Events about versions above the caller's ceiling are absent.
+         * Item audit timeline, paged
+         * @description Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Merges memory events, promotion decisions, and consolidation operations into one ascending timeline with actor, action, version, time, and a fixed reason code. `detail` carries only enums, counts, and opaque ids. Events about versions above the caller's ceiling are absent. The timeline is paginated rather than truncated: pass `limit` (default 50, max 200) and follow `next_cursor` until it is null to read the complete audit history.
          */
         get: operations["getMemoryItemEvents"];
         put?: never;
@@ -2856,10 +2856,13 @@ export interface components {
                 [key: string]: string | number | boolean;
             };
         };
+        /** @description One page of the merged audit timeline. The timeline is traversable: `next_cursor` is non-null exactly when older-to-newer traversal has more rows, so a client can always reach the complete history. */
         MemoryItemEvents: {
             item_id: string;
             /** @description Ascending by `at`. Append-only: entries are never rewritten. */
             events: components["schemas"]["MemoryItemEvent"][];
+            /** @description Opaque cursor for the next page; null at the end of the timeline. A bounded page is never presented as the complete audit history. */
+            next_cursor: string | null;
         };
         /** @description Named human promotion. Only candidate -> active is accepted; procedural content and policy receive the approver's exact-version review stamp. */
         MemoryPromoteRequest: {
@@ -8559,7 +8562,12 @@ export interface operations {
     };
     getMemoryItemEvents: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Timeline page size. */
+                limit?: number;
+                /** @description Opaque `next_cursor` from the previous page. */
+                cursor?: string;
+            };
             header?: never;
             path: {
                 /** @description Workspace the caller is a member of; resolved from the session. */

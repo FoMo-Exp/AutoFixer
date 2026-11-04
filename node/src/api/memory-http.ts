@@ -648,7 +648,7 @@ export async function handleMemoryRequest(
     return;
   }
 
-  // GET /memory/items/{item_id}/events — the merged audit timeline.
+  // GET /memory/items/{item_id}/events — the merged audit timeline, paged.
   if (
     method === "GET" &&
     resource === "items" &&
@@ -656,10 +656,21 @@ export async function handleMemoryRequest(
     segments[7] === "events"
   ) {
     requireAuthority(deps, memory, "read");
+    const limit = optionalQuery(url, "limit");
+    if (limit !== undefined) {
+      const parsed = Number(limit);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new ApiError(400, "INVALID_REQUEST", "limit must be a positive integer");
+      }
+    }
+    const cursor = optionalQuery(url, "cursor");
     writeJson(
       res,
       200,
-      governanceService(deps).events(memory.scope, memory.role, segments[6] as string),
+      governanceService(deps).events(memory.scope, memory.role, segments[6] as string, {
+        ...(limit !== undefined ? { limit: Number(limit) } : {}),
+        ...(cursor !== undefined ? { cursor } : {}),
+      }),
     );
     return;
   }

@@ -161,9 +161,23 @@ export interface MemoryItemEventView {
   detail?: Record<string, string | number | boolean>;
 }
 
+/** Query for one page of the merged timeline. */
+export interface MemoryItemEventsQuery {
+  /** Page size; defaults to 50 and is capped at 200. */
+  limit?: number;
+  /** Opaque cursor from the previous page's `next_cursor`. */
+  cursor?: string;
+}
+
 export interface MemoryItemEventsView {
   item_id: string;
   events: MemoryItemEventView[];
+  /**
+   * Opaque cursor for the next page, or null when this page reaches the end of
+   * the audit history. A non-null cursor means events remain: a bounded page
+   * is never presented as a complete timeline.
+   */
+  next_cursor: string | null;
 }
 
 /** The post-transition state, with the same view the browse surface serves. */

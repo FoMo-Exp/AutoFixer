@@ -631,6 +631,8 @@ describe("per-version sensitivity and the audit timeline", () => {
       sessionHeaders(),
     );
     expect(response.status).toBe(200);
+    // Small history: one page is the whole timeline.
+    expect(response.body.next_cursor).toBeNull();
     const events = response.body.events;
     const sources = new Set(events.map((event) => event.source));
     expect(sources.has("memory_event")).toBe(true);
@@ -669,5 +671,133 @@ describe("per-version sensitivity and the audit timeline", () => {
         }
       }
     }
+  });
+});
+
+describe("audit timeline pagination", () => {
+  /** Follow `next_cursor` until null and return every page's events. */
+  async function readAllEvents(
+    itemId: string,
+    limit: number,
+  ): Promise<{ events: MemoryItemEventsView["events"]; pages: number }> {
+    const events: MemoryItemEventsView["events"] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    for (;;) {
+      const suffix: string =
+        cursor === null ? `events?limit=${limit}` : `events?limit=${limit}&cursor=${cursor}`;
+      const response: { status: number; body: MemoryItemEventsView } =
+        await getJson<MemoryItemEventsView>(itemUrl(itemId, suffix), sessionHeaders());
+      expect(response.status).toBe(200);
+      pages += 1;
+      events.push(...response.body.events);
+      cursor = response.body.next_cursor;
+      if (cursor === null) {
+        return { events, pages };
+      }
+      // A bounded page is never the whole history when a cursor is returned.
+      expect(response.body.events.length).toBe(limit);
+      expect(pages).toBeLessThan(50);
+    }
+  }
+
+  function addVersion(itemId: string, version: number, day: number): void {
+    const memory = app.orchestrator.memoryRepositories;
+    if (memory === undefined) {
+      throw new Error("memory repositories are not wired");
+    }
+    memory.items.addVersion(
+      scope,
+      itemId,
+      {
+        kind: "fact",
+        scope: {},
+        statement: `revision ${version}`,
+        provenance: { author_type: "human" },
+        trust: "human",
+        sensitivity: "internal",
+        valid_from: `2026-11-${String(day).padStart(2, "0")}T00:00:00.000Z`,
+        valid_to: null,
+      },
+      version,
+    );
+  }
+
+  test("pages through the complete history without losing or duplicating rows", async () => {
+    const itemId = createItem({ statement: "paginated history" });
+    for (let version = 1; version <= 6; version += 1) {
+      addVersion(itemId, version, version + 1);
+    }
+
+    const whole = await getJson<MemoryItemEventsView>(
+      itemUrl(itemId, "events?limit=200"),
+      sessionHeaders(),
+    );
+    expect(whole.status).toBe(200);
+    expect(whole.body.next_cursor).toBeNull();
+    expect(whole.body.events.length).toBeGreaterThan(6);
+
+    const paged = await readAllEvents(itemId, 3);
+    expect(paged.pages).toBeGreaterThan(1);
+    // Same rows, same order: paging neither drops nor duplicates an entry.
+    expect(paged.events).toEqual(whole.body.events);
+  });
+
+  test("advances past hidden versions instead of stalling or losing later rows", async () => {
+    const memory = app.orchestrator.memoryRepositories;
+    if (memory === undefined) {
+      throw new Error("memory repositories are not wired");
+    }
+    const created = memory.items.create(scope, {
+      kind: "fact",
+      scope: {},
+      statement: "confidential v1",
+      provenance: { author_type: "human" },
+      trust: "human",
+      sensitivity: "confidential",
+      valid_from: "2026-11-01T00:00:00.000Z",
+      valid_to: null,
+    });
+    addVersion(created.item.id, 1, 2);
+    addVersion(created.item.id, 2, 3);
+
+    setRole("member");
+    // The first two events are about the hidden confidential v1. A page of one
+    // must still make progress and reach the visible v2/v3 events.
+    const first = await getJson<MemoryItemEventsView>(
+      itemUrl(created.item.id, "events?limit=1"),
+      sessionHeaders(),
+    );
+    expect(first.status).toBe(200);
+    expect(first.body.events).toHaveLength(1);
+    expect(first.body.events[0]?.item_version).toBe(2);
+    expect(first.body.next_cursor).not.toBeNull();
+
+    const paged = await readAllEvents(created.item.id, 1);
+    expect(paged.events.map((event) => event.item_version)).toEqual([2, 3]);
+    expect(JSON.stringify(paged.events)).not.toContain("confidential v1");
+    setRole("owner");
+  });
+
+  test("rejects an out-of-range limit and a malformed cursor", async () => {
+    const itemId = createItem({ statement: "timeline validation" });
+    const tooLarge = await getJson<{ error: { code: string } }>(
+      itemUrl(itemId, "events?limit=201"),
+      sessionHeaders(),
+    );
+    expect(tooLarge.status).toBe(400);
+    expect(tooLarge.body.error.code).toBe("INVALID_REQUEST");
+
+    const zero = await getJson<{ error: { code: string } }>(
+      itemUrl(itemId, "events?limit=0"),
+      sessionHeaders(),
+    );
+    expect(zero.status).toBe(400);
+
+    const badCursor = await getJson<{ error: { code: string } }>(
+      itemUrl(itemId, "events?cursor=not-a-cursor"),
+      sessionHeaders(),
+    );
+    expect(badCursor.status).toBe(400);
   });
 });

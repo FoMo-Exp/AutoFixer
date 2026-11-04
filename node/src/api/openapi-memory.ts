@@ -841,7 +841,11 @@ const memoryItemEventSchema: JsonObject = {
 
 const memoryItemEventsSchema: JsonObject = {
   type: "object",
-  required: ["item_id", "events"],
+  description:
+    "One page of the merged audit timeline. The timeline is traversable: " +
+    "`next_cursor` is non-null exactly when older-to-newer traversal has more " +
+    "rows, so a client can always reach the complete history.",
+  required: ["item_id", "events", "next_cursor"],
   additionalProperties: false,
   properties: {
     item_id: { type: "string" },
@@ -849,6 +853,12 @@ const memoryItemEventsSchema: JsonObject = {
       type: "array",
       description: "Ascending by `at`. Append-only: entries are never rewritten.",
       items: { $ref: "#/components/schemas/MemoryItemEvent" },
+    },
+    next_cursor: {
+      oneOf: [{ type: "string" }, { type: "null" }],
+      description:
+        "Opaque cursor for the next page; null at the end of the timeline. A " +
+        "bounded page is never presented as the complete audit history.",
     },
   },
 };
@@ -1264,15 +1274,34 @@ export function memoryOpenApiPaths(): Record<string, Record<string, unknown>> {
     "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/events": {
       get: {
         operationId: "getMemoryItemEvents",
-        summary: "Item audit timeline",
+        summary: "Item audit timeline, paged",
         description:
           SESSION_ONLY_NOTE +
           "Merges memory events, promotion decisions, and consolidation " +
           "operations into one ascending timeline with actor, action, version, " +
           "time, and a fixed reason code. `detail` carries only enums, counts, " +
           "and opaque ids. Events about versions above the caller's ceiling are " +
-          "absent.",
-        parameters: [workspaceIdParameter, itemIdParameter],
+          "absent. The timeline is paginated rather than truncated: pass " +
+          "`limit` (default 50, max 200) and follow `next_cursor` until it is " +
+          "null to read the complete audit history.",
+        parameters: [
+          workspaceIdParameter,
+          itemIdParameter,
+          {
+            name: "limit",
+            in: "query",
+            required: false,
+            schema: { type: "integer", minimum: 1, maximum: 200, default: 50 },
+            description: "Timeline page size.",
+          },
+          {
+            name: "cursor",
+            in: "query",
+            required: false,
+            schema: { type: "string", maxLength: 512 },
+            description: "Opaque `next_cursor` from the previous page.",
+          },
+        ],
         responses: {
           200: {
             description: "Audit timeline",

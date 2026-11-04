@@ -197,10 +197,21 @@ version is within the ceiling.
 ### 4.4 `GET /workspaces/{workspace_id}/memory/items/{item_id}/events`
 
 The item's audit timeline, ascending by `at`, merged from three stored sources
-and normalized into one shape:
+and normalized into one shape. It is **paginated, never silently truncated**:
+
+| Query parameter | Rule |
+| --- | --- |
+| `limit` | page size; default 50, range 1–200; out of range is `400 INVALID_REQUEST` |
+| `cursor` | opaque `next_cursor` from the previous page; a malformed cursor is `400 INVALID_REQUEST` |
+
+A page returns `next_cursor: null` only at the end of the history. A non-null
+cursor means rows remain, so a client that follows the cursor reaches every
+audit row. The cursor records, per source, the last row already consumed
+(including rows hidden by the sensitivity ceiling), so paging is stable, gap-
+free, duplicate-free, and cannot stall on hidden rows.
 
 ```
-200 MemoryItemEvents { item_id, events: MemoryItemEvent[] }
+200 MemoryItemEvents { item_id, events: MemoryItemEvent[], next_cursor: string | null }
 
 MemoryItemEvent {
   at,                                  // date-time
@@ -227,8 +238,9 @@ MemoryItemEvent {
   item id when one exists, and the op's integer counts.
 
 Events about a version above the caller's ceiling are absent, so the timeline
-cannot be used to enumerate hidden history. The timeline is append-only; it is
-built from rows, never from a mutable summary.
+cannot be used to enumerate hidden history; those rows are still consumed for
+pagination purposes, so their presence never hides later visible events. The
+timeline is append-only; it is built from rows, never from a mutable summary.
 
 ### 4.5 Transitions
 

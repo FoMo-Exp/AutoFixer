@@ -4,7 +4,11 @@
  * `docs/contracts/memory-governance-v1.md`.
  */
 
-export { createMemoryGovernanceService } from "./service.js";
+export {
+  createMemoryGovernanceService,
+  MEMORY_TIMELINE_DEFAULT_LIMIT,
+  MEMORY_TIMELINE_MAX_LIMIT,
+} from "./service.js";
 export type {
   MemoryGovernanceService,
   MemoryGovernanceServiceDeps,
@@ -25,6 +29,7 @@ export type {
   MemoryGovernanceReasonCode,
   MemoryGovernanceResult,
   MemoryItemEventView,
+  MemoryItemEventsQuery,
   MemoryItemEventsView,
   MemoryItemVersionView,
   MemoryItemVersionsView,

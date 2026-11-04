@@ -12,6 +12,8 @@ export type { MemoryContentInput } from "./hash.js";
 export type {
   MemoryAuditRepository,
   MemoryEmbeddingRepository,
+  MemoryTimelineEntry,
+  MemoryTimelinePosition,
   MemoryEvidenceRepository,
   MemoryItemRepository,
   MemoryLinkRepository,
