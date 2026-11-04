@@ -9620,7 +9620,7 @@ export interface operations {
             path: {
                 /** @description Workspace locator. It must equal the workspace resolved from the caller's live membership; any other id is 404 (indistinguishable from a missing workspace). */
                 workspace_id: string;
-                /** @description Issue locator; it is matched inside the authenticated workspace scope. */
+                /** @description Issue locator; it is matched inside the authenticated workspace scope. It is audited as metadata, so only identifier characters are accepted. */
                 issue_id: string;
             };
             cookie?: never;

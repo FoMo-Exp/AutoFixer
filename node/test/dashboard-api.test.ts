@@ -244,15 +244,19 @@ describe("dashboard HTTP surface authorization", () => {
     await grant(app, app.workspaceId, session.userId, "owner");
     const headers = cookieSessionHeaders(session);
 
+    const contentSecret = "sk-live-prompt-content-must-not-persist";
+    const quarantineSecret = "quarantined-artifact-must-not-persist";
+    const unknownSecret = "unknown-parameter-value-must-not-persist";
+
     const content = await getJson<{ error: { code: string } }>(
-      dashboardUrl(app, "summary", { include_content: "true" }),
+      dashboardUrl(app, "summary", { include_content: contentSecret }),
       headers,
     );
     expect(content.status).toBe(403);
     expect(content.body.error.code).toBe("CONTENT_ACCESS_DENIED");
 
     const quarantine = await getJson<{ error: { code: string } }>(
-      dashboardUrl(app, "summary", { include_quarantine: "true" }),
+      dashboardUrl(app, "summary", { include_quarantine: quarantineSecret }),
       headers,
     );
     expect(quarantine.status).toBe(403);
@@ -266,7 +270,7 @@ describe("dashboard HTTP surface authorization", () => {
     expect(scopeClaim.body.error.code).toBe("INVALID_REQUEST");
 
     const unknown = await getJson<{ error: { code: string } }>(
-      dashboardUrl(app, "summary", { group_by: "model" }),
+      dashboardUrl(app, "summary", { group_by: unknownSecret }),
       headers,
     );
     expect(unknown.status).toBe(400);
@@ -278,6 +282,68 @@ describe("dashboard HTTP surface authorization", () => {
     );
     expect(badLimit.status).toBe(400);
     expect(badLimit.body.error.code).toBe("LIMIT_OUT_OF_RANGE");
+
+    // A path locator is audited metadata too, so free-form caller text is
+    // rejected before any audit record can hold it.
+    const issueSecret = "payload~prompt~secret";
+    const badIssue = await getJson<{ error: { code: string } }>(
+      `${app.base}/api/v1/workspaces/${app.workspaceId}/dashboard/issues/${issueSecret}?from=${DASHBOARD_FROM}&to=${DASHBOARD_TO}`,
+      headers,
+    );
+    expect(badIssue.status).toBe(400);
+    expect(badIssue.body.error.code).toBe("INVALID_REQUEST");
+
+    // Denials are audited, but never with caller-supplied values: a content
+    // probe must not write its payload into the audit trail it is denied from.
+    const audit = await getJson<{
+      items: Array<{
+        resource: string;
+        record_count: number;
+        query: Record<string, string | number | null>;
+      }>;
+    }>(dashboardUrl(app, "audit"), headers);
+    expect(audit.status).toBe(200);
+    const serialized = JSON.stringify(audit.body.items);
+    expect(serialized).not.toContain(contentSecret);
+    expect(serialized).not.toContain(quarantineSecret);
+    expect(serialized).not.toContain(unknownSecret);
+    expect(serialized).not.toContain(issueSecret);
+
+    const deniedContent = audit.body.items.find(
+      (entry) => entry.query["denial_code"] === "CONTENT_ACCESS_DENIED",
+    );
+    expect(deniedContent).toMatchObject({
+      resource: "summary",
+      record_count: 0,
+      query: {
+        denial_code: "CONTENT_ACCESS_DENIED",
+        parameter_names: "bucket,from,include_content,timezone,to",
+      },
+    });
+    const deniedQuarantine = audit.body.items.find(
+      (entry) => entry.query["denial_code"] === "QUARANTINE_ACCESS_DENIED",
+    );
+    expect(deniedQuarantine?.query).toEqual({
+      denial_code: "QUARANTINE_ACCESS_DENIED",
+      parameter_names: "bucket,from,include_quarantine,timezone,to",
+    });
+    // An unknown parameter contributes no name at all, because a name is
+    // caller-supplied text too.
+    const deniedUnknown = audit.body.items.find(
+      (entry) => entry.resource === "summary" && entry.query["denial_code"] === "INVALID_REQUEST",
+    );
+    expect(deniedUnknown?.query).toEqual({
+      denial_code: "INVALID_REQUEST",
+      parameter_names: "bucket,from,timezone,to",
+    });
+    const deniedScopeClaim = audit.body.items.find((entry) =>
+      String(entry.query["parameter_names"]).includes("workspace_id"),
+    );
+    expect(deniedScopeClaim?.query).toEqual({
+      denial_code: "INVALID_REQUEST",
+      parameter_names: "bucket,from,timezone,to,workspace_id",
+    });
+    expect(serialized).not.toContain("group_by");
   });
 
   test("a non-GET request has no dashboard route", async () => {

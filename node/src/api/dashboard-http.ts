@@ -97,12 +97,25 @@ function singleParam(url: URL, name: string): string | undefined {
   return values[0];
 }
 
-function queryObject(url: URL): Record<string, string | number | null> {
-  const out: Record<string, string | number | null> = {};
-  for (const [key, value] of url.searchParams.entries()) {
-    out[key] = value;
-  }
-  return out;
+const KNOWN_QUERY_NAMES = new Set([...ALLOWED_QUERY, ...Object.keys(DENIED_QUERY), ...SCOPE_QUERY]);
+
+/** Path ids are audited metadata, so only identifier characters are accepted. */
+const ISSUE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+
+/**
+ * Metadata for a denied or invalid read. A denial is still audited, but the
+ * audit record must never hold caller-supplied values: an unauthenticated
+ * probe like `?content=<prompt>` would otherwise persist the very payload the
+ * content quarantine exists to keep out of the audit trail. Only the
+ * service-decided denial code and the names of *known* parameters are
+ * recorded — never a value, and never an unknown (attacker-chosen) name.
+ */
+function denialMetadata(url: URL, error: ApiError): Record<string, string> {
+  const parameterNames = [...KNOWN_QUERY_NAMES]
+    .filter((name) => url.searchParams.has(name))
+    .sort()
+    .join(",");
+  return { denial_code: error.code, parameter_names: parameterNames };
 }
 
 /**
@@ -209,8 +222,15 @@ function classifyRoute(
   }
   if (segments.length === 7 && segments[5] === "issues") {
     const issueId = segments[6];
-    if (issueId === undefined || issueId.length === 0 || issueId.length > 200) {
-      throw new ApiError(400, "INVALID_REQUEST", "issue_id must be 1-200 characters");
+    // The id is written to the audit trail, so it must be a locator, not
+    // free-form caller text: reject anything outside the identifier charset
+    // before any audit record exists.
+    if (issueId === undefined || !ISSUE_ID_PATTERN.test(issueId)) {
+      throw new ApiError(
+        400,
+        "INVALID_REQUEST",
+        "issue_id must be 1-200 identifier characters (letters, digits, . _ : -)",
+      );
     }
     return { resource: "issue_drilldown", issueId };
   }
@@ -224,6 +244,7 @@ function auditDenied(
   resource: DashboardResource,
   issueId: string | null,
   operation: "read" | "export",
+  error: ApiError,
 ): void {
   try {
     deps.service.auditLog.append({
@@ -234,7 +255,7 @@ function auditDenied(
       operation,
       resource,
       issue_id: issueId,
-      query: queryObject(ctx.url),
+      query: denialMetadata(ctx.url, error),
       record_count: 0,
       request_id: ctx.requestId,
     });
@@ -306,6 +327,7 @@ export async function handleDashboardRequest(
         route.resource,
         route.issueId,
         route.resource === "export" ? "export" : "read",
+        error,
       );
     }
     throw error;

@@ -1203,8 +1203,14 @@ export function dashboardOpenApiPaths(): Record<string, Record<string, unknown>>
             name: "issue_id",
             in: "path",
             required: true,
-            schema: { type: "string", maxLength: 200 },
-            description: "Issue locator; it is matched inside the authenticated workspace scope.",
+            schema: {
+              type: "string",
+              maxLength: 200,
+              pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$",
+            },
+            description:
+              "Issue locator; it is matched inside the authenticated workspace scope. " +
+              "It is audited as metadata, so only identifier characters are accepted.",
           },
           fromParameter,
           toParameter,
