@@ -52,6 +52,63 @@ export type RsiDataset = RsiEvaluation["dataset"];
 export type RsiControlsPatch =
   operations["updateRsiControls"]["requestBody"]["content"]["application/json"];
 
+export type SecurityCase = components["schemas"]["SecurityCase"];
+export type SecurityCasePage =
+  operations["listSecurityCases"]["responses"][200]["content"]["application/json"];
+export type SecurityCaseState = SecurityCase["state"];
+export type SecurityCaseTransition =
+  operations["transitionSecurityCase"]["requestBody"]["content"]["application/json"];
+export type SecurityBlock = components["schemas"]["SecurityBlock"];
+export type SecurityQuarantineGrant = components["schemas"]["SecurityQuarantineGrant"];
+export type SecurityQuarantineView = components["schemas"]["SecurityQuarantineView"];
+export type SecurityRuleRevision = components["schemas"]["SecurityRuleRevision"];
+export type SecurityRulePage =
+  operations["listSecurityRuleRevisions"]["responses"][200]["content"]["application/json"];
+export type SecurityRuleStatus = SecurityRuleRevision["status"];
+export type SecurityRuleConstraints = components["schemas"]["SecurityRuleConstraints"];
+export type SecurityRuleProposal =
+  operations["proposeSecurityRuleCorrection"]["requestBody"]["content"]["application/json"];
+export type SecurityRuleReview =
+  operations["reviewSecurityRuleCorrection"]["requestBody"]["content"]["application/json"];
+export type SecurityRecoveryApproval = components["schemas"]["SecurityRecoveryApproval"];
+export type SecurityRecoveryApprovalRequest =
+  operations["approveSecurityRecovery"]["requestBody"]["content"]["application/json"];
+export type SecurityRecoveryDispatch = components["schemas"]["SecurityRecoveryDispatch"];
+export type SecurityAuditEntry = components["schemas"]["SecurityAuditEntry"];
+export type SecurityAuditEvent = components["schemas"]["SecurityAuditEvent"];
+export type SecurityAuditEventType = SecurityAuditEvent["event"];
+export type SecurityAuditPage =
+  operations["readSecurityAuditTrail"]["responses"][200]["content"]["application/json"];
+export type SecurityAuditExport =
+  operations["exportSecurityAuditTrail"]["responses"][200]["content"]["application/json"];
+export type SecurityAuditExportRequest =
+  operations["exportSecurityAuditTrail"]["requestBody"]["content"]["application/json"];
+
+export interface SecurityCaseQuery {
+  state?: SecurityCaseState;
+  run_id?: string;
+  cursor?: string;
+}
+
+export interface SecurityRuleQuery {
+  detector_id?: string;
+  status?: SecurityRuleStatus;
+  cursor?: string;
+}
+
+export interface SecurityAuditQuery {
+  /** Required by the contract; recorded with the `audit.trail_read` event. */
+  purpose: string;
+  case_id?: string;
+  run_id?: string;
+  trace_id?: string;
+  invocation_id?: string;
+  event_type?: SecurityAuditEventType;
+  from?: string;
+  to?: string;
+  cursor?: string;
+}
+
 type ErrorPayload = components["schemas"]["Error"];
 export type JsonFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -280,6 +337,10 @@ function issuePath(workspaceId: string, issueId?: string, suffix?: string): stri
 
 function memoryPath(workspaceId: string, suffix: string): string {
   return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/memory/${suffix}`;
+}
+
+function securityPath(workspaceId: string, suffix = ""): string {
+  return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/security${suffix}`;
 }
 
 export interface StreamResult {
@@ -629,6 +690,305 @@ export class ForgePilotClient extends ApiTransport {
       },
     );
     return result.controls;
+  }
+
+  /*
+   * ADR-0005 security surface (DAT-214). Every method below is a direct
+   * projection of the merged contract: no per-call bypass route exists, so no
+   * client method offers one. Mutating calls carry an Idempotency-Key; raw
+   * quarantine content is fetched only through the grant header.
+   */
+
+  async listSecurityCases(
+    workspaceId: string,
+    options: SecurityCaseQuery = {},
+  ): Promise<SecurityCasePage> {
+    const params = new URLSearchParams();
+    if (options.state) params.set("state", options.state);
+    if (options.run_id) params.set("run_id", options.run_id);
+    if (options.cursor) params.set("cursor", options.cursor);
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    return this.request<SecurityCasePage>(`${securityPath(workspaceId, "/cases")}${query}`);
+  }
+
+  async getSecurityCase(workspaceId: string, caseId: string): Promise<SecurityCase> {
+    return this.request<SecurityCase>(
+      securityPath(workspaceId, `/cases/${encodeURIComponent(caseId)}`),
+    );
+  }
+
+  async transitionSecurityCase(
+    workspaceId: string,
+    caseId: string,
+    input: SecurityCaseTransition,
+    idempotencyKey: string,
+  ): Promise<SecurityCase> {
+    return this.request<SecurityCase>(
+      securityPath(workspaceId, `/cases/${encodeURIComponent(caseId)}/transitions`),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  async requestSecurityCaseTermination(
+    workspaceId: string,
+    caseId: string,
+    input: { note?: string },
+    idempotencyKey: string,
+  ): Promise<SecurityCase> {
+    return this.request<SecurityCase>(
+      securityPath(workspaceId, `/cases/${encodeURIComponent(caseId)}/termination-requests`),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  async requestSecurityCaseReassignment(
+    workspaceId: string,
+    caseId: string,
+    input: { note?: string },
+    idempotencyKey: string,
+  ): Promise<SecurityCase> {
+    return this.request<SecurityCase>(
+      securityPath(workspaceId, `/cases/${encodeURIComponent(caseId)}/reassignment-requests`),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  async grantSecurityQuarantineAccess(
+    workspaceId: string,
+    caseId: string,
+    input: { quarantine_id: string; subject: string },
+    idempotencyKey: string,
+  ): Promise<SecurityQuarantineGrant> {
+    return this.request<SecurityQuarantineGrant>(
+      securityPath(workspaceId, `/cases/${encodeURIComponent(caseId)}/quarantine-grants`),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  async viewQuarantinedContext(
+    workspaceId: string,
+    quarantineId: string,
+    grantId: string,
+  ): Promise<SecurityQuarantineView> {
+    return this.request<SecurityQuarantineView>(
+      securityPath(workspaceId, `/quarantine/${encodeURIComponent(quarantineId)}/views`),
+      {
+        method: "POST",
+        headers: { "X-Quarantine-Grant": grantId },
+      },
+    );
+  }
+
+  async listSecurityRuleRevisions(
+    workspaceId: string,
+    options: SecurityRuleQuery = {},
+  ): Promise<SecurityRulePage> {
+    const params = new URLSearchParams();
+    if (options.detector_id) params.set("detector_id", options.detector_id);
+    if (options.status) params.set("status", options.status);
+    if (options.cursor) params.set("cursor", options.cursor);
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    return this.request<SecurityRulePage>(`${securityPath(workspaceId, "/rules")}${query}`);
+  }
+
+  async proposeSecurityRuleCorrection(
+    workspaceId: string,
+    input: SecurityRuleProposal,
+    idempotencyKey: string,
+  ): Promise<SecurityRuleRevision> {
+    return this.request<SecurityRuleRevision>(securityPath(workspaceId, "/rules/proposals"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey,
+      },
+      body: JSON.stringify(input),
+    });
+  }
+
+  async reviewSecurityRuleCorrection(
+    workspaceId: string,
+    lineage: string,
+    version: number,
+    input: SecurityRuleReview,
+    idempotencyKey: string,
+  ): Promise<SecurityRuleRevision> {
+    return this.request<SecurityRuleRevision>(
+      securityPath(
+        workspaceId,
+        `/rules/${encodeURIComponent(lineage)}/revisions/${version}/reviews`,
+      ),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  async activateSecurityRuleCorrection(
+    workspaceId: string,
+    lineage: string,
+    version: number,
+    input: { note?: string },
+    idempotencyKey: string,
+  ): Promise<SecurityRuleRevision> {
+    return this.request<SecurityRuleRevision>(
+      securityPath(
+        workspaceId,
+        `/rules/${encodeURIComponent(lineage)}/revisions/${version}/activation`,
+      ),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  async rollbackSecurityRuleCorrection(
+    workspaceId: string,
+    lineage: string,
+    input: { note?: string },
+    idempotencyKey: string,
+  ): Promise<SecurityRuleRevision> {
+    return this.request<SecurityRuleRevision>(
+      securityPath(workspaceId, `/rules/${encodeURIComponent(lineage)}/rollbacks`),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  async approveSecurityRecovery(
+    workspaceId: string,
+    caseId: string,
+    input: SecurityRecoveryApprovalRequest,
+    idempotencyKey: string,
+  ): Promise<SecurityRecoveryApproval> {
+    return this.request<SecurityRecoveryApproval>(
+      securityPath(workspaceId, `/cases/${encodeURIComponent(caseId)}/recovery-approvals`),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  async getSecurityRecoveryApproval(
+    workspaceId: string,
+    authorizationId: string,
+  ): Promise<SecurityRecoveryApproval> {
+    return this.request<SecurityRecoveryApproval>(
+      securityPath(workspaceId, `/recovery-approvals/${encodeURIComponent(authorizationId)}`),
+    );
+  }
+
+  async revokeSecurityRecoveryApproval(
+    workspaceId: string,
+    authorizationId: string,
+    idempotencyKey: string,
+  ): Promise<SecurityRecoveryApproval> {
+    return this.request<SecurityRecoveryApproval>(
+      securityPath(workspaceId, `/recovery-approvals/${encodeURIComponent(authorizationId)}`),
+      { method: "DELETE", headers: { "Idempotency-Key": idempotencyKey } },
+    );
+  }
+
+  async dispatchSecurityRecovery(
+    workspaceId: string,
+    authorizationId: string,
+    input: { worker_id: string },
+    idempotencyKey: string,
+  ): Promise<SecurityRecoveryDispatch> {
+    return this.request<SecurityRecoveryDispatch>(
+      securityPath(
+        workspaceId,
+        `/recovery-approvals/${encodeURIComponent(authorizationId)}/dispatch`,
+      ),
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  async readSecurityAuditTrail(
+    workspaceId: string,
+    query: SecurityAuditQuery,
+  ): Promise<SecurityAuditPage> {
+    const params = new URLSearchParams({ purpose: query.purpose });
+    if (query.case_id) params.set("case_id", query.case_id);
+    if (query.run_id) params.set("run_id", query.run_id);
+    if (query.trace_id) params.set("trace_id", query.trace_id);
+    if (query.invocation_id) params.set("invocation_id", query.invocation_id);
+    if (query.event_type) params.set("event_type", query.event_type);
+    if (query.from) params.set("from", query.from);
+    if (query.to) params.set("to", query.to);
+    if (query.cursor) params.set("cursor", query.cursor);
+    return this.request<SecurityAuditPage>(`${securityPath(workspaceId, "/audit")}?${params}`);
+  }
+
+  async exportSecurityAuditTrail(
+    workspaceId: string,
+    input: SecurityAuditExportRequest,
+    idempotencyKey: string,
+  ): Promise<SecurityAuditExport> {
+    return this.request<SecurityAuditExport>(securityPath(workspaceId, "/audit/exports"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey,
+      },
+      body: JSON.stringify(input),
+    });
   }
 
   async streamTaskEvents(taskId: string, options: StreamOptions): Promise<StreamResult> {
