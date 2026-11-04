@@ -321,6 +321,12 @@ const ERROR_SEMANTICS: Record<string, ErrorSemantics> = {
     retryable: false,
     next_action: null,
   },
+  TEST_PLAN_CONFLICT: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
   CANDIDATE_CONFLICT: {
     stage: "validation",
     category: "stop",

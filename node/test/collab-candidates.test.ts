@@ -21,15 +21,25 @@ import {
   DIGEST,
   OTHER_DIGEST,
   REPOSITORY,
+  TEST_PLAN_CHECKS,
+  TEST_PLAN_CONFIG_DIGEST,
+  TEST_PLAN_ENVIRONMENT,
+  TEST_REPORT_DIGEST,
   Clock,
+  acquireLease,
   freezeCandidateInput,
+  leaseRef,
   op,
   openRun,
   planningIssue,
   stoppedPreparation,
 } from "./helpers/collab.js";
 import type { PreparationContext } from "./helpers/collab.js";
-import type { CandidateRecord, CandidateValidationResult } from "../src/collab/index.js";
+import type {
+  CandidateRecord,
+  CandidateValidation,
+  CandidateValidationResult,
+} from "../src/collab/index.js";
 
 function expectCode(fn: () => unknown, code: string): void {
   try {
@@ -70,6 +80,36 @@ function frozen(machine: CollabMachine): {
   return { context, candidateId: candidate.candidate_id, issueId: issue.issue_id };
 }
 
+function passingResult(
+  context: PreparationContext,
+  overrides: Partial<CandidateValidationResult> = {},
+): CandidateValidationResult {
+  const testReport = context.artifacts.find((artifact) => artifact.kind === "test_report");
+  if (testReport === undefined) {
+    throw new Error("preparation context has no test_report artifact");
+  }
+  return {
+    tool: TEST_PLAN_CHECKS[0] as string,
+    exit_status: 0,
+    output_digest: { algorithm: "sha256", value: TEST_REPORT_DIGEST },
+    event_reference: artifactEvidenceRef(context.run.run_id, testReport.artifact_id),
+    ...overrides,
+  };
+}
+
+function planValidation(
+  context: PreparationContext,
+  overrides: Partial<CandidateValidation> = {},
+): CandidateValidation {
+  return {
+    config_digest: TEST_PLAN_CONFIG_DIGEST,
+    environment: TEST_PLAN_ENVIRONMENT,
+    required_checks: [...TEST_PLAN_CHECKS],
+    results: [passingResult(context)],
+    ...overrides,
+  };
+}
+
 function candidateOf(machine: CollabMachine, candidateId: string): CandidateRecord {
   const candidate = machine.getCandidate(candidateId);
   if (candidate === undefined) {
@@ -108,11 +148,12 @@ describe("immutable candidate freeze (DAT-219)", () => {
       "candidate",
       "patch",
       "report",
+      "test_report",
     ]);
-    expect(candidate?.audit_refs).toHaveLength(3);
+    expect(candidate?.audit_refs).toHaveLength(5);
     for (const reference of candidate?.audit_refs ?? []) {
       expect(reference).toMatch(
-        new RegExp(`^evidence://runs/${context.run.run_id}/(artifacts|grants)/`),
+        new RegExp(`^evidence://runs/${context.run.run_id}/(artifacts|grants|plans)/`),
       );
     }
     // A frozen candidate carries no delivery surface: no branch, no PR.
@@ -264,35 +305,18 @@ describe("immutable candidate freeze (DAT-219)", () => {
     const machine = machineWithStore();
     const issue = planningIssue(machine);
     const context = stoppedPreparation(machine, issue.issue_id);
-    const report = context.artifacts.find((artifact) => artifact.kind === "report");
-    const ref = artifactEvidenceRef(context.run.run_id, report?.artifact_id as string);
 
     const cases: CandidateValidationResult[] = [
-      {
-        tool: "npm test -- retry",
-        exit_status: 1,
-        output_digest: { algorithm: "sha256", value: DIGEST },
-        event_reference: ref,
-      },
-      {
-        tool: "npm test -- retry",
-        exit_status: null,
-        output_digest: { algorithm: "sha256", value: DIGEST },
-        event_reference: ref,
-      },
-      { tool: "npm test -- retry", exit_status: 0, output_digest: null, event_reference: ref },
+      passingResult(context, { exit_status: 1 }),
+      passingResult(context, { exit_status: null }),
+      passingResult(context, { output_digest: null }),
     ];
     for (const result of cases) {
       expectCode(
         () =>
           machine.freezeCandidate(
             freezeCandidateInput(context, {
-              validation: {
-                config_digest: `sha256:${OTHER_DIGEST}`,
-                environment: "node20-linux-x64-isolated",
-                required_checks: ["npm test -- retry"],
-                results: [result],
-              },
+              validation: planValidation(context, { results: [result] }),
             }),
           ),
         "CANDIDATE_INVALID",
@@ -301,57 +325,81 @@ describe("immutable candidate freeze (DAT-219)", () => {
     expect(machine.listCandidates(issue.issue_id)).toEqual([]);
   });
 
-  test("every required check needs a recorded passing attempt", () => {
+  test("freezing requires the run's approved test plan", () => {
+    const machine = machineWithStore();
+    const issue = planningIssue(machine);
+    const context = stoppedPreparation(machine, issue.issue_id, { recordPlan: false });
+
+    expectCode(() => machine.freezeCandidate(freezeCandidateInput(context)), "CANDIDATE_INVALID");
+    expect(machine.listCandidates(issue.issue_id)).toEqual([]);
+  });
+
+  test("required checks and validation config must match the approved plan", () => {
+    const machine = machineWithStore();
+    const issue = planningIssue(machine);
+    const context = stoppedPreparation(machine, issue.issue_id);
+    const cases = [
+      planValidation(context, {
+        required_checks: ["npm test -- retry", "go test ./..."],
+        results: [passingResult(context), passingResult(context, { tool: "go test ./..." })],
+      }),
+      planValidation(context, {
+        required_checks: [],
+        results: [passingResult(context)],
+      }),
+      planValidation(context, { config_digest: `sha256:${DIGEST}` }),
+      planValidation(context, { environment: "node22-linux-x64-isolated" }),
+      planValidation(context, {
+        results: [passingResult(context, { tool: "npm run lint" })],
+      }),
+    ];
+    for (const validation of cases) {
+      expectCode(
+        () => machine.freezeCandidate(freezeCandidateInput(context, { validation })),
+        "CANDIDATE_INVALID",
+      );
+    }
+    expect(machine.listCandidates(issue.issue_id)).toEqual([]);
+  });
+
+  test("a validation result must cite a test-report artifact carrying its output digest", () => {
     const machine = machineWithStore();
     const issue = planningIssue(machine);
     const context = stoppedPreparation(machine, issue.issue_id);
     const report = context.artifacts.find((artifact) => artifact.kind === "report");
-    const ref = artifactEvidenceRef(context.run.run_id, report?.artifact_id as string);
-    const results = [
-      {
-        tool: "npm test -- retry",
-        exit_status: 0,
-        output_digest: { algorithm: "sha256", value: DIGEST },
-        event_reference: ref,
-      },
-    ];
+    const reportRef = artifactEvidenceRef(context.run.run_id, report?.artifact_id as string);
+    const plan = context.plan;
 
-    expectCode(
-      () =>
-        machine.freezeCandidate(
-          freezeCandidateInput(context, {
-            validation: {
-              config_digest: `sha256:${OTHER_DIGEST}`,
-              environment: "node20-linux-x64-isolated",
-              required_checks: ["npm test -- retry", "go test ./..."],
-              results,
-            },
-          }),
-        ),
-      "CANDIDATE_INVALID",
-    );
-    expectCode(
-      () =>
-        machine.freezeCandidate(
-          freezeCandidateInput(context, {
-            validation: {
-              config_digest: `sha256:${OTHER_DIGEST}`,
-              environment: "node20-linux-x64-isolated",
-              required_checks: [],
-              results,
-            },
-          }),
-        ),
-      "CANDIDATE_INVALID",
-    );
+    const cases = [
+      // A report artifact is not execution evidence, even in the same run.
+      passingResult(context, { event_reference: reportRef }),
+      // A digest the retained execution artifact does not have.
+      passingResult(context, { output_digest: { algorithm: "sha256", value: DIGEST } }),
+      // An unsupported digest algorithm is never accepted.
+      passingResult(context, { output_digest: { algorithm: "sha1", value: DIGEST } }),
+      // A plan record is not execution evidence.
+      passingResult(context, {
+        event_reference: `evidence://runs/${context.run.run_id}/plans/${plan?.plan_id as string}`,
+      }),
+    ];
+    for (const result of cases) {
+      expectCode(
+        () =>
+          machine.freezeCandidate(
+            freezeCandidateInput(context, {
+              validation: planValidation(context, { results: [result] }),
+            }),
+          ),
+        "CANDIDATE_INVALID",
+      );
+    }
+    expect(machine.listCandidates(issue.issue_id)).toEqual([]);
   });
 
   test("fabricated evidence references cannot freeze a candidate", () => {
     const machine = machineWithStore();
     const issue = planningIssue(machine);
     const context = stoppedPreparation(machine, issue.issue_id);
-    const report = context.artifacts.find((artifact) => artifact.kind === "report");
-    const ref = artifactEvidenceRef(context.run.run_id, report?.artifact_id as string);
 
     for (const reference of [
       "evidence://events/run_does_not_exist/7",
@@ -366,26 +414,15 @@ describe("immutable candidate freeze (DAT-219)", () => {
         () =>
           machine.freezeCandidate(
             freezeCandidateInput(context, {
-              validation: {
-                config_digest: `sha256:${OTHER_DIGEST}`,
-                environment: "node20-linux-x64-isolated",
-                required_checks: ["npm test -- retry"],
-                results: [
-                  {
-                    tool: "npm test -- retry",
-                    exit_status: 0,
-                    output_digest: { algorithm: "sha256", value: DIGEST },
-                    event_reference: reference,
-                  },
-                ],
-              },
+              validation: planValidation(context, {
+                results: [passingResult(context, { event_reference: reference })],
+              }),
             }),
           ),
         "CANDIDATE_INVALID",
       );
     }
     expect(machine.listCandidates(issue.issue_id)).toEqual([]);
-    void ref;
   });
 
   test("another run's artifact or a non-revision record cannot stand in as evidence", () => {
@@ -399,7 +436,7 @@ describe("immutable candidate freeze (DAT-219)", () => {
       worktreeId: "wt_second",
       worktreePath: "/tmp/worktrees/wt_second",
     });
-    const foreignArtifact = second.artifacts.find((artifact) => artifact.kind === "report");
+    const foreignArtifact = second.artifacts.find((artifact) => artifact.kind === "test_report");
     const foreignRef = artifactEvidenceRef(
       second.run.run_id,
       foreignArtifact?.artifact_id as string,
@@ -422,25 +459,105 @@ describe("immutable candidate freeze (DAT-219)", () => {
         () =>
           machine.freezeCandidate(
             freezeCandidateInput(first, {
-              validation: {
-                config_digest: `sha256:${OTHER_DIGEST}`,
-                environment: "node20-linux-x64-isolated",
-                required_checks: ["npm test -- retry"],
-                results: [
-                  {
-                    tool: "npm test -- retry",
-                    exit_status: 0,
-                    output_digest: { algorithm: "sha256", value: DIGEST },
-                    event_reference: reference,
-                  },
-                ],
-              },
+              validation: planValidation(first, {
+                results: [passingResult(first, { event_reference: reference })],
+              }),
             }),
           ),
         "CANDIDATE_INVALID",
       );
     }
     expect(machine.listCandidates(issue.issue_id)).toEqual([]);
+  });
+
+  test("a plan is lease-guarded, single per run, and recorded before the run stops", () => {
+    const machine = machineWithStore();
+    const issue = planningIssue(machine);
+    const context = stoppedPreparation(machine, issue.issue_id);
+
+    expectCode(
+      () =>
+        machine.recordTestPlan({
+          operation_id: op(),
+          actor: "worker:other",
+          run_id: context.run.run_id,
+          lease: { holder: "worker:other", fencing_token: 99 },
+          config_digest: TEST_PLAN_CONFIG_DIGEST,
+          environment: TEST_PLAN_ENVIRONMENT,
+          checks: [...TEST_PLAN_CHECKS],
+        }),
+      "LEASE_STALE",
+    );
+    expectCode(
+      () =>
+        machine.recordTestPlan({
+          operation_id: op(),
+          actor: "worker:a",
+          run_id: context.run.run_id,
+          lease: context.lease,
+          config_digest: TEST_PLAN_CONFIG_DIGEST,
+          environment: TEST_PLAN_ENVIRONMENT,
+          checks: [...TEST_PLAN_CHECKS],
+        }),
+      "CANDIDATE_INVALID",
+    );
+
+    const running = stoppedPreparation(machine, issue.issue_id, {
+      worktreeId: "wt_running_plan",
+      worktreePath: "/tmp/worktrees/wt_running_plan",
+      recordPlan: false,
+    });
+    // The run is already stopped here, so a plan can no longer be recorded.
+    expectCode(
+      () =>
+        machine.recordTestPlan({
+          operation_id: op(),
+          actor: "worker:a",
+          run_id: running.run.run_id,
+          lease: running.lease,
+          config_digest: TEST_PLAN_CONFIG_DIGEST,
+          environment: TEST_PLAN_ENVIRONMENT,
+          checks: [...TEST_PLAN_CHECKS],
+        }),
+      "CANDIDATE_INVALID",
+    );
+  });
+
+  test("one run records exactly one approved test plan", () => {
+    const machine = machineWithStore();
+    const issue = planningIssue(machine);
+    const run = openRun(machine, issue.issue_id);
+    const lease = leaseRef(acquireLease(machine, run.run_id));
+    machine.recordRunState({
+      operation_id: op(),
+      actor: "worker:a",
+      run_id: run.run_id,
+      lease,
+      to: "approved",
+    });
+    const plan = machine.recordTestPlan({
+      operation_id: op(),
+      actor: "worker:a",
+      run_id: run.run_id,
+      lease,
+      config_digest: TEST_PLAN_CONFIG_DIGEST,
+      environment: TEST_PLAN_ENVIRONMENT,
+      checks: [...TEST_PLAN_CHECKS],
+    });
+    expect(machine.getTestPlan(run.run_id)?.plan_id).toBe(plan.plan_id);
+    expectCode(
+      () =>
+        machine.recordTestPlan({
+          operation_id: op(),
+          actor: "worker:a",
+          run_id: run.run_id,
+          lease,
+          config_digest: TEST_PLAN_CONFIG_DIGEST,
+          environment: TEST_PLAN_ENVIRONMENT,
+          checks: [...TEST_PLAN_CHECKS],
+        }),
+      "TEST_PLAN_CONFLICT",
+    );
   });
 
   test("prohibited risk never becomes a reviewable candidate", () => {

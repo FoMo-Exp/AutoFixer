@@ -240,9 +240,28 @@ export interface CandidateValidationResult {
 }
 
 /**
- * The test evidence an approval is bound to. `required_checks` names the
- * validation identities the approved test plan requires; every one of them
- * must have a passing attempt before a candidate may freeze.
+ * The approved test plan of one run, recorded before validation executes
+ * (ADR-0007 "validating": approved test plan against the exact revision).
+ *
+ * The plan is the trusted source of the required checks: a candidate cannot
+ * introduce or rename a check at freeze time, it can only show the recorded
+ * checks passing. `checks` are the tool/command identities the plan requires,
+ * and a validation result must carry the same identity plus an execution
+ * artifact for its digest.
+ */
+export interface TestPlanRecord {
+  plan_id: string;
+  run_id: string;
+  config_digest: string;
+  environment: string;
+  checks: string[];
+  recorded_at: string;
+}
+
+/**
+ * The test evidence an approval is bound to. `required_checks` must equal the
+ * run's recorded test plan checks, and every check needs a passing attempt
+ * backed by a retained execution artifact.
  */
 export interface CandidateValidation {
   config_digest: string;
@@ -311,6 +330,7 @@ export interface CollabState {
   issues: Map<string, IssueRecord>;
   tasks: Map<string, TaskRecord>;
   runs: Map<string, RunRecord>;
+  testPlans: Map<string, TestPlanRecord>;
   candidates: Map<string, CandidateRecord>;
   handoffs: HandoffRecord[];
   /** Signal fingerprint -> issue id; replays reuse the issue instead of a new one. */
@@ -326,6 +346,7 @@ export function emptyCollabState(): CollabState {
     issues: new Map(),
     tasks: new Map(),
     runs: new Map(),
+    testPlans: new Map(),
     candidates: new Map(),
     handoffs: [],
     dedupe: new Map(),

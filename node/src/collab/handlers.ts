@@ -3,7 +3,7 @@ import { canonicalJson } from "./audit.js";
 import { APPROVAL_INVALIDATION_REASONS } from "./contract.js";
 import type { ApprovalInvalidationReason } from "./contract.js";
 import { CollabError } from "./errors.js";
-import { resolveRevisionEvidence, resolveRunEvidence } from "./evidence.js";
+import { resolveRevisionEvidence, resolveValidationEvidence } from "./evidence.js";
 import type {
   ArtifactRef,
   CandidateDiff,
@@ -26,6 +26,7 @@ import type {
   RunScope,
   TaskRecord,
   TaskState,
+  TestPlanRecord,
   WorkspaceScope,
   WorktreeRef,
 } from "./types.js";
@@ -313,10 +314,21 @@ function uniqueStrings(values: string[], field: string): string[] {
 function parseDigestRef(value: unknown, field: string): { algorithm: string; value: string } {
   const source = object(value, field);
   assertExactKeys(source, ["algorithm", "value"], field);
-  return {
-    algorithm: str(source["algorithm"], `${field}.algorithm`),
-    value: str(source["value"], `${field}.value`),
-  };
+  const algorithm = str(source["algorithm"], `${field}.algorithm`);
+  const digest = str(source["value"], `${field}.value`);
+  if (algorithm !== "sha256") {
+    throw new CollabError("CANDIDATE_INVALID", `${field}.algorithm must be sha256`, {
+      field: `${field}.algorithm`,
+      value: algorithm,
+    });
+  }
+  if (!SHA256_HEX.test(digest)) {
+    throw new CollabError("CANDIDATE_INVALID", `${field}.value must be a sha256 hex digest`, {
+      field: `${field}.value`,
+      value: digest,
+    });
+  }
+  return { algorithm, value: digest };
 }
 
 function relativePath(value: unknown, field: string): string {
@@ -1287,6 +1299,55 @@ function handleRequestRunRestart(state: CollabState, payload: Payload): unknown 
   );
 }
 
+function handleRecordTestPlan(state: CollabState, payload: Payload): unknown {
+  assertExactKeys(
+    payload,
+    [...BASE_KEYS, "plan_id", "run_id", "lease", "config_digest", "environment", "checks"],
+    "record_test_plan",
+  );
+  const run = runOf(state, payload["run_id"], "run_id");
+  const at = payload["at"] as string;
+  assertLeaseHeld(run, payload["lease"], at);
+  if (isTerminalRunState(run.state)) {
+    throw new CollabError("RUN_TERMINAL", "terminal run records no test plan", {
+      run_id: run.run_id,
+    });
+  }
+  if (run.state !== "approved" && run.state !== "running") {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      `a test plan is recorded before validation runs (run is ${run.state})`,
+      { run_id: run.run_id, state: run.state },
+    );
+  }
+  for (const existing of state.testPlans.values()) {
+    if (existing.run_id === run.run_id) {
+      throw new CollabError(
+        "TEST_PLAN_CONFLICT",
+        "the run already has an approved test plan; a new plan needs a new run",
+        { run_id: run.run_id, plan_id: existing.plan_id },
+      );
+    }
+  }
+  const checks = uniqueStrings(strArray(payload["checks"], "checks"), "checks");
+  if (checks.length === 0) {
+    throw new CollabError("CANDIDATE_INVALID", "the approved test plan requires no check", {
+      field: "checks",
+    });
+  }
+  const plan: TestPlanRecord = {
+    plan_id: str(payload["plan_id"], "plan_id"),
+    run_id: run.run_id,
+    config_digest: str(payload["config_digest"], "config_digest"),
+    environment: str(payload["environment"], "environment"),
+    checks,
+    recorded_at: at,
+  };
+  state.testPlans.set(plan.plan_id, plan);
+  run.updated_at = at;
+  return clone(plan);
+}
+
 const CANDIDATE_FREEZE_PRODUCT_STATES: ProductState[] = [
   "implementing",
   "validating",
@@ -1368,6 +1429,53 @@ function handleFreezeCandidate(state: CollabState, payload: Payload): unknown {
   const validation = parseCandidateValidation(payload["validation"], "validation");
   const risk = parseChangeRisk(payload["risk"], "risk");
 
+  // The required checks are not the candidate submitter's to declare: they
+  // come from the run's approved test plan, recorded before validation ran.
+  const plan = [...state.testPlans.values()].find((entry) => entry.run_id === run.run_id);
+  if (plan === undefined) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      "no approved test plan was recorded for the preparation run",
+      { run_id: run.run_id },
+    );
+  }
+  if (
+    validation.config_digest !== plan.config_digest ||
+    validation.environment !== plan.environment
+  ) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      "validation configuration or environment differs from the approved test plan",
+      {
+        plan_config_digest: plan.config_digest,
+        validation_config_digest: validation.config_digest,
+        plan_environment: plan.environment,
+        validation_environment: validation.environment,
+      },
+    );
+  }
+  const planChecks = [...plan.checks].sort();
+  const declaredChecks = [...validation.required_checks].sort();
+  if (
+    planChecks.length !== declaredChecks.length ||
+    planChecks.some((check, index) => check !== declaredChecks[index])
+  ) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      "required checks must be exactly the checks of the approved test plan",
+      { plan_checks: plan.checks, required_checks: validation.required_checks },
+    );
+  }
+  for (const result of validation.results) {
+    if (!plan.checks.includes(result.tool)) {
+      throw new CollabError(
+        "CANDIDATE_INVALID",
+        "a validation result names a check that is not in the approved test plan",
+        { tool: result.tool, plan_checks: plan.checks },
+      );
+    }
+  }
+
   const artifactIds = uniqueStrings(
     strArray(payload["artifact_ids"], "artifact_ids"),
     "artifact_ids",
@@ -1424,14 +1532,19 @@ function handleFreezeCandidate(state: CollabState, payload: Payload): unknown {
   }
 
   // Every claimed reference must resolve to a record this run actually
-  // retained. Validation evidence is additionally bound to the exact frozen
-  // revision, so a card can never cite a test run that never happened here.
+  // retained. Validation evidence is additionally a retained execution
+  // artifact from the exact frozen revision whose digest is the declared
+  // output digest, so a card cannot cite an unrelated artifact, another
+  // revision, or an unbacked "passing" result.
+  const evidence = { run, plan };
+  const binding = { base_sha: baseSha, head_sha: headSha };
   for (const [index, result] of validation.results.entries()) {
-    resolveRevisionEvidence(
-      run,
+    resolveValidationEvidence(
+      evidence,
       result.event_reference,
       `validation.results[${index}].event_reference`,
-      { base_sha: baseSha, head_sha: headSha },
+      binding,
+      result.output_digest as { algorithm: string; value: string },
     );
   }
   const auditRefs = uniqueStrings(strArray(payload["audit_refs"], "audit_refs"), "audit_refs");
@@ -1441,13 +1554,7 @@ function handleFreezeCandidate(state: CollabState, payload: Payload): unknown {
     });
   }
   for (const [index, reference] of auditRefs.entries()) {
-    const resolved = resolveRunEvidence(run, reference, `audit_refs[${index}]`);
-    if (resolved.kind === "artifact") {
-      resolveRevisionEvidence(run, reference, `audit_refs[${index}]`, {
-        base_sha: baseSha,
-        head_sha: headSha,
-      });
-    }
+    resolveRevisionEvidence(evidence, reference, `audit_refs[${index}]`, binding);
   }
 
   // One preparation run freezes exactly one candidate; a later revision is a
@@ -1558,6 +1665,7 @@ export const HANDLERS: Record<AuditCommand, (state: CollabState, payload: Payloa
   revoke_grant: handleRevokeGrant,
   record_run_state: handleRecordRunState,
   attach_artifact: handleAttachArtifact,
+  record_test_plan: handleRecordTestPlan,
   freeze_candidate: handleFreezeCandidate,
   invalidate_candidate: handleInvalidateCandidate,
   record_base_advance: handleRecordBaseAdvance,

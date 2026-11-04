@@ -1,5 +1,9 @@
 import { diffDigest } from "../../src/collab/candidate-store.js";
-import { artifactEvidenceRef, grantEvidenceRef } from "../../src/collab/evidence.js";
+import {
+  artifactEvidenceRef,
+  grantEvidenceRef,
+  planEvidenceRef,
+} from "../../src/collab/evidence.js";
 import { CollabMachine } from "../../src/collab/machine.js";
 import type {
   ArtifactInput,
@@ -154,6 +158,11 @@ export const CANDIDATE_DIFF = [
 ].join("\n");
 
 export const CANDIDATE_HEAD = "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00";
+/** Content digest of the retained test-report artifact. */
+export const TEST_REPORT_DIGEST = "cd".repeat(32);
+export const TEST_PLAN_CHECKS = ["npm test -- retry"];
+export const TEST_PLAN_CONFIG_DIGEST = "sha256:" + "ef".repeat(32);
+export const TEST_PLAN_ENVIRONMENT = "node20-linux-x64-isolated";
 export const CANDIDATE_TREE = "d4e5f60718293a4b5c6d7e8f9012345678a1b2c3";
 
 export interface PreparationContext {
@@ -163,6 +172,7 @@ export interface PreparationContext {
   artifacts: ArtifactRef[];
   /** An artifact retained by the run but produced from another revision. */
   other_revision_artifact: ArtifactRef;
+  plan: { plan_id: string } | undefined;
   head_sha: string;
   tree_sha: string;
   diff_content: string;
@@ -177,7 +187,7 @@ export interface PreparationContext {
 export function stoppedPreparation(
   machine: CollabMachine,
   issueId: string,
-  overrides: { worktreePath?: string; worktreeId?: string } = {},
+  overrides: { worktreePath?: string; worktreeId?: string; recordPlan?: boolean } = {},
 ): PreparationContext {
   const worktreeId = overrides.worktreeId ?? "wt_candidate";
   const run = openRun(machine, issueId, {
@@ -208,6 +218,17 @@ export function stoppedPreparation(
     lease,
     grant: grantInput(),
   });
+  if (overrides.recordPlan !== false) {
+    machine.recordTestPlan({
+      operation_id: op(),
+      actor: "worker:a",
+      run_id: run.run_id,
+      lease,
+      config_digest: TEST_PLAN_CONFIG_DIGEST,
+      environment: TEST_PLAN_ENVIRONMENT,
+      checks: TEST_PLAN_CHECKS,
+    });
+  }
   const digest = diffDigest(CANDIDATE_DIFF);
   const artifacts = [
     machine.attachArtifact({
@@ -232,6 +253,17 @@ export function stoppedPreparation(
       artifact: artifactInput({
         kind: "report",
         digest: OTHER_DIGEST,
+        head_sha: CANDIDATE_HEAD,
+      }),
+    }),
+    machine.attachArtifact({
+      operation_id: op(),
+      actor: "worker:a",
+      run_id: run.run_id,
+      lease,
+      artifact: artifactInput({
+        kind: "test_report",
+        digest: TEST_REPORT_DIGEST,
         head_sha: CANDIDATE_HEAD,
       }),
     }),
@@ -272,6 +304,7 @@ export function stoppedPreparation(
     lease,
     artifacts,
     other_revision_artifact: otherRevisionArtifact,
+    plan: machine.getTestPlan(run.run_id),
     head_sha: CANDIDATE_HEAD,
     tree_sha: CANDIDATE_TREE,
     diff_content: CANDIDATE_DIFF,
@@ -286,12 +319,15 @@ export function freezeCandidateInput(
 ): FreezeCandidateInput {
   const patch = context.artifacts.find((artifact) => artifact.kind === "patch");
   const report = context.artifacts.find((artifact) => artifact.kind === "report");
-  if (patch === undefined || report === undefined) {
-    throw new Error("preparation context has no patch/report artifact");
+  const testReport = context.artifacts.find((artifact) => artifact.kind === "test_report");
+  if (patch === undefined || report === undefined || testReport === undefined) {
+    throw new Error("preparation context has no patch/report/test_report artifact");
   }
   const patchRef = artifactEvidenceRef(context.run.run_id, patch.artifact_id);
   const reportRef = artifactEvidenceRef(context.run.run_id, report.artifact_id);
+  const testReportRef = artifactEvidenceRef(context.run.run_id, testReport.artifact_id);
   const grant = context.run.grants[0];
+  const plan = context.plan;
   if (grant === undefined) {
     throw new Error("preparation context has no recorded grant");
   }
@@ -313,15 +349,15 @@ export function freezeCandidateInput(
     },
     diff_content: context.diff_content,
     validation: {
-      config_digest: `sha256:${OTHER_DIGEST}`,
-      environment: "node20-linux-x64-isolated",
-      required_checks: ["npm test -- retry"],
+      config_digest: TEST_PLAN_CONFIG_DIGEST,
+      environment: TEST_PLAN_ENVIRONMENT,
+      required_checks: [...TEST_PLAN_CHECKS],
       results: [
         {
-          tool: "npm test -- retry",
+          tool: TEST_PLAN_CHECKS[0] as string,
           exit_status: 0,
-          output_digest: { algorithm: "sha256", value: DIGEST },
-          event_reference: reportRef,
+          output_digest: { algorithm: "sha256", value: TEST_REPORT_DIGEST },
+          event_reference: testReportRef,
         },
       ],
     },
@@ -331,7 +367,13 @@ export function freezeCandidateInput(
       requires_human_approval: false,
     },
     artifact_ids: context.artifacts.map((artifact) => artifact.artifact_id),
-    audit_refs: [patchRef, reportRef, grantEvidenceRef(context.run.run_id, grant.grant_id)],
+    audit_refs: [
+      patchRef,
+      reportRef,
+      testReportRef,
+      ...(plan === undefined ? [] : [planEvidenceRef(context.run.run_id, plan.plan_id)]),
+      grantEvidenceRef(context.run.run_id, grant.grant_id),
+    ],
     ...overrides,
   };
 }

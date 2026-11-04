@@ -26,6 +26,7 @@ export type {
   OpenRunInput,
   RecordBaseAdvanceInput,
   RecordGrantInput,
+  RecordTestPlanInput,
   RecordHandoffInput,
   RecordRunStateInput,
   RenewLeaseInput,
@@ -67,13 +68,16 @@ export type {
 export { CandidateContentStore, diffDigest } from "./candidate-store.js";
 export {
   RUN_EVIDENCE_PREFIX,
+  VALIDATION_ARTIFACT_KINDS,
   artifactEvidenceRef,
   grantEvidenceRef,
+  planEvidenceRef,
   resolveRevisionEvidence,
   resolveRunEvidence,
+  resolveValidationEvidence,
   runEvidenceIndex,
 } from "./evidence.js";
-export type { ResolvedEvidence } from "./evidence.js";
+export type { ResolvedEvidence, RunEvidenceContext } from "./evidence.js";
 export type { StoredDiff } from "./candidate-store.js";
 export { CandidateReviewService } from "./candidate-service.js";
 export type { CandidateCardPage, CandidateDiffView } from "./candidate-service.js";
@@ -113,6 +117,7 @@ export type {
   RunScope,
   TaskRecord,
   TaskState,
+  TestPlanRecord,
   WorkspaceScope,
   WorktreeRef,
 } from "./types.js";

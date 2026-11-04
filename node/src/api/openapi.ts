@@ -1448,10 +1448,12 @@ const candidateSchema: JsonObject = {
           type: "array",
           items: { type: "string" },
           description:
-            "Validation identities the approved test plan requires. A candidate " +
-            "freezes only when every required check has a recorded passing " +
-            "attempt against its exact revision; a failed or unexecuted required " +
-            "check stops the run instead of producing a review card.",
+            "Validation identities of the run's approved test plan. The set must " +
+            "equal the plan recorded before validation ran; every check needs a " +
+            "passing attempt backed by a retained execution artifact whose digest " +
+            "is the attempt's `output_digest`, produced from this exact revision. " +
+            "A failed, unexecuted, unplanned, or digest-mismatched check stops the " +
+            "run instead of producing a review card.",
         },
         results: {
           type: "array",

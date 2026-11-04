@@ -19,6 +19,7 @@ import {
   newIssueId,
   newRunId,
   newTaskId,
+  newTestPlanId,
 } from "./ids.js";
 import type {
   ArtifactRef,
@@ -28,6 +29,7 @@ import type {
   CapabilityGrant,
   ChangeRisk,
   CollabState,
+  TestPlanRecord,
   Disposition,
   GrantTool,
   HandoffRecord,
@@ -201,6 +203,19 @@ export type RequestRunRestartInput = CommandBase & {
  * ephemeral worktree), and records only the digest in the audited payload — the
  * append-only log never carries patch text or tool output.
  */
+/**
+ * Record the approved test plan of one run before validation executes. The
+ * plan is the trusted source of the required checks a frozen candidate must
+ * prove passing; it is run-scoped, lease-guarded, and immutable.
+ */
+export type RecordTestPlanInput = CommandBase & {
+  run_id: string;
+  lease: { holder: string; fencing_token: number };
+  config_digest: string;
+  environment: string;
+  checks: string[];
+};
+
 export type FreezeCandidateInput = CommandBase & {
   issue_id: string;
   run_id: string;
@@ -415,6 +430,15 @@ export class CollabMachine {
     return this.execute("record_base_advance", input, payload) as BaseAdvanceResult;
   }
 
+  recordTestPlan(input: RecordTestPlanInput): TestPlanRecord {
+    const payload: Payload = {
+      ...input,
+      at: this.clock().toISOString(),
+      plan_id: newTestPlanId(),
+    };
+    return this.execute("record_test_plan", input, payload) as TestPlanRecord;
+  }
+
   transitionIssue(input: TransitionIssueInput): IssueRecord {
     const payload: Payload = {
       ...input,
@@ -460,6 +484,12 @@ export class CollabMachine {
   getRun(runId: string): RunRecord | undefined {
     const run = this.state.runs.get(runId);
     return run ? structuredClone(run) : undefined;
+  }
+
+  /** The run's recorded approved test plan, if one exists. */
+  getTestPlan(runId: string): TestPlanRecord | undefined {
+    const plan = [...this.state.testPlans.values()].find((entry) => entry.run_id === runId);
+    return plan ? structuredClone(plan) : undefined;
   }
 
   getCandidate(candidateId: string): CandidateRecord | undefined {
@@ -557,6 +587,9 @@ export class CollabMachine {
       issues: [...this.state.issues.values()].sort((a, b) => a.issue_id.localeCompare(b.issue_id)),
       tasks: [...this.state.tasks.values()].sort((a, b) => a.task_id.localeCompare(b.task_id)),
       runs: [...this.state.runs.values()].sort((a, b) => a.run_id.localeCompare(b.run_id)),
+      test_plans: [...this.state.testPlans.values()].sort((a, b) =>
+        a.plan_id.localeCompare(b.plan_id),
+      ),
       candidates: [...this.state.candidates.values()].sort((a, b) =>
         a.candidate_id.localeCompare(b.candidate_id),
       ),

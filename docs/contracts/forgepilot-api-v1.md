@@ -818,17 +818,24 @@ retained content and can be recomputed independently instead of trusted. The
 containment check resolves symlinks, so a retention root that only appears to be
 outside the worktree is refused.
 
-Validation evidence is passing evidence: `validation.required_checks` names the
-checks the approved test plan requires, and every required check must have a
-recorded attempt with exit status `0`. A failed attempt, an attempt with no exit
-status or output digest, or a missing required check stops the run instead of
-producing a review card.
+Validation evidence is passing evidence, and its scope is not the candidate
+submitter's to declare. Before validation executes, the run records one
+immutable approved test plan (`plan_id`, configuration digest, environment, and
+the required check identities) through its lease. `validation.required_checks`
+must equal that plan's checks, the configuration digest and environment must
+match, and every result must name a planned check with exit status `0`. A
+failed attempt, an attempt with no exit status or output digest, an unplanned
+check, or a missing required check stops the run instead of producing a review
+card. A run records exactly one plan; a revised plan needs a new run.
 
-Every validation `event_reference` and `audit_refs` entry must resolve to a
-record the preparation run actually retained (`evidence://runs/{run_id}/...`:
-artifacts and recorded grants). Validation references must be artifacts produced
-from the frozen base and head, so a card cannot cite another run's artifact, a
-grant record as a test result, or a fabricated evidence path.
+Every validation `event_reference` must be a retained `test_report` artifact of
+the same run produced from the frozen base and head whose digest equals the
+attempt's `output_digest` (algorithm `sha256`, hex value), so a "passing" result
+cannot point at a patch/report of another purpose, at a plan or grant record, at
+another revision, or at a digest the execution artifact does not have.
+`audit_refs` entries resolve to retained artifacts, grants, or the approved
+plan of the same run (`evidence://runs/{run_id}/...`); artifact references must
+bind the frozen revision, and a fabricated path never freezes a candidate.
 
 `Candidate` carries optional `invalidated_at`/`invalidated_reason`. When the
 issue base advances, every candidate frozen against an older base is

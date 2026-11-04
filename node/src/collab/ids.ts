@@ -28,6 +28,10 @@ export function newArtifactId(): string {
   return `art_${randomUUID().replaceAll("-", "")}`;
 }
 
+export function newTestPlanId(): string {
+  return `pln_${randomUUID().replaceAll("-", "")}`;
+}
+
 export function newCandidateId(): string {
   return `cand_${randomUUID().replaceAll("-", "")}`;
 }
