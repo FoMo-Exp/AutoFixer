@@ -24,6 +24,25 @@ export type IssueTaskPage =
   operations["listIssueTasks"]["responses"][200]["content"]["application/json"];
 export type IssueRunPage =
   operations["listIssueRuns"]["responses"][200]["content"]["application/json"];
+export type Candidate = components["schemas"]["Candidate"];
+export type Approval = components["schemas"]["Approval"];
+export type Delivery = components["schemas"]["Delivery"];
+export type Digest = components["schemas"]["Digest"];
+export type ChangeRiskClass = Candidate["risk"]["class"];
+export type ApprovalState = Approval["state"];
+export type DeliveryState = Delivery["state"];
+export type ApprovalInvalidationReason = NonNullable<Approval["invalidated_reason"]>;
+export type IssueApprovalDecision =
+  operations["decideIssueApproval"]["requestBody"]["content"]["application/json"];
+export type IssueDeliveryReconcile = NonNullable<
+  operations["reconcileIssueDelivery"]["requestBody"]
+>["content"]["application/json"];
+export type IssueCandidatePage =
+  operations["listIssueCandidates"]["responses"][200]["content"]["application/json"];
+export type IssueApprovalPage =
+  operations["listIssueApprovals"]["responses"][200]["content"]["application/json"];
+export type IssueDeliveryPage =
+  operations["listIssueDeliveries"]["responses"][200]["content"]["application/json"];
 
 export type MemoryItem = components["schemas"]["MemoryItemView"];
 export type MemoryItemPage =
@@ -625,6 +644,152 @@ export class ForgePilotClient extends ApiTransport {
   async getIssueRun(workspaceId: string, issueId: string, runId: string): Promise<IssueRun> {
     return this.request<IssueRun>(
       `${issuePath(workspaceId, issueId, "runs")}/${encodeURIComponent(runId)}`,
+    );
+  }
+
+  async listIssueCandidates(
+    workspaceId: string,
+    issueId: string,
+    cursor?: string,
+  ): Promise<IssueCandidatePage> {
+    const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    return this.request<IssueCandidatePage>(
+      `${issuePath(workspaceId, issueId, "candidates")}${query}`,
+    );
+  }
+
+  async listAllIssueCandidates(workspaceId: string, issueId: string): Promise<Candidate[]> {
+    const candidates: Candidate[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.listIssueCandidates(workspaceId, issueId, cursor);
+      candidates.push(...page.items);
+      cursor = page.next_cursor ?? undefined;
+    } while (cursor);
+    return candidates;
+  }
+
+  async getIssueCandidate(
+    workspaceId: string,
+    issueId: string,
+    candidateId: string,
+  ): Promise<Candidate> {
+    return this.request<Candidate>(
+      `${issuePath(workspaceId, issueId, "candidates")}/${encodeURIComponent(candidateId)}`,
+    );
+  }
+
+  async listIssueApprovals(
+    workspaceId: string,
+    issueId: string,
+    cursor?: string,
+  ): Promise<IssueApprovalPage> {
+    const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    return this.request<IssueApprovalPage>(
+      `${issuePath(workspaceId, issueId, "approvals")}${query}`,
+    );
+  }
+
+  async listAllIssueApprovals(workspaceId: string, issueId: string): Promise<Approval[]> {
+    const approvals: Approval[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.listIssueApprovals(workspaceId, issueId, cursor);
+      approvals.push(...page.items);
+      cursor = page.next_cursor ?? undefined;
+    } while (cursor);
+    return approvals;
+  }
+
+  async getIssueApproval(
+    workspaceId: string,
+    issueId: string,
+    approvalId: string,
+  ): Promise<Approval> {
+    return this.request<Approval>(
+      `${issuePath(workspaceId, issueId, "approvals")}/${encodeURIComponent(approvalId)}`,
+    );
+  }
+
+  /**
+   * Record the authenticated caller's decision on a frozen candidate. The
+   * reviewed diff digest is part of the command, so a decision can never drift
+   * onto a different revision; the approver is the session, never a body field.
+   */
+  async decideIssueApproval(
+    workspaceId: string,
+    issueId: string,
+    approvalId: string,
+    input: IssueApprovalDecision,
+    idempotencyKey?: string,
+  ): Promise<Approval> {
+    return this.request<Approval>(
+      `${issuePath(workspaceId, issueId, "approvals")}/${encodeURIComponent(approvalId)}/decision`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+        },
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  async listIssueDeliveries(
+    workspaceId: string,
+    issueId: string,
+    cursor?: string,
+  ): Promise<IssueDeliveryPage> {
+    const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    return this.request<IssueDeliveryPage>(
+      `${issuePath(workspaceId, issueId, "deliveries")}${query}`,
+    );
+  }
+
+  async listAllIssueDeliveries(workspaceId: string, issueId: string): Promise<Delivery[]> {
+    const deliveries: Delivery[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.listIssueDeliveries(workspaceId, issueId, cursor);
+      deliveries.push(...page.items);
+      cursor = page.next_cursor ?? undefined;
+    } while (cursor);
+    return deliveries;
+  }
+
+  async getIssueDelivery(
+    workspaceId: string,
+    issueId: string,
+    deliveryId: string,
+  ): Promise<Delivery> {
+    return this.request<Delivery>(
+      `${issuePath(workspaceId, issueId, "deliveries")}/${encodeURIComponent(deliveryId)}`,
+    );
+  }
+
+  /**
+   * Reconcile an ambiguous provider outcome against branch/PR evidence. This
+   * is never an automatic retry: `unknown` is only cleared by an explicit
+   * reconciliation, and a `partial` delivery stays an explicit outcome.
+   */
+  async reconcileIssueDelivery(
+    workspaceId: string,
+    issueId: string,
+    deliveryId: string,
+    input: IssueDeliveryReconcile,
+    idempotencyKey?: string,
+  ): Promise<Delivery> {
+    return this.request<Delivery>(
+      `${issuePath(workspaceId, issueId, "deliveries")}/${encodeURIComponent(deliveryId)}/reconcile`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+        },
+        body: JSON.stringify(input),
+      },
     );
   }
 

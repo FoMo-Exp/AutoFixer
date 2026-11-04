@@ -492,3 +492,49 @@ Surface boundaries:
   24-hour preset and `day` for 7/30 days; `bucket` is sent only as a contract
   parameter and is selectable for a `date` breakdown. Pages advance only
   through `next_cursor`; a truncated breakdown states the omitted key count.
+
+### Collaboration v1: frozen candidate review, approval, and delivery
+
+Baseline `fc34eeabf12fd4c4d860173e81c9571d4e97b0a0` on `main`, which carries
+the DAT-221 collaboration contract merge
+`52393c6` (OpenAPI `0.9.0`). Fixtures are the merged-contract captures under
+`docs/fixtures/collab-api-v1/`; no field is invented. The workbench never
+authors a candidate, approval, or delivery record, never displays a bearer
+approval, and never treats an approval as a merge or check waiver.
+
+| Endpoint                                                                                      | Request fields                                                                        | Response type                       | Status |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ----------------------------------- | ------ |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/candidates?cursor=`                  | path ids; optional `cursor`                                                           | `{items: Candidate[], next_cursor}` | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/candidates/{candidate_id}`           | path ids                                                                              | `Candidate`                         | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals?cursor=`                   | path ids; optional `cursor`                                                           | `{items: Approval[], next_cursor}`  | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}`             | path ids                                                                              | `Approval`                          | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}/decision`   | `decision`, `diff_digest{algorithm,value}`, optional `note`; `Idempotency-Key` header | `Approval`                          | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries?cursor=`                  | path ids; optional `cursor`                                                           | `{items: Delivery[], next_cursor}`  | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}`            | path ids                                                                              | `Delivery`                          | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}/reconcile` | optional `note`; `Idempotency-Key` header                                             | `202 Delivery`                      | ✅     |
+
+UI behavior that follows the contract:
+
+- The review card shows the frozen `summary` and expands to the authorized diff
+  (`diff.digest`, changed paths, insertions/deletions), test evidence
+  (`validation.config_digest`, environment, per-tool exit status/output digest/
+  event reference), risks (`risk.class`, decision code, human-approval flag),
+  and provenance (`base_sha`, `head_sha`, `tree_sha`, artifacts, audit refs).
+  The service-provided `tool` string is already redacted server-side; every
+  other free-text field passes through the workbench redactor.
+- A decision is offered only when the request is `pending`, the caller is the
+  named `approver`, the workspace role is not `viewer`, and the approval binding
+  still matches the selected candidate's `candidate_id`, `head_sha`, and
+  `diff_digest`. Expired, invalidated (with its recorded reason), consumed,
+  rejected, cancelled, superseded, and binding-mismatched candidates are shown
+  without approve/reject actions. Both decisions send the reviewed digest, so a
+  stale UI cannot approve a different revision; the approver is the session,
+  never a body field. Approval and rejection require an explicit confirmation
+  dialog; rejection requires a reason.
+- `approval.state === "approved"` is a pre-PR gate only. The card states that a
+  merge remains the repository's own review, checks, and quorum.
+- Delivery states render as distinct outcomes: `partial` (branch pushed, PR not
+  confirmed) and `unknown` (never auto-retried) never use the delivered tone or
+  copy. Both expose the contract's reconcile command; the reconcile request is
+  an explicit, non-automatic action with an idempotency key, and `delivered`
+  still claims no merge.

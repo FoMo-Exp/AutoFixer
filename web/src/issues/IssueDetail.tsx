@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
-import { ApiError } from "../api/client";
 import type {
+  Approval,
+  Candidate,
+  Delivery,
   ForgePilotClient,
   Issue,
   IssueRun,
@@ -11,6 +13,10 @@ import type {
   IssueTaskState,
   ProductState,
 } from "../api/client";
+import { ChangeReviewCard } from "./ChangeReview";
+import { DeliveryStatusCard } from "./DeliveryStatus";
+import { describeIssueError, errorLabel } from "./errors";
+import type { IssueError } from "./errors";
 import { useIssueStream } from "../api/issue-hooks";
 import type { IssueStreamConnection, IssueStreamState } from "../api/issue-hooks";
 import { CreateIdempotencyKeys } from "../api/idempotency";
@@ -34,32 +40,12 @@ import {
 } from "../ui/issues";
 import { redactText } from "../ui/redaction";
 
-export interface IssueError {
-  code: string;
-  message: string;
-  missing: boolean;
-}
-
-export function describeIssueError(caught: unknown): IssueError {
-  if (caught instanceof ApiError) {
-    return { code: caught.code, message: caught.message, missing: caught.status === 404 };
-  }
-  return {
-    code: "REQUEST_FAILED",
-    message: caught instanceof Error ? caught.message : "The issue request failed.",
-    missing: false,
-  };
-}
-
-function errorLabel(error: IssueError): string {
-  return `${error.code}: ${error.message}`;
-}
-
-interface IssueDetailProps {
+export interface IssueDetailProps {
   client: ForgePilotClient;
   workspaceId: string;
   issueId: string;
   seed: Issue | undefined;
+  currentUserId?: string;
   canMutate: boolean;
   onBack: () => void;
   onChanged: () => void;
@@ -70,6 +56,7 @@ export function IssueDetail({
   workspaceId,
   issueId,
   seed,
+  currentUserId,
   canMutate,
   onBack,
   onChanged,
@@ -78,6 +65,11 @@ export function IssueDetail({
   const [stage, setStage] = useState<IssueStage | undefined>(undefined);
   const [tasks, setTasks] = useState<IssueTask[]>([]);
   const [runs, setRuns] = useState<IssueRun[]>([]);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [deliveries, setDeliveries] = useState<Delivery[]>([]);
+  const [reviewLoading, setReviewLoading] = useState(true);
+  const [reviewError, setReviewError] = useState<IssueError | undefined>(undefined);
   const [reloadToken, setReloadToken] = useState(0);
   const [loading, setLoading] = useState(seed === undefined);
   const [loadError, setLoadError] = useState<IssueError | undefined>(undefined);
@@ -121,6 +113,35 @@ export function IssueDetail({
     };
   }, [client, workspaceId, issueId, reloadToken]);
 
+  // The review surface loads independently: a candidate/approval read failure
+  // must never blank the issue projection or its stage actions.
+  useEffect(() => {
+    let active = true;
+    setReviewLoading(true);
+    void Promise.all([
+      client.listAllIssueCandidates(workspaceId, issueId),
+      client.listAllIssueApprovals(workspaceId, issueId),
+      client.listAllIssueDeliveries(workspaceId, issueId),
+    ])
+      .then(([nextCandidates, nextApprovals, nextDeliveries]) => {
+        if (!active) return;
+        setCandidates(nextCandidates);
+        setApprovals(nextApprovals);
+        setDeliveries(nextDeliveries);
+        setReviewError(undefined);
+      })
+      .catch((caught: unknown) => {
+        if (!active) return;
+        setReviewError(describeIssueError(caught));
+      })
+      .finally(() => {
+        if (active) setReviewLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [client, workspaceId, issueId, reloadToken]);
+
   useEffect(() => {
     seenSequence.current = 0;
   }, [issueId]);
@@ -142,6 +163,26 @@ export function IssueDetail({
   const unrecognisedTransitions = (stage?.allowed_transitions ?? []).filter(
     (target) => !isKnownProductState(target),
   );
+
+  function applyApproval(updated: Approval): void {
+    setApprovals((current) =>
+      current.some((approval) => approval.approval_id === updated.approval_id)
+        ? current.map((approval) =>
+            approval.approval_id === updated.approval_id ? updated : approval,
+          )
+        : [...current, updated],
+    );
+  }
+
+  function applyDelivery(updated: Delivery): void {
+    setDeliveries((current) =>
+      current.some((delivery) => delivery.delivery_id === updated.delivery_id)
+        ? current.map((delivery) =>
+            delivery.delivery_id === updated.delivery_id ? updated : delivery,
+          )
+        : [...current, updated],
+    );
+  }
 
   async function submitTransition(input: { reason: string; disposition: string }): Promise<void> {
     if (!stage || !pendingTransition) return;
@@ -365,6 +406,35 @@ export function IssueDetail({
                 </p>
               )}
             </section>
+
+            <ChangeReviewCard
+              client={client}
+              workspaceId={workspaceId}
+              issueId={issueId}
+              currentUserId={currentUserId}
+              canMutate={canMutate}
+              candidates={candidates}
+              approvals={approvals}
+              loading={reviewLoading}
+              error={reviewError}
+              onRetry={() => setReloadToken((value) => value + 1)}
+              onApprovalUpdated={applyApproval}
+              onChanged={onChanged}
+            />
+
+            <DeliveryStatusCard
+              client={client}
+              workspaceId={workspaceId}
+              issueId={issueId}
+              deliveries={deliveries}
+              candidates={candidates}
+              loading={reviewLoading}
+              error={reviewError}
+              canMutate={canMutate}
+              onRetry={() => setReloadToken((value) => value + 1)}
+              onDeliveryUpdated={applyDelivery}
+              onChanged={onChanged}
+            />
 
             <section className="card task-progress-card" aria-labelledby="issue-tasks-heading">
               <div className="card-heading">

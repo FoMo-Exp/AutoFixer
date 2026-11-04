@@ -804,7 +804,9 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
         </main>
       </div>
 
-      {surface === "issues" && <IssuesWorkbench client={client} />}
+      {surface === "issues" && (
+        <IssuesWorkbench client={client} currentUserId={auth.session?.user.id} />
+      )}
 
       {surface === "memory" && (
         <MemoryWorkbench client={client} session={auth.session} loadTeams={loadMemoryTeams} />
