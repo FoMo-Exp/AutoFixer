@@ -140,6 +140,40 @@ describe("ForgePilotClient", () => {
     expect(fetchImpl.mock.calls[0]?.[0]).toBe("http://127.0.0.1:4567/api/v1/tasks");
   });
 
+  it("streams through the selected workspace and the legacy seam", async () => {
+    const streaming = () =>
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        void input;
+        void init;
+        return new Response("", {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      });
+    const scopedFetch = streaming();
+    const scoped = new ForgePilotClient({
+      baseUrl: "http://127.0.0.1:4567",
+      token: "token",
+      workspaceId: "wsp_1",
+      fetchImpl: scopedFetch,
+    });
+    const legacyFetch = streaming();
+    const legacy = new ForgePilotClient({
+      baseUrl: "http://127.0.0.1:4567",
+      token: "token",
+      workspaceId: null,
+      fetchImpl: legacyFetch,
+    });
+
+    await scoped.streamTaskEvents("tsk_1", { onEvent: () => undefined });
+    await legacy.streamTaskEvents("tsk_1", { onEvent: () => undefined });
+
+    expect(scopedFetch.mock.calls[0]?.[0]).toBe(
+      "http://127.0.0.1:4567/api/v1/workspaces/wsp_1/tasks/tsk_1/stream",
+    );
+    expect(legacyFetch.mock.calls[0]?.[0]).toBe("http://127.0.0.1:4567/api/v1/tasks/tsk_1/stream");
+  });
+
   it("walks every workspace page and stops on a repeated cursor", async () => {
     const workspace = (id: string) => ({
       id,

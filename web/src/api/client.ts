@@ -230,7 +230,7 @@ export class ForgePilotClient {
     const headers = this.headers({ Accept: "text/event-stream" });
     if (options.lastEventId) headers["Last-Event-ID"] = options.lastEventId;
 
-    const response = await this.raw(`/api/v1/tasks/${encodeURIComponent(taskId)}/stream`, {
+    const response = await this.raw(`${this.taskRoutes}/${encodeURIComponent(taskId)}/stream`, {
       headers,
       signal: options.signal,
     });
