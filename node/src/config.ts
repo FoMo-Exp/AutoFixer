@@ -92,6 +92,18 @@ export interface OrchestratorConfig {
   /** Durable notification record sink (JSONL, 0600; non-secret content). */
   securityNotificationsFile?: string;
   /**
+   * Unified tamper-evident security audit trail (DAT-213): hash-chained,
+   * owner-only JSONL. Every case, rule, recovery, and audit-access event is
+   * appended here; a chain that fails verification blocks the dependent action.
+   */
+  securityAuditFile?: string;
+  /**
+   * Protected file holding the audit chain key (base64 32 bytes). Generated
+   * 0600 on first use when absent; the key makes the chain unverifiable to
+   * anyone who can only edit the log.
+   */
+  securityAuditKeyFile?: string;
+  /**
    * Secret for minting authenticated, non-transferable case references.
    * Unset uses a per-process secret (references then only verify within the
    * process that minted them); a deployment sets it for cross-restart use.
@@ -286,6 +298,10 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     securityNotificationsFile:
       env["FORGEPILOT_SECURITY_NOTIFICATIONS_FILE"] ??
       defaultSecurityStatePath("security-notifications.jsonl"),
+    securityAuditFile:
+      env["FORGEPILOT_SECURITY_AUDIT_FILE"] ?? defaultSecurityStatePath("security-audit.jsonl"),
+    securityAuditKeyFile:
+      env["FORGEPILOT_SECURITY_AUDIT_KEY_FILE"] ?? defaultSecurityStatePath("security-audit.key"),
     securityHandlerIds: csv(env["FORGEPILOT_SECURITY_HANDLER_IDS"], []),
     securityAdminIds: csv(env["FORGEPILOT_SECURITY_ADMIN_IDS"], []),
     usageLedgerFile: env["FORGEPILOT_USAGE_LEDGER_FILE"] ?? defaultUsageLedgerPath(),

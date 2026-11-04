@@ -18,6 +18,7 @@ import { newId, nowIso } from "../../control-plane/db.js";
 import { ValidationError } from "../../control-plane/errors.js";
 import type { UserId, WorkspaceScope } from "../../control-plane/types.js";
 import type { MemoryItemId, MemoryKind } from "../types.js";
+import type { MemoryTimelinePosition } from "../repositories.js";
 import type {
   ConsolidationOp,
   ConsolidationOpReason,
@@ -70,6 +71,25 @@ export interface PromotionDecisionRecord {
   created_by: UserId;
 }
 
+export interface ConsolidationOpRecordWithTime extends ConsolidationOpRecord {
+  /** When the operation row was written (RFC 3339, canonical UTC). */
+  created_at: string;
+  created_by: UserId;
+  run_id: string;
+}
+
+/** One promotion decision with its audit-stream position. */
+export interface PromotionDecisionEntry {
+  decision: PromotionDecisionRecord;
+  sequence: number;
+}
+
+/** One consolidation operation with its audit-stream position. */
+export interface ConsolidationOpEntry {
+  op: ConsolidationOpRecordWithTime;
+  sequence: number;
+}
+
 export interface MemoryLifecycleStore {
   /** The workspace's promotion policy, or the ADR-0009 defaults when unset. */
   getPolicy(scope: WorkspaceScope): MemoryPromotionPolicyRecord;
@@ -108,6 +128,28 @@ export interface MemoryLifecycleStore {
   listConsolidationRuns(scope: WorkspaceScope, limit?: number): ConsolidationReport[];
   /** Operations of one consolidation run, in application order. */
   listConsolidationOps(scope: WorkspaceScope, runId: string): ConsolidationOpRecord[];
+  /**
+   * Keyset page of one item's promotion decisions, oldest first (DAT-251).
+   * `after` is exclusive, so the governance timeline traverses the whole
+   * decision history instead of a fixed newest-first sample.
+   */
+  listPromotionDecisionsPage(
+    scope: WorkspaceScope,
+    itemId: MemoryItemId,
+    after: MemoryTimelinePosition | undefined,
+    limit: number,
+  ): PromotionDecisionEntry[];
+  /**
+   * Keyset page of the consolidation operations that targeted one item,
+   * oldest first (DAT-251). A read over the existing ops table, not a new
+   * record, and pageable for the same reason.
+   */
+  listConsolidationOpsForItem(
+    scope: WorkspaceScope,
+    itemId: MemoryItemId,
+    after: MemoryTimelinePosition | undefined,
+    limit: number,
+  ): ConsolidationOpEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +286,35 @@ interface OpRow {
   created_by: string;
 }
 
+function toPromotionDecision(row: DecisionRow): PromotionDecisionRecord {
+  return {
+    id: row.id,
+    item_id: row.item_id,
+    item_version: row.item_version,
+    kind: row.kind as MemoryKind,
+    outcome: row.outcome as "promoted" | "blocked",
+    reasons: JSON.parse(row.reasons) as PromotionReason[],
+    independent_support_runs: row.independent_support_runs,
+    evaluation_delta: row.evaluation_delta,
+    policy_digest: row.policy_digest,
+    run_id: row.run_id,
+    created_at: row.created_at,
+    created_by: row.created_by as UserId,
+  };
+}
+
+function toConsolidationOp(row: OpRow): ConsolidationOpRecord {
+  return {
+    op: row.op as ConsolidationOp,
+    item_id: row.item_id,
+    target_item_id: row.target_item_id,
+    item_version: row.item_version,
+    reason_code: row.reason_code as ConsolidationOpReason,
+    applied: row.applied === 1,
+    detail: JSON.parse(row.detail) as Record<string, number>,
+  };
+}
+
 class SqliteMemoryLifecycleStore implements MemoryLifecycleStore {
   constructor(private readonly db: ControlPlaneDb) {}
 
@@ -358,20 +429,32 @@ class SqliteMemoryLifecycleStore implements MemoryLifecycleStore {
          ORDER BY rowid DESC LIMIT ?`,
       )
       .all(...params) as unknown as DecisionRow[];
-    return rows.map((row) => ({
-      id: row.id,
-      item_id: row.item_id,
-      item_version: row.item_version,
-      kind: row.kind as MemoryKind,
-      outcome: row.outcome as "promoted" | "blocked",
-      reasons: JSON.parse(row.reasons) as PromotionReason[],
-      independent_support_runs: row.independent_support_runs,
-      evaluation_delta: row.evaluation_delta,
-      policy_digest: row.policy_digest,
-      run_id: row.run_id,
-      created_at: row.created_at,
-      created_by: row.created_by as UserId,
-    }));
+    return rows.map(toPromotionDecision);
+  }
+
+  listPromotionDecisionsPage(
+    scope: WorkspaceScope,
+    itemId: MemoryItemId,
+    after: MemoryTimelinePosition | undefined,
+    limit: number,
+  ): PromotionDecisionEntry[] {
+    const bounded = Math.min(Math.max(limit, 1), 500);
+    const keyset =
+      after === undefined ? "" : " AND (created_at > ? OR (created_at = ? AND rowid > ?))";
+    const params: (string | number)[] = [scope.enterprise_id, scope.workspace_id, itemId];
+    if (after !== undefined) {
+      params.push(after.at, after.at, after.sequence);
+    }
+    params.push(bounded);
+    const rows = this.db
+      .prepare(
+        `SELECT rowid AS sequence, * FROM memory_promotion_decisions
+          WHERE enterprise_id = ? AND workspace_id = ? AND item_id = ?${keyset}
+          ORDER BY created_at, rowid
+          LIMIT ?`,
+      )
+      .all(...params) as unknown as (DecisionRow & { sequence: number })[];
+    return rows.map((row) => ({ decision: toPromotionDecision(row), sequence: row.sequence }));
   }
 
   startConsolidationRun(scope: WorkspaceScope, runId: string, startedAt: string): void {
@@ -476,14 +559,39 @@ class SqliteMemoryLifecycleStore implements MemoryLifecycleStore {
          ORDER BY rowid`,
       )
       .all(scope.enterprise_id, scope.workspace_id, runId) as unknown as OpRow[];
+    return rows.map(toConsolidationOp);
+  }
+
+  listConsolidationOpsForItem(
+    scope: WorkspaceScope,
+    itemId: MemoryItemId,
+    after: MemoryTimelinePosition | undefined,
+    limit: number,
+  ): ConsolidationOpEntry[] {
+    const bounded = Math.min(Math.max(limit, 1), 500);
+    const keyset =
+      after === undefined ? "" : " AND (created_at > ? OR (created_at = ? AND rowid > ?))";
+    const params: (string | number)[] = [scope.enterprise_id, scope.workspace_id, itemId];
+    if (after !== undefined) {
+      params.push(after.at, after.at, after.sequence);
+    }
+    params.push(bounded);
+    const rows = this.db
+      .prepare(
+        `SELECT rowid AS sequence, * FROM memory_consolidation_ops
+          WHERE enterprise_id = ? AND workspace_id = ? AND item_id = ?${keyset}
+          ORDER BY created_at, rowid
+          LIMIT ?`,
+      )
+      .all(...params) as unknown as (OpRow & { sequence: number })[];
     return rows.map((row) => ({
-      op: row.op as ConsolidationOp,
-      item_id: row.item_id,
-      target_item_id: row.target_item_id,
-      item_version: row.item_version,
-      reason_code: row.reason_code as ConsolidationOpReason,
-      applied: row.applied === 1,
-      detail: JSON.parse(row.detail) as Record<string, number>,
+      op: {
+        ...toConsolidationOp(row),
+        created_at: row.created_at,
+        created_by: row.created_by as UserId,
+        run_id: row.run_id,
+      },
+      sequence: row.sequence,
     }));
   }
 }

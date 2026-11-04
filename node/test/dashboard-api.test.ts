@@ -329,16 +329,19 @@ describe("dashboard HTTP surface authorization", () => {
       parameter_names: "bucket,from,include_quarantine,timezone,to",
     });
     // An unknown parameter contributes no name at all, because a name is
-    // caller-supplied text too.
-    const deniedUnknown = audit.body.items.find(
+    // caller-supplied text too. A scope claim is a separate denial, so select
+    // by the recorded names rather than by order.
+    const deniedSummaryInvalid = audit.body.items.filter(
       (entry) => entry.resource === "summary" && entry.query["denial_code"] === "INVALID_REQUEST",
     );
-    expect(deniedUnknown?.query).toEqual({
-      denial_code: "INVALID_REQUEST",
-      parameter_names: "bucket,from,timezone,to",
-    });
-    const deniedScopeClaim = audit.body.items.find((entry) =>
-      String(entry.query["parameter_names"]).includes("workspace_id"),
+    const deniedUnknown = deniedSummaryInvalid.find(
+      (entry) => entry.query["parameter_names"] === "bucket,from,timezone,to",
+    );
+    expect(deniedUnknown).toBeDefined();
+    const deniedScopeClaim = audit.body.items.find(
+      (entry) =>
+        entry.query["denial_code"] === "INVALID_REQUEST" &&
+        String(entry.query["parameter_names"]).includes("workspace_id"),
     );
     expect(deniedScopeClaim?.query).toEqual({
       denial_code: "INVALID_REQUEST",

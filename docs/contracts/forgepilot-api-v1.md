@@ -250,7 +250,14 @@ run summaries for that task; terminal grants are never reused.
 | `DELETE /api/v1/workspaces/{workspace_id}/invitations/{invitation_id}` | none | `204` |
 | `POST /api/v1/workspaces/{workspace_id}/memory/search` | `{purpose, query, scope?, run_id?, max_items?, max_tokens?, context_window_tokens?, include_candidates?, policy_version?, query_embedding?}` | `200 MemoryBundle` (bounded, cited; `degraded` on store outage) |
 | `POST /api/v1/workspaces/{workspace_id}/memory/feedback` | `{bundle_id, run_id, outcome, items?[], note?}` | `201 MemoryFeedbackRecord` |
-| `GET /api/v1/workspaces/{workspace_id}/memory/items?kind=&status=&tier=&limit=&cursor=` | none | `200 {items: MemoryItemView[], next_cursor}` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/items?kind=&status=&tier=&team_id=&path_prefix=&language=&task_family=&trust=&sensitivity=&limit=&cursor=` | none | `200 {items: MemoryItemView[], next_cursor}` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/items/{item_id}` | none | `200 MemoryItemView` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/versions` | none | `200 MemoryItemVersions` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/events?limit=&cursor=` | none | `200 MemoryItemEvents` (paged; `next_cursor` until null) |
+| `POST /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/promote` | `{version, expected_version}` | `200 MemoryGovernanceResult` (candidate → active) |
+| `POST /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/deprecate` | `{version, expected_version, reason_code}` | `200 MemoryGovernanceResult` (active\|candidate → deprecated) |
+| `POST /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/quarantine` | `{version, expected_version, reason_code}` | `200 MemoryGovernanceResult` (any non-terminal → quarantined; content redacted) |
+| `POST /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/restore` | `{version, expected_version, target_status, reason_code}` | `200 MemoryGovernanceResult` (quarantined → proposed\|candidate\|deprecated) |
 | `GET /api/v1/workspaces/{workspace_id}/memory/versions` | none | `200 MemoryVersions` |
 | `POST /api/v1/workspaces/{workspace_id}/memory/eval-runs` | `{kind, dataset, policy_version, memory_version, metrics, verdict, notes?}` | `201 MemoryEvalRunRecord` |
 | `GET /api/v1/workspaces/{workspace_id}/memory/proposals?status=&risk=&limit=` | none | `200 {proposals: RsiProposal[]}` |
@@ -352,9 +359,48 @@ proceeds with configured policy only, never invented lessons.
 
 Memory is untrusted data: a bundle can never grant a capability, approve a
 change, or authorize a tool action, and `dsh` remains the sole execution gate.
-Promotion, deprecation, quarantine, and retrieval-policy writes are deliberately
-**not** reachable from this surface; those belong to the memory lifecycle and
-bounded-RSI slices.
+Retrieval itself is read-only over memory.
+
+### Memory governance (DAT-251)
+
+The named-human half of the lifecycle is detailed in
+`docs/contracts/memory-governance-v1.md`. It adds item detail, per-version
+content for diffing, and the item audit timeline, plus exactly four
+transitions: `promote`, `deprecate`, `quarantine`, and `restore`. It is
+session-authenticated and workspace-scoped, and authority is resolved from
+live membership and team rows, never from a request body:
+
+| Actor | Governance authority |
+|---|---|
+| workspace `owner` / `admin` | every item in the workspace within their sensitivity ceiling |
+| team leader (`team.leader_user_id`) | only items whose applicability names a team they lead |
+| `member` / `viewer` | read-only; transitions are `403 FORBIDDEN` |
+| agent / operator bearer credential | `403 FORBIDDEN` for transitions |
+| item in another workspace | `404 NOT_FOUND`, indistinguishable from a missing item |
+
+The state machine is explicit: `promote` accepts only `candidate → active` and
+records named human approval of the exact version (procedural content and
+policy require it; policy must additionally be human-authored); `deprecate`
+accepts `active|candidate → deprecated`; `quarantine` accepts any non-terminal
+state; `restore` accepts `quarantined → proposed|candidate|deprecated` and
+never `→ active`, so leaving quarantine always re-enters the promotion path.
+`retired` is terminal. An illegal transition is `409 INVALID_TRANSITION`.
+
+Every transition carries `version` and `expected_version`; either mismatching
+the current version is `409 VERSION_CONFLICT`, and writes only append audit
+rows. Reasons are a fixed machine vocabulary (`reason_code`), never free text:
+`memory_events.detail` keeps its no-free-text, no-memory-content invariant,
+and the timeline normalizes `detail` to enums, counts, and opaque ids.
+
+A quarantined item's `statement` is `null` with `statement_redacted: true`,
+its `preconditions` are empty, and its evidence references are replaced by
+irreversible identifiers in items, item detail, versions, and events. v1 has
+no route that returns quarantine content: ADR-0009 requires separately
+authorized access to quarantine and evidence. Historical versions are filtered
+by their own sensitivity: a version above the caller's ceiling is absent from
+`versions` and from `events`, not blanked in place. The browse surface gains
+only optional fields and optional query parameters, so DAT-236 clients are
+unaffected.
 
 
 ### Bounded RSI (DAT-238)
@@ -706,6 +752,8 @@ Stable codes and their default envelope semantics:
 | `TASK_STATE_CONFLICT` | 409 | execution | stop | no | `refresh` |
 | `IDEMPOTENCY_CONFLICT` | 409 | validation | stop | no | `resubmit` |
 | `VERSION_CONFLICT` | 409 | validation | stop | no | `refresh` |
+| `INVALID_TRANSITION` | 409 | policy | stop | no | `refresh` |
+| `PRECONDITION_FAILED` | 409 | policy | stop | no | `refresh` |
 | `WORKSPACE_REPOSITORY_CONFLICT` | 409 | validation | stop | no | — |
 | `MEMBERSHIP_CONFLICT` | 409 | validation | stop | no | — |
 | `AUTHORITY_RECHECK_REQUIRED` | 409 | reconciliation | stop | no | `reconcile` |
@@ -1036,6 +1084,37 @@ audit trail itself is owner/admin only (`403 AUDIT_ACCESS_DENIED`).
 | `GET /api/v1/workspaces/{workspace_id}/dashboard/issues/{issue_id}?from=&to=&timezone=&bucket=&limit=&cursor=` | none | `200 DashboardIssueDrilldown` (execution, trace, runs, references; no content) |
 | `GET /api/v1/workspaces/{workspace_id}/dashboard/audit?limit=&cursor=&operation=&resource=` | none | `200 DashboardAuditPage` (owner/admin only) |
 | `GET /api/v1/workspaces/{workspace_id}/dashboard/export?from=&to=&timezone=&bucket=&breakdown=` | none | `200 DashboardExportBundle` as an attachment (owner/admin only; capped at 1000 cost items) |
+
+## Model egress, security cases, and audit (DAT-213)
+
+The ADR-0005 surface is detailed by `docs/contracts/security-api-v1.md`. It is
+workspace-scoped under `/api/v1/workspaces/{workspace_id}/security`, adds
+`case_ref` and `trace_ref` to the shared error envelope, and emits the stable
+codes `MODEL_EGRESS_DENIED`, `SENSITIVE_DATA_UNCERTAIN`,
+`SECURITY_REVIEW_REQUIRED`, and `RECOVERY_APPROVAL_INVALID`. No operation in
+that surface accepts a per-call bypass, a client-supplied scope, or reused
+recovery authorization.
+
+| Operation | Purpose |
+| --- | --- |
+| `GET /api/v1/workspaces/{workspace_id}/security/cases` | List redacted cases. |
+| `GET /api/v1/workspaces/{workspace_id}/security/cases/{case_id}` | Read one case and its allowed transitions. |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/transitions` | Advance or close a case through a permitted edge. |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/termination-requests` | Request termination for administrator review. |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/reassignment-requests` | Hand a case to another handler. |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/quarantine-grants` | Grant temporary access to quarantined content. |
+| `POST /api/v1/workspaces/{workspace_id}/security/quarantine/{quarantine_id}/views` | View quarantined content under a live grant. |
+| `GET /api/v1/workspaces/{workspace_id}/security/rules` | List rule revisions by lineage. |
+| `POST /api/v1/workspaces/{workspace_id}/security/rules/proposals` | Propose a versioned constraint revision. |
+| `POST /api/v1/workspaces/{workspace_id}/security/rules/{lineage}/revisions/{version}/reviews` | Independent review of one revision. |
+| `POST /api/v1/workspaces/{workspace_id}/security/rules/{lineage}/revisions/{version}/activation` | Activate an approved revision. |
+| `POST /api/v1/workspaces/{workspace_id}/security/rules/{lineage}/rollbacks` | Roll back the active revision. |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/recovery-approvals` | Bind a single-use recovery approval. |
+| `GET /api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}` | Read an authorization's bound facts. |
+| `DELETE /api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}` | Revoke an unconsumed approval. |
+| `POST /api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}/dispatch` | Recheck the complete request and dispatch once. |
+| `GET /api/v1/workspaces/{workspace_id}/security/audit` | Read the tamper-evident non-secret trail. |
+| `POST /api/v1/workspaces/{workspace_id}/security/audit/exports` | Export a filtered trail; the export is itself audited. |
 
 ## Pagination
 

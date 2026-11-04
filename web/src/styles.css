@@ -3653,3 +3653,199 @@ p {
     display: inline-flex;
   }
 }
+
+/* ── Workspace memory browse (DAT-239) ──────────────────────────────────────
+   Read-only surface: list + detail. Long statements wrap instead of widening
+   the layout, and opaque evidence references break rather than overflow. */
+.memory-filters {
+  display: grid;
+  gap: 9px;
+  margin: 18px 0 14px;
+}
+
+.memory-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.memory-filters .button {
+  justify-self: start;
+}
+
+.memory-list-summary {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow-wrap: anywhere;
+  overflow: hidden;
+}
+
+.memory-list-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.memory-list-end {
+  color: var(--faint);
+  font-size: 10px;
+  margin: 10px 4px 2px;
+  text-transform: uppercase;
+}
+
+.memory-statement {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.memory-detail-badges {
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 320px;
+}
+
+.role-chip.sensitivity-confidential {
+  border-color: rgba(var(--amber-rgb), 0.4);
+  color: var(--amber);
+}
+
+.role-chip.sensitivity-restricted {
+  border-color: rgba(var(--red-rgb), 0.4);
+  color: var(--red);
+}
+
+.memory-untrusted-note {
+  background: rgba(var(--panel-rgb), 0.6);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  margin: 0 0 18px;
+  padding: 10px 14px;
+}
+
+.memory-card {
+  margin-bottom: 18px;
+}
+
+.memory-detail-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.memory-preconditions {
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  font-size: var(--fs-body);
+  gap: 7px;
+  list-style: disc;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.memory-preconditions li {
+  overflow-wrap: anywhere;
+}
+
+.memory-facts {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.memory-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.memory-fact dd {
+  font-size: var(--fs-body);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.memory-fact-wide {
+  grid-column: 1 / -1;
+}
+
+.memory-hash {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.memory-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.memory-evidence-row {
+  align-items: baseline;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+
+.memory-evidence-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.evidence-type {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.memory-evidence-reference {
+  color: var(--text);
+  font-size: var(--fs-meta);
+  overflow-wrap: anywhere;
+}
+
+.memory-evidence-note {
+  border-top: 1px solid var(--line-soft);
+  color: var(--faint);
+  font-size: 10px;
+  margin: 14px 0 0;
+  padding-top: 12px;
+}
+
+.memory-welcome .detail-back {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .memory-detail-grid,
+  .memory-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .memory-detail-badges {
+    max-width: none;
+  }
+
+  .memory-welcome .detail-back {
+    display: inline-flex;
+  }
+}
+
+.memory-heading-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}

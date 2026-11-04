@@ -1,0 +1,48 @@
+{
+  "lineage": "openai_key|ent_acme|ws_payments",
+  "version": 2,
+  "kind": "correction",
+  "status": "activated",
+  "detector_id": "openai_key",
+  "scope": {
+    "enterprise_id": "ent_acme",
+    "workspace_id": "ws_payments"
+  },
+  "constraints": {
+    "min_shannon_entropy": 3.5,
+    "min_length": 20
+  },
+  "reason": "Short documentation examples were reported as false positives.",
+  "expires_at": "2027-02-01T00:00:00.000Z",
+  "review_at": "2027-01-01T00:00:00.000Z",
+  "regression_evidence": [
+    {
+      "test_ref": "corpus/openai-key/classic",
+      "description": "Classic sk- project key is still detected.",
+      "detector_id": "openai_key",
+      "result": "pass",
+      "at": "2026-11-04T07:30:00.000Z"
+    }
+  ],
+  "regression_binding": {
+    "rule_digest": "k1.rule.0f8a",
+    "corpus_digest": "k1.corpus.51be",
+    "at": "2026-11-04T07:30:00.000Z"
+  },
+  "author_id": "human_handler",
+  "proposed_at": "2026-11-04T07:30:00.000Z",
+  "review": {
+    "reviewer_id": "human_reviewer",
+    "approved": true,
+    "reason": "Evidence and bounded applicability verified.",
+    "at": "2026-11-04T07:40:00.000Z"
+  },
+  "activated_by": "human_admin",
+  "activated_at": "2026-11-04T07:45:00.000Z",
+  "superseded_at": null,
+  "rolled_back_by": null,
+  "rolled_back_at": null,
+  "rolls_back_version": null,
+  "expired_at": null,
+  "rejected_code": null
+}
