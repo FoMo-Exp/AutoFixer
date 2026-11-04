@@ -114,3 +114,68 @@ export {
 
 export { RuleCorrectionService } from "./rule-service.js";
 export type { RuleServiceDeps } from "./rule-service.js";
+
+export { RecoveryAuthorizationStore } from "./recovery-authorization.js";
+export type {
+  ConsumeResult,
+  RecoveryApproval,
+  RecoveryAuthorization,
+  RecoveryAuthorizationState,
+  RecoveryAuthorizationStatus,
+  RecoveryAuthorizationStoreOptions,
+  RecoveryDestination,
+  RecoveryDispatchOutcome,
+  RecoveryDispatchOutcomeKind,
+  RecoveryInvalidReason,
+  RecoveryReconciliation,
+  RecoveryReconciliationFinding,
+  RecoveryScope,
+} from "./recovery-authorization.js";
+
+export {
+  contextRevisionOf,
+  deepFreezeRequest,
+  fingerprintRequest,
+  keyedIdentifier,
+  rebuildCompleteRequest,
+  requestDigestOf,
+  requireCorrelationKey,
+  rulesRevisionOf,
+  scanPolicyRevisionOf,
+} from "./recovery-request.js";
+export type {
+  RebuiltRequest,
+  RecoveryRebuildInput,
+  RecoveryRequestSource,
+  RequestFingerprint,
+} from "./recovery-request.js";
+
+export {
+  createFileRecoveryAuditSink,
+  createMemoryRecoveryAuditSink,
+  scrubAuditRecord,
+  verifyRecoveryAuditLog,
+} from "./recovery-audit.js";
+export type {
+  RecoveryAuditApproval,
+  RecoveryAuditDestination,
+  RecoveryAuditEventType,
+  RecoveryAuditRecord,
+  RecoveryAuditSink,
+  RecoveryAuditSinkOptions,
+} from "./recovery-audit.js";
+
+export {
+  RECOVERY_APPROVAL_INVALID,
+  RecoveryApprovalInvalidError,
+  RecoveryDispatchError,
+  RecoveryEgressDeniedError,
+  RecoveryService,
+} from "./recovery.js";
+export type {
+  ApproveRecoveryInput,
+  RecoverInput,
+  RecoveryDispatchHandle,
+  RecoveryIdentityStatus,
+  RecoveryServiceDeps,
+} from "./recovery.js";

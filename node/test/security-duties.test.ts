@@ -128,6 +128,27 @@ const EXPECTED: Record<SecurityAction, Record<SecurityDuty, boolean>> = {
     independent_reviewer: false,
     enterprise_security_admin: true,
   },
+  // Recovery (DAT-212): rechecking is approved by the independent reviewer
+  // alone; withdrawing an approval is reviewer or administrator work; an
+  // unknown provider outcome is reconciled by a handler or administrator.
+  "recovery.approve": {
+    task_owner: false,
+    security_handler: false,
+    independent_reviewer: true,
+    enterprise_security_admin: false,
+  },
+  "recovery.revoke": {
+    task_owner: false,
+    security_handler: false,
+    independent_reviewer: true,
+    enterprise_security_admin: true,
+  },
+  "recovery.reconcile": {
+    task_owner: false,
+    security_handler: true,
+    independent_reviewer: false,
+    enterprise_security_admin: true,
+  },
   "role.grant": {
     task_owner: false,
     security_handler: false,
