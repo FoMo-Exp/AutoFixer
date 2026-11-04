@@ -704,15 +704,22 @@ describe("security audit trail", () => {
     await screen.findByRole("heading", { name: "Security audit trail" });
   }
 
-  it("requires a stated purpose and renders hash-chained events", async () => {
+  it("starts with an empty purpose and requires the operator to state one before reading", async () => {
     const client = makeClient();
     render(<SecurityWorkbench client={client} session={sessionFor("human_handler")} />);
     await openAudit();
 
+    const purpose = screen.getByLabelText(/Stated purpose/) as HTMLInputElement;
+    expect(purpose.value).toBe("");
+    await userEvent.click(screen.getByRole("button", { name: "Read trail" }));
+    expect(await screen.findByText(/A non-secret stated purpose is required/)).toBeTruthy();
+    expect(client.readSecurityAuditTrail).not.toHaveBeenCalled();
+
+    await userEvent.type(purpose, "Quarterly access review for payments");
     await userEvent.click(screen.getByRole("button", { name: "Read trail" }));
     await waitFor(() =>
       expect(client.readSecurityAuditTrail).toHaveBeenCalledWith(workspace.id, {
-        purpose: "operator security review of workspace activity",
+        purpose: "Quarterly access review for payments",
       }),
     );
     expect(await screen.findByText("Recovery dispatch attempted")).toBeTruthy();
@@ -721,20 +728,22 @@ describe("security audit trail", () => {
     expect(screen.getByText("recorded")).toBeTruthy();
   });
 
-  it("refuses to read without a purpose instead of guessing one", async () => {
+  it("refuses both read and export without an operator-supplied purpose", async () => {
+    const exportAudit = vi.spyOn(ForgePilotClient.prototype, "exportSecurityAuditTrail");
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_handler")} />);
+    render(<SecurityWorkbench client={client} session={sessionFor("human_admin", true)} />);
     await openAudit();
 
-    const purpose = screen.getByLabelText(/Stated purpose/);
-    await userEvent.clear(purpose);
     await userEvent.click(screen.getByRole("button", { name: "Read trail" }));
-
     expect(await screen.findByText(/A non-secret stated purpose is required/)).toBeTruthy();
     expect(client.readSecurityAuditTrail).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Export filtered slice" }));
+    expect(await screen.findByText(/A stated purpose is required for an export/)).toBeTruthy();
+    expect(exportAudit).not.toHaveBeenCalled();
   });
 
-  it("keeps exports administrator-only and reports the audited export", async () => {
+  it("keeps exports administrator-only and exports only the stated purpose", async () => {
     vi.spyOn(ForgePilotClient.prototype, "exportSecurityAuditTrail").mockResolvedValue({
       exported_at: new Date().toISOString(),
       enterprise_id: workspace.enterprise_id,
@@ -756,6 +765,7 @@ describe("security audit trail", () => {
     const admin = makeClient();
     render(<SecurityWorkbench client={admin} session={sessionFor("human_admin", true)} />);
     await openAudit();
+    await userEvent.type(screen.getByLabelText(/Stated purpose/), "Incident INC-42 export");
     const exportButton = screen.getByRole("button", { name: "Export filtered slice" });
     expect(exportButton).toHaveProperty("disabled", false);
     await userEvent.click(exportButton);
@@ -763,7 +773,7 @@ describe("security audit trail", () => {
     await waitFor(() =>
       expect(admin.exportSecurityAuditTrail).toHaveBeenCalledWith(
         workspace.id,
-        { purpose: "operator security review of workspace activity" },
+        { purpose: "Incident INC-42 export" },
         expect.stringContaining("forgepilot-ui-"),
       ),
     );
@@ -777,6 +787,7 @@ describe("security audit trail", () => {
     const client = makeClient();
     render(<SecurityWorkbench client={client} session={sessionFor("human_handler")} />);
     await openAudit();
+    await userEvent.type(screen.getByLabelText(/Stated purpose/), "Verify trail integrity");
     await userEvent.click(screen.getByRole("button", { name: "Read trail" }));
 
     expect(await screen.findByText(/The audit hash chain failed verification/)).toBeTruthy();

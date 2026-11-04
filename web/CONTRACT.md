@@ -370,6 +370,12 @@ Scope boundaries enforced by the surface:
   administrator (`SessionInfo.enterprise_roles`); the service still returns
   `SOD_DUTY_REQUIRED` for any other caller and the UI prints the envelope's
   safe guidance.
+- **Audit purpose is operator-entered.** The audit panel starts with an empty
+  purpose field and refuses both reads and exports until the operator types a
+  non-secret reason; the value is what the service records with
+  `audit.trail_read` / `audit.trail_exported`. Only the case-history read
+  triggered by opening a case uses the fixed programmatic purpose
+  `case disposition: read the append-only security history`.
 - **Recovery is one recheck, not a send control.** The approval card shows the
   bound destination, context, policy/rules/scan revisions, and expiry. Dispatch
   is disabled for consumed, invalidated, revoked, or expired approvals, and an

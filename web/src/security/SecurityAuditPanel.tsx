@@ -19,8 +19,6 @@ import {
 } from "./security-format";
 import type { SecurityErrorDescription } from "./security-format";
 
-const DEFAULT_PURPOSE = "operator security review of workspace activity";
-
 interface SecurityAuditPanelProps {
   client: ForgePilotClient;
   workspaceId: string;
@@ -35,8 +33,13 @@ interface AuditFilters {
   to: string;
 }
 
+/**
+ * Purpose starts empty on purpose: the operator must state why this access
+ * happens, and that statement is what the service records. A prefilled
+ * generic value would make every read look like a stated intent.
+ */
 const EMPTY_FILTERS: AuditFilters = {
-  purpose: DEFAULT_PURPOSE,
+  purpose: "",
   case_id: "",
   event_type: "all",
   from: "",
@@ -221,6 +224,7 @@ export function SecurityAuditPanel({
                 className="security-input"
                 value={filters.purpose}
                 maxLength={500}
+                placeholder="Why are you reading this trail?"
                 onChange={(event) =>
                   setFilters((current) => ({ ...current, purpose: event.target.value }))
                 }

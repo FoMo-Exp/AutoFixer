@@ -316,9 +316,11 @@ workspace-scoped through `GET /api/v1/workspaces` like Issues and Memory.
   and cannot be submitted by the client. The detail shows the constraint diff
   against the previous loaded revision, applicability, evidence, review
   record, and activation/rollback/supersession history.
-- **Audit.** Reads require a stated purpose, are themselves audited, and never
-  poll in the background. Exports are administrator-only. A failed hash-chain
-  verification stays a visible refusal rather than unverified data.
+- **Audit.** The purpose field starts empty; the operator must type a
+  specific, non-secret reason before a read or export, both of which refuse an
+  empty purpose. Reads are themselves audited and never poll in the
+  background. Exports are administrator-only. A failed hash-chain verification
+  stays a visible refusal rather than unverified data.
 
 `CONTRACT.md` carries the per-endpoint checklist and the DAT-213 baseline
 commit.
