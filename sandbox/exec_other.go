@@ -20,3 +20,7 @@ func toolPath() string {
 func configureProcess(cmd *exec.Cmd) {
 	cmd.WaitDelay = 2 * time.Second
 }
+
+// signalBreach: no POSIX signals and no kernel CPU cap on this platform, so
+// no termination is ever the kernel enforcing a resource limit.
+func signalBreach(cmd *exec.Cmd) string { return "" }

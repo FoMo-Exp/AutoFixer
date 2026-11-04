@@ -156,3 +156,65 @@ func TestRecordExecutionOutcomeAuditFailureRevokesDispatch(t *testing.T) {
 		t.Errorf("VerifyChain: %v", err)
 	}
 }
+
+func TestEvaluateAndRecordActionRecordsEvidenceArguments(t *testing.T) {
+	store := NewEventStore()
+	run, _ := runningRun(t, store)
+
+	// Structured calls check grant-visible class tokens but record the
+	// redacted value forms in the evidence chain, so the chain shows what
+	// was requested without granting free-form values by enumeration.
+	req := ActionRequest{
+		Tool:              "go-test",
+		Arguments:         []string{"./harness/"},
+		EvidenceArguments: []string{"harness/state.go", "password=hunter2"},
+		RepositoryURL:     run.RepositoryURL,
+		BaseSHA:           run.BaseSHA,
+	}
+	if d := run.EvaluateAndRecordAction(req); !d.Allowed {
+		t.Fatalf("dispatch denied: %+v", d)
+	}
+	events := store.Events(run.RunID)
+	dispatch := events[len(events)-1]
+	if dispatch.RequestedTool == nil {
+		t.Fatal("dispatch event has no requested_tool")
+	}
+	got := dispatch.RequestedTool.Arguments
+	if len(got) != 2 || got[0] != "harness/state.go" || got[1] != "password=[REDACTED]" {
+		t.Errorf("requested_tool.arguments = %q, want redacted evidence values", got)
+	}
+}
+
+func TestRecordExecutionOutcomeRecordsActualArguments(t *testing.T) {
+	store := NewEventStore()
+	run, _ := runningRun(t, store)
+
+	req := ActionRequest{
+		Tool:              "go-test",
+		Arguments:         []string{"./harness/"},
+		EvidenceArguments: []string{"harness/policy_test.go"},
+		RepositoryURL:     run.RepositoryURL,
+		BaseSHA:           run.BaseSHA,
+	}
+	if d := run.EvaluateAndRecordAction(req); !d.Allowed {
+		t.Fatalf("dispatch denied: %+v", d)
+	}
+	status := 0
+	err := run.RecordExecutionOutcome(req, ExecutionOutcome{
+		ExitStatus:      &status,
+		OutputDigest:    &Digest{Algorithm: DigestAlgorithmSHA256, Value: "abc123"},
+		ActualArguments: []string{"test", "./harness"},
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionOutcome: %v", err)
+	}
+	events := store.Events(run.RunID)
+	completion := events[len(events)-1]
+	if completion.ActualTool == nil {
+		t.Fatal("completion event has no actual_tool")
+	}
+	got := completion.ActualTool.Arguments
+	if len(got) != 2 || got[0] != "test" || got[1] != "./harness" {
+		t.Errorf("actual_tool.arguments = %q, want the profile-built argv", got)
+	}
+}

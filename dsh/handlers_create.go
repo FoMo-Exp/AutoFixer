@@ -287,6 +287,10 @@ func normalizePathHint(hint string) string {
 			trimmed = strings.TrimSuffix(trimmed, suffix)
 		}
 	}
+	// "." is the repository-wide root a suite or dependency run needs.
+	if trimmed == "." {
+		return "."
+	}
 	if trimmed == "" || strings.Contains(trimmed, "*") || strings.Contains(trimmed, "\\") {
 		return ""
 	}
@@ -298,14 +302,19 @@ func normalizePathHint(hint string) string {
 
 // grantParams builds the capability grant from the registered tool surface
 // and the requested scope. Unregistered capabilities never enter the grant,
-// so asking for a shell or an unknown tool grants nothing.
+// so asking for a shell or an unknown tool grants nothing. The patch scope
+// bit is granted only to runs that explicitly requested the edit capability.
 func (s *Server) grantParams(rec *runRecord, issuedAt time.Time) harness.GrantParams {
 	wall := rec.scope.MaxWallClockSeconds
 	permitted := []harness.PermittedTool{}
+	mayCreatePatch := false
 	for _, capability := range rec.scope.ToolCapabilities {
 		spec, ok := s.tools.get(capability)
 		if !ok {
 			continue
+		}
+		if spec.Kind == ToolEdit {
+			mayCreatePatch = true
 		}
 		permitted = append(permitted, harness.PermittedTool{
 			Identity:         spec.ID,
@@ -326,7 +335,7 @@ func (s *Server) grantParams(rec *runRecord, issuedAt time.Time) harness.GrantPa
 		NetworkDestinations:    []string{},
 		MaxWallClockSeconds:    wall,
 		ResourceLimits:         harness.ResourceLimits{MaxMemoryMB: 512, MaxCPUSeconds: wall},
-		MayCreatePatch:         false,
+		MayCreatePatch:         mayCreatePatch,
 		MayCreateOrUpdatePR:    false,
 	}
 }
