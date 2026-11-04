@@ -170,6 +170,11 @@ describe("sensitive diagnostics behind a trusted authorizer (DAT-226)", () => {
         dsh: {} as DshClient,
         store: new TaskStore(),
         gateway: {} as ModelGateway,
+        workspaceBindings: {
+          resolve: () => {
+            throw new Error("workspace bindings are not used by this test");
+          },
+        },
         ...(diagnosticsPolicy === undefined ? {} : { diagnosticsPolicy }),
       });
     // Fail closed by default: the policy runs before any lookup.

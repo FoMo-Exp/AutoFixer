@@ -18,6 +18,7 @@ function makeRecord(id = "tsk_unit"): TaskRecord {
   return createTaskRecord({
     id,
     workspaceId: "wsp_test",
+    enterpriseId: "ent_test",
     repository: {
       id: "github:Luthiel/AutoFixer",
       display_name: "Luthiel/AutoFixer",
@@ -248,11 +249,29 @@ describe("durable task projection (M3 persistence)", () => {
     expect(() => new TaskStore({ persistencePath: stateFile })).toThrow(/no workspace ownership/);
   });
 
+  test("schema-2 records gain the deployment's legacy enterprise owner", () => {
+    const dir = tempDir();
+    const stateFile = path.join(dir, "task-state.json");
+    const base = makeRecord("tsk_pre_enterprise");
+    const { enterpriseId: _enterpriseId, subscribers: _subscribers, ...legacy } = base;
+    expect(legacy).not.toHaveProperty("enterpriseId");
+    writeFileSync(
+      stateFile,
+      JSON.stringify({ schema_version: 2, tasks: [legacy], idempotency: {} }),
+      "utf8",
+    );
+    const store = new TaskStore({ persistencePath: stateFile, legacyEnterpriseId: "ent_legacy" });
+    expect(store.get("tsk_pre_enterprise")?.enterpriseId).toBe("ent_legacy");
+
+    // Without a truthful owner the migration refuses instead of inventing one.
+    expect(() => new TaskStore({ persistencePath: stateFile })).toThrow(/no enterprise ownership/);
+  });
+
   test("a future schema version refuses to load instead of guessing", () => {
     const dir = tempDir();
     const stateFile = path.join(dir, "task-state.json");
     writeFileSync(stateFile, JSON.stringify({ schema_version: 99, tasks: [] }), "utf8");
-    expect(() => new TaskStore({ persistencePath: stateFile })).toThrow(/newer than 2/);
+    expect(() => new TaskStore({ persistencePath: stateFile })).toThrow(/newer than 3/);
   });
 
   test("a corrupt projection fails startup rather than dropping history", () => {

@@ -11,6 +11,10 @@ import { createRequestAuthority } from "./api/request-authority.js";
 import type { RequestAuthority } from "./api/request-authority.js";
 import { TaskService } from "./api/task-service.js";
 import { TaskStore } from "./api/task-store.js";
+import {
+  createConfiguredWorkspaceRunBindingResolver,
+  createWorkspaceRunBindingResolver,
+} from "./api/workspace-bindings.js";
 import type { OrchestratorConfig } from "./config.js";
 import { configFromEnv } from "./config.js";
 import type { ControlPlaneDb } from "./control-plane/index.js";
@@ -125,6 +129,9 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     // Pre-DAT-244 projections had no workspace ownership; one deployment
     // served exactly one workspace, so that workspace is their owner.
     legacyWorkspaceId: config.workspaceId,
+    // Pre-DAT-245 projections had no enterprise ownership; one deployment
+    // served exactly one enterprise, so that enterprise is their owner.
+    legacyEnterpriseId: config.enterpriseId,
   });
   const dsh = new DshClient({
     socketPath: config.dshSocketPath,
@@ -132,13 +139,6 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   });
   const model = options.model ?? resolveConfiguredModel(config);
   const gateway = options.gateway ?? deploymentGateway(config);
-  const service = new TaskService({
-    config,
-    dsh,
-    store,
-    gateway,
-    ...(model ? { model } : {}),
-  });
   // Fresh per-process token: possessing it is what authorizes API callers,
   // approvals included; the configured dsh identity alone is not proof of a
   // human decision.
@@ -148,6 +148,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let auth: AuthService | undefined;
   let controlPlane: ControlPlaneDb | undefined;
   let providerAuthority: RequestAuthority | undefined;
+  let workspaceBindings = createConfiguredWorkspaceRunBindingResolver(config);
   if (config.oauthClientsFile !== undefined) {
     controlPlane = openControlPlaneDb({ path: config.controlPlaneFile ?? ":memory:" });
     const repos = createRepositories(controlPlane);
@@ -182,7 +183,22 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       enterpriseId: config.enterpriseId,
       workspaceId: config.workspaceId,
     });
+    // The workspace-scoped task family resolves each locator against the
+    // authenticated control plane, not against process config (DAT-245).
+    workspaceBindings = createWorkspaceRunBindingResolver({
+      config,
+      workspaces: repos.workspaces,
+      providerInstances: repos.providerInstances,
+    });
   }
+  const service = new TaskService({
+    config,
+    dsh,
+    store,
+    gateway,
+    workspaceBindings,
+    ...(model ? { model } : {}),
+  });
   const server = createApiServer({
     service,
     apiToken,

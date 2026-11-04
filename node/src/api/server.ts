@@ -144,9 +144,11 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
   const taskId = tail[0];
 
   if (tail.length === 0) {
-    // POST /api/v1/tasks — legacy local-operator create only. Creating in an
-    // arbitrary workspace is DAT-245, so the scoped family has no create.
-    if (req.method === "POST" && !ctx.scoped) {
+    // POST /api/v1/tasks (legacy local-operator seam) and
+    // POST /api/v1/workspaces/{workspace_id}/tasks (DAT-245) share one
+    // handler: the latter passes the path workspace as the locator, and the
+    // service resolves the workspace's own repository/base/gateway binding.
+    if (req.method === "POST") {
       const body = await readJsonBody(req);
       const idempotencyKey = req.headers["idempotency-key"];
       // The contract caps the key at 256 characters; enforce it here so the
@@ -171,9 +173,14 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
             : {}),
           acceptance_criteria: optionalStringArray(body, "acceptance_criteria"),
         },
-        typeof idempotencyKey === "string" && idempotencyKey.length > 0 ? { idempotencyKey } : {},
+        {
+          ...(typeof idempotencyKey === "string" && idempotencyKey.length > 0
+            ? { idempotencyKey }
+            : {}),
+          ...(ctx.scoped ? { workspaceId } : {}),
+        },
       );
-      writeJson(res, 201, created);
+      writeJson(res, 201, presentTask(ctx, created));
       return;
     }
     if (req.method === "GET") {

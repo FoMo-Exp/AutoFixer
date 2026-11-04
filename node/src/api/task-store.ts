@@ -204,6 +204,12 @@ export interface TaskRecord {
   id: string;
   /** Durable workspace ownership; never re-derived or client-supplied. */
   workspaceId: string;
+  /**
+   * Durable enterprise ownership. Gateway policy/credential attribution and
+   * every scoped read derive from these two ids rather than process config
+   * (DAT-245); a restart must not rebind a task to another scope.
+   */
+  enterpriseId: string;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -249,6 +255,7 @@ export function newTaskId(): string {
 export function createTaskRecord(input: {
   id: string;
   workspaceId: string;
+  enterpriseId: string;
   repository: TaskResource["repository"];
   summary: string;
   sourceReference: string | null;
@@ -258,6 +265,7 @@ export function createTaskRecord(input: {
   return {
     id: input.id,
     workspaceId: input.workspaceId,
+    enterpriseId: input.enterpriseId,
     version: 1,
     createdAt: now,
     updatedAt: now,
@@ -345,6 +353,12 @@ export class TaskStore {
    * deployment's configured workspace is the only truthful owner.
    */
   private readonly legacyWorkspaceId: string | undefined;
+  /**
+   * Enterprise assigned to records persisted before tasks carried enterprise
+   * ownership (schema < 3). Deployments served one enterprise then, so the
+   * deployment's configured enterprise is the only truthful owner.
+   */
+  private readonly legacyEnterpriseId: string | undefined;
   private readonly idempotency = new Map<string, CreateIdempotencyRecord>();
   private persistTimer: NodeJS.Timeout | null = null;
   private dirty = false;
@@ -352,6 +366,7 @@ export class TaskStore {
   constructor(options: TaskStoreOptions = {}) {
     this.persistencePath = options.persistencePath;
     this.legacyWorkspaceId = options.legacyWorkspaceId;
+    this.legacyEnterpriseId = options.legacyEnterpriseId;
     this.load();
   }
 
@@ -451,7 +466,7 @@ export class TaskStore {
     const raw = JSON.parse(fs.readFileSync(this.persistencePath, "utf8")) as unknown;
     const migrated = migratePersistedState(raw);
     for (const serialized of migrated.tasks) {
-      const record = deserializeTask(serialized, this.legacyWorkspaceId);
+      const record = deserializeTask(serialized, this.legacyWorkspaceId, this.legacyEnterpriseId);
       this.tasks.set(record.id, record);
     }
     for (const [key, entry] of Object.entries(migrated.idempotency)) {
@@ -502,6 +517,8 @@ export interface TaskStoreOptions {
   persistencePath?: string;
   /** Owner assigned to pre-schema-2 records that predate workspace ownership. */
   legacyWorkspaceId?: string;
+  /** Enterprise assigned to pre-schema-3 records that predate enterprise ownership. */
+  legacyEnterpriseId?: string;
 }
 
 interface CreateIdempotencyRecord {
@@ -518,7 +535,7 @@ interface PersistedState {
   idempotency: Record<string, CreateIdempotencyRecord>;
 }
 
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 3;
 
 /** Version-0 was the unversioned M2 shape; migrate it before deserializing. */
 function migratePersistedState(raw: unknown): PersistedState {
@@ -546,6 +563,7 @@ function serializeTask(record: TaskRecord): PersistedTaskRecord {
 function deserializeTask(
   serialized: PersistedTaskRecord,
   legacyWorkspaceId: string | undefined,
+  legacyEnterpriseId: string | undefined,
 ): TaskRecord {
   const record = serialized as TaskRecord;
   // Schema < 2 predates workspace ownership. Assigning the deployment's
@@ -556,6 +574,16 @@ function deserializeTask(
       throw new Error("task projection has no workspace ownership and no legacy workspace is set");
     }
     record.workspaceId = legacyWorkspaceId;
+  }
+  // Schema < 3 predates enterprise ownership. Same rule: a pre-DAT-245
+  // deployment served one enterprise, and the configured one is its owner.
+  if (record.enterpriseId === undefined || record.enterpriseId.length === 0) {
+    if (legacyEnterpriseId === undefined || legacyEnterpriseId.length === 0) {
+      throw new Error(
+        "task projection has no enterprise ownership and no legacy enterprise is set",
+      );
+    }
+    record.enterpriseId = legacyEnterpriseId;
   }
   record.subscribers = new Set();
   record.headSha ??= null;

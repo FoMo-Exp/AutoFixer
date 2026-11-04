@@ -201,11 +201,15 @@ export interface paths {
         };
         /**
          * List tasks owned by one workspace
-         * @description Cursor/status semantics are identical to `GET /api/v1/tasks`, but only tasks whose durable `workspace_id` is this workspace are visible; a foreign task id is never a valid cursor. Creating a task in an arbitrary workspace is DAT-245, not this operation.
+         * @description Cursor/status semantics are identical to `GET /api/v1/tasks`, but only tasks whose durable `workspace_id` is this workspace are visible; a foreign task id is never a valid cursor.
          */
         get: operations["listWorkspaceTasks"];
         put?: never;
-        post?: never;
+        /**
+         * Create a task in one workspace
+         * @description Creates the task and its dsh run inside the path workspace. The workspace's own binding supplies the repository, base revision, and model-gateway enterprise/workspace identity; the deployment's configured repository is never a fallback. `repository_id` must equal the workspace's repository binding (`400 REPOSITORY_NOT_IN_WORKSPACE`) and `base_ref` must equal that binding's pinned base revision (`400 BASE_REF_NOT_SUPPORTED`). Unknown/archived workspaces and non-members are one `404 NOT_FOUND`; viewers are `403 FORBIDDEN`. A workspace whose repository has no pinned base revision in this deployment is `409 REPOSITORY_BINDING_UNAVAILABLE`, and a provider instance that is no longer registered is `409 PROVIDER_INSTANCE_NOT_APPROVED`; both refuse before any dsh dispatch. Each workspace has its own idempotency-key namespace.
+         */
+        post: operations["createWorkspaceTask"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2104,6 +2108,108 @@ export interface operations {
             };
             /** @description NOT_FOUND — no live membership for this workspace, or a cursor from another workspace */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    createWorkspaceTask: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe create scoped to this workspace. Repeating the request with the same key and payload returns the original task instead of minting a second run; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @example github:Luthiel/AutoFixer */
+                    repository_id: string;
+                    /** @example main */
+                    base_ref: string;
+                    summary: string;
+                    source_reference?: string;
+                    acceptance_criteria?: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description Task created in this workspace */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Task"];
+                };
+            };
+            /** @description INVALID_REQUEST, REPOSITORY_NOT_IN_WORKSPACE, or BASE_REF_NOT_SUPPORTED */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — viewer, or repository authority denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — no live membership for this workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description IDEMPOTENCY_CONFLICT, REPOSITORY_BINDING_UNAVAILABLE, or PROVIDER_INSTANCE_NOT_APPROVED */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Prohibited work was rejected by dsh (details.task_id names the rejected task) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description PI_UNAVAILABLE or DSH_UNAVAILABLE */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

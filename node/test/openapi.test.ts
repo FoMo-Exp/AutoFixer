@@ -59,6 +59,7 @@ const AUTH_ENDPOINTS: Array<[method: string, path: string]> = [
 
 /** Workspace-scoped task family (DAT-244). */
 const WORKSPACE_TASK_ENDPOINTS: Array<[method: string, path: string]> = [
+  ["post", "/api/v1/workspaces/{workspace_id}/tasks"],
   ["get", "/api/v1/workspaces/{workspace_id}/tasks"],
   ["get", "/api/v1/workspaces/{workspace_id}/tasks/{task_id}"],
   ["get", "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/runs"],

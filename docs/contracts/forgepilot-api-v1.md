@@ -216,6 +216,7 @@ run summaries for that task; terminal grants are never reused.
 | `GET /api/v1/tasks/{task_id}/timeline` | none | `200 {items: TimelineEvent[]}` |
 | `GET /api/v1/tasks/{task_id}/artifacts/{artifact_id}` | none | `200 redacted artifact` |
 | `GET /api/v1/tasks/{task_id}/stream` | `Last-Event-ID` optional | `200 text/event-stream` |
+| `POST /api/v1/workspaces/{workspace_id}/tasks` | `repository_id`, `base_ref`, `summary`, `source_reference`, `acceptance_criteria[]`; optional `Idempotency-Key` header (workspace-scoped namespace) | `201 Task` bound to the workspace's repository and gateway identity |
 | `GET /api/v1/workspaces/{workspace_id}/tasks?cursor=&status=` | none | `200 {items: Task[], next_cursor}` confined to that workspace |
 | `GET /api/v1/workspaces/{workspace_id}/tasks/{task_id}` | none | `200 Task` |
 | `GET /api/v1/workspaces/{workspace_id}/tasks/{task_id}/runs` | none | `200 {items: redacted RunSummary[]}` |
@@ -281,9 +282,30 @@ membership in that configured workspace. It is not an enterprise switcher
 path, and no client-supplied workspace id, header, or body field ever becomes
 an authorization input.
 
-Creating a task in an arbitrary workspace (and binding that run to the
-workspace's repository and gateway identity) is DAT-245; this contract only
-defines reads and mutations for tasks that already have an owner.
+### Creating a task in a workspace
+
+`POST /api/v1/workspaces/{workspace_id}/tasks` creates the task and its dsh
+run inside the path workspace. The workspace's binding is authority for the
+run's repository, base revision, and model-gateway enterprise/workspace
+identity; the deployment's configured repository is never a fallback.
+
+- `repository_id` must equal the workspace's repository binding; otherwise
+  `400 REPOSITORY_NOT_IN_WORKSPACE`.
+- `base_ref` must equal that binding's pinned base revision; otherwise
+  `400 BASE_REF_NOT_SUPPORTED`.
+- No live membership, unknown, archived, and cross-enterprise workspaces are
+  one indistinguishable `404 NOT_FOUND`; a viewer is `403 FORBIDDEN`.
+- A workspace whose repository has no pinned base revision in this deployment
+  is `409 REPOSITORY_BINDING_UNAVAILABLE`; a provider instance that is no
+  longer registered is `409 PROVIDER_INSTANCE_NOT_APPROVED`. Both refuse with
+  zero dsh dispatch.
+- `Idempotency-Key` is namespaced per workspace: the same key in two
+  workspaces names two independent creates; within one workspace, a repeated
+  key with a different payload is `409 IDEMPOTENCY_CONFLICT`.
+
+```json
+{"repository_id":"github:acme/payments","base_ref":"main","summary":"Fix the flaky retry","acceptance_criteria":["retry test is green"]}
+```
 
 Archive and recover apply only to cancelled tasks and return `409` for other
 statuses. These operations move the existing task between workspace views;
