@@ -207,7 +207,7 @@ run summaries for that task; terminal grants are never reused.
 | `POST /api/v1/tasks` | `repository_id`, `base_ref`, `summary`, `source_reference`, `acceptance_criteria[]`; optional `Idempotency-Key` header | `201 Task` |
 | `GET /api/v1/tasks?cursor=&status=` | none | `200 {items: Task[], next_cursor}` |
 | `GET /api/v1/tasks/{task_id}` | none | `200 Task` |
-| `GET /api/v1/tasks/{task_id}/runs` | none | `200 {items: redacted RunSummary[]}` ordered by creation time |
+| `GET /api/v1/tasks/{task_id}/runs` | none | `200 {items: redacted RunSummary[]}` ordered by creation time; optional `actions_completed` / `safety_events` / `updated_at` are run-attributed and absent when they cannot be |
 | `POST /api/v1/tasks/{task_id}/messages` | `{mode:"steer"|"follow_up",content:"..."}` | `202 {task_id, queued:true}` |
 | `POST /api/v1/tasks/{task_id}/approvals` | `{decision:"approve"|"reject",scope_digest:"sha256:..."}` | `200 Task` |
 | `POST /api/v1/tasks/{task_id}/cancel` | optional reason | `202 Task` |
@@ -390,8 +390,10 @@ takes effect in the same call: active canaries roll back, new runs pin the
 baseline policy, and RSI actions are refused. Promotions consume a weekly change
 budget, and replay consumes a weekly reflection-token budget.
 
-Every run pins the exact memory version and policy identity it used at run
-creation (surfaced as the Task `memory` block), so a bad promotion is
+Every pinned run's canary evidence comes from that run's own `RunSummary`
+entry; task-level aggregates are used only for single-run tasks. Every run pins
+the exact memory version and policy identity it used at run creation (surfaced
+as the Task `memory` block), so a bad promotion is
 reproducible after rollback and a canary run's candidate overlay is visible. Memory remains untrusted data, and
 `dsh` remains the only tool gate: nothing on this surface can grant a
 capability, approve a change, or alter an approval rule.

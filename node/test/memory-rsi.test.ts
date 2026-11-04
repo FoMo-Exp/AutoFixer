@@ -484,7 +484,7 @@ describe("canary, promotion, rollback", () => {
     evaluate(proposal);
     approveAsOwner(proposal);
     rsi.startCanary(scope, proposal.proposal_id, ACTOR);
-    expect(() => observe(proposal)).toThrow(/no terminal runs/);
+    expect(() => observe(proposal)).toThrow(/no runs are pinned/);
     expect(
       store.listObservations(
         scope,

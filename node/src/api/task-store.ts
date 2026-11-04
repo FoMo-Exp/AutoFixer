@@ -163,6 +163,15 @@ export interface RunSummary {
   run_id: string;
   state: DshState;
   created_at: string;
+  /**
+   * Run-level evidence, populated only by observations made while this run was
+   * active. Undefined means "not attributed" and callers must fail closed:
+   * a multi-run task never lends its task-level aggregates to one run.
+   */
+  actions_completed?: number;
+  safety_events?: number;
+  /** Last time this run's own evidence changed; never another run's clock. */
+  updated_at?: string;
 }
 
 /**
@@ -406,6 +415,31 @@ export class TaskStore {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Attribute one observed action or safety denial to the run that produced it.
+   * Evidence is written only to that run's summary; an update of another run
+   * can never overwrite it (DAT-238 run-level canary evidence).
+   */
+  recordRunEvidence(
+    record: TaskRecord,
+    runId: string,
+    evidence: { action?: boolean; safety_event?: boolean },
+  ): void {
+    let entry = record.runs.find((run) => run.run_id === runId);
+    if (entry === undefined) {
+      entry = { run_id: runId, state: "running", created_at: new Date().toISOString() };
+      record.runs.push(entry);
+    }
+    if (evidence.action) {
+      entry.actions_completed = (entry.actions_completed ?? 0) + 1;
+    }
+    if (evidence.safety_event) {
+      entry.safety_events = (entry.safety_events ?? 0) + 1;
+    }
+    entry.updated_at = new Date().toISOString();
+    this.schedulePersist();
   }
 
   put(record: TaskRecord): void {

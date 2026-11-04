@@ -822,14 +822,16 @@ class RsiGovernanceService implements RsiService {
         const outcome = this.deps.outcomes.outcomeFor(pin.run_id);
         return outcome !== null && outcome.terminal ? [outcome] : [];
       });
-    const candidate = collect(this.store.listRolloutPins(scope, rollout.rollout_id));
-    const baseline = collect(
-      this.store.listBaselinePinsSince(scope, rollout.started_at, rollout.baseline_policy_version),
+    const candidatePins = this.store.listRolloutPins(scope, rollout.rollout_id);
+    const baselinePins = this.store.listBaselinePinsSince(
+      scope,
+      rollout.started_at,
+      rollout.baseline_policy_version,
     );
-    if (candidate.length === 0 && baseline.length === 0) {
-      throw new ConflictError(
-        "no terminal runs are pinned to this canary or its baseline window yet",
-      );
+    const candidate = collect(candidatePins);
+    const baseline = collect(baselinePins);
+    if (candidatePins.length === 0 && baselinePins.length === 0) {
+      throw new ConflictError("no runs are pinned to this canary or its baseline window yet");
     }
     const candidateSuccesses = candidate.filter((outcome) => outcome.success).length;
     const baselineSuccesses = baseline.filter((outcome) => outcome.success).length;

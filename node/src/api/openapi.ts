@@ -535,11 +535,30 @@ const taskEventSchema: JsonObject = {
 
 const runSummarySchema: JsonObject = {
   type: "object",
+  description:
+    "One remediation run on a task. The optional evidence fields are written " +
+    "only while that run was active; absent means the evidence cannot be " +
+    "attributed to this run (DAT-238), never that it is zero.",
   required: ["run_id", "state", "created_at"],
   properties: {
     run_id: { type: "string" },
     state: { type: "string", enum: [...DSH_STATES] },
     created_at: { type: "string", format: "date-time" },
+    actions_completed: {
+      type: "integer",
+      minimum: 0,
+      description: "Executed tool actions attributed to this run.",
+    },
+    safety_events: {
+      type: "integer",
+      minimum: 0,
+      description: "Prohibited/policy-denied tool intents attributed to this run.",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+      description: "Last time this run's own evidence changed.",
+    },
   },
 };
 

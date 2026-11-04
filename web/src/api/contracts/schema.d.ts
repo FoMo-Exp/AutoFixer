@@ -1729,12 +1729,22 @@ export interface components {
             /** @enum {string} */
             outcome: "ready_for_review" | "needs_approval" | "blocked" | "failed" | "completed";
         };
+        /** @description One remediation run on a task. The optional evidence fields are written only while that run was active; absent means the evidence cannot be attributed to this run (DAT-238), never that it is zero. */
         RunSummary: {
             run_id: string;
             /** @enum {string} */
             state: "requested" | "approved" | "running" | "awaiting_review" | "approved_for_merge" | "stopped" | "timed_out" | "expired" | "rejected" | "cancelled" | "merged";
             /** Format: date-time */
             created_at: string;
+            /** @description Executed tool actions attributed to this run. */
+            actions_completed?: number;
+            /** @description Prohibited/policy-denied tool intents attributed to this run. */
+            safety_events?: number;
+            /**
+             * Format: date-time
+             * @description Last time this run's own evidence changed.
+             */
+            updated_at?: string;
         };
         ArtifactMetadata: {
             /**

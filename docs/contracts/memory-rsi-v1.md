@@ -102,7 +102,12 @@ never raise these.
 - An observation is computed server-side from the runs pinned into the rollout
   (candidate arm) and baseline pins created since it started (control arm),
   joined with their terminal task outcomes; the control arm counts only
-  baseline pins at the rollout's baseline policy version. Pending runs are
+  baseline pins at the rollout's baseline policy version. Each pin's terminal
+  state, success, rework, actions, and safety events are read from that run's
+  own `RunSummary` entry, never from the task's aggregate status. Task-level
+  aggregates are used only when the task has exactly one run; a multi-run task
+  without run-level evidence yields no outcome, so the sample is excluded and
+  the observation stays `inconclusive` (missing is never zero). Pending runs are
   excluded, and any request body is refused — an owner cannot submit a passing
   sample. The
   evidence reference is the server-generated pin set.
