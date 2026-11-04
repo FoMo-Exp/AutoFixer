@@ -85,6 +85,12 @@ function profileFromPayload(payload: unknown): ProviderProfile {
   };
 }
 
+/** github.com fronts its API on a separate host; GitHub Enterprise serves
+ * the same API under the instance origin. */
+function githubApiBase(origin: string): string {
+  return origin === "https://github.com" ? "https://api.github.com" : `${origin}/api/v3`;
+}
+
 const githubAdapter: ProviderAdapter = {
   authorizeUrl(params) {
     const url = new URL(`${params.origin}/login/oauth/authorize`);
@@ -100,11 +106,7 @@ const githubAdapter: ProviderAdapter = {
     return `${origin}/login/oauth/access_token`;
   },
   userUrl(origin) {
-    // github.com fronts its API on a separate host; GitHub Enterprise serves
-    // the same API under the instance origin.
-    return origin === "https://github.com"
-      ? "https://api.github.com/user"
-      : `${origin}/api/v3/user`;
+    return `${githubApiBase(origin)}/user`;
   },
   profileFromUser: profileFromPayload,
 };
