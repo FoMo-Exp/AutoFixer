@@ -154,7 +154,7 @@ Scope boundaries:
 
 ## Bounded RSI surface (DAT-240)
 
-This surface targets `main` at `8d0ba0cf82b7a00332401ada7669ba1fc3a3165a`
+This surface targets `main` at `f6b0f15e97dbbaecd9d793321e7fae1c007644e7`
 (DAT-249; OpenAPI `0.9.0`). The RSI paths were merged by DAT-238 at
 `32e2afa`, and the fixtures are HTTP captures of that running surface under
 `docs/fixtures/rsi-api-v1/`. Every field rendered comes from those captures or
