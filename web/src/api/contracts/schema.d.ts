@@ -1788,6 +1788,13 @@ export interface components {
             validation: {
                 config_digest: string;
                 environment: string;
+                /** @description Validation identities of the run's approved test plan. The set must equal the registered test-policy checks the plan is bound to; every check needs a passing attempt backed by a retained execution artifact whose digest is the attempt's `output_digest`, produced from this exact revision. A failed, unexecuted, unplanned, or digest-mismatched check stops the run instead of producing a review card. */
+                required_checks?: string[];
+                /** @description The registered test-policy version this evidence is bound to. Required checks, config digest, and environment are policy content approved by a configuration administrator, never supplied by the run or the candidate. */
+                policy_id?: string;
+                policy_version?: string;
+                /** @description Digest of the exact policy content, so an approval binds to that policy version even after a newer version becomes current. */
+                policy_digest?: string;
                 results: components["schemas"]["ValidationResult"][];
             };
             risk: components["schemas"]["ChangeRisk"];
@@ -1797,6 +1804,16 @@ export interface components {
             audit_refs: string[];
             /** Format: date-time */
             created_at: string;
+            /**
+             * Format: date-time
+             * @description When the candidate stopped being valid for delivery (base advancement, test-evidence, target, policy, or authority change). An invalidated candidate never authorizes delivery; a new revision needs a new run and a new candidate. Absent on records that predate this field and never invalidated.
+             */
+            invalidated_at?: string | null;
+            /**
+             * @description Why the candidate was invalidated; always paired with `invalidated_at`.
+             * @enum {string|null}
+             */
+            invalidated_reason?: "content_changed" | "test_evidence_changed" | "base_advanced" | "target_changed" | "policy_changed" | "authority_changed" | null;
         };
         /** @description Everything one approval is bound to (ADR-0007). Content, required test evidence, base advancement, target, approval policy, expiry, or relevant authority changes invalidate the approval; refresh/rebase and rerun tests, then request a new card. Never rebase after approval and push under the old one. */
         ApprovalBinding: {

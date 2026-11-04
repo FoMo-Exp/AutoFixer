@@ -1,9 +1,17 @@
 import type { AuditCommand } from "./audit.js";
-import { canonicalJson } from "./audit.js";
+import { canonicalJson, digestOf } from "./audit.js";
+import { APPROVAL_INVALIDATION_REASONS } from "./contract.js";
+import type { ApprovalInvalidationReason } from "./contract.js";
 import { CollabError } from "./errors.js";
+import { resolveRevisionEvidence, resolveValidationEvidence } from "./evidence.js";
 import type {
   ArtifactRef,
+  CandidateDiff,
+  CandidateRecord,
+  CandidateValidation,
+  CandidateValidationResult,
   CapabilityGrant,
+  ChangeRisk,
   CollabState,
   Disposition,
   GrantTool,
@@ -11,16 +19,19 @@ import type {
   IssueRecord,
   LeaseRecord,
   RepositoryRef,
+  RiskClass,
   Role,
   RunLimits,
   RunRecord,
   RunScope,
   TaskRecord,
   TaskState,
+  TestPlanRecord,
+  TestPolicyRecord,
   WorkspaceScope,
   WorktreeRef,
 } from "./types.js";
-import { grantStateAt } from "./types.js";
+import { RISK_CLASSES, grantStateAt, testPolicyScopeKey } from "./types.js";
 import type { DshState } from "../dsh/types.js";
 import {
   canTransitionProduct,
@@ -283,6 +294,227 @@ function parseArtifact(value: unknown, field: string): ArtifactRef {
     base_sha: str(source["base_sha"], `${field}.base_sha`),
     head_sha: strOrNull(source["head_sha"], `${field}.head_sha`),
   };
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+function uniqueStrings(values: string[], field: string): string[] {
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) {
+      throw new CollabError("INVALID_INPUT", `${field} contains a duplicate value`, {
+        field,
+        value,
+      });
+    }
+    seen.add(value);
+  }
+  return values;
+}
+
+function parseDigestRef(value: unknown, field: string): { algorithm: string; value: string } {
+  const source = object(value, field);
+  assertExactKeys(source, ["algorithm", "value"], field);
+  const algorithm = str(source["algorithm"], `${field}.algorithm`);
+  const digest = str(source["value"], `${field}.value`);
+  if (algorithm !== "sha256") {
+    throw new CollabError("CANDIDATE_INVALID", `${field}.algorithm must be sha256`, {
+      field: `${field}.algorithm`,
+      value: algorithm,
+    });
+  }
+  if (!SHA256_HEX.test(digest)) {
+    throw new CollabError("CANDIDATE_INVALID", `${field}.value must be a sha256 hex digest`, {
+      field: `${field}.value`,
+      value: digest,
+    });
+  }
+  return { algorithm, value: digest };
+}
+
+function relativePath(value: unknown, field: string): string {
+  const text = str(value, field);
+  const normalised = text.replaceAll("\\", "/");
+  if (
+    normalised.startsWith("/") ||
+    normalised.split("/").includes("..") ||
+    /^[A-Za-z]:/.test(text)
+  ) {
+    throw new CollabError("CANDIDATE_INVALID", `${field} must be a repository-relative path`, {
+      field,
+      value: text,
+    });
+  }
+  return text;
+}
+
+/**
+ * A candidate diff is immutable evidence: sha256 over the retained content,
+ * a non-empty set of repository-relative changed paths, and the exact line
+ * counts a reviewer sees. A renamed or empty-diff change is still a valid
+ * candidate; only a digest that cannot be recomputed is refused.
+ */
+function parseCandidateDiff(value: unknown, field: string): CandidateDiff {
+  const source = object(value, field);
+  assertExactKeys(
+    source,
+    ["digest_algorithm", "digest", "changed_paths", "insertions", "deletions"],
+    field,
+  );
+  const algorithm = str(source["digest_algorithm"], `${field}.digest_algorithm`);
+  if (algorithm !== "sha256") {
+    throw new CollabError("CANDIDATE_INVALID", `${field}.digest_algorithm must be sha256`, {
+      field: `${field}.digest_algorithm`,
+      value: algorithm,
+    });
+  }
+  const digest = str(source["digest"], `${field}.digest`);
+  if (!SHA256_HEX.test(digest)) {
+    throw new CollabError("CANDIDATE_INVALID", `${field}.digest must be a sha256 hex digest`, {
+      field: `${field}.digest`,
+      value: digest,
+    });
+  }
+  const changedPaths = strArray(source["changed_paths"], `${field}.changed_paths`).map(
+    (path, index) => relativePath(path, `${field}.changed_paths[${index}]`),
+  );
+  if (changedPaths.length === 0) {
+    throw new CollabError("CANDIDATE_INVALID", `${field}.changed_paths must not be empty`, {
+      field: `${field}.changed_paths`,
+    });
+  }
+  uniqueStrings(changedPaths, `${field}.changed_paths`);
+  return {
+    digest_algorithm: algorithm,
+    digest,
+    changed_paths: changedPaths,
+    insertions: int(source["insertions"], `${field}.insertions`, 0),
+    deletions: int(source["deletions"], `${field}.deletions`, 0),
+  };
+}
+
+function parseValidationResult(value: unknown, field: string): CandidateValidationResult {
+  const source = object(value, field);
+  assertExactKeys(source, ["tool", "exit_status", "output_digest", "event_reference"], field);
+  if (
+    typeof source["exit_status"] !== "number" ||
+    !Number.isInteger(source["exit_status"]) ||
+    source["exit_status"] !== 0
+  ) {
+    // A frozen candidate carries passing evidence only. A failed attempt leaves
+    // the run in a stop state that needs human disposition, never a review card.
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      `${field}.exit_status must be 0: a frozen candidate cannot include a failed or unexecuted validation`,
+      { field: `${field}.exit_status`, value: source["exit_status"] },
+    );
+  }
+  if (source["output_digest"] === null || source["output_digest"] === undefined) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      `${field}.output_digest is required for executed validation evidence`,
+      { field: `${field}.output_digest` },
+    );
+  }
+  return {
+    tool: str(source["tool"], `${field}.tool`),
+    exit_status: 0,
+    output_digest: parseDigestRef(source["output_digest"], `${field}.output_digest`),
+    event_reference: str(source["event_reference"], `${field}.event_reference`),
+  };
+}
+
+function parseCandidateValidation(value: unknown, field: string): CandidateValidation {
+  const source = object(value, field);
+  assertExactKeys(source, ["config_digest", "environment", "required_checks", "results"], field);
+  const rawResults = source["results"];
+  if (!Array.isArray(rawResults) || rawResults.length === 0) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      `${field}.results must record at least one validation attempt`,
+      { field: `${field}.results` },
+    );
+  }
+  const requiredChecks = uniqueStrings(
+    strArray(source["required_checks"], `${field}.required_checks`),
+    `${field}.required_checks`,
+  );
+  if (requiredChecks.length === 0) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      `${field}.required_checks must name the checks the approved test plan requires`,
+      { field: `${field}.required_checks` },
+    );
+  }
+  const results = rawResults.map((entry, index) =>
+    parseValidationResult(entry, `${field}.results[${index}]`),
+  );
+  for (const check of requiredChecks) {
+    if (!results.some((result) => result.tool === check)) {
+      throw new CollabError(
+        "CANDIDATE_INVALID",
+        `required check ${JSON.stringify(check)} has no recorded passing attempt`,
+        { field: `${field}.required_checks`, check },
+      );
+    }
+  }
+  return {
+    config_digest: str(source["config_digest"], `${field}.config_digest`),
+    environment: str(source["environment"], `${field}.environment`),
+    required_checks: requiredChecks,
+    results,
+  };
+}
+
+/**
+ * The pre-approval risk decision. `prohibited` work never becomes a reviewable
+ * candidate, and `elevated` work always carries the human-approval flag —
+ * the review card must not understate what the approver is agreeing to.
+ */
+function parseChangeRisk(value: unknown, field: string): ChangeRisk {
+  const source = object(value, field);
+  assertExactKeys(source, ["class", "decision_code", "requires_human_approval"], field);
+  const riskClass = str(source["class"], `${field}.class`);
+  if (!(RISK_CLASSES as readonly string[]).includes(riskClass)) {
+    throw new CollabError("INVALID_INPUT", `${field}.class is not a risk class`, {
+      field: `${field}.class`,
+      value: riskClass,
+    });
+  }
+  if (riskClass === "prohibited") {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      "prohibited work is rejected; it never becomes a reviewable candidate",
+      { field: `${field}.class` },
+    );
+  }
+  const requiresHumanApproval = bool(
+    source["requires_human_approval"],
+    `${field}.requires_human_approval`,
+  );
+  if (requiresHumanApproval !== (riskClass === "elevated")) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      `${field}.requires_human_approval must be ${riskClass === "elevated"} for class ${riskClass}`,
+      { field: `${field}.requires_human_approval`, class: riskClass as RiskClass },
+    );
+  }
+  return {
+    class: riskClass as RiskClass,
+    decision_code: str(source["decision_code"], `${field}.decision_code`),
+    requires_human_approval: requiresHumanApproval,
+  };
+}
+
+function parseInvalidationReason(value: unknown, field: string): ApprovalInvalidationReason {
+  const text = str(value, field);
+  if (!(APPROVAL_INVALIDATION_REASONS as readonly string[]).includes(text)) {
+    throw new CollabError("INVALID_INPUT", `${field} is not an invalidation reason`, {
+      field,
+      value: text,
+    });
+  }
+  return text as ApprovalInvalidationReason;
 }
 
 function parseGrantTools(value: unknown, field: string): GrantTool[] {
@@ -1068,6 +1300,525 @@ function handleRequestRunRestart(state: CollabState, payload: Payload): unknown 
   );
 }
 
+const POLICY_CONFIG_DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+/** Digest over the immutable content of one test-policy version. */
+function testPolicyDigest(input: {
+  workspace: WorkspaceScope;
+  repository_id: string;
+  repository_url: string;
+  policy_version: string;
+  checks: string[];
+  config_digest: string;
+  environment: string;
+}): string {
+  return digestOf({
+    workspace: input.workspace,
+    repository_id: input.repository_id,
+    repository_url: input.repository_url,
+    policy_version: input.policy_version,
+    checks: input.checks,
+    config_digest: input.config_digest,
+    environment: input.environment,
+  });
+}
+
+/**
+ * Register one version of the workspace + repository test policy. Required
+ * checks, config digest, and environment are approved here by the caller
+ * boundary (the configuration administrator) and recorded as `registered_by`;
+ * a run lease never defines policy. The new version becomes the repository's
+ * current one and older versions stay for audit and replay.
+ */
+function handleRegisterTestPolicy(state: CollabState, payload: Payload): unknown {
+  assertExactKeys(
+    payload,
+    [
+      ...BASE_KEYS,
+      "policy_id",
+      "workspace",
+      "repository_id",
+      "repository_url",
+      "policy_version",
+      "checks",
+      "config_digest",
+      "environment",
+    ],
+    "register_test_policy",
+  );
+  const workspace = parseWorkspace(payload["workspace"], "workspace");
+  const repositoryId = str(payload["repository_id"], "repository_id");
+  const repositoryUrl = str(payload["repository_url"], "repository_url");
+  const policyVersion = str(payload["policy_version"], "policy_version");
+  const checks = uniqueStrings(strArray(payload["checks"], "checks"), "checks");
+  if (checks.length === 0) {
+    throw new CollabError("INVALID_INPUT", "a test policy requires at least one check", {
+      field: "checks",
+    });
+  }
+  const configDigest = str(payload["config_digest"], "config_digest");
+  if (!POLICY_CONFIG_DIGEST.test(configDigest)) {
+    throw new CollabError("INVALID_INPUT", "config_digest must be sha256:<64 hex characters>", {
+      field: "config_digest",
+      value: configDigest,
+    });
+  }
+  const environment = str(payload["environment"], "environment");
+  const content = {
+    workspace,
+    repository_id: repositoryId,
+    repository_url: repositoryUrl,
+    policy_version: policyVersion,
+    checks,
+    config_digest: configDigest,
+    environment,
+  };
+  const policyDigest = testPolicyDigest(content);
+  const scope = testPolicyScopeKey(workspace, repositoryId);
+  for (const existing of state.testPolicies.values()) {
+    if (
+      testPolicyScopeKey(existing.workspace, existing.repository_id) === scope &&
+      existing.policy_version === policyVersion
+    ) {
+      throw new CollabError(
+        "TEST_POLICY_CONFLICT",
+        "that policy version is already registered; a changed policy needs a new version",
+        { policy_version: policyVersion, policy_id: existing.policy_id },
+      );
+    }
+  }
+  const policy: TestPolicyRecord = {
+    policy_id: str(payload["policy_id"], "policy_id"),
+    workspace,
+    repository_id: repositoryId,
+    repository_url: repositoryUrl,
+    policy_version: policyVersion,
+    checks,
+    config_digest: configDigest,
+    environment,
+    policy_digest: policyDigest,
+    registered_by: str(payload["actor"], "actor"),
+    registered_at: payload["at"] as string,
+  };
+  state.testPolicies.set(policy.policy_id, policy);
+  state.currentTestPolicies.set(scope, policy.policy_id);
+  return clone(policy);
+}
+
+/**
+ * Bind one run to the repository's current test-policy version. The plan takes
+ * only the binding — checks, config digest, and environment are frozen from
+ * the registered policy and must never be supplied per command.
+ */
+function handleRecordTestPlan(state: CollabState, payload: Payload): unknown {
+  assertExactKeys(payload, [...BASE_KEYS, "plan_id", "run_id", "policy_id"], "record_test_plan");
+  const run = runOf(state, payload["run_id"], "run_id");
+  const at = payload["at"] as string;
+  if (isTerminalRunState(run.state)) {
+    throw new CollabError("RUN_TERMINAL", "terminal run records no test plan", {
+      run_id: run.run_id,
+    });
+  }
+  if (run.state !== "approved" && run.state !== "running") {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      `a test plan is recorded before validation runs (run is ${run.state})`,
+      { run_id: run.run_id, state: run.state },
+    );
+  }
+  const policyId = str(payload["policy_id"], "policy_id");
+  const policy = state.testPolicies.get(policyId);
+  if (policy === undefined) {
+    throw new CollabError("TEST_POLICY_NOT_FOUND", "unknown test policy", {
+      policy_id: policyId,
+    });
+  }
+  if (
+    policy.workspace.enterprise_id !== run.workspace.enterprise_id ||
+    policy.workspace.workspace_id !== run.workspace.workspace_id ||
+    policy.repository_id !== run.repository.repository_id ||
+    policy.repository_url !== run.repository.url
+  ) {
+    // Another repository's or workspace's policy is indistinguishable from a
+    // missing one: the binding cannot be used to enumerate other scopes.
+    throw new CollabError("TEST_POLICY_NOT_FOUND", "unknown test policy", {
+      policy_id: policyId,
+    });
+  }
+  const current = state.currentTestPolicies.get(
+    testPolicyScopeKey(policy.workspace, policy.repository_id),
+  );
+  if (current !== policyId) {
+    throw new CollabError(
+      "TEST_POLICY_CONFLICT",
+      "the run may only bind the repository's current policy version",
+      { policy_id: policyId, current_policy_id: current ?? null },
+    );
+  }
+  for (const existing of state.testPlans.values()) {
+    if (existing.run_id === run.run_id) {
+      throw new CollabError(
+        "TEST_PLAN_CONFLICT",
+        "the run already has an approved test plan; a new plan needs a new run",
+        { run_id: run.run_id, plan_id: existing.plan_id },
+      );
+    }
+  }
+  const planId = str(payload["plan_id"], "plan_id");
+  if (state.testPlans.has(planId)) {
+    throw new CollabError("TEST_PLAN_CONFLICT", "test plan id already exists", {
+      plan_id: planId,
+    });
+  }
+  const plan: TestPlanRecord = {
+    plan_id: planId,
+    run_id: run.run_id,
+    policy_id: policy.policy_id,
+    policy_version: policy.policy_version,
+    policy_digest: policy.policy_digest,
+    checks: [...policy.checks],
+    config_digest: policy.config_digest,
+    environment: policy.environment,
+    recorded_at: at,
+  };
+  state.testPlans.set(plan.plan_id, plan);
+  run.updated_at = at;
+  return clone(plan);
+}
+
+const CANDIDATE_FREEZE_PRODUCT_STATES: ProductState[] = [
+  "implementing",
+  "validating",
+  "awaiting_change_approval",
+];
+
+function handleFreezeCandidate(state: CollabState, payload: Payload): unknown {
+  assertExactKeys(
+    payload,
+    [
+      ...BASE_KEYS,
+      "candidate_id",
+      "issue_id",
+      "run_id",
+      "summary",
+      "base_sha",
+      "head_sha",
+      "tree_sha",
+      "diff",
+      "validation",
+      "risk",
+      "artifact_ids",
+      "audit_refs",
+    ],
+    "freeze_candidate",
+  );
+  const issue = issueOf(state, payload["issue_id"], "issue_id");
+  const run = runOf(state, payload["run_id"], "run_id");
+  if (run.issue_id !== issue.issue_id) {
+    throw new CollabError("CANDIDATE_INVALID", "candidate run belongs to another issue", {
+      issue_id: issue.issue_id,
+      run_id: run.run_id,
+    });
+  }
+  if (!CANDIDATE_FREEZE_PRODUCT_STATES.includes(issue.product_state)) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      `no candidate may freeze in product state ${issue.product_state}`,
+      { issue_id: issue.issue_id, product_state: issue.product_state },
+    );
+  }
+  if (run.state !== "stopped") {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      `candidate freezes only when the preparation run stopped (run is ${run.state})`,
+      { run_id: run.run_id, state: run.state },
+    );
+  }
+  const at = payload["at"] as string;
+  if (activeGrants(run, at).length > 0) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      "the preparation grant must be revoked before the candidate is frozen",
+      { run_id: run.run_id },
+    );
+  }
+
+  const baseSha = str(payload["base_sha"], "base_sha");
+  if (baseSha !== run.repository.base_sha || baseSha !== issue.repository.base_sha) {
+    // The base moved after preparation; the diff and its test evidence no
+    // longer describe the tree that would be delivered.
+    throw new CollabError("BASE_ADVANCED", "the repository base advanced after the run opened", {
+      base_sha: baseSha,
+      run_base_sha: run.repository.base_sha,
+      issue_base_sha: issue.repository.base_sha,
+    });
+  }
+  const headSha = str(payload["head_sha"], "head_sha");
+  if (run.head_sha !== headSha) {
+    throw new CollabError("CANDIDATE_INVALID", "candidate head must match the stopped run head", {
+      run_id: run.run_id,
+      run_head_sha: run.head_sha,
+      head_sha: headSha,
+    });
+  }
+  const treeSha = str(payload["tree_sha"], "tree_sha");
+  const summary = bounded(payload["summary"], "summary", SUMMARY_MAX);
+  const diff = parseCandidateDiff(payload["diff"], "diff");
+  const validation = parseCandidateValidation(payload["validation"], "validation");
+  const risk = parseChangeRisk(payload["risk"], "risk");
+
+  // The required checks are not the candidate submitter's to declare: they
+  // come from the run's approved test plan, recorded before validation ran.
+  const plan = [...state.testPlans.values()].find((entry) => entry.run_id === run.run_id);
+  if (plan === undefined) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      "no approved test plan was recorded for the preparation run",
+      { run_id: run.run_id },
+    );
+  }
+  const policy = state.testPolicies.get(plan.policy_id);
+  if (policy === undefined) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      "the test policy bound to the run's plan is no longer registered",
+      { run_id: run.run_id, policy_id: plan.policy_id },
+    );
+  }
+  // The plan is a binding, not a copy: its frozen values must still be exactly
+  // the registered version it claims, or the evidence is bound to nothing.
+  if (
+    plan.policy_digest !== policy.policy_digest ||
+    plan.policy_version !== policy.policy_version ||
+    plan.config_digest !== policy.config_digest ||
+    plan.environment !== policy.environment ||
+    canonicalJson(plan.checks) !== canonicalJson(policy.checks)
+  ) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      "the bound test plan diverges from its registered policy version",
+      { plan_id: plan.plan_id, policy_id: policy.policy_id },
+    );
+  }
+  if (
+    validation.config_digest !== plan.config_digest ||
+    validation.environment !== plan.environment
+  ) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      "validation configuration or environment differs from the approved test plan",
+      {
+        plan_config_digest: plan.config_digest,
+        validation_config_digest: validation.config_digest,
+        plan_environment: plan.environment,
+        validation_environment: validation.environment,
+      },
+    );
+  }
+  const planChecks = [...plan.checks].sort();
+  const declaredChecks = [...validation.required_checks].sort();
+  if (
+    planChecks.length !== declaredChecks.length ||
+    planChecks.some((check, index) => check !== declaredChecks[index])
+  ) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      "required checks must be exactly the checks of the approved test plan",
+      { plan_checks: plan.checks, required_checks: validation.required_checks },
+    );
+  }
+  for (const result of validation.results) {
+    if (!plan.checks.includes(result.tool)) {
+      throw new CollabError(
+        "CANDIDATE_INVALID",
+        "a validation result names a check that is not in the approved test plan",
+        { tool: result.tool, plan_checks: plan.checks },
+      );
+    }
+  }
+
+  const artifactIds = uniqueStrings(
+    strArray(payload["artifact_ids"], "artifact_ids"),
+    "artifact_ids",
+  );
+  if (artifactIds.length === 0) {
+    throw new CollabError("CANDIDATE_INVALID", "candidate evidence references no artifact", {
+      field: "artifact_ids",
+    });
+  }
+  const artifacts = artifactIds.map((artifactId) => {
+    const artifact = run.artifact_refs.find((ref) => ref.artifact_id === artifactId);
+    if (!artifact) {
+      throw new CollabError("ARTIFACT_NOT_FOUND", "artifact is not retained by the run", {
+        artifact_id: artifactId,
+        run_id: run.run_id,
+      });
+    }
+    return artifact;
+  });
+  const patch = artifacts.find((artifact) => artifact.kind === "patch");
+  if (!patch) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      "candidate evidence must reference a patch artifact",
+      {
+        field: "artifact_ids",
+      },
+    );
+  }
+  if (patch.digest !== diff.digest || patch.head_sha !== headSha || patch.base_sha !== baseSha) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      "patch artifact does not bind the frozen diff digest, base, and head",
+      {
+        artifact_id: patch.artifact_id,
+        artifact_digest: patch.digest,
+        diff_digest: diff.digest,
+      },
+    );
+  }
+  if (!artifacts.some((artifact) => artifact.kind === "report")) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      "candidate evidence must reference a report artifact",
+      { field: "artifact_ids" },
+    );
+  }
+  if (!run.artifact_refs.some((artifact) => artifact.kind === "candidate")) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      "the stopped preparation run must preserve a candidate artifact",
+      { run_id: run.run_id },
+    );
+  }
+
+  // Every claimed reference must resolve to a record this run actually
+  // retained. Validation evidence is additionally a retained execution
+  // artifact from the exact frozen revision whose digest is the declared
+  // output digest, so a card cannot cite an unrelated artifact, another
+  // revision, or an unbacked "passing" result.
+  const evidence = { run, plan };
+  const binding = { base_sha: baseSha, head_sha: headSha };
+  for (const [index, result] of validation.results.entries()) {
+    resolveValidationEvidence(
+      evidence,
+      result.event_reference,
+      `validation.results[${index}].event_reference`,
+      binding,
+      result.output_digest as { algorithm: string; value: string },
+    );
+  }
+  const auditRefs = uniqueStrings(strArray(payload["audit_refs"], "audit_refs"), "audit_refs");
+  if (auditRefs.length === 0) {
+    throw new CollabError("CANDIDATE_INVALID", "candidate evidence has no audit reference", {
+      field: "audit_refs",
+    });
+  }
+  for (const [index, reference] of auditRefs.entries()) {
+    resolveRevisionEvidence(evidence, reference, `audit_refs[${index}]`, binding);
+  }
+
+  // One preparation run freezes exactly one candidate; a later revision is a
+  // new run, never an edit of this record.
+  for (const existing of state.candidates.values()) {
+    if (existing.run_id === run.run_id) {
+      throw new CollabError(
+        "CANDIDATE_CONFLICT",
+        "the preparation run already froze a candidate; a revision needs a new run",
+        { run_id: run.run_id, candidate_id: existing.candidate_id },
+      );
+    }
+  }
+  const candidateId = str(payload["candidate_id"], "candidate_id");
+  if (state.candidates.has(candidateId)) {
+    throw new CollabError("CANDIDATE_CONFLICT", "candidate id already exists", {
+      candidate_id: candidateId,
+    });
+  }
+
+  const candidate: CandidateRecord = {
+    candidate_id: candidateId,
+    issue_id: issue.issue_id,
+    run_id: run.run_id,
+    workspace: clone(issue.workspace),
+    repository: clone(run.repository),
+    base_sha: baseSha,
+    head_sha: headSha,
+    tree_sha: treeSha,
+    diff,
+    summary,
+    validation,
+    risk,
+    test_policy: {
+      policy_id: plan.policy_id,
+      policy_version: plan.policy_version,
+      policy_digest: plan.policy_digest,
+    },
+    artifacts: artifacts.map((artifact) => clone(artifact)),
+    audit_refs: auditRefs,
+    created_at: at,
+    invalidated_at: null,
+    invalidated_reason: null,
+  };
+  state.candidates.set(candidateId, candidate);
+  return clone(candidate);
+}
+
+function handleInvalidateCandidate(state: CollabState, payload: Payload): unknown {
+  assertExactKeys(payload, [...BASE_KEYS, "candidate_id", "reason"], "invalidate_candidate");
+  const candidateId = str(payload["candidate_id"], "candidate_id");
+  const candidate = state.candidates.get(candidateId);
+  if (!candidate) {
+    throw new CollabError("CANDIDATE_NOT_FOUND", "unknown candidate", {
+      candidate_id: candidateId,
+    });
+  }
+  const reason = parseInvalidationReason(payload["reason"], "reason");
+  if (candidate.invalidated_at === null) {
+    // Invalidation is recorded once and never cleared: a later revision is a
+    // new candidate, not a revival of this record.
+    candidate.invalidated_at = payload["at"] as string;
+    candidate.invalidated_reason = reason;
+  }
+  return clone(candidate);
+}
+
+/**
+ * Record that the issue's base revision advanced (rebase or upstream push).
+ * Every candidate frozen against an older base becomes permanently invalid and
+ * can never be approved or delivered; new work needs a fresh run and a new
+ * candidate. Records are never rewritten, only marked.
+ */
+function handleRecordBaseAdvance(state: CollabState, payload: Payload): unknown {
+  assertExactKeys(
+    payload,
+    [...BASE_KEYS, "issue_id", "base_sha", "base_ref"],
+    "record_base_advance",
+  );
+  const issue = issueOf(state, payload["issue_id"], "issue_id");
+  const baseSha = str(payload["base_sha"], "base_sha");
+  const baseRef = strOrNull(payload["base_ref"], "base_ref");
+  const at = payload["at"] as string;
+  if (baseRef !== null) {
+    issue.repository.base_ref = baseRef;
+  }
+  issue.repository.base_sha = baseSha;
+  issue.updated_at = at;
+  const invalidatedCandidateIds: string[] = [];
+  for (const candidate of state.candidates.values()) {
+    if (
+      candidate.issue_id === issue.issue_id &&
+      candidate.invalidated_at === null &&
+      candidate.base_sha !== baseSha
+    ) {
+      candidate.invalidated_at = at;
+      candidate.invalidated_reason = "base_advanced";
+      invalidatedCandidateIds.push(candidate.candidate_id);
+    }
+  }
+  return { issue: clone(issue), invalidated_candidate_ids: invalidatedCandidateIds };
+}
+
 export const HANDLERS: Record<AuditCommand, (state: CollabState, payload: Payload) => unknown> = {
   create_issue: handleCreateIssue,
   add_task: handleAddTask,
@@ -1080,6 +1831,11 @@ export const HANDLERS: Record<AuditCommand, (state: CollabState, payload: Payloa
   revoke_grant: handleRevokeGrant,
   record_run_state: handleRecordRunState,
   attach_artifact: handleAttachArtifact,
+  register_test_policy: handleRegisterTestPolicy,
+  record_test_plan: handleRecordTestPlan,
+  freeze_candidate: handleFreezeCandidate,
+  invalidate_candidate: handleInvalidateCandidate,
+  record_base_advance: handleRecordBaseAdvance,
   transition_issue: handleTransitionIssue,
   record_handoff: handleRecordHandoff,
   request_run_restart: handleRequestRunRestart,

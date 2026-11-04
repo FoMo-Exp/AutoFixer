@@ -753,7 +753,9 @@ bearer token.
 
 ## Collaboration v1 (DAT-221)
 
-Status: implementation contract defined ahead of its serving code. It defines
+Status: implementation contract whose durable issue/task/run/approval/delivery
+serving code is still landing; the immutable-candidate freeze and review-card
+reads below are implemented in the collaboration domain (DAT-219). It defines
 the durable issue/task/run/candidate/approval/delivery resources and their
 event stream of ADR-0007 so dependent web work is built against a merged
 contract; it claims no running control until the implementation lands, and dsh
@@ -802,6 +804,69 @@ direct main write, merge, self-review, or check waiver.
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}` | none | `200 Delivery` |
 | `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}/reconcile` | optional `note` | `202 Delivery` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stream` | `Last-Event-ID` optional | `200 text/event-stream` |
+
+### Candidate freeze and review card (DAT-219)
+
+A candidate is frozen by the service when local preparation stops; it is never
+client-authored or client-mutated. The record binds the exact base, candidate
+commit, and tree identity, the sha256 diff digest and changed paths, the
+validation configuration/environment and every validation attempt, the risk
+decision, and patch/report provenance references. The diff content is retained
+in a content-addressed store outside the ephemeral worktree, so the card and its
+evidence stay reviewable after cleanup; `diff.digest` is the sha256 of that
+retained content and can be recomputed independently instead of trusted. The
+containment check resolves symlinks, so a retention root that only appears to be
+outside the worktree is refused.
+
+Validation evidence is passing evidence, and the required checks are **policy**,
+not execution output. A configuration administrator registers a versioned test
+policy scoped to one workspace and repository: required checks, `config_digest`
+(`sha256:<64 hex>`), and environment, recorded with `registered_by`. Each
+repository has exactly one current version; registering a new version moves that
+pointer, and older versions stay registered for audit and replay. A worker lease
+never defines or edits policy.
+
+Before validation executes, the run binds exactly one immutable plan to the
+repository's **current** policy version. The plan command accepts only the run
+and the policy id — checks, config digest, and environment are frozen from the
+registered policy and can never be supplied per command. A plan for a stopped
+or terminal run, a second plan for the same run, a policy from another
+workspace/repository, or a superseded policy version is refused.
+
+`validation.required_checks` must equal the bound policy's checks, its
+`config_digest`/`environment` must match, and every result must name a policy
+check with exit status `0`. A failed attempt, an attempt with no exit status or
+output digest, an unplanned check, or a missing required check stops the run
+instead of producing a review card. The card exposes `policy_id`,
+`policy_version`, and `policy_digest`, so an approval (DAT-220) binds to one
+exact policy version even after a newer one becomes current; a policy update
+does not retroactively invalidate an already frozen candidate.
+
+Every validation `event_reference` must be a retained `test_report` artifact of
+the same run produced from the frozen base and head whose digest equals the
+attempt's `output_digest` (algorithm `sha256`, hex value), so a "passing" result
+cannot point at a patch/report of another purpose, at a plan or grant record, at
+another revision, or at a digest the execution artifact does not have.
+`audit_refs` entries resolve to retained artifacts, grants, or the approved
+plan of the same run (`evidence://runs/{run_id}/...`); artifact references must
+bind the frozen revision, and a fabricated path never freezes a candidate.
+
+`Candidate` carries optional `invalidated_at`/`invalidated_reason`. When the
+issue base advances, every candidate frozen against an older base is
+permanently invalid (`base_advanced`) and can never be approved or delivered:
+refreshing a base requires a new run, new validation, and a new candidate. A
+frozen candidate has no branch or PR — no provider write exists before a
+current, candidate-bound human approval.
+
+`GET .../candidates` serves stable pages: `next_cursor` is the last served
+candidate id and an unknown cursor is `400 INVALID_CURSOR`, so a client never
+silently restarts or skips the list.
+
+The reviewer notification carries bounded metadata (summary, changed-path
+count, line counts, test totals, risk class) and an authenticated client link
+to the card. It never contains diff text, changed path names, tool output,
+digests, or a bearer/approval credential; the link selects a candidate and
+approval remains a confirmed authenticated mutation in the client.
 
 ### Issue events and replay
 

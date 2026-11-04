@@ -1,5 +1,6 @@
 /**
- * Durable collaboration state machine (DAT-215, ADR-0007).
+ * Durable collaboration state machine (DAT-215, ADR-0007) and its immutable
+ * candidate review-card surface (DAT-219, ADR-0007).
  *
  * The module owns the product issue/task/run domain model: product lifecycle
  * states, bounded runs with worktree/scope/limit/grant records, leases with
@@ -14,13 +15,19 @@ export type {
   AcquireLeaseInput,
   AddTaskInput,
   ArtifactInput,
+  BaseAdvanceResult,
   CollabMachineOptions,
   CommandBase,
   CreateIssueInput,
+  FreezeCandidateInput,
   GrantInput,
+  InvalidateCandidateInput,
   LeaseInput,
   OpenRunInput,
+  RecordBaseAdvanceInput,
   RecordGrantInput,
+  RecordTestPlanInput,
+  RegisterTestPolicyInput,
   RecordHandoffInput,
   RecordRunStateInput,
   RenewLeaseInput,
@@ -44,7 +51,45 @@ export {
   runTransitionIssueConflict,
 } from "./states.js";
 export type { ProductState, ProductRelation, RunView } from "./states.js";
-export { grantStateAt, GRANT_STATES, ROLES, TASK_STATES } from "./types.js";
+export {
+  grantStateAt,
+  GRANT_STATES,
+  RISK_CLASSES,
+  ROLES,
+  TASK_STATES,
+  testPolicyScopeKey,
+} from "./types.js";
+export {
+  assertCandidateCurrent,
+  candidateFreshness,
+  candidateNotification,
+  candidateReviewCard,
+  validationEvidenceDigest,
+} from "./candidate.js";
+export type {
+  CandidateCardValidation,
+  CandidateFreshness,
+  CandidateNotification,
+  CandidateNotificationOptions,
+  CandidateReviewCard,
+  CandidateStaleReason,
+} from "./candidate.js";
+export { CandidateContentStore, diffDigest } from "./candidate-store.js";
+export {
+  RUN_EVIDENCE_PREFIX,
+  VALIDATION_ARTIFACT_KINDS,
+  artifactEvidenceRef,
+  grantEvidenceRef,
+  planEvidenceRef,
+  resolveRevisionEvidence,
+  resolveRunEvidence,
+  resolveValidationEvidence,
+  runEvidenceIndex,
+} from "./evidence.js";
+export type { ResolvedEvidence, RunEvidenceContext } from "./evidence.js";
+export type { StoredDiff } from "./candidate-store.js";
+export { CandidateReviewService } from "./candidate-service.js";
+export type { CandidateCardPage, CandidateDiffView } from "./candidate-service.js";
 export {
   APPROVAL_INVALIDATION_REASONS,
   APPROVAL_STATES,
@@ -60,7 +105,13 @@ export type {
 } from "./contract.js";
 export type {
   ArtifactRef,
+  CandidateDiff,
+  CandidateRecord,
+  CandidateTestPolicy,
+  CandidateValidation,
+  CandidateValidationResult,
   CapabilityGrant,
+  ChangeRisk,
   CollabState,
   Disposition,
   GrantState,
@@ -69,12 +120,15 @@ export type {
   IssueRecord,
   LeaseRecord,
   RepositoryRef,
+  RiskClass,
   Role,
   RunLimits,
   RunRecord,
   RunScope,
   TaskRecord,
   TaskState,
+  TestPlanRecord,
+  TestPolicyRecord,
   WorkspaceScope,
   WorktreeRef,
 } from "./types.js";
