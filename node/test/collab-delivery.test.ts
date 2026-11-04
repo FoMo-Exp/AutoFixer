@@ -577,6 +577,43 @@ describe("broker-controlled push and PR", () => {
     );
   });
 
+  test("an existing PR on a confirmed branch is adopted without a duplicate", async () => {
+    const f = setup();
+    const delivery = requestDelivery(f);
+    const branch = autofixerBranchFor(f.issue.issue_id);
+    f.provider.branchHead = f.candidate.head_sha;
+    f.provider.pr = {
+      pr_id: "pr_1",
+      pr_url: "https://github.com/Luthiel/AutoFixer/pull/1",
+      branch,
+      head_sha: f.candidate.head_sha,
+      state: "open",
+    };
+    const view = await f.broker.deliver(delivery.delivery_id, { actor: "broker:delivery" });
+    expect(view.state).toBe("delivered");
+    expect(f.provider.pushCalls).toHaveLength(0);
+    expect(f.provider.openCalls).toHaveLength(0);
+  });
+
+  test("an existing PR whose branch is gone is partial, never delivered", async () => {
+    const f = setup();
+    const delivery = requestDelivery(f);
+    const branch = autofixerBranchFor(f.issue.issue_id);
+    f.provider.branchHead = null;
+    f.provider.pr = {
+      pr_id: "pr_1",
+      pr_url: "https://github.com/Luthiel/AutoFixer/pull/1",
+      branch,
+      head_sha: f.candidate.head_sha,
+      state: "open",
+    };
+    const view = await f.broker.deliver(delivery.delivery_id, { actor: "broker:delivery" });
+    expect(view.state).toBe("partial");
+    expect(view.error_code).toBe("PROVIDER_BRANCH_UNCONFIRMED");
+    expect(f.provider.pushCalls).toHaveLength(0);
+    expect(f.provider.openCalls).toHaveLength(0);
+  });
+
   test("provider head drift is unknown and never opens a PR", async () => {
     const f = setup();
     const delivery = requestDelivery(f);
@@ -594,6 +631,77 @@ describe("broker-controlled push and PR", () => {
     const view = await f.broker.deliver(delivery.delivery_id, { actor: "broker:delivery" });
     expect(view.state).toBe("partial");
     expect(view.error_code).toBe("PROVIDER_PR_MISMATCH");
+  });
+
+  test("an open PR cannot reconcile to delivered while the branch is missing", async () => {
+    const f = setup();
+    const delivery = requestDelivery(f);
+    f.provider.pushMode = "ambiguous";
+    await f.broker.deliver(delivery.delivery_id, { actor: "broker:delivery" });
+    const branch = autofixerBranchFor(f.issue.issue_id);
+    f.provider.branchHead = null;
+    f.provider.pr = {
+      pr_id: "pr_1",
+      pr_url: "https://github.com/Luthiel/AutoFixer/pull/1",
+      branch,
+      head_sha: f.candidate.head_sha,
+      state: "open",
+    };
+    const view = await f.broker.reconcile(delivery.delivery_id, {
+      operation_id: op(),
+      actor: "broker:reconcile",
+    });
+    expect(view.state).toBe("unknown");
+    expect(view.state).not.toBe("delivered");
+  });
+
+  test("an open PR cannot reconcile to delivered while the branch holds another head", async () => {
+    const f = setup();
+    const delivery = requestDelivery(f);
+    f.provider.pushMode = "ambiguous";
+    await f.broker.deliver(delivery.delivery_id, { actor: "broker:delivery" });
+    const branch = autofixerBranchFor(f.issue.issue_id);
+    f.provider.branchHead = OTHER_HEAD;
+    f.provider.pr = {
+      pr_id: "pr_1",
+      pr_url: "https://github.com/Luthiel/AutoFixer/pull/1",
+      branch,
+      head_sha: f.candidate.head_sha,
+      state: "open",
+    };
+    const view = await f.broker.reconcile(delivery.delivery_id, {
+      operation_id: op(),
+      actor: "broker:reconcile",
+    });
+    expect(view.state).toBe("unknown");
+    expect(view.state).not.toBe("delivered");
+  });
+
+  test("the durable reconcile command rejects delivered without a branch-head proof", async () => {
+    const f = setup();
+    const delivery = requestDelivery(f);
+    f.provider.pushMode = "ambiguous";
+    await f.broker.deliver(delivery.delivery_id, { actor: "broker:delivery" });
+    const branch = autofixerBranchFor(f.issue.issue_id);
+    expectCode(
+      () =>
+        f.machine.reconcileDelivery({
+          operation_id: op(),
+          actor: "broker:reconcile",
+          delivery_id: delivery.delivery_id,
+          to: "delivered",
+          branch,
+          pr_id: "pr_1",
+          pr_url: "https://github.com/Luthiel/AutoFixer/pull/1",
+          error_code: null,
+          evidence: {
+            branch_head_sha: null,
+            pr_head_sha: f.candidate.head_sha,
+            pr_branch: branch,
+          },
+        }),
+      "DELIVERY_STATE_CONFLICT",
+    );
   });
 
   test("reconciliation refuses a delivery that has nothing to reconcile", async () => {
@@ -642,6 +750,23 @@ describe("pre-write authority, grant, audit, and branch checks", () => {
       "DELIVERY_AUDIT_UNAVAILABLE",
     );
     expect(f.provider.pushCalls).toHaveLength(0);
+  });
+
+  test("an unconfigured audit sink fails closed instead of assuming availability", async () => {
+    const f = setup();
+    const broker = new DeliveryBroker({
+      machine: f.machine,
+      providers: { github: f.provider },
+      approvalDirectory: f.directory,
+      deliveryAuthorized: () => true,
+    });
+    const delivery = requestDelivery(f);
+    await expectCodeAsync(
+      () => broker.deliver(delivery.delivery_id, { actor: "broker:delivery" }),
+      "DELIVERY_AUDIT_UNAVAILABLE",
+    );
+    expect(f.provider.pushCalls).toHaveLength(0);
+    expect(f.provider.openCalls).toHaveLength(0);
   });
 
   test("missing trusted delivery permission blocks the write", async () => {

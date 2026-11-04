@@ -2710,10 +2710,10 @@ function handleReconcileDelivery(state: CollabState, payload: Payload): unknown 
         { delivery_id: delivery.delivery_id },
       );
     }
-    if (observedBranchHead !== null && observedBranchHead !== delivery.head_sha) {
+    if (observedBranchHead !== delivery.head_sha) {
       throw new CollabError(
         "DELIVERY_STATE_CONFLICT",
-        "provider branch head is not the approved commit",
+        "delivered requires the provider branch to hold the approved commit",
         { delivery_id: delivery.delivery_id },
       );
     }

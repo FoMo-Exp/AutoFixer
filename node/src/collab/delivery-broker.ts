@@ -274,6 +274,28 @@ export class DeliveryBroker {
       existingPr.branch === branch
     ) {
       this.recordState(delivery, options, "pushing", {});
+      // A PR alone is not proof of delivery: the provider branch must still
+      // hold the approved commit. A missing or drifted branch is a confirmed
+      // PR with an unconfirmed push, never `delivered`.
+      let branchEvidence: ProviderBranchEvidence;
+      try {
+        branchEvidence = await provider.observeBranch(delivery.repository, branch);
+      } catch {
+        return deliveryView(
+          this.recordState(delivery, options, "unknown", {
+            branch: null,
+            error_code: "PROVIDER_UNAVAILABLE",
+          }),
+        );
+      }
+      if (branchEvidence.head_sha !== delivery.head_sha) {
+        return deliveryView(
+          this.recordState(delivery, options, "partial", {
+            branch,
+            error_code: "PROVIDER_BRANCH_UNCONFIRMED",
+          }),
+        );
+      }
       this.recordState(delivery, options, "opening_pr", { branch });
       return deliveryView(
         this.recordState(delivery, options, "delivered", {
@@ -412,7 +434,8 @@ export class DeliveryBroker {
       pr !== null &&
       pr.state === "open" &&
       pr.head_sha === delivery.head_sha &&
-      pr.branch === branch
+      pr.branch === branch &&
+      branchEvidence.head_sha === delivery.head_sha
     ) {
       return deliveryView(
         machine.reconcileDelivery({
@@ -643,7 +666,9 @@ export class DeliveryBroker {
         repository_id: delivery.repository.repository_id,
         delivery_id: delivery.delivery_id,
       }) ?? false;
-    const auditAvailable = this.options.auditAvailable?.() ?? true;
+    // Fail closed: an unconfigured audit sink cannot prove the write is
+    // auditable, so it blocks delivery instead of assuming availability.
+    const auditAvailable = this.options.auditAvailable?.() ?? false;
     return {
       approver_authorized: approverAuthorized,
       delivery_authorized: deliveryAuthorized,
