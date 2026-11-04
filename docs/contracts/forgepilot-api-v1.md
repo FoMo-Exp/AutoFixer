@@ -248,6 +248,11 @@ run summaries for that task; terminal grants are never reused.
 | `GET /api/v1/workspaces/{workspace_id}/invitations?cursor=` | none | `200 {items: Invitation[], next_cursor}` |
 | `POST /api/v1/workspaces/{workspace_id}/invitations` | `{expires_in_seconds?, bound_provider_subject?}` | `201 CreatedInvitation` |
 | `DELETE /api/v1/workspaces/{workspace_id}/invitations/{invitation_id}` | none | `204` |
+| `POST /api/v1/workspaces/{workspace_id}/memory/search` | `{purpose, query, scope?, run_id?, max_items?, max_tokens?, context_window_tokens?, include_candidates?, policy_version?, query_embedding?}` | `200 MemoryBundle` (bounded, cited; `degraded` on store outage) |
+| `POST /api/v1/workspaces/{workspace_id}/memory/feedback` | `{bundle_id, run_id, outcome, items?[], note?}` | `201 MemoryFeedbackRecord` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/items?kind=&status=&tier=&limit=&cursor=` | none | `200 {items: MemoryItemView[], next_cursor}` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/versions` | none | `200 MemoryVersions` |
+| `POST /api/v1/workspaces/{workspace_id}/memory/eval-runs` | `{kind, dataset, policy_version, memory_version, metrics, verdict, notes?}` | `201 MemoryEvalRunRecord` |
 | `POST /api/v1/invitations/preview` | `{token}` | `200 InvitationPreview` |
 | `POST /api/v1/invitations/redeem` | `{token}` | `200 InvitationRedemption` |
 
@@ -310,6 +315,35 @@ identity; the deployment's configured repository is never a fallback.
 Archive and recover apply only to cancelled tasks and return `409` for other
 statuses. These operations move the existing task between workspace views;
 they do not resume or create a run.
+
+### Workspace memory (DAT-236)
+
+The memory surface implements ADR-0009's read path and is detailed in
+`docs/contracts/memory-retrieval-v1.md`. It is session-authenticated and
+workspace-scoped; `workspace_id` is a locator, never authority. Retrieval
+applies hard filters (workspace, applicability, status, sensitivity, validity,
+approval) before hybrid BM25+vector scoring, then a strict budget: **eight
+items or 1,500 tokens by default, never more than 15% of the model context**;
+it omits rather than dilutes. Mandatory L4 policy is never counted against the
+budget and are never truncated (a policy corpus over the supported bound fails
+the request rather than returning policy-incomplete context). The caller's stated
+context window is used exactly; windows below 1,000 are rejected rather than
+silently enlarged. Unapproved candidates appear at reduced weight, capped at two,
+and are labeled. Contradictions are surfaced rather than silently overwritten: while a
+conflict is unresolved neither side is injected as fact. Every bundle names the
+exact `memory_version` and retrieval-policy version it read, and every
+retrieval is audited with the injected item versions. The versions surface obeys
+the same sensitivity ceiling as browse: hidden items are not enumerable by ID,
+version, hash, timestamp, or count, and the ceiling applies to each historical
+version's own sensitivity. If the memory store is
+unavailable, `search` returns `200` with `degraded: true` and no items — the run
+proceeds with configured policy only, never invented lessons.
+
+Memory is untrusted data: a bundle can never grant a capability, approve a
+change, or authorize a tool action, and `dsh` remains the sole execution gate.
+Promotion, deprecation, quarantine, and retrieval-policy writes are deliberately
+**not** reachable from this surface; those belong to the memory lifecycle and
+bounded-RSI slices.
 
 SSE events contain `event_id`, `sequence`, `occurred_at`, `task_id`,
 `task_version`, `type`, and redacted `data`. Types are `task.status_changed`,

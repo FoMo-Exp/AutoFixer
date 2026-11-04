@@ -108,3 +108,7 @@ export type {
 // scheduled consolidation, and deletion rules. See
 // `docs/contracts/memory-lifecycle-v1.md`.
 export * from "./lifecycle/index.js";
+
+// Bounded retrieval, ranking, budget, conflict and degraded-mode surface
+// (DAT-236). Re-exported here so callers depend on one memory module.
+export * from "./retrieval/index.js";

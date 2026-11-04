@@ -1283,6 +1283,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspace_id}/memory/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Assemble a bounded, cited MemoryBundle
+         * @description Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Hard filters first (workspace, applicability, status, sensitivity, validity, approval), then hybrid BM25+vector scoring with trust, recency and contradiction adjustments, then a strict budget: eight items or 1,500 tokens by default, never more than 15% of the model context. Omit rather than dilute. Unapproved candidates appear at reduced weight, capped at two, and are labeled. A memory outage returns 200 with `degraded: true` and no items — never invented lessons. Memory is untrusted data and cannot authorize tools; dsh remains the only execution gate.
+         */
+        post: operations["searchMemory"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/feedback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record run outcome and per-item usefulness feedback
+         * @description Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Append-only and non-authoritative: feedback never promotes, demotes, or re-weights an item by itself. Items must have been injected by the named bundle. Outcomes use the closed run-outcome vocabulary; an unknown delivery result is recorded as `unknown`, never as success.
+         */
+        post: operations["recordMemoryFeedback"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Browse workspace memory items, filter, and page
+         * @description Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Bounded, workspace-scoped browse of current item versions with evidence citations. Filters: kind, status, tier; cursor pagination with limit <= 100. There is no cross-workspace browse.
+         */
+        get: operations["listMemoryItems"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retrieval-policy and corpus versions
+         * @description Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. The current retrieval policy with its immutable version history, the deterministic corpus digest (`memory_version`), corpus counts, and a bounded per-item version index for diffing. Every run records the pair it used, so a bad promotion is reproducible.
+         */
+        get: operations["getMemoryVersions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/memory/eval-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record an offline replay or canary evaluation result
+         * @description Requires a user session (web `fp_session` cookie or desktop session bearer); the local-operator process token does not authenticate this surface. Workspace owner only. Records an immutable evaluation result that names the policy and memory version evaluated. Recording never promotes memory or changes retrieval weights; the RSI approval flow (DAT-238) owns promotion, and evaluation cases or holdout content can never be written here.
+         */
+        post: operations["recordMemoryEvalRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1991,6 +2091,328 @@ export interface components {
             details: {
                 [key: string]: unknown;
             };
+        };
+        /** @description Applicability of a memory item, and of a retrieval request's run context. An item field that is set only applies when the request field matches (path prefixes match on segment boundaries); empty means broad. */
+        MemoryApplicability: {
+            team_id?: string;
+            path_prefix?: string;
+            language?: string;
+            task_family?: string;
+        };
+        MemoryEvidence: {
+            /** @enum {string} */
+            evidence_type: "run" | "issue" | "pr" | "commit" | "test" | "reviewer_decision" | "incident";
+            /** @description Opaque pointer to a run, issue, PR, commit, test, reviewer decision, or incident. A citation is a provenance claim, not proof of correctness. */
+            reference: string;
+        };
+        MemoryScore: {
+            /** @description Hybrid BM25 + vector relevance. */
+            relevance: number;
+            /** @description Support and reviewer salience. */
+            importance: number;
+            /** @description Bounded half-life recency. */
+            recency: number;
+            /** @description Support minus contradiction counts; may be negative. */
+            confidence: number;
+            /** @description Provenance trust class plus evidence boost. */
+            trust: number;
+            contradiction_penalty: number;
+            total: number;
+        };
+        /** @description One injected memory item. Memory is untrusted data: this object can never grant a capability, approve a change, or authorize a tool action. */
+        MemoryBundleItem: {
+            item_id: string;
+            item_version: number;
+            /** @enum {string} */
+            kind: "fact" | "lesson" | "playbook" | "anti_pattern" | "episode" | "policy";
+            /** @enum {string} */
+            tier: "L1" | "L2" | "L3" | "L4";
+            /** @enum {string} */
+            status: "proposed" | "candidate" | "active" | "deprecated" | "retired" | "quarantined";
+            statement: string;
+            preconditions: string[];
+            applicability: components["schemas"]["MemoryApplicability"];
+            /** @enum {string} */
+            trust: "human" | "agent" | "enterprise_template" | "system";
+            /**
+             * @description Retrieval applies the role's sensitivity ceiling; restricted items are never injected and require separate authorization.
+             * @enum {string}
+             */
+            sensitivity: "internal" | "confidential" | "restricted";
+            /** @description A named human approved this exact version. Facts and episodes are approved by validated promotion to active; procedural content needs a review stamp or human authorship. */
+            approved: boolean;
+            /** @description Injected at reduced weight and labeled unapproved. */
+            candidate: boolean;
+            evidence: components["schemas"]["MemoryEvidence"][];
+            /** Format: date-time */
+            valid_from: string;
+            valid_to: string | null;
+            content_hash: string;
+            conflicts_with: string[];
+            token_estimate: number;
+            score: components["schemas"]["MemoryScore"];
+        };
+        MemoryConflictParty: {
+            item_id: string;
+            item_version: number;
+            statement: string;
+            /** @enum {string} */
+            trust: "human" | "agent" | "enterprise_template" | "system";
+            approved: boolean;
+        };
+        /** @description A visible contradiction. Neither side is injected as fact while the conflict is unresolved; a resolved conflict names the winning item. */
+        MemoryConflict: {
+            item_ids: string[];
+            reason: string;
+            resolved: boolean;
+            winner_item_id: string | null;
+            parties: components["schemas"]["MemoryConflictParty"][];
+        };
+        /** @description Bounded, cited, reproducible memory context for one run. Mandatory L4 policy is never counted against the budget. A degraded bundle means memory was unavailable and the run proceeds with configured policy only. `memory_version` plus `policy_version` identify the exact memory a run read. */
+        MemoryBundle: {
+            bundle_id: string;
+            /** @enum {integer} */
+            schema_version: 1;
+            /** @enum {string} */
+            purpose: "run_plan" | "review" | "browse" | "eval_replay";
+            enterprise_id: string;
+            workspace_id: string;
+            version: {
+                /** @description Deterministic digest of the corpus the bundle read. */
+                memory_version: string;
+                policy_version: number;
+                policy_hash: string;
+            };
+            degraded: boolean;
+            degraded_reason: ("memory_unavailable" | "policy_unavailable" | "retrieval_error") | null;
+            /** @description Fewer items than the eligible corpus warranted; omitted over diluted. */
+            sparse: boolean;
+            budget: {
+                max_items: number;
+                max_tokens: number;
+                context_window_tokens: number;
+                max_context_share: number;
+                used_items: number;
+                used_tokens: number;
+                omitted_count: number;
+            };
+            /** @description Mandatory L4 policy; excluded from the token/item budget and never truncated. If the workspace policy corpus exceeds the supported bound, the request fails with a validation error instead of returning a bundle missing policy; that refusal is never reported as a degraded bundle. */
+            policy_items: components["schemas"]["MemoryBundleItem"][];
+            lessons: components["schemas"]["MemoryBundleItem"][];
+            episodes: components["schemas"]["MemoryBundleItem"][];
+            facts: components["schemas"]["MemoryBundleItem"][];
+            /** @description Unapproved candidates at reduced weight, capped at two. */
+            candidates: components["schemas"]["MemoryBundleItem"][];
+            conflicts: components["schemas"]["MemoryConflict"][];
+            signals: {
+                lexical: boolean;
+                vector: boolean;
+                vector_unavailable_reason: string | null;
+            };
+            trust_boundary: {
+                /** @enum {boolean} */
+                memory_is_untrusted_data: true;
+                /** @enum {boolean} */
+                instructions_allowed: false;
+                /** @enum {string} */
+                tool_control_authority: "dsh";
+                /** @enum {boolean} */
+                citations_required: true;
+                /** @enum {string} */
+                render_fence: "memory";
+            };
+            /** Format: date-time */
+            created_at: string;
+        };
+        MemorySearchRequest: {
+            /**
+             * @default run_plan
+             * @enum {string}
+             */
+            purpose: "run_plan" | "review" | "browse" | "eval_replay";
+            /** @description Task/issue text. Used for relevance only, never as authority. */
+            query: string;
+            scope?: components["schemas"]["MemoryApplicability"];
+            path_prefix?: string;
+            run_id?: string;
+            /** @description Caller's model context window. Values below 1,000 are rejected rather than raised: the token budget is exactly 15% (or the policy share) of the stated window, never of a larger substituted one. */
+            context_window_tokens?: number;
+            /** @description Clamped down to the policy bound and the hard ceiling. */
+            max_items?: number;
+            max_tokens?: number;
+            /** @default true */
+            include_candidates: boolean;
+            /** @description Pin a policy version to reproduce a historical run. */
+            policy_version?: number;
+            /** @description Query embedding produced through the model gateway (ADR-0005). The memory service never calls a model; absent means lexical-only scoring. */
+            query_embedding?: {
+                model: string;
+                vector: number[];
+            };
+        };
+        MemoryFeedbackRequest: {
+            bundle_id: string;
+            run_id: string;
+            /** @enum {string} */
+            outcome: "accepted" | "merged" | "rejected" | "cancelled" | "failed" | "unknown";
+            items?: {
+                item_id: string;
+                item_version: number;
+                useful?: boolean | null;
+                contradicted?: boolean;
+            }[];
+            note?: string;
+        };
+        MemoryFeedbackRecord: {
+            feedback_id: string;
+            bundle_id: string;
+            run_id: string;
+            /** @enum {string} */
+            outcome: "accepted" | "merged" | "rejected" | "cancelled" | "failed" | "unknown";
+            items: {
+                item_id: string;
+                item_version: number;
+                useful: boolean | null;
+                contradicted: boolean;
+            }[];
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
+        };
+        /** @description Human browse view of one memory item's current version. Reads are bounded and workspace-scoped; there is no cross-workspace browse. */
+        MemoryItemView: {
+            item_id: string;
+            /** @enum {string} */
+            status: "proposed" | "candidate" | "active" | "deprecated" | "retired" | "quarantined";
+            current_version: number;
+            versions_count: number;
+            /** @enum {string} */
+            kind: "fact" | "lesson" | "playbook" | "anti_pattern" | "episode" | "policy";
+            /** @enum {string} */
+            tier: "L1" | "L2" | "L3" | "L4";
+            statement: string;
+            preconditions: string[];
+            applicability: components["schemas"]["MemoryApplicability"];
+            /** @enum {string} */
+            trust: "human" | "agent" | "enterprise_template" | "system";
+            /** @enum {string} */
+            sensitivity: "internal" | "confidential" | "restricted";
+            approved: boolean;
+            /** Format: date-time */
+            valid_from: string;
+            valid_to: string | null;
+            content_hash: string;
+            support_count: number;
+            contradiction_count: number;
+            evidence: components["schemas"]["MemoryEvidence"][];
+            /** Format: date-time */
+            updated_at: string;
+        };
+        MemoryItemsPage: {
+            items: components["schemas"]["MemoryItemView"][];
+            next_cursor: string | null;
+        };
+        RetrievalWeights: {
+            relevance: number;
+            importance: number;
+            recency: number;
+            confidence: number;
+            trust: number;
+            contradiction: number;
+        };
+        RetrievalBounds: {
+            max_items: number;
+            max_tokens: number;
+            max_context_share: number;
+            context_window_tokens: number;
+            relevance_floor: number;
+            candidate_weight: number;
+            candidate_max: number;
+            recency_half_life_days: number;
+            trust_class_weights: {
+                [key: string]: number;
+            };
+            evidence_class_boost: {
+                [key: string]: number;
+            };
+        } & {
+            [key: string]: unknown;
+        };
+        /** @description Retrieval-policy versions plus the corpus digest and a bounded per-item version index for diffing. Version history is immutable; a bundle's `version` object names the exact pair it read. The index and corpus counts obey the caller's sensitivity ceiling: identifiers, versions, hashes, and timestamps of items the role cannot browse are not enumerable here. The ceiling is applied to every historical version's own sensitivity, so a restricted version stays hidden after the item's current version becomes internal. */
+        MemoryVersions: {
+            schema_version: number;
+            memory_version: string;
+            retrieval_policy: {
+                version: number;
+                policy_hash: string;
+                weights: components["schemas"]["RetrievalWeights"];
+                bounds: components["schemas"]["RetrievalBounds"];
+            };
+            policy_versions: {
+                version: number;
+                policy_hash: string;
+                /** Format: date-time */
+                created_at: string;
+            }[];
+            corpus: {
+                items: number;
+                active_items: number;
+                versions: number;
+                last_updated_at: string | null;
+            };
+            items: {
+                item_id: string;
+                current_version: number;
+                versions: {
+                    version: number;
+                    content_hash: string;
+                    /** Format: date-time */
+                    created_at: string;
+                }[];
+            }[];
+        };
+        /** @description Evaluation result record. Recording a result never promotes memory; the RSI approval flow owns that decision. Evaluation cases cannot be written through this surface, and the hidden holdout stays read-only to the loop. */
+        MemoryEvalRunRequest: {
+            /** @enum {string} */
+            kind: "offline_replay" | "canary";
+            dataset: {
+                name: string;
+                sample_size: number;
+                holdout: boolean;
+            };
+            policy_version: number;
+            memory_version: string;
+            metrics: {
+                success_rate_delta?: number;
+                rework_rate_delta?: number;
+                cost_delta?: number;
+                safety_events?: number;
+                sample_size: number;
+            };
+            /** @enum {string} */
+            verdict: "pass" | "fail" | "inconclusive";
+            notes?: string;
+        };
+        MemoryEvalRunRecord: {
+            eval_run_id: string;
+            /** @enum {string} */
+            kind: "offline_replay" | "canary";
+            dataset: {
+                name: string;
+                sample_size: number;
+                holdout: boolean;
+            };
+            policy_version: number;
+            memory_version: string;
+            metrics: {
+                [key: string]: number;
+            };
+            /** @enum {string} */
+            verdict: "pass" | "fail" | "inconclusive";
+            notes?: string;
+            /** Format: date-time */
+            created_at: string;
+            created_by: string;
         };
         Error: {
             /** @description The shared versioned error envelope (ADR-0008, DAT-226 alignment): a stable machine code, the processing stage, the outcome category, a safe localizable user message, service-decided retryability, retry-after where applicable, the request_id trace/case reference, safe-only structured details, and the authorized next action. No field ever carries secrets, credentials, invitation tokens, or sensitive diagnostics; those stay behind separate access checks. */
@@ -6973,6 +7395,319 @@ export interface operations {
                 };
             };
             /** @description ISSUE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    searchMemory: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemorySearchRequest"];
+            };
+        };
+        responses: {
+            /** @description Bounded bundle, possibly sparse or degraded */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryBundle"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — no membership or authority revoked */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — workspace outside the caller's membership */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    recordMemoryFeedback: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryFeedbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Feedback recorded */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryFeedbackRecord"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — unknown bundle in this workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listMemoryItems: {
+        parameters: {
+            query?: {
+                kind?: "fact" | "lesson" | "playbook" | "anti_pattern" | "episode" | "policy";
+                status?: "proposed" | "candidate" | "active" | "deprecated" | "retired" | "quarantined";
+                tier?: "L1" | "L2" | "L3" | "L4";
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded item page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemsPage"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getMemoryVersions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Policy and corpus versions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryVersions"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    recordMemoryEvalRun: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace the caller is a member of; resolved from the session. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryEvalRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Evaluation recorded */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryEvalRunRecord"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — owner role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
             404: {
                 headers: {
                     [name: string]: unknown;

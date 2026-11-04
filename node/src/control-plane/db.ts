@@ -817,6 +817,100 @@ const MIGRATIONS: Migration[] = [
         ON memory_consolidation_ops(item_id)`,
     ],
   },
+  {
+    // Bounded memory retrieval (DAT-236). The migration lineage is at v8
+    // (DAT-235 promotion and consolidation lifecycle), so this slice takes the
+    // next free number, v9.
+    //
+    // Retrieval policy is versioned and immutable: every run records the exact
+    // policy version it used, so a bundle can be reproduced. Retrieval runs,
+    // feedback, and evaluation records are append-only audit rows; none of them
+    // can mutate memory items, trust classes, or capability grants.
+    version: 9,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS memory_retrieval_policies (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL,
+        policy TEXT NOT NULL,
+        policy_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        UNIQUE (workspace_id, version)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_retrieval_policies_scope
+        ON memory_retrieval_policies(enterprise_id, workspace_id)`,
+      // One row per assembled bundle. `injected` is a bounded JSON array of
+      // {item_id, item_version, kind, tier, approved} so a run can be audited
+      // and replayed against the exact memory it consumed.
+      `CREATE TABLE IF NOT EXISTS memory_retrieval_runs (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        bundle_id TEXT NOT NULL,
+        run_id TEXT,
+        purpose TEXT NOT NULL,
+        query TEXT NOT NULL,
+        policy_version INTEGER NOT NULL,
+        memory_version TEXT NOT NULL,
+        degraded INTEGER NOT NULL CHECK (degraded IN (0, 1)),
+        degraded_reason TEXT,
+        injected TEXT NOT NULL,
+        omitted_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        UNIQUE (workspace_id, bundle_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_retrieval_runs_scope
+        ON memory_retrieval_runs(enterprise_id, workspace_id, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_retrieval_runs_run
+        ON memory_retrieval_runs(workspace_id, run_id)`,
+      // Run outcome and per-item usefulness feedback. Append-only and
+      // non-authoritative: it never promotes, demotes, or re-weights an item by
+      // itself; consolidation consumes it later.
+      `CREATE TABLE IF NOT EXISTS memory_feedback (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        bundle_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (
+          outcome IN ('accepted', 'merged', 'rejected', 'cancelled', 'failed', 'unknown')
+        ),
+        details TEXT NOT NULL,
+        note TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_feedback_scope
+        ON memory_feedback(enterprise_id, workspace_id, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_feedback_bundle
+        ON memory_feedback(workspace_id, bundle_id)`,
+      // Offline replay / canary evaluation results. Recording a result never
+      // promotes anything: the RSI approval flow (DAT-238) owns that decision.
+      // `holdout` records that the sample came from the hidden holdout; the
+      // learning loop can never write evaluation cases through this surface.
+      `CREATE TABLE IF NOT EXISTS memory_eval_runs (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('offline_replay', 'canary')),
+        dataset_name TEXT NOT NULL,
+        sample_size INTEGER NOT NULL CHECK (sample_size > 0),
+        holdout INTEGER NOT NULL CHECK (holdout IN (0, 1)),
+        policy_version INTEGER NOT NULL,
+        memory_version TEXT NOT NULL,
+        metrics TEXT NOT NULL,
+        verdict TEXT NOT NULL CHECK (verdict IN ('pass', 'fail', 'inconclusive')),
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_eval_runs_scope
+        ON memory_eval_runs(enterprise_id, workspace_id, created_at)`,
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------

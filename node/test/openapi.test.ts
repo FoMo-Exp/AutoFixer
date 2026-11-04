@@ -136,12 +136,22 @@ const COLLAB_ENDPOINTS: Array<[method: string, path: string]> = [
   ["get", `${COLLAB_BASE}/{issue_id}/stream`],
 ];
 
+/** Workspace memory v1 surface (DAT-236). */
+const MEMORY_ENDPOINTS: Array<[method: string, path: string]> = [
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/search"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/feedback"],
+  ["get", "/api/v1/workspaces/{workspace_id}/memory/items"],
+  ["get", "/api/v1/workspaces/{workspace_id}/memory/versions"],
+  ["post", "/api/v1/workspaces/{workspace_id}/memory/eval-runs"],
+];
+
 const ALL_ENDPOINTS = [
   ...M0_ENDPOINTS,
   ...AUTH_ENDPOINTS,
   ...WORKSPACE_ENDPOINTS,
   ...WORKSPACE_TASK_ENDPOINTS,
   ...COLLAB_ENDPOINTS,
+  ...MEMORY_ENDPOINTS,
 ];
 
 describe("forgepilot-api/v1 OpenAPI document", () => {
@@ -158,6 +168,20 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
     for (const [method, path] of AUTH_ENDPOINTS) {
       expect(document.paths[path], `missing path ${path}`).toBeDefined();
       expect(document.paths[path]?.[method], `missing ${method} ${path}`).toBeDefined();
+    }
+  });
+
+  test("documents every workspace memory endpoint and nothing beyond it", () => {
+    for (const [method, path] of MEMORY_ENDPOINTS) {
+      expect(document.paths[path], `missing path ${path}`).toBeDefined();
+      expect(document.paths[path]?.[method], `missing ${method} ${path}`).toBeDefined();
+    }
+    // Retrieval is read-mostly: promotion, deprecation, quarantine, and policy
+    // writes are deliberately not reachable from this credential.
+    for (const path of Object.keys(document.paths)) {
+      if (path.includes("/memory/")) {
+        expect(path).not.toMatch(/promote|deprecate|quarantine|policy/);
+      }
     }
   });
 
