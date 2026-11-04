@@ -5,6 +5,7 @@ import path from "node:path";
 import { createOrchestrator } from "../../src/index.js";
 import type { OrchestratorHandle } from "../../src/index.js";
 import type { OrchestratorConfig } from "../../src/config.js";
+import type { DashboardSources } from "../../src/dashboard/index.js";
 import type { InvitationRateLimits } from "../../src/api/invitation-service.js";
 import {
   createProviderAccessRepositories,
@@ -116,6 +117,14 @@ export interface AuthAppOptions {
   repositoryIntegration?: boolean;
   /** Provider API base override for the point refresh (fake provider). */
   providerApiBaseUrl?: string;
+  /**
+   * Dashboard sources seeded with the ids this app generated. The dashboard
+   * is only readable through a live workspace membership (DAT-230).
+   */
+  dashboardSources?: (scope: {
+    enterpriseId: string;
+    workspaceId: string;
+  }) => Partial<DashboardSources>;
 }
 
 let appCounter = 0;
@@ -219,6 +228,14 @@ export async function startAuthApp(options: AuthAppOptions): Promise<AuthApp> {
       : {}),
     ...(options.providerApiBaseUrl !== undefined
       ? { providerApiBaseUrl: options.providerApiBaseUrl }
+      : {}),
+    ...(options.dashboardSources !== undefined
+      ? {
+          dashboardSources: options.dashboardSources({
+            enterpriseId: enterprise.id,
+            workspaceId: workspace.id,
+          }),
+        }
       : {}),
   });
   const { port } = await orchestrator.start();

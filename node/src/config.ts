@@ -122,6 +122,12 @@ export interface OrchestratorConfig {
   budgetPolicyFile?: string;
   /** Durable budget journal (JSONL, 0600); required alongside the policy. */
   budgetStateFile?: string;
+  /**
+   * Durable dashboard read/export audit log (JSONL, 0600). Every dashboard
+   * read and export appends one metadata-only entry (DAT-230). Unset keeps the
+   * trail process-local.
+   */
+  dashboardAuditFile?: string;
   // --- Enterprise identity (ADR-0006) -------------------------------------
   /**
    * External origin for OAuth redirect URLs and desktop login links. Unset
@@ -223,6 +229,11 @@ function defaultUsageLedgerPath(): string {
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "usage-ledger.json");
 }
 
+function defaultDashboardAuditPath(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "dashboard-audit.jsonl");
+}
+
 function defaultBudgetStatePath(): string {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "budget-journal.jsonl");
@@ -294,6 +305,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     securityHandlerIds: csv(env["FORGEPILOT_SECURITY_HANDLER_IDS"], []),
     securityAdminIds: csv(env["FORGEPILOT_SECURITY_ADMIN_IDS"], []),
     usageLedgerFile: env["FORGEPILOT_USAGE_LEDGER_FILE"] ?? defaultUsageLedgerPath(),
+    dashboardAuditFile: env["FORGEPILOT_DASHBOARD_AUDIT_FILE"] ?? defaultDashboardAuditPath(),
     securityTaskOwnerIds: csv(env["FORGEPILOT_SECURITY_TASK_OWNER_IDS"], []),
     securityReviewerIds: csv(env["FORGEPILOT_SECURITY_REVIEWER_IDS"], []),
     securityRuleStateFile:

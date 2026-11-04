@@ -27,6 +27,7 @@ import {
   ERROR_NEXT_ACTIONS,
   ERROR_STAGES,
 } from "./errors.js";
+import { DASHBOARD_OPENAPI_SCHEMAS, dashboardOpenApiPaths } from "./openapi-dashboard.js";
 import { MEMORY_OPENAPI_SCHEMAS, memoryOpenApiPaths } from "./openapi-memory.js";
 import { RSI_OPENAPI_SCHEMAS, rsiOpenApiPaths } from "./openapi-rsi.js";
 import { SECURITY_OPENAPI_SCHEMAS, securityOpenApiPaths } from "./openapi-security.js";
@@ -4561,6 +4562,11 @@ export function buildOpenApiDocument(): OpenApiDocument {
   // rollback, budgets, kill switch. Mounted under the same memory surface.
   Object.assign(paths, rsiOpenApiPaths());
 
+  // Workspace dashboard (DAT-230): read-only aggregates over the invocation
+  // ledger, cost ledger, budget journal, trace and task events, with explicit
+  // missing/stale/restricted states and a read/export audit surface.
+  Object.assign(paths, dashboardOpenApiPaths());
+
   // Security case/rule/recovery/audit surface (DAT-213, ADR-0005): redacted
   // cases, separated disposition, versioned rule corrections, one-time
   // rechecked recovery, and the tamper-evident non-secret audit trail.
@@ -4574,7 +4580,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
     openapi: "3.1.0",
     info: {
       title: "ForgePilot orchestrator API",
-      version: "0.9.0",
+      version: "0.10.0",
       description:
         "forgepilot-api/v1: the Node-to-UI contract of the ForgePilot pilot, the " +
         "enterprise identity surface (DAT-202, ADR-0006), and the workspace, " +
@@ -4610,7 +4616,11 @@ export function buildOpenApiDocument(): OpenApiDocument {
         "the bundle records the exact memory and retrieval-policy version it read, " +
         "omits rather than dilutes, surfaces conflicts instead of overwriting, " +
         "degrades to policy-only when the memory store is unavailable, and can " +
-        "never expand a capability grant — dsh remains the sole tool gate. " +
+        "never expand a capability grant — dsh remains the sole tool gate. The " +
+        "workspace dashboard (DAT-230, ADR-0008) is a read-only, workspace-scoped " +
+        "aggregate over invocation, cost, budget, trace and task telemetry: " +
+        "missing, stale, estimated and unknown data stays explicit and is never " +
+        "zero-filled, and financial, content and quarantine access stay separate. " +
         "Generated from the " +
         "orchestrator implementation; shapes are defined by " +
         "docs/contracts/forgepilot-api-v1.md.",
@@ -4670,6 +4680,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
         AuthAuditRecord: authAuditRecordSchema,
         ...MEMORY_OPENAPI_SCHEMAS,
         ...RSI_OPENAPI_SCHEMAS,
+        ...DASHBOARD_OPENAPI_SCHEMAS,
         ...SECURITY_OPENAPI_SCHEMAS,
         Error: errorSchema,
       },
