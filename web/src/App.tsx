@@ -11,6 +11,7 @@ import { AuthLoadingScreen, LoginScreen, NoWorkspaceScreen } from "./auth/LoginS
 import { useTaskStream } from "./api/hooks";
 import { IssuesWorkbench } from "./issues/IssuesWorkbench";
 import { MemoryWorkbench } from "./memory/MemoryWorkbench";
+import { RsiWorkbench } from "./memory/RsiWorkbench";
 import { CreateIdempotencyKeys } from "./api/idempotency";
 import { RepositoryPicker } from "./settings/RepositoryPicker";
 import { SettingsDialog } from "./settings/SettingsDialog";
@@ -178,7 +179,7 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
     [config],
   );
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [surface, setSurface] = useState<"tasks" | "issues" | "memory">("tasks");
+  const [surface, setSurface] = useState<"tasks" | "issues" | "memory" | "rsi">("tasks");
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   /** 窄屏钻取视图：list ↔ detail（≤900px 生效，桌面始终双栏并存） */
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
@@ -532,6 +533,14 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
             >
               Memory
             </button>
+            <button
+              type="button"
+              className={`surface-tab ${surface === "rsi" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "rsi" ? "page" : undefined}
+              onClick={() => setSurface("rsi")}
+            >
+              RSI
+            </button>
           </nav>
           {auth.session && (
             <div className="account-chip">
@@ -772,6 +781,8 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
       {surface === "issues" && <IssuesWorkbench client={client} />}
 
       {surface === "memory" && <MemoryWorkbench client={client} />}
+
+      {surface === "rsi" && <RsiWorkbench client={client} currentUserId={auth.session?.user.id} />}
 
       {showCreate && (
         <CreateTaskDialog
