@@ -286,9 +286,9 @@ describe("independent conformance to the normative contract", () => {
     // 70 identity/workspace/collaboration operations on main, the five
     // memory v1 operations (DAT-236), the eleven bounded RSI operations
     // (DAT-238), the seven memory-governance operations (DAT-251), the five
-    // dashboard operations (DAT-230), and the eighteen ADR-0005 security
-    // operations (DAT-213).
-    expect(checked).toBe(116);
+    // dashboard operations (DAT-230), the candidate-bound approval operation
+    // (DAT-220), and the eighteen ADR-0005 security operations (DAT-213).
+    expect(checked).toBe(117);
   });
 
   test("the committed openapi.json also carries the auth scheme", () => {
