@@ -28,7 +28,6 @@ import {
   createPatternSecretScanner,
   createScopeBackedPolicyResolver,
   createStaticCredentialStore,
-  createStaticPolicyResolver,
   staticDutyDirectory,
 } from "../src/index.js";
 import { TEST_MODEL } from "./helpers/scripted-stream.js";

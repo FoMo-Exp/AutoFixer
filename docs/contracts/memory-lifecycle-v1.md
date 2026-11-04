@@ -197,7 +197,7 @@ External facts arrive through injected interfaces, never bare assertions:
 | `UsageStat[]` | retrieval citation tracking | unused-candidate decay |
 | `ProposedOp[]` | admission retirement proposals, security reports | supersede / deprecate / quarantine |
 
-## 5. Tables (control-plane migration version 6)
+## 5. Tables (control-plane migration version 8)
 
 | Table | Purpose | Lifetime |
 | --- | --- | --- |
@@ -206,10 +206,12 @@ External facts arrive through injected interfaces, never bare assertions:
 | `memory_consolidation_runs` | Consolidation run summary | Audit; outlives items |
 | `memory_consolidation_ops` | Applied or skipped operations | Audit; outlives items |
 
-Migration version 6, not 5: the candidate-admission migration (DAT-234) owns
-version 5, and two branches claiming one version would make the second skip
-its schema silently. All four tables are additive; nothing existing is
-rebuilt.
+Migration version 8: main already carries v5 (DAT-247), v6 (DAT-204), and v7
+(the candidate-admission gate DAT-234, renumbered when it merged), so this
+unmerged block takes the next free version immediately after the admission
+gate it builds on. Renumbering an unmerged block costs nothing and no merged
+migration is touched; a duplicate version would silently skip this schema.
+All four tables are additive; nothing existing is rebuilt.
 
 ## 6. Bounds
 

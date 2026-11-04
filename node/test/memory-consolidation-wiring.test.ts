@@ -14,6 +14,7 @@ import {
   piAiProviderAdapter,
 } from "../src/gateway/index.js";
 import { createOrchestrator } from "../src/index.js";
+import { securityStubs } from "./helpers/test-gateway.js";
 
 // ---------------------------------------------------------------------------
 // Production wiring: the scheduled consolidation job is registered by the
@@ -63,6 +64,7 @@ function testGateway() {
     credentials: createStaticCredentialStore({}),
     adapter: piAiProviderAdapter,
     scanner: createPatternSecretScanner(),
+    ...securityStubs(),
   });
 }
 
