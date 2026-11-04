@@ -28,8 +28,28 @@ export function newArtifactId(): string {
   return `art_${randomUUID().replaceAll("-", "")}`;
 }
 
+export function newTestPolicyId(): string {
+  return `pol_${randomUUID().replaceAll("-", "")}`;
+}
+
+export function newTestPlanId(): string {
+  return `pln_${randomUUID().replaceAll("-", "")}`;
+}
+
+export function newCandidateId(): string {
+  return `cand_${randomUUID().replaceAll("-", "")}`;
+}
+
 export function newHandoffId(): string {
   return `hof_${randomUUID().replaceAll("-", "")}`;
+}
+
+export function newApprovalId(): string {
+  return `apr_${randomUUID().replaceAll("-", "")}`;
+}
+
+export function newDeliveryId(): string {
+  return `dlv_${randomUUID().replaceAll("-", "")}`;
 }
 
 export function newEventId(): string {

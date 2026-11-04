@@ -1,0 +1,48 @@
+{
+  "contract_version": 1,
+  "controls": {
+    "kill_switch": false,
+    "kill_switch_reason": null,
+    "kill_switch_changed_at": null,
+    "kill_switch_changed_by": null,
+    "auto_promote_low_risk": false,
+    "weekly_change_budget": 3,
+    "weekly_reflection_token_budget": 200000,
+    "updated_at": null,
+    "updated_by": null
+  },
+  "budget": {
+    "week_start": "2026-11-02",
+    "weekly_change_budget": 3,
+    "changes_promoted": 0,
+    "changes_remaining": 3,
+    "weekly_reflection_token_budget": 200000,
+    "reflection_tokens_used": 1680,
+    "reflection_tokens_remaining": 198320
+  },
+  "holdout": {
+    "cases": 20,
+    "last_evaluated_at": "2026-11-04T08:33:27.201Z"
+  },
+  "active_rollout": {
+    "rollout_id": "rsirollout_be378291a8504f86a6f66e21e0c4848b",
+    "proposal_id": "rsi_4c2ecc024aa8477a8ff5a6df1b835669",
+    "stage": 10,
+    "status": "canary",
+    "baseline_policy_version": 1,
+    "candidate_hash": "8dd1f42da87c6aacc0f9a4d4c2ce28f45b8772df3e0c19921eafe22307f6f5c2",
+    "reason": null,
+    "started_at": "2026-11-04T08:33:27.208Z",
+    "ended_at": null,
+    "updated_at": "2026-11-04T08:33:27.208Z"
+  },
+  "proposals": {
+    "proposed": 0,
+    "awaiting_approval": 0,
+    "ready": 0,
+    "canary": 1,
+    "promoted": 0,
+    "rolled_back": 0,
+    "blocked": 0
+  }
+}

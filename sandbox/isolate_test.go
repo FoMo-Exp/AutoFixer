@@ -40,6 +40,35 @@ func newIsolationLayout(t *testing.T) (string, IsolationRequest) {
 	return dir, isolationRequest(dir)
 }
 
+// TestPlatformExecutionDomain pins the platform contract the runner's gate
+// depends on: only a backend that owns the whole execution domain (Linux
+// bubblewrap's PID namespace) may run untrusted commands; macOS Seatbelt is
+// explicitly best-effort and therefore refused (DAT-253).
+func TestPlatformExecutionDomain(t *testing.T) {
+	isolator := NewIsolator()
+	switch runtime.GOOS {
+	case "linux":
+		if got := isolator.ExecutionDomain(); got != DomainComplete {
+			t.Errorf("linux backend %q domain = %q, want %q", isolator.Name(), got, DomainComplete)
+		}
+	case "darwin":
+		if got := isolator.ExecutionDomain(); got != DomainBestEffort {
+			t.Errorf("darwin backend %q domain = %q, want %q", isolator.Name(), got, DomainBestEffort)
+		}
+	}
+	err := requireCompleteExecutionDomain(isolator)
+	switch runtime.GOOS {
+	case "linux":
+		if err != nil {
+			t.Errorf("requireCompleteExecutionDomain on linux = %v, want nil", err)
+		}
+	case "darwin":
+		if !errors.Is(err, ErrExecutionDomainIncomplete) {
+			t.Errorf("requireCompleteExecutionDomain on darwin = %v, want ErrExecutionDomainIncomplete", err)
+		}
+	}
+}
+
 func TestIsolatorWrapRefusesApprovedDestinations(t *testing.T) {
 	_, req := newIsolationLayout(t)
 	req.Network = NetworkPolicy{Destinations: []string{"proxy.golang.org:443"}}

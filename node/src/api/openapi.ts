@@ -27,8 +27,11 @@ import {
   ERROR_NEXT_ACTIONS,
   ERROR_STAGES,
 } from "./errors.js";
-
-type JsonObject = Record<string, unknown>;
+import { DASHBOARD_OPENAPI_SCHEMAS, dashboardOpenApiPaths } from "./openapi-dashboard.js";
+import { MEMORY_OPENAPI_SCHEMAS, memoryOpenApiPaths } from "./openapi-memory.js";
+import { RSI_OPENAPI_SCHEMAS, rsiOpenApiPaths } from "./openapi-rsi.js";
+import { SECURITY_OPENAPI_SCHEMAS, securityOpenApiPaths } from "./openapi-security.js";
+import type { JsonObject } from "./openapi-types.js";
 
 /** Loosely-typed OpenAPI 3.1 document; schemas stay plain JSON objects. */
 export interface OpenApiDocument {
@@ -121,6 +124,17 @@ const errorSchema: JsonObject = {
         request_id: {
           type: "string",
           description: "Trace/case reference to quote in support and security cases.",
+        },
+        case_ref: {
+          type: ["string", "null"],
+          description:
+            "Authenticated security-case identifier, when the failure belongs " +
+            "to one (ADR-0005). A correlation handle only: it authorizes " +
+            "nothing and never grants access to quarantined content.",
+        },
+        trace_ref: {
+          type: ["string", "null"],
+          description: "Trace identifier for correlation, when one exists.",
         },
         details: {
           type: "object",
@@ -350,6 +364,7 @@ const taskSchema: JsonObject = {
     "risk",
     "progress",
     "pi_summary",
+    "memory",
     "governance",
     "artifacts",
   ],
@@ -453,6 +468,37 @@ const taskSchema: JsonObject = {
         "served unavailable with text null.",
       oneOf: [{ $ref: "#/components/schemas/PiSummary" }, { type: "null" }],
     },
+    memory: {
+      type: ["object", "null"],
+      description:
+        "Memory and retrieval-policy versions this run was pinned to at start " +
+        "(DAT-238), so a run is reproducible after a rollback. `canary` marks " +
+        "an unpublished candidate policy overlay; `item_ids` are the exact " +
+        "memory versions injected. Null when the memory service is not " +
+        "configured; `degraded` records an outage that did not block the run.",
+      required: [
+        "run_id",
+        "memory_version",
+        "policy_version",
+        "policy_hash",
+        "canary",
+        "rollout_id",
+        "bundle_id",
+        "degraded",
+        "item_ids",
+      ],
+      properties: {
+        run_id: { type: "string" },
+        memory_version: { type: ["string", "null"] },
+        policy_version: { type: ["integer", "null"] },
+        policy_hash: { type: ["string", "null"] },
+        canary: { type: "boolean" },
+        rollout_id: { type: ["string", "null"] },
+        bundle_id: { type: ["string", "null"] },
+        degraded: { type: "boolean" },
+        item_ids: { type: "array", items: { type: "string" } },
+      },
+    },
     governance: {
       type: "object",
       description:
@@ -502,11 +548,30 @@ const taskEventSchema: JsonObject = {
 
 const runSummarySchema: JsonObject = {
   type: "object",
+  description:
+    "One remediation run on a task. The optional evidence fields are written " +
+    "only while that run was active; absent means the evidence cannot be " +
+    "attributed to this run (DAT-238), never that it is zero.",
   required: ["run_id", "state", "created_at"],
   properties: {
     run_id: { type: "string" },
     state: { type: "string", enum: [...DSH_STATES] },
     created_at: { type: "string", format: "date-time" },
+    actions_completed: {
+      type: "integer",
+      minimum: 0,
+      description: "Executed tool actions attributed to this run.",
+    },
+    safety_events: {
+      type: "integer",
+      minimum: 0,
+      description: "Prohibited/policy-denied tool intents attributed to this run.",
+    },
+    updated_at: {
+      type: "string",
+      format: "date-time",
+      description: "Last time this run's own evidence changed.",
+    },
   },
 };
 
@@ -1444,6 +1509,32 @@ const candidateSchema: JsonObject = {
       properties: {
         config_digest: { type: "string" },
         environment: { type: "string" },
+        required_checks: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Validation identities of the run's approved test plan. The set must " +
+            "equal the registered test-policy checks the plan is bound to; every " +
+            "check needs a passing attempt backed by a retained execution artifact " +
+            "whose digest is the attempt's `output_digest`, produced from this " +
+            "exact revision. A failed, unexecuted, unplanned, or digest-mismatched " +
+            "check stops the run instead of producing a review card.",
+        },
+        policy_id: {
+          type: "string",
+          description:
+            "The registered test-policy version this evidence is bound to. " +
+            "Required checks, config digest, and environment are policy content " +
+            "approved by a configuration administrator, never supplied by the run " +
+            "or the candidate.",
+        },
+        policy_version: { type: "string" },
+        policy_digest: {
+          type: "string",
+          description:
+            "Digest of the exact policy content, so an approval binds to that " +
+            "policy version even after a newer version becomes current.",
+        },
         results: {
           type: "array",
           items: { $ref: "#/components/schemas/ValidationResult" },
@@ -1462,6 +1553,21 @@ const candidateSchema: JsonObject = {
       description: "References into the append-only audit/evidence records backing the candidate.",
     },
     created_at: { type: "string", format: "date-time" },
+    invalidated_at: {
+      type: ["string", "null"],
+      format: "date-time",
+      description:
+        "When the candidate stopped being valid for delivery (base advancement, " +
+        "test-evidence, target, policy, or authority change). An invalidated " +
+        "candidate never authorizes delivery; a new revision needs a new run and " +
+        "a new candidate. Absent on records that predate this field and never " +
+        "invalidated.",
+    },
+    invalidated_reason: {
+      type: ["string", "null"],
+      enum: [...APPROVAL_INVALIDATION_REASONS, null],
+      description: "Why the candidate was invalidated; always paired with `invalidated_at`.",
+    },
   },
 };
 
@@ -4215,6 +4321,61 @@ export function buildOpenApiDocument(): OpenApiDocument {
           404: errorResponse("ISSUE_NOT_FOUND"),
         },
       },
+      post: {
+        operationId: "requestIssueApproval",
+        summary: "Address a candidate-bound approval request to one eligible human",
+        description:
+          "Creates the one pre-PR human approval request for a frozen candidate " +
+          "in `awaiting_change_approval`. The approver is a current active " +
+          "workspace member with verified repository access and explicit " +
+          "delivery-approval authority — assignee, blame author, or team-leader " +
+          "status alone is insufficient. When `approver_user_id` is omitted, the " +
+          "service selects one eligible approver deterministically; when none " +
+          "exists the request is recorded unaddressed (`approver: null`) and can " +
+          "never be approved automatically. The finite TTL (default 24 hours) is " +
+          "service policy, never a request field.",
+        parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER, IDEMPOTENCY_KEY_PARAMETER],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["candidate_id"],
+                properties: {
+                  candidate_id: { type: "string" },
+                  target_branch: {
+                    type: "string",
+                    description:
+                      "Intended PR target; defaults to the issue's base branch. " +
+                      "A different value is a stale binding, never a silent retarget.",
+                  },
+                  approver_user_id: {
+                    type: "string",
+                    description:
+                      "Trusted selector for one eligible human approver. Omit to " +
+                      "let the service choose the first eligible approver.",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: "Approval request addressed",
+            ...jsonRef("#/components/schemas/Approval"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          403: errorResponse("APPROVER_NOT_AUTHORIZED — the named approver is ineligible"),
+          404: errorResponse("ISSUE_NOT_FOUND or CANDIDATE_NOT_FOUND"),
+          409: errorResponse(
+            "APPROVAL_REQUIRED (the issue is not awaiting change approval), " +
+              "APPROVAL_ALREADY_PENDING, CANDIDATE_INVALID, BASE_ADVANCED, or " +
+              "IDEMPOTENCY_CONFLICT",
+          ),
+        },
+      },
     },
     "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}": {
       get: {
@@ -4321,8 +4482,22 @@ export function buildOpenApiDocument(): OpenApiDocument {
             "application/json": {
               schema: {
                 type: "object",
-                required: ["approval_id"],
-                properties: { approval_id: { type: "string" } },
+                required: ["approval_id", "grant_id"],
+                properties: {
+                  approval_id: {
+                    type: "string",
+                    description:
+                      "The current approved request. It is consumed by exactly " +
+                      "this operation; reusing it is 409 APPROVAL_CONSUMED.",
+                  },
+                  grant_id: {
+                    type: "string",
+                    description:
+                      "The separate delivery-role capability grant bound to the " +
+                      "approved candidate head. A missing, expired, revoked, " +
+                      "non-PR, or wrong-head grant leaves delivery blocked.",
+                  },
+                },
               },
             },
           },
@@ -4448,6 +4623,24 @@ export function buildOpenApiDocument(): OpenApiDocument {
     },
   };
 
+  // Workspace memory v1 surface (DAT-236): bounded retrieval, feedback,
+  // browse, versions, and evaluation records.
+  Object.assign(paths, memoryOpenApiPaths());
+
+  // Bounded RSI (DAT-238): proposals, replay evaluation, approvals, canary,
+  // rollback, budgets, kill switch. Mounted under the same memory surface.
+  Object.assign(paths, rsiOpenApiPaths());
+
+  // Workspace dashboard (DAT-230): read-only aggregates over the invocation
+  // ledger, cost ledger, budget journal, trace and task events, with explicit
+  // missing/stale/restricted states and a read/export audit surface.
+  Object.assign(paths, dashboardOpenApiPaths());
+
+  // Security case/rule/recovery/audit surface (DAT-213, ADR-0005): redacted
+  // cases, separated disposition, versioned rule corrections, one-time
+  // rechecked recovery, and the tamper-evident non-secret audit trail.
+  Object.assign(paths, securityOpenApiPaths());
+
   // Stamp the security requirement and 401 response onto every operation so
   // auth coverage cannot silently miss an endpoint.
   stampAuth(paths);
@@ -4456,7 +4649,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
     openapi: "3.1.0",
     info: {
       title: "ForgePilot orchestrator API",
-      version: "0.9.0",
+      version: "0.10.0",
       description:
         "forgepilot-api/v1: the Node-to-UI contract of the ForgePilot pilot, the " +
         "enterprise identity surface (DAT-202, ADR-0006), and the workspace, " +
@@ -4487,6 +4680,16 @@ export function buildOpenApiDocument(): OpenApiDocument {
         "`retry_after_seconds` on the shared envelope. Mutating collaboration " +
         "commands are replay-safe by `Idempotency-Key`, and the issue SSE " +
         "stream replays by `Last-Event-ID` with replay-stable event ids. " +
+        "client-supplied identifiers never grant access. Workspace memory " +
+        "(DAT-236) is bounded, cited, reproducible, and untrusted by construction: " +
+        "the bundle records the exact memory and retrieval-policy version it read, " +
+        "omits rather than dilutes, surfaces conflicts instead of overwriting, " +
+        "degrades to policy-only when the memory store is unavailable, and can " +
+        "never expand a capability grant — dsh remains the sole tool gate. The " +
+        "workspace dashboard (DAT-230, ADR-0008) is a read-only, workspace-scoped " +
+        "aggregate over invocation, cost, budget, trace and task telemetry: " +
+        "missing, stale, estimated and unknown data stays explicit and is never " +
+        "zero-filled, and financial, content and quarantine access stay separate. " +
         "Generated from the " +
         "orchestrator implementation; shapes are defined by " +
         "docs/contracts/forgepilot-api-v1.md.",
@@ -4544,6 +4747,10 @@ export function buildOpenApiDocument(): OpenApiDocument {
         ProviderInstance: providerInstanceSchema,
         DesktopFlow: desktopFlowSchema,
         AuthAuditRecord: authAuditRecordSchema,
+        ...MEMORY_OPENAPI_SCHEMAS,
+        ...RSI_OPENAPI_SCHEMAS,
+        ...DASHBOARD_OPENAPI_SCHEMAS,
+        ...SECURITY_OPENAPI_SCHEMAS,
         Error: errorSchema,
       },
       securitySchemes: {

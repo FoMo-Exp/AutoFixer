@@ -91,6 +91,38 @@ mode) sees an explicit unavailable state instead of an empty list.
 state controls are hidden. The service still enforces every authorization
 check.
 
+## Bounded RSI surface
+
+The **RSI** surface reviews self-improvement proposals and the workspace
+controls that bound them. It is workspace-scoped and needs the `member` role:
+a viewer sees an explicit role gate instead of an empty list, and no read is
+issued. Proposal titles, targets, diffs, evaluations, approvals, rollouts, and
+observations come from the DAT-238 RSI contract (OpenAPI `0.9.0`).
+
+- The server runs the replay. A caller selects the golden set and hidden
+  holdout; metrics, a verifier claim, and evidence text are refused. The
+  verdict, per-arm samples, delta, confidence interval, approval keys, budget
+  state, and canary eligibility are rendered exactly as stored. `inconclusive`
+  reads as a refusal, never a pass.
+- The hidden holdout is aggregate-only. The status card shows its case count and
+  last evaluation time; an evaluation row shows aggregate samples and a
+  `holdout_used` flag. No holdout case content is returned by the contract, and
+  none is displayed or reconstructed.
+- The risk ladder maps the target class to its approval gate: A automatic only
+  when enabled, otherwise one named human; B one named human; C two humans with
+  the owner and reviewer keys; D rejected by the loop. A proposer is never
+  offered evaluation or approval of its own proposal.
+- Owners start the 10% canary, record a stage observation (samples are derived
+  from pinned runs), roll back, change controls, or engage and release the
+  kill switch. Admins approve. Engaging the kill switch requires a reason and
+  stops the loop in the same call; the form only lowers budgets and never
+  raises the fixed sample or regression ceilings.
+- Rollback requires a reason, which is rendered with the ended rollout.
+  Historical run pins and prior evaluations are never rewritten.
+- A regression, a failed dataset verdict, or a forbidden-item injection is
+  surfaced as a prominent warning above the gate; the raw evaluation table
+  stays available underneath.
+
 ## Provider account binding (settings)
 
 The workbench Settings dialog binds GitHub or GitLab accounts so the task
@@ -249,3 +281,46 @@ bearer-authenticated requests never send it. API requests opt into cross-origin
 credentials so a loopback API on another port still receives `fp_session`;
 Electron's IPC fetch ignores that field and keeps its bearer attachment in the
 main process.
+
+## Security surface
+
+The **Security** view implements the ADR-0005 operator side on the merged
+DAT-213 contract: a redacted case inbox and handling desk, versioned rule
+corrections, and the tamper-evident non-secret audit trail. It is
+workspace-scoped through `GET /api/v1/workspaces` like Issues and Memory.
+
+- **Cases.** The inbox filters by state and run and follows `next_cursor`.
+  Detail shows the redacted block reason, bound enterprise/workspace/issue/run
+  identifiers, the audited history, and only the disposition edges the service
+  reports in `allowed_transitions`. Task-owner termination and reassignment
+  requests are recorded (202), never executed.
+- **Separation of duties.** Handling and review are different human
+  principals. The desk derives the handler of record for the current review
+  round from the append-only `case.handled` / `case.submitted_for_review`
+  events; if the current user handled that round, review and recovery approval
+  are disabled. If the history cannot be read, the controls stay disabled and
+  say independence cannot be verified. Rule review is disabled for the
+  revision's author. The service enforces the duty on every request.
+- **Quarantine.** Case views carry metadata only. Raw context requires an
+  administrator-issued, scoped, expiring grant id plus an explicit
+  acknowledgement; the returned content is shown once in a dedicated block,
+  is clearable, and never enters lists, errors, or cached state.
+- **Recovery.** An approval is bound to the reviewed context, destination,
+  policy, rule, and scan revisions and expires. The UI distinguishes
+  `approved`, `consumed`, `invalidated`, `revoked`, and `expired`; dispatch is
+  enabled only for a live approval, requires an explicit complete-recheck
+  acknowledgement, and reports `unknown` provider outcomes as unknown. There
+  is no "send anyway" or administrator override anywhere in the surface.
+- **Rules.** Proposals carry only bounded constraints, a reason, an expiry, and
+  an optional review date; regression evidence is displayed from the service
+  and cannot be submitted by the client. The detail shows the constraint diff
+  against the previous loaded revision, applicability, evidence, review
+  record, and activation/rollback/supersession history.
+- **Audit.** The purpose field starts empty; the operator must type a
+  specific, non-secret reason before a read or export, both of which refuse an
+  empty purpose. Reads are themselves audited and never poll in the
+  background. Exports are administrator-only. A failed hash-chain verification
+  stays a visible refusal rather than unverified data.
+
+`CONTRACT.md` carries the per-endpoint checklist and the DAT-213 baseline
+commit.

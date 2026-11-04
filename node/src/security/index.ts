@@ -114,3 +114,107 @@ export {
 
 export { RuleCorrectionService } from "./rule-service.js";
 export type { RuleServiceDeps } from "./rule-service.js";
+
+export { RecoveryAuthorizationStore } from "./recovery-authorization.js";
+export { RECOVERY_INVALID_REASONS } from "./recovery-authorization.js";
+export type {
+  ConsumeResult,
+  RecoveryApproval,
+  RecoveryAuthorization,
+  RecoveryAuthorizationState,
+  RecoveryAuthorizationStatus,
+  RecoveryAuthorizationStoreOptions,
+  RecoveryDestination,
+  RecoveryDispatchOutcome,
+  RecoveryDispatchOutcomeKind,
+  RecoveryInvalidReason,
+  RecoveryReconciliation,
+  RecoveryReconciliationFinding,
+  RecoveryScope,
+} from "./recovery-authorization.js";
+
+export {
+  contextRevisionOf,
+  deepFreezeRequest,
+  fingerprintRequest,
+  keyedIdentifier,
+  rebuildCompleteRequest,
+  requestDigestOf,
+  requireCorrelationKey,
+  rulesRevisionOf,
+  scanPolicyRevisionOf,
+} from "./recovery-request.js";
+export type {
+  RebuiltRequest,
+  RecoveryRebuildInput,
+  RecoveryRequestSource,
+  RequestFingerprint,
+} from "./recovery-request.js";
+
+export {
+  createFileRecoveryAuditSink,
+  createMemoryRecoveryAuditSink,
+  scrubAuditRecord,
+  verifyRecoveryAuditLog,
+} from "./recovery-audit.js";
+export type {
+  RecoveryAuditApproval,
+  RecoveryAuditDestination,
+  RecoveryAuditEventType,
+  RecoveryAuditRecord,
+  RecoveryAuditSink,
+  RecoveryAuditSinkOptions,
+} from "./recovery-audit.js";
+
+export {
+  RECOVERY_APPROVAL_INVALID,
+  RecoveryApprovalInvalidError,
+  RecoveryDispatchError,
+  RecoveryEgressDeniedError,
+  RecoveryService,
+} from "./recovery.js";
+export type {
+  ApproveRecoveryInput,
+  RecoverInput,
+  RecoveryDispatchHandle,
+  RecoveryIdentityStatus,
+  RecoveryServiceDeps,
+} from "./recovery.js";
+
+export {
+  SECURITY_AUDIT_EVENT_CLASSES,
+  SECURITY_AUDIT_EVENT_TYPES,
+  SECURITY_AUDIT_RESULTS,
+  createFileSecurityAuditTrail,
+  createMemorySecurityAuditTrail,
+  inspectSecurityAuditTrailForTests,
+  normalizeSecurityAuditEvent,
+  protectedAuditIdentifier,
+  scrubAuditText,
+} from "./audit.js";
+export { assertProtectedSecurityAuditKeyFile, readOrCreateSecurityAuditKey } from "./audit-key.js";
+export type {
+  SecurityAuditAccess,
+  SecurityAuditActor,
+  SecurityAuditAuthorization,
+  SecurityAuditDestination,
+  SecurityAuditEntry,
+  SecurityAuditEvent,
+  SecurityAuditEventType,
+  SecurityAuditExport,
+  SecurityAuditQuery,
+  SecurityAuditResult,
+  SecurityAuditScanEvidence,
+  SecurityAuditScope,
+  SecurityAuditSink,
+  SecurityAuditTrail,
+  SecurityAuditTrailOptions,
+} from "./audit.js";
+export {
+  auditEventFromCaseEvent,
+  auditEventFromGatewayAttempt,
+  auditEventFromRecoveryRecord,
+  auditEventFromRuleEvent,
+  createSecurityAuditGatewaySink,
+  createSecurityAuditRecoverySink,
+} from "./audit-adapters.js";

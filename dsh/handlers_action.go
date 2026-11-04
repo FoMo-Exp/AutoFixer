@@ -3,6 +3,7 @@ package dsh
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -180,8 +181,8 @@ func (s *Server) handleSubmitAction(w http.ResponseWriter, r *http.Request) {
 	closeErr := rec.closeRunnerLocked()
 
 	if execErr != nil {
-		writeError(w, r, http.StatusServiceUnavailable, CodeSandboxUnavailable,
-			"Tool dispatch failed before an outcome could be recorded.", nil)
+		message, details := sandboxDispatchFailure(execErr)
+		writeError(w, r, http.StatusServiceUnavailable, CodeSandboxUnavailable, message, details)
 		return
 	}
 	if closeErr != nil {
@@ -220,6 +221,19 @@ func (s *Server) handleSubmitAction(w http.ResponseWriter, r *http.Request) {
 		Result:              result.Record,
 		Output:              string(result.Output),
 	})
+}
+
+// sandboxDispatchFailure describes a dispatch that never produced an outcome.
+// A host whose isolation backend cannot guarantee a complete execution domain
+// is named explicitly: the operator must move the run to a host that can
+// (Linux bubblewrap, or a future container/VM backend), not retry here, where
+// the platform gate will refuse it again (DAT-253).
+func sandboxDispatchFailure(err error) (string, map[string]any) {
+	if errors.Is(err, sandbox.ErrExecutionDomainIncomplete) {
+		return "Untrusted execution is unavailable on this host: no isolation backend can guarantee a complete execution domain.",
+			map[string]any{"reason": "execution_domain_incomplete"}
+	}
+	return "Tool dispatch failed before an outcome could be recorded.", nil
 }
 
 // checkActionState applies the contract's state gate before any dispatch
@@ -411,6 +425,7 @@ func (s *Server) executorFor(rec *runRecord) (*sandbox.Runner, error) {
 		RevisionSource:   s.cfg.RevisionSource,
 		DependencySource: s.cfg.DependencySource,
 		Profiles:         s.profiles,
+		Isolator:         s.cfg.Isolator,
 		DenyRead:         s.controlPlaneDenyRead(),
 	})
 	if err != nil {

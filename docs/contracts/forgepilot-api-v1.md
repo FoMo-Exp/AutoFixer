@@ -207,7 +207,7 @@ run summaries for that task; terminal grants are never reused.
 | `POST /api/v1/tasks` | `repository_id`, `base_ref`, `summary`, `source_reference`, `acceptance_criteria[]`; optional `Idempotency-Key` header | `201 Task` |
 | `GET /api/v1/tasks?cursor=&status=` | none | `200 {items: Task[], next_cursor}` |
 | `GET /api/v1/tasks/{task_id}` | none | `200 Task` |
-| `GET /api/v1/tasks/{task_id}/runs` | none | `200 {items: redacted RunSummary[]}` ordered by creation time |
+| `GET /api/v1/tasks/{task_id}/runs` | none | `200 {items: redacted RunSummary[]}` ordered by creation time; optional `actions_completed` / `safety_events` / `updated_at` are run-attributed and absent when they cannot be |
 | `POST /api/v1/tasks/{task_id}/messages` | `{mode:"steer"|"follow_up",content:"..."}` | `202 {task_id, queued:true}` |
 | `POST /api/v1/tasks/{task_id}/approvals` | `{decision:"approve"|"reject",scope_digest:"sha256:..."}` | `200 Task` |
 | `POST /api/v1/tasks/{task_id}/cancel` | optional reason | `202 Task` |
@@ -248,6 +248,29 @@ run summaries for that task; terminal grants are never reused.
 | `GET /api/v1/workspaces/{workspace_id}/invitations?cursor=` | none | `200 {items: Invitation[], next_cursor}` |
 | `POST /api/v1/workspaces/{workspace_id}/invitations` | `{expires_in_seconds?, bound_provider_subject?}` | `201 CreatedInvitation` |
 | `DELETE /api/v1/workspaces/{workspace_id}/invitations/{invitation_id}` | none | `204` |
+| `POST /api/v1/workspaces/{workspace_id}/memory/search` | `{purpose, query, scope?, run_id?, max_items?, max_tokens?, context_window_tokens?, include_candidates?, policy_version?, query_embedding?}` | `200 MemoryBundle` (bounded, cited; `degraded` on store outage) |
+| `POST /api/v1/workspaces/{workspace_id}/memory/feedback` | `{bundle_id, run_id, outcome, items?[], note?}` | `201 MemoryFeedbackRecord` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/items?kind=&status=&tier=&team_id=&path_prefix=&language=&task_family=&trust=&sensitivity=&limit=&cursor=` | none | `200 {items: MemoryItemView[], next_cursor}` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/items/{item_id}` | none | `200 MemoryItemView` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/versions` | none | `200 MemoryItemVersions` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/events?limit=&cursor=` | none | `200 MemoryItemEvents` (paged; `next_cursor` until null) |
+| `POST /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/promote` | `{version, expected_version}` | `200 MemoryGovernanceResult` (candidate → active) |
+| `POST /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/deprecate` | `{version, expected_version, reason_code}` | `200 MemoryGovernanceResult` (active\|candidate → deprecated) |
+| `POST /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/quarantine` | `{version, expected_version, reason_code}` | `200 MemoryGovernanceResult` (any non-terminal → quarantined; content redacted) |
+| `POST /api/v1/workspaces/{workspace_id}/memory/items/{item_id}/restore` | `{version, expected_version, target_status, reason_code}` | `200 MemoryGovernanceResult` (quarantined → proposed\|candidate\|deprecated) |
+| `GET /api/v1/workspaces/{workspace_id}/memory/versions` | none | `200 MemoryVersions` |
+| `POST /api/v1/workspaces/{workspace_id}/memory/eval-runs` | `{kind, dataset, policy_version, memory_version, metrics, verdict, notes?}` | `201 MemoryEvalRunRecord` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/proposals?status=&risk=&limit=` | none | `200 {proposals: RsiProposal[]}` |
+| `POST /api/v1/workspaces/{workspace_id}/memory/proposals` | `{title, summary, diff, target, candidate_policy?, memory_item?}` | `201 RsiProposal` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}` | none | `200 RsiProposal` |
+| `POST /api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/evaluations` | `{datasets?[]}` | `201 RsiProposal` (replay executed server-side; metrics/verifier refused) |
+| `POST /api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/approvals` | `{note?}` | `201 RsiProposal` |
+| `POST /api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/canary` | none | `201 RsiProposal` (canary at 10%) |
+| `POST /api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/canary/observations` | none | `201 RsiProposal` (sample derived from pinned runs) |
+| `POST /api/v1/workspaces/{workspace_id}/memory/proposals/{proposal_id}/rollback` | `{reason}` | `200 RsiProposal` |
+| `GET /api/v1/workspaces/{workspace_id}/memory/rsi/status` | none | `200 RsiStatus` |
+| `POST /api/v1/workspaces/{workspace_id}/memory/rsi/kill-switch` | `{enabled, reason?}` | `200 {controls: RsiControls}` |
+| `PATCH /api/v1/workspaces/{workspace_id}/memory/rsi/controls` | `{auto_promote_low_risk?, weekly_change_budget?, weekly_reflection_token_budget?}` | `200 {controls: RsiControls}` |
 | `POST /api/v1/invitations/preview` | `{token}` | `200 InvitationPreview` |
 | `POST /api/v1/invitations/redeem` | `{token}` | `200 InvitationRedemption` |
 
@@ -310,6 +333,116 @@ identity; the deployment's configured repository is never a fallback.
 Archive and recover apply only to cancelled tasks and return `409` for other
 statuses. These operations move the existing task between workspace views;
 they do not resume or create a run.
+
+### Workspace memory (DAT-236)
+
+The memory surface implements ADR-0009's read path and is detailed in
+`docs/contracts/memory-retrieval-v1.md`. It is session-authenticated and
+workspace-scoped; `workspace_id` is a locator, never authority. Retrieval
+applies hard filters (workspace, applicability, status, sensitivity, validity,
+approval) before hybrid BM25+vector scoring, then a strict budget: **eight
+items or 1,500 tokens by default, never more than 15% of the model context**;
+it omits rather than dilutes. Mandatory L4 policy is never counted against the
+budget and are never truncated (a policy corpus over the supported bound fails
+the request rather than returning policy-incomplete context). The caller's stated
+context window is used exactly; windows below 1,000 are rejected rather than
+silently enlarged. Unapproved candidates appear at reduced weight, capped at two,
+and are labeled. Contradictions are surfaced rather than silently overwritten: while a
+conflict is unresolved neither side is injected as fact. Every bundle names the
+exact `memory_version` and retrieval-policy version it read, and every
+retrieval is audited with the injected item versions. The versions surface obeys
+the same sensitivity ceiling as browse: hidden items are not enumerable by ID,
+version, hash, timestamp, or count, and the ceiling applies to each historical
+version's own sensitivity. If the memory store is
+unavailable, `search` returns `200` with `degraded: true` and no items — the run
+proceeds with configured policy only, never invented lessons.
+
+Memory is untrusted data: a bundle can never grant a capability, approve a
+change, or authorize a tool action, and `dsh` remains the sole execution gate.
+Retrieval itself is read-only over memory.
+
+### Memory governance (DAT-251)
+
+The named-human half of the lifecycle is detailed in
+`docs/contracts/memory-governance-v1.md`. It adds item detail, per-version
+content for diffing, and the item audit timeline, plus exactly four
+transitions: `promote`, `deprecate`, `quarantine`, and `restore`. It is
+session-authenticated and workspace-scoped, and authority is resolved from
+live membership and team rows, never from a request body:
+
+| Actor | Governance authority |
+|---|---|
+| workspace `owner` / `admin` | every item in the workspace within their sensitivity ceiling |
+| team leader (`team.leader_user_id`) | only items whose applicability names a team they lead |
+| `member` / `viewer` | read-only; transitions are `403 FORBIDDEN` |
+| agent / operator bearer credential | `403 FORBIDDEN` for transitions |
+| item in another workspace | `404 NOT_FOUND`, indistinguishable from a missing item |
+
+The state machine is explicit: `promote` accepts only `candidate → active` and
+records named human approval of the exact version (procedural content and
+policy require it; policy must additionally be human-authored); `deprecate`
+accepts `active|candidate → deprecated`; `quarantine` accepts any non-terminal
+state; `restore` accepts `quarantined → proposed|candidate|deprecated` and
+never `→ active`, so leaving quarantine always re-enters the promotion path.
+`retired` is terminal. An illegal transition is `409 INVALID_TRANSITION`.
+
+Every transition carries `version` and `expected_version`; either mismatching
+the current version is `409 VERSION_CONFLICT`, and writes only append audit
+rows. Reasons are a fixed machine vocabulary (`reason_code`), never free text:
+`memory_events.detail` keeps its no-free-text, no-memory-content invariant,
+and the timeline normalizes `detail` to enums, counts, and opaque ids.
+
+A quarantined item's `statement` is `null` with `statement_redacted: true`,
+its `preconditions` are empty, and its evidence references are replaced by
+irreversible identifiers in items, item detail, versions, and events. v1 has
+no route that returns quarantine content: ADR-0009 requires separately
+authorized access to quarantine and evidence. Historical versions are filtered
+by their own sensitivity: a version above the caller's ceiling is absent from
+`versions` and from `events`, not blanked in place. The browse surface gains
+only optional fields and optional query parameters, so DAT-236 clients are
+unaffected.
+
+
+### Bounded RSI (DAT-238)
+
+The RSI surface is a governance layer over memory artifacts and retrieval
+policy; it is detailed by `docs/contracts/memory-rsi-v1.md`. It is
+session-authenticated and workspace-scoped. The risk ladder is derived from the
+target, never supplied by the caller: retrieval weights and ranking
+tie-breakers are class A, lessons/playbooks/prompt hints are class B, retrieval
+bounds/scope taxonomy/consolidation thresholds are class C, and class D
+(capability grants, approval rules, evidence schema, evaluation definitions,
+safety policy, merge/deploy) is rejected. Class B needs one named human
+approval; class C needs two distinct humans (owner and reviewer keys); class A
+skips human approval only when the workspace has enabled automatic promotion.
+
+The server — not the caller — runs the offline replay over the stored corpus
+against the workspace golden set **and** a hidden holdout the proposer cannot
+read. No operation accepts a score, an evaluation case, or holdout content: the
+holdout contributes an aggregate sample count only. The recorded verifier is
+the authenticated evaluator with a server-derived replay reference, and a
+request that carries a verifier claim or metrics is refused. Promotion requires a minimum sample per arm, a
+non-negative success delta, a Newcombe confidence interval that does not
+establish a regression beyond the fixed margin, zero forbidden-item injection,
+and no rework or cost breach. A passing candidate enters a 10% → 50% → 100%
+canary whose stages each require their own minimum sample; rollouts are
+serialized per workspace and a canary refuses a baseline that moved since
+evaluation. A canary observation
+is computed server-side from the runs the rollout pinned and their terminal task
+outcomes (pending runs excluded); any request body is refused, so an owner
+cannot submit a passing sample. Any security event, regression, or breach rolls
+it back automatically. The workspace kill switch
+takes effect in the same call: active canaries roll back, new runs pin the
+baseline policy, and RSI actions are refused. Promotions consume a weekly change
+budget, and replay consumes a weekly reflection-token budget.
+
+Every pinned run's canary evidence comes from that run's own `RunSummary`
+entry; task-level aggregates are used only for single-run tasks. Every run pins
+the exact memory version and policy identity it used at run creation (surfaced
+as the Task `memory` block), so a bad promotion is
+reproducible after rollback and a canary run's candidate overlay is visible. Memory remains untrusted data, and
+`dsh` remains the only tool gate: nothing on this surface can grant a
+capability, approve a change, or alter an approval rule.
 
 SSE events contain `event_id`, `sequence`, `occurred_at`, `task_id`,
 `task_version`, `type`, and redacted `data`. Types are `task.status_changed`,
@@ -619,6 +752,8 @@ Stable codes and their default envelope semantics:
 | `TASK_STATE_CONFLICT` | 409 | execution | stop | no | `refresh` |
 | `IDEMPOTENCY_CONFLICT` | 409 | validation | stop | no | `resubmit` |
 | `VERSION_CONFLICT` | 409 | validation | stop | no | `refresh` |
+| `INVALID_TRANSITION` | 409 | policy | stop | no | `refresh` |
+| `PRECONDITION_FAILED` | 409 | policy | stop | no | `refresh` |
 | `WORKSPACE_REPOSITORY_CONFLICT` | 409 | validation | stop | no | — |
 | `MEMBERSHIP_CONFLICT` | 409 | validation | stop | no | — |
 | `AUTHORITY_RECHECK_REQUIRED` | 409 | reconciliation | stop | no | `reconcile` |
@@ -753,11 +888,14 @@ bearer token.
 
 ## Collaboration v1 (DAT-221)
 
-Status: implementation contract defined ahead of its serving code. It defines
-the durable issue/task/run/candidate/approval/delivery resources and their
-event stream of ADR-0007 so dependent web work is built against a merged
-contract; it claims no running control until the implementation lands, and dsh
-remains the execution gate.
+Status: implementation contract whose durable issue/task/run/approval/delivery
+domain is implemented in the collaboration domain (DAT-219 candidate freeze,
+DAT-220 candidate-bound approval and broker delivery); the HTTP/SSE serving
+wiring remains a separate landing surface. It defines the durable
+issue/task/run/candidate/approval/delivery resources and their event stream of
+ADR-0007 so dependent web work is built against a merged contract; it claims no
+running HTTP control until that serving code lands, and dsh remains the
+execution gate.
 
 Product stages and harness run states are separate vocabularies. An issue's
 `product_state` is the product lifecycle (`triage`, `planning`, `implementing`,
@@ -795,13 +933,156 @@ direct main write, merge, self-review, or check waiver.
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/candidates?cursor=` | none | `200 {items: Candidate[], next_cursor}` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/candidates/{candidate_id}` | none | `200 Candidate` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals?cursor=` | none | `200 {items: Approval[], next_cursor}` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals` | `{candidate_id, target_branch?, approver_user_id?}`; optional `Idempotency-Key` | `201 Approval` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}` | none | `200 Approval` |
 | `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}/decision` | `{decision, diff_digest, note?}` | `200 Approval` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries?cursor=` | none | `200 {items: Delivery[], next_cursor}` |
-| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries` | `{approval_id}` | `202 Delivery` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries` | `{approval_id, grant_id}`; optional `Idempotency-Key` | `202 Delivery` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}` | none | `200 Delivery` |
 | `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}/reconcile` | optional `note` | `202 Delivery` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stream` | `Last-Event-ID` optional | `200 text/event-stream` |
+
+### Candidate freeze and review card (DAT-219)
+
+A candidate is frozen by the service when local preparation stops; it is never
+client-authored or client-mutated. The record binds the exact base, candidate
+commit, and tree identity, the sha256 diff digest and changed paths, the
+validation configuration/environment and every validation attempt, the risk
+decision, and patch/report provenance references. The diff content is retained
+in a content-addressed store outside the ephemeral worktree, so the card and its
+evidence stay reviewable after cleanup; `diff.digest` is the sha256 of that
+retained content and can be recomputed independently instead of trusted. The
+containment check resolves symlinks, so a retention root that only appears to be
+outside the worktree is refused.
+
+Validation evidence is passing evidence, and the required checks are **policy**,
+not execution output. A configuration administrator registers a versioned test
+policy scoped to one workspace and repository: required checks, `config_digest`
+(`sha256:<64 hex>`), and environment, recorded with `registered_by`. Each
+repository has exactly one current version; registering a new version moves that
+pointer, and older versions stay registered for audit and replay. A worker lease
+never defines or edits policy.
+
+Before validation executes, the run binds exactly one immutable plan to the
+repository's **current** policy version. The plan command accepts only the run
+and the policy id — checks, config digest, and environment are frozen from the
+registered policy and can never be supplied per command. A plan for a stopped
+or terminal run, a second plan for the same run, a policy from another
+workspace/repository, or a superseded policy version is refused.
+
+`validation.required_checks` must equal the bound policy's checks, its
+`config_digest`/`environment` must match, and every result must name a policy
+check with exit status `0`. A failed attempt, an attempt with no exit status or
+output digest, an unplanned check, or a missing required check stops the run
+instead of producing a review card. The card exposes `policy_id`,
+`policy_version`, and `policy_digest`, so an approval (DAT-220) binds to one
+exact policy version even after a newer one becomes current; a policy update
+does not retroactively invalidate an already frozen candidate.
+
+Every validation `event_reference` must be a retained `test_report` artifact of
+the same run produced from the frozen base and head whose digest equals the
+attempt's `output_digest` (algorithm `sha256`, hex value), so a "passing" result
+cannot point at a patch/report of another purpose, at a plan or grant record, at
+another revision, or at a digest the execution artifact does not have.
+`audit_refs` entries resolve to retained artifacts, grants, or the approved
+plan of the same run (`evidence://runs/{run_id}/...`); artifact references must
+bind the frozen revision, and a fabricated path never freezes a candidate.
+
+`Candidate` carries optional `invalidated_at`/`invalidated_reason`. When the
+issue base advances, every candidate frozen against an older base is
+permanently invalid (`base_advanced`) and can never be approved or delivered:
+refreshing a base requires a new run, new validation, and a new candidate. A
+frozen candidate has no branch or PR — no provider write exists before a
+current, candidate-bound human approval.
+
+`GET .../candidates` serves stable pages: `next_cursor` is the last served
+candidate id and an unknown cursor is `400 INVALID_CURSOR`, so a client never
+silently restarts or skips the list.
+
+The reviewer notification carries bounded metadata (summary, changed-path
+count, line counts, test totals, risk class) and an authenticated client link
+to the card. It never contains diff text, changed path names, tool output,
+digests, or a bearer/approval credential; the link selects a candidate and
+approval remains a confirmed authenticated mutation in the client.
+
+### Candidate-bound human approval (DAT-220)
+
+An approval request is addressed to exactly one **named eligible human** who
+has repository access and explicit approval authority. The workspace holds no
+eligible approver: the request is recorded `pending` with `approver: null`
+(unaddressed) and can never be decided, never becomes approved, and never
+authorizes delivery. Selection is deterministic (lowest eligible `user_id`) so
+a replay of the same operation records the same addressee; an explicit
+`approver_user_id` naming a member without authority is
+`403 APPROVER_NOT_AUTHORIZED`.
+
+Addressing freezes an immutable `binding` to one candidate: workspace,
+repository identity, `candidate_id`, candidate head SHA, sha256 diff digest,
+sha256 test-evidence digest, intended `target_branch`, and policy version. The
+approval additionally carries the trusted configuration's finite TTL (24 hours
+by default, never caller-supplied) and `expires_at`. The effective state is
+derived at read time: an approved request whose `expires_at` passed while the
+service was down comes back `expired`, never `approved`.
+
+The decision command accepts only `{decision, diff_digest, note?}`; the
+approver is the authenticated caller and must equal the addressed addressee.
+The reviewed `diff_digest` must restate the bound digest exactly, so an approver
+cannot confirm a diff they did not see and an agent cannot approve its own
+work (`403 APPROVER_NOT_AUTHORIZED`, `409 APPROVAL_BINDING_STALE`). Rejection is
+terminal for the request. One candidate holds at most one actionable request at
+a time (`409 APPROVAL_ALREADY_PENDING`).
+
+Approval state is `pending`, `approved`, `rejected`, `invalidated`, `expired`,
+`consumed`, or `cancelled`. `invalidated` is permanent and records its reason:
+candidate invalidation (`candidate_invalidated`), base advance or rebase
+(`base_advanced`), target branch change (`target_changed`), test-evidence change
+(`test_evidence_changed`), policy change (`policy_changed`), or authority change
+such as reassignment (`authority_changed`). A rebase therefore requires new
+validation against the new revision and a new request; the previous approval can
+never be revived. Cancelling the issue cancels its actionable approvals.
+
+### Controlled delivery broker (DAT-220)
+
+Only the trusted delivery broker performs provider writes. The broker obtains
+provider write credentials itself; clients and models never receive them, and no
+response or event contains one. The provider contract exposes exactly two write
+operations — push one branch ref and open one pull request — and structurally
+has no merge, close, delete, force-push, or review operation, so the broker
+cannot merge, self-review, or waive a check.
+
+`POST .../deliveries` takes `{approval_id, grant_id}` and is a no-op duplicate
+only for the same operation identity. The broker requires a current `approved`
+approval bound to a valid frozen candidate and an **active, unexpired,
+delivery-role capability grant** whose head binding matches the candidate
+(`grant_id` is a separate delivery grant — a preparation grant is not enough).
+The branch must be exactly `autofixer/{issue_id}`; the repository base branch,
+`main`, and `master` are refused (`403 DELIVERY_FORBIDDEN`). Repository base
+branch changes and target/policy/authority changes invalidate the approval, so a
+delivery cannot push to a target the approver did not see.
+
+Before **each** provider write the broker re-checks the current approval state,
+the delivery permission, the dsh grant, audit availability, the branch
+constraint, and the exact candidate identity. It records the operation identity
+and intent durably before writing, so a crash or ambiguous harness/provider
+result leaves an explicit state rather than an untracked write. Delivery state
+is `pending`, `pushing`, `opening_pr`, `delivered`, `partial`, `unknown`,
+`failed`, or `cancelled`:
+
+- `delivered` requires both provider branch and pull-request evidence naming the
+  approved head; an existing PR for the branch is adopted instead of opening a
+  duplicate.
+- `partial` means one write is confirmed and the other is not; it is never
+  reported as success.
+- `unknown` means the provider outcome could not be determined. `partial` and
+  `unknown` leave only through an explicit reconcile; a retry cannot start a
+  second write from them.
+
+`POST .../deliveries/{delivery_id}/reconcile` reads provider branch and PR
+evidence and records `delivered`, `partial`, `failed`, or `unknown` without
+performing a provider write. If the provider cannot be read, the reconcile fails
+`503 PROVIDER_ERROR` (retryable) and the delivery stays unreconciled. Delivering
+an approval consumes it exactly once (`consumed_by_delivery_id`); every later
+request naming that approval is `409 APPROVAL_CONSUMED`.
 
 ### Issue events and replay
 
@@ -847,6 +1128,74 @@ outcome classes and their retryability:
 
 `partial` delivery (a pushed branch without a PR) is an explicit recorded
 outcome, never success and never automatically deleted.
+
+## Workspace dashboard (DAT-230)
+
+Read-only, session-authenticated aggregation over the invocation ledger, cost
+ledger, budget journal, trace and task-event log of ADR-0008. `{workspace_id}`
+is a locator, never authority: the scope comes from the caller's live
+membership, client-supplied `workspace_id`/`enterprise_id` query parameters are
+`400 INVALID_REQUEST`, and a path naming another workspace is `404 NOT_FOUND`
+(the same answer as a workspace that does not exist). Periods are half-open
+`[from, to)` with an explicit IANA `timezone` (default `UTC`) and a `bucket` of
+`hour`, `day`, `week` or `month`; date keys are the local civil label in that
+zone. Ranges longer than 366 days are `400 RANGE_TOO_LARGE`.
+
+Every metric carries its own `status` — `ok`, `empty` (source wired, no data in
+the period: a real zero where the metric is a count), `missing_source` (source
+not wired), `not_measured` (no telemetry exists for it) or `restricted` — and a
+missing figure is `null`, never zero. Known, estimated and unknown token and
+cost figures stay separate, ratios publish numerator and denominator, and each
+source reports a watermark plus `ok`/`empty`/`stale`/`missing`/`restricted`; a
+restricted financial source hides even its record count and watermark.
+`connector_lag_ms`
+and `worker_utilization` are `not_measured` until such telemetry is wired.
+`cost` and `budget` are owner/admin only; other roles get `restricted` with
+`null` figures. Content and quarantine are never served by this surface:
+`include_content`/`content` is `403 CONTENT_ACCESS_DENIED` and
+`include_quarantine`/`quarantine` is `403 QUARANTINE_ACCESS_DENIED`. Trace views
+never carry the event payload. Every read and export appends an audit entry
+(metadata only: actor, scope, resource, query parameters, record count), and the
+audit trail itself is owner/admin only (`403 AUDIT_ACCESS_DENIED`).
+
+| Request | Request body | Response |
+|---|---|---|
+| `GET /api/v1/workspaces/{workspace_id}/dashboard/summary?from=&to=&timezone=&bucket=&breakdown=&limit=&cursor=&stale_after_seconds=` | none | `200 DashboardSummary` (totals + breakdown by `task`, `agent`, `model` or `date`) |
+| `GET /api/v1/workspaces/{workspace_id}/dashboard/cost-items?from=&to=&timezone=&bucket=&limit=&cursor=` | none | `200 DashboardCostItemPage` (cost item → ledger entry join; owner/admin only) |
+| `GET /api/v1/workspaces/{workspace_id}/dashboard/issues/{issue_id}?from=&to=&timezone=&bucket=&limit=&cursor=` | none | `200 DashboardIssueDrilldown` (execution, trace, runs, references; no content) |
+| `GET /api/v1/workspaces/{workspace_id}/dashboard/audit?limit=&cursor=&operation=&resource=` | none | `200 DashboardAuditPage` (owner/admin only) |
+| `GET /api/v1/workspaces/{workspace_id}/dashboard/export?from=&to=&timezone=&bucket=&breakdown=` | none | `200 DashboardExportBundle` as an attachment (owner/admin only; capped at 1000 cost items) |
+
+## Model egress, security cases, and audit (DAT-213)
+
+The ADR-0005 surface is detailed by `docs/contracts/security-api-v1.md`. It is
+workspace-scoped under `/api/v1/workspaces/{workspace_id}/security`, adds
+`case_ref` and `trace_ref` to the shared error envelope, and emits the stable
+codes `MODEL_EGRESS_DENIED`, `SENSITIVE_DATA_UNCERTAIN`,
+`SECURITY_REVIEW_REQUIRED`, and `RECOVERY_APPROVAL_INVALID`. No operation in
+that surface accepts a per-call bypass, a client-supplied scope, or reused
+recovery authorization.
+
+| Operation | Purpose |
+| --- | --- |
+| `GET /api/v1/workspaces/{workspace_id}/security/cases` | List redacted cases. |
+| `GET /api/v1/workspaces/{workspace_id}/security/cases/{case_id}` | Read one case and its allowed transitions. |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/transitions` | Advance or close a case through a permitted edge. |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/termination-requests` | Request termination for administrator review. |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/reassignment-requests` | Hand a case to another handler. |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/quarantine-grants` | Grant temporary access to quarantined content. |
+| `POST /api/v1/workspaces/{workspace_id}/security/quarantine/{quarantine_id}/views` | View quarantined content under a live grant. |
+| `GET /api/v1/workspaces/{workspace_id}/security/rules` | List rule revisions by lineage. |
+| `POST /api/v1/workspaces/{workspace_id}/security/rules/proposals` | Propose a versioned constraint revision. |
+| `POST /api/v1/workspaces/{workspace_id}/security/rules/{lineage}/revisions/{version}/reviews` | Independent review of one revision. |
+| `POST /api/v1/workspaces/{workspace_id}/security/rules/{lineage}/revisions/{version}/activation` | Activate an approved revision. |
+| `POST /api/v1/workspaces/{workspace_id}/security/rules/{lineage}/rollbacks` | Roll back the active revision. |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/recovery-approvals` | Bind a single-use recovery approval. |
+| `GET /api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}` | Read an authorization's bound facts. |
+| `DELETE /api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}` | Revoke an unconsumed approval. |
+| `POST /api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}/dispatch` | Recheck the complete request and dispatch once. |
+| `GET /api/v1/workspaces/{workspace_id}/security/audit` | Read the tamper-evident non-secret trail. |
+| `POST /api/v1/workspaces/{workspace_id}/security/audit/exports` | Export a filtered trail; the export is itself audited. |
 
 ## Pagination
 

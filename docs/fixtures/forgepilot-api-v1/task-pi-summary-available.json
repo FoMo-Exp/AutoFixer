@@ -66,6 +66,7 @@
     },
     "updated_at": "2099-01-01T00:00:00.000Z"
   },
+  "memory": null,
   "governance": {
     "current_head_sha": null,
     "observations_valid": true,

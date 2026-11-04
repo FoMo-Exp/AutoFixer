@@ -1,0 +1,28 @@
+{
+  "item_id": "mem_9b1d6f2c4e5a4b7f8c1d2e3f4a5b6c7d",
+  "events": [
+    {
+      "at": "2026-11-04T09:40:00Z",
+      "source": "memory_event",
+      "action": "evidence_added",
+      "actor": { "type": "system", "id": "sys_consolidation" },
+      "item_version": 3,
+      "detail": { "count": 2 }
+    },
+    {
+      "at": "2026-11-04T10:05:00Z",
+      "source": "consolidation_op",
+      "action": "merge",
+      "actor": { "type": "system", "id": "sys_consolidation" },
+      "item_version": 3,
+      "reason_code": "duplicate_content",
+      "detail": {
+        "applied": true,
+        "run_id": "run:mem_02",
+        "target_item_id": "mem_4ccab9541a2740379fb7ba131d914ed1",
+        "merged_versions": 1
+      }
+    }
+  ],
+  "next_cursor": null
+}

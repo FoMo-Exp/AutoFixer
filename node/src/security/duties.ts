@@ -42,10 +42,28 @@ export type SecurityAction =
   | "case.terminate"
   | "quarantine.grant_access"
   | "quarantine.view"
+  /**
+   * Recovery (DAT-212, ADR-0005 §5): approving one recheck of a rebuilt
+   * request. Reviewing the evidence, scope, expiry, and destination is the
+   * independent reviewer's work; it authorizes rechecking, never a bypass.
+   */
+  | "recovery.approve"
+  /** Withdrawing an unconsumed recovery approval (reviewer or administrator). */
+  | "recovery.revoke"
+  /** Operational reconciliation of an unknown provider outcome (never a replay). */
+  | "recovery.reconcile"
   | "rule.propose"
   | "rule.review"
   | "rule.activate"
   | "rule.rollback"
+  /**
+   * Audit-trail access (DAT-213, ADR-0005 §6): reads are restricted to the
+   * principals who already see security evidence, and exports — which leave
+   * the service — are enterprise-security-administrator work. Every read and
+   * export is itself audited.
+   */
+  | "audit.read"
+  | "audit.export"
   | "role.grant"
   | "endpoint.configure";
 
@@ -82,6 +100,19 @@ export const SECURITY_DUTY_MATRIX: Record<SecurityAction, readonly SecurityDuty[
   // activate or roll back reviewed rule revisions — never waive review.
   "rule.activate": ["enterprise_security_admin"],
   "rule.rollback": ["enterprise_security_admin"],
+  // Recovery (DAT-212): the independent reviewer approves one recheck and may
+  // withdraw an unconsumed approval; an administrator may also withdraw one.
+  // Neither administrative nor review authority authorizes sending blocked
+  // content — the recheck still runs in full, and reconciliation of an
+  // unknown outcome is a record, never a replay grant.
+  "recovery.approve": ["independent_reviewer"],
+  "recovery.revoke": ["independent_reviewer", "enterprise_security_admin"],
+  "recovery.reconcile": ["security_handler", "enterprise_security_admin"],
+  // Audit access (DAT-213): handlers and reviewers may read the security
+  // trail for their scope; only the enterprise security administrator may
+  // export it out of the service. Neither action grants any other capability.
+  "audit.read": ["security_handler", "independent_reviewer", "enterprise_security_admin"],
+  "audit.export": ["enterprise_security_admin"],
   "role.grant": ["enterprise_security_admin"],
   "endpoint.configure": ["enterprise_security_admin"],
 };
@@ -171,8 +202,11 @@ export interface ReviewIndependence {
   subjectIds: readonly string[];
   /** The principal deciding. Must be a different human principal. */
   reviewer: SecurityActor;
-  /** Duty the decision requires (`case.review_decide` or `rule.review`). */
-  action: "case.review_decide" | "rule.review";
+  /**
+   * Duty the decision requires (`case.review_decide`, `rule.review`, or the
+   * recovery approval of one recheck, DAT-212).
+   */
+  action: "case.review_decide" | "rule.review" | "recovery.approve";
   scope: SecurityDutyScope;
 }
 

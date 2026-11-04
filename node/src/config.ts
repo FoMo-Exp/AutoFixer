@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { isLoopbackHost } from "./api/auth.js";
+import { DEFAULT_MEMORY_CONSOLIDATION_INTERVAL_MS } from "./memory/lifecycle/runner.js";
 
 /** Runtime configuration for the orchestrator, sourced from the environment. */
 export interface OrchestratorConfig {
@@ -91,6 +92,18 @@ export interface OrchestratorConfig {
   /** Durable notification record sink (JSONL, 0600; non-secret content). */
   securityNotificationsFile?: string;
   /**
+   * Unified tamper-evident security audit trail (DAT-213): hash-chained,
+   * owner-only JSONL. Every case, rule, recovery, and audit-access event is
+   * appended here; a chain that fails verification blocks the dependent action.
+   */
+  securityAuditFile?: string;
+  /**
+   * Protected file holding the audit chain key (base64 32 bytes). Generated
+   * 0600 on first use when absent; the key makes the chain unverifiable to
+   * anyone who can only edit the log.
+   */
+  securityAuditKeyFile?: string;
+  /**
    * Secret for minting authenticated, non-transferable case references.
    * Unset uses a per-process secret (references then only verify within the
    * process that minted them); a deployment sets it for cross-restart use.
@@ -102,6 +115,19 @@ export interface OrchestratorConfig {
    * stream: financial records are queried and retained on their own terms.
    */
   usageLedgerFile?: string;
+  /**
+   * Budget policy JSON (DAT-229). Setting it enables enterprise/workspace/run
+   * budget enforcement at the gateway; unset leaves invocations unbudgeted.
+   */
+  budgetPolicyFile?: string;
+  /** Durable budget journal (JSONL, 0600); required alongside the policy. */
+  budgetStateFile?: string;
+  /**
+   * Durable dashboard read/export audit log (JSONL, 0600). Every dashboard
+   * read and export appends one metadata-only entry (DAT-230). Unset keeps the
+   * trail process-local.
+   */
+  dashboardAuditFile?: string;
   // --- Enterprise identity (ADR-0006) -------------------------------------
   /**
    * External origin for OAuth redirect URLs and desktop login links. Unset
@@ -139,6 +165,13 @@ export interface OrchestratorConfig {
   oauthFlowTtlSeconds?: number;
   /** Desktop system-browser flow lifetime in seconds (default 10 minutes). */
   desktopFlowTtlSeconds?: number;
+  /**
+   * Sleep-time memory consolidation interval in milliseconds (DAT-235).
+   * Applies whenever the identity control plane is enabled; defaults to six
+   * hours. The scheduled job never holds the process open and stops with the
+   * orchestrator.
+   */
+  memoryConsolidationIntervalMs?: number;
 }
 
 function csv(value: string | undefined, fallback: string[]): string[] {
@@ -194,6 +227,16 @@ export function defaultSecurityStatePath(name: string): string {
 function defaultUsageLedgerPath(): string {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "usage-ledger.json");
+}
+
+function defaultDashboardAuditPath(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "dashboard-audit.jsonl");
+}
+
+function defaultBudgetStatePath(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "budget-journal.jsonl");
 }
 
 function defaultControlPlanePath(): string {
@@ -255,9 +298,14 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     securityNotificationsFile:
       env["FORGEPILOT_SECURITY_NOTIFICATIONS_FILE"] ??
       defaultSecurityStatePath("security-notifications.jsonl"),
+    securityAuditFile:
+      env["FORGEPILOT_SECURITY_AUDIT_FILE"] ?? defaultSecurityStatePath("security-audit.jsonl"),
+    securityAuditKeyFile:
+      env["FORGEPILOT_SECURITY_AUDIT_KEY_FILE"] ?? defaultSecurityStatePath("security-audit.key"),
     securityHandlerIds: csv(env["FORGEPILOT_SECURITY_HANDLER_IDS"], []),
     securityAdminIds: csv(env["FORGEPILOT_SECURITY_ADMIN_IDS"], []),
     usageLedgerFile: env["FORGEPILOT_USAGE_LEDGER_FILE"] ?? defaultUsageLedgerPath(),
+    dashboardAuditFile: env["FORGEPILOT_DASHBOARD_AUDIT_FILE"] ?? defaultDashboardAuditPath(),
     securityTaskOwnerIds: csv(env["FORGEPILOT_SECURITY_TASK_OWNER_IDS"], []),
     securityReviewerIds: csv(env["FORGEPILOT_SECURITY_REVIEWER_IDS"], []),
     securityRuleStateFile:
@@ -293,6 +341,15 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     throw new Error(
       "FORGEPILOT_GATEWAY_POLICY_FILE and FORGEPILOT_GATEWAY_CREDENTIALS_FILE must be configured together",
     );
+  }
+  // Budget enforcement is opt-in by configuration, not by accident: a
+  // deployment that sets the policy file gets the authority and a durable
+  // journal; leaving it unset keeps the historical unbudgeted behavior.
+  const budgetPolicyFile = env["FORGEPILOT_BUDGET_POLICY_FILE"]?.trim();
+  if (budgetPolicyFile) {
+    config.budgetPolicyFile = budgetPolicyFile;
+    config.budgetStateFile =
+      env["FORGEPILOT_BUDGET_STATE_FILE"]?.trim() || defaultBudgetStatePath();
   }
   if (env["FORGEPILOT_PI_PROVIDER"] && env["FORGEPILOT_PI_MODEL"]) {
     config.piModelProvider = env["FORGEPILOT_PI_PROVIDER"];
@@ -363,6 +420,11 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     env["FORGEPILOT_DESKTOP_FLOW_TTL_SECONDS"],
     600,
     "FORGEPILOT_DESKTOP_FLOW_TTL_SECONDS",
+  );
+  config.memoryConsolidationIntervalMs = positiveInt(
+    env["FORGEPILOT_MEMORY_CONSOLIDATION_INTERVAL_MS"],
+    DEFAULT_MEMORY_CONSOLIDATION_INTERVAL_MS,
+    "FORGEPILOT_MEMORY_CONSOLIDATION_INTERVAL_MS",
   );
   return config;
 }

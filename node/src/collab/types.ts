@@ -1,4 +1,5 @@
 import type { DshState } from "../dsh/types.js";
+import type { ApprovalInvalidationReason, ApprovalState, DeliveryState } from "./contract.js";
 import type { ProductState } from "./states.js";
 
 /**
@@ -35,6 +36,18 @@ export interface RepositoryRef {
   url: string;
   base_ref: string;
   base_sha: string;
+}
+
+/** A digest value with the algorithm that produced it (contract `Digest`). */
+export interface DigestRef {
+  algorithm: string;
+  value: string;
+}
+
+/** Authenticated human identity (contract `UserRef`). */
+export interface UserRef {
+  id: string;
+  display_name: string;
 }
 
 /**
@@ -216,6 +229,244 @@ export interface HandoffRecord {
   created_at: string;
 }
 
+/**
+ * Digest and shape of the exact diff a pre-PR approver reviews (ADR-0007).
+ * `digest` is the sha256 of the retained diff content, so an independent
+ * reader can recompute it from the retained artifact rather than trusting the
+ * record.
+ */
+export interface CandidateDiff {
+  digest_algorithm: string;
+  digest: string;
+  changed_paths: string[];
+  insertions: number;
+  deletions: number;
+}
+
+/** One validation attempt against the exact candidate revision. */
+export interface CandidateValidationResult {
+  tool: string;
+  exit_status: number | null;
+  output_digest: { algorithm: string; value: string } | null;
+  event_reference: string;
+}
+
+/**
+ * A versioned, workspace + repository scoped test policy (DAT-219, ADR-0007).
+ *
+ * Required checks are policy, not execution output: they are registered by a
+ * configuration administrator (recorded as `registered_by`) and a worker lease
+ * can never define or edit them. Each repository has exactly one current
+ * version; registering a new version moves that pointer and older versions stay
+ * for audit and replay, so a caller cannot shop for a friendlier policy.
+ */
+export interface TestPolicyRecord {
+  policy_id: string;
+  workspace: WorkspaceScope;
+  repository_id: string;
+  repository_url: string;
+  policy_version: string;
+  checks: string[];
+  config_digest: string;
+  environment: string;
+  /** Digest over the exact policy content this version froze. */
+  policy_digest: string;
+  registered_by: string;
+  registered_at: string;
+}
+
+/** Scope key of one repository's current-policy pointer. */
+export function testPolicyScopeKey(workspace: WorkspaceScope, repositoryId: string): string {
+  return `${workspace.enterprise_id}\u0000${workspace.workspace_id}\u0000${repositoryId}`;
+}
+
+/**
+ * The plan of one run: a binding to one registered test-policy version,
+ * recorded before validation executes (ADR-0007 "validating": approved test
+ * plan against the exact revision).
+ *
+ * The plan carries no caller-supplied checks or configuration — it freezes the
+ * referenced policy version's values, so a candidate can only show that
+ * policy's checks passing. `policy_version`, `policy_digest`, the checks,
+ * config digest, and environment are copied at binding time and never edited.
+ */
+export interface TestPlanRecord {
+  plan_id: string;
+  run_id: string;
+  policy_id: string;
+  policy_version: string;
+  policy_digest: string;
+  checks: string[];
+  config_digest: string;
+  environment: string;
+  recorded_at: string;
+}
+
+/**
+ * The test evidence an approval is bound to. `required_checks` must equal the
+ * run's recorded test plan checks, and every check needs a passing attempt
+ * backed by a retained execution artifact.
+ */
+export interface CandidateValidation {
+  config_digest: string;
+  environment: string;
+  required_checks: string[];
+  results: CandidateValidationResult[];
+}
+
+/** Risk classes of the pre-approval assessment (FP-01). */
+export const RISK_CLASSES = ["low", "elevated", "prohibited"] as const;
+
+export type RiskClass = (typeof RISK_CLASSES)[number];
+
+/** The test-policy identity a frozen candidate's evidence is bound to. */
+export interface CandidateTestPolicy {
+  policy_id: string;
+  policy_version: string;
+  policy_digest: string;
+}
+
+/** The pre-approval risk decision for the candidate's work. */
+export interface ChangeRisk {
+  class: RiskClass;
+  decision_code: string;
+  requires_human_approval: boolean;
+}
+
+/**
+ * An immutable frozen candidate (DAT-219, ADR-0007).
+ *
+ * A candidate is produced by the service when local preparation stops: the
+ * preparation run's grant is revoked while the candidate is preserved outside
+ * the ephemeral worktree, so it stays reviewable and deliverable after cleanup.
+ * Nothing is added or edited after validation; the diff content is retained by
+ * digest in the candidate content store, and `diff.digest` is the sha256 over
+ * that retained content.
+ *
+ * Invalidation is the only later recorded fact: base advancement, test-evidence
+ * change, or a policy/authority change marks the candidate permanently invalid,
+ * and an approval bound to it can never be reused for another revision.
+ */
+export interface CandidateRecord {
+  candidate_id: string;
+  issue_id: string;
+  /** The stopped preparation run that produced the candidate. */
+  run_id: string;
+  workspace: WorkspaceScope;
+  repository: RepositoryRef;
+  base_sha: string;
+  head_sha: string;
+  tree_sha: string;
+  diff: CandidateDiff;
+  summary: string;
+  validation: CandidateValidation;
+  /** The registered test-policy version this candidate's evidence is bound to. */
+  test_policy: CandidateTestPolicy;
+  risk: ChangeRisk;
+  /** Patch, report, and evidence-bundle references retained after cleanup. */
+  artifacts: ArtifactRef[];
+  /** References into the append-only audit/evidence records. */
+  audit_refs: string[];
+  created_at: string;
+  invalidated_at: string | null;
+  invalidated_reason: ApprovalInvalidationReason | null;
+}
+
+/**
+ * Everything one approval is bound to (ADR-0007 "Approval and delivery").
+ *
+ * The binding is fixed when the request is addressed and can never be edited:
+ * a delivery is authorized only for exactly this issue, repository, candidate
+ * commit, diff digest, test-evidence digest, intended target branch, and test
+ * policy version. Content, test evidence, base advancement, target, policy, or
+ * relevant authority changes invalidate the approval instead of mutating it.
+ */
+export interface ApprovalBinding {
+  workspace: WorkspaceScope;
+  repository: RepositoryRef;
+  candidate_id: string;
+  head_sha: string;
+  diff_digest: DigestRef;
+  test_evidence_digest: DigestRef;
+  target_branch: string;
+  policy_version: string;
+}
+
+/** The recorded decision of the one addressed human approver. */
+export interface ApprovalDecision {
+  decision: "approve" | "reject";
+  decided_by: UserRef;
+  decided_at: string;
+  note: string | null;
+}
+
+/**
+ * A candidate-bound pre-PR human approval request (ADR-0007).
+ *
+ * `state` is stored; `approvalStateAt` derives the effective state at read
+ * time so an approval whose finite TTL passed while the service was down comes
+ * back `expired`, never `approved`. `approver` is null only when the workspace
+ * has no eligible approver; such a request can never be decided automatically.
+ * `consumed_by_delivery_id` is set exactly once, by the delivery operation the
+ * approval authorized; every later delivery attempt using it is refused.
+ */
+export interface ApprovalRecord {
+  contract_version: string;
+  approval_id: string;
+  issue_id: string;
+  candidate_id: string;
+  state: ApprovalState;
+  binding: ApprovalBinding;
+  approver: UserRef | null;
+  requested_at: string;
+  decided_at: string | null;
+  expires_at: string;
+  decision: ApprovalDecision | null;
+  invalidated_at: string | null;
+  invalidated_reason: ApprovalInvalidationReason | null;
+  consumed_by_delivery_id: string | null;
+}
+
+/** The issue's autofixer branch naming rule (never a protected branch). */
+export const AUTOFIXER_BRANCH_PREFIX = "autofixer/";
+
+/** Deterministic, issue-scoped delivery branch. */
+export function autofixerBranchFor(issueId: string): string {
+  return `${AUTOFIXER_BRANCH_PREFIX}${issueId}`;
+}
+
+/**
+ * One broker-controlled delivery operation (ADR-0007 "Approval and delivery").
+ *
+ * `operation_id` is the idempotent operation identity persisted before any
+ * provider write; `grant_id` names the separate delivery capability grant the
+ * broker re-checks before each write (it is internal evidence, not part of the
+ * public `Delivery` projection). `state` distinguishes success (`delivered`),
+ * an explicit partial outcome (`partial`), and an ambiguous provider outcome
+ * (`unknown`) that must be reconciled before any further write.
+ */
+export interface DeliveryRecord {
+  delivery_id: string;
+  operation_id: string;
+  issue_id: string;
+  candidate_id: string;
+  approval_id: string;
+  repository: RepositoryRef;
+  target_branch: string;
+  head_sha: string;
+  provider: "github" | "gitlab";
+  state: DeliveryState;
+  branch: string | null;
+  pr_id: string | null;
+  pr_url: string | null;
+  error_code: string | null;
+  created_at: string;
+  updated_at: string;
+  reconciled_at: string | null;
+  /** The active delivery grant checked before each provider write. */
+  grant_id: string;
+}
+
 /** Human disposition reference for the stopped -> approved (new grant) path. */
 export interface Disposition {
   actor: string;
@@ -227,6 +478,13 @@ export interface CollabState {
   issues: Map<string, IssueRecord>;
   tasks: Map<string, TaskRecord>;
   runs: Map<string, RunRecord>;
+  testPolicies: Map<string, TestPolicyRecord>;
+  /** scope key -> current policy id; old versions stay in `testPolicies`. */
+  currentTestPolicies: Map<string, string>;
+  testPlans: Map<string, TestPlanRecord>;
+  candidates: Map<string, CandidateRecord>;
+  approvals: Map<string, ApprovalRecord>;
+  deliveries: Map<string, DeliveryRecord>;
   handoffs: HandoffRecord[];
   /** Signal fingerprint -> issue id; replays reuse the issue instead of a new one. */
   dedupe: Map<string, string>;
@@ -241,6 +499,12 @@ export function emptyCollabState(): CollabState {
     issues: new Map(),
     tasks: new Map(),
     runs: new Map(),
+    testPolicies: new Map(),
+    currentTestPolicies: new Map(),
+    testPlans: new Map(),
+    candidates: new Map(),
+    approvals: new Map(),
+    deliveries: new Map(),
     handoffs: [],
     dedupe: new Map(),
     attempts: new Map(),

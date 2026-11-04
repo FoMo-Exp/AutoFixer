@@ -1,0 +1,65 @@
+{
+  "items": [
+    {
+      "audit_id": "aud_fixture",
+      "at": "2099-01-01T00:00:00.000Z",
+      "enterprise_id": "ent_fixture",
+      "workspace_id": "ws_fixture",
+      "subject": "usr_fixture",
+      "role": "owner",
+      "operation": "read",
+      "resource": "issue_drilldown",
+      "issue_id": "issue-1",
+      "query": {
+        "from": "2026-06-01T00:00:00.000Z",
+        "to": "2026-06-02T00:00:00.000Z",
+        "timezone": "UTC",
+        "limit": 100
+      },
+      "record_count": 2,
+      "request_id": "req_fixture"
+    },
+    {
+      "audit_id": "aud_fixture",
+      "at": "2099-01-01T00:00:00.000Z",
+      "enterprise_id": "ent_fixture",
+      "workspace_id": "ws_fixture",
+      "subject": "usr_fixture",
+      "role": "owner",
+      "operation": "read",
+      "resource": "cost_items",
+      "issue_id": null,
+      "query": {
+        "from": "2026-06-01T00:00:00.000Z",
+        "to": "2026-06-02T00:00:00.000Z",
+        "timezone": "UTC",
+        "limit": 50
+      },
+      "record_count": 1,
+      "request_id": "req_fixture"
+    },
+    {
+      "audit_id": "aud_fixture",
+      "at": "2099-01-01T00:00:00.000Z",
+      "enterprise_id": "ent_fixture",
+      "workspace_id": "ws_fixture",
+      "subject": "usr_fixture",
+      "role": "owner",
+      "operation": "read",
+      "resource": "summary",
+      "issue_id": null,
+      "query": {
+        "from": "2026-06-01T00:00:00.000Z",
+        "to": "2026-06-02T00:00:00.000Z",
+        "timezone": "UTC",
+        "bucket": "hour",
+        "breakdown": "model",
+        "limit": 50
+      },
+      "record_count": 2,
+      "request_id": "req_fixture"
+    }
+  ],
+  "next_cursor": null,
+  "total": 3
+}

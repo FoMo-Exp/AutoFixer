@@ -30,6 +30,7 @@ function task(id: string, summary: string): Task {
     risk: null,
     progress: { phase: "Executing", actions_completed: 0, actions_total: null },
     pi_summary: null,
+    memory: null,
     governance: { current_head_sha: null, observations_valid: false, merge_queue_eligible: false },
     artifacts: { patch: null, report: null, evidence_bundle_available: false, index: [] },
   };
@@ -307,6 +308,16 @@ describe("surface navigation", () => {
     await userEvent.click(screen.getByRole("button", { name: "Issues" }));
     expect(await screen.findByRole("heading", { name: "Issues" })).toBeTruthy();
     expect(screen.getByRole("navigation", { name: "Workbench views" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /New task/ })).toBeNull();
+  });
+
+  it("switches to the workspace-scoped RSI surface", async () => {
+    vi.spyOn(ForgePilotClient.prototype, "listWorkspaces").mockResolvedValue([]);
+    render(<App />);
+    await screen.findByRole("button", { name: "Repair alpha owner/repo" });
+
+    await userEvent.click(screen.getByRole("button", { name: "RSI" }));
+    expect(await screen.findByRole("heading", { name: "Bounded self-improvement" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /New task/ })).toBeNull();
   });
 });

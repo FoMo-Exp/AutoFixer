@@ -128,6 +128,27 @@ const EXPECTED: Record<SecurityAction, Record<SecurityDuty, boolean>> = {
     independent_reviewer: false,
     enterprise_security_admin: true,
   },
+  // Recovery (DAT-212): rechecking is approved by the independent reviewer
+  // alone; withdrawing an approval is reviewer or administrator work; an
+  // unknown provider outcome is reconciled by a handler or administrator.
+  "recovery.approve": {
+    task_owner: false,
+    security_handler: false,
+    independent_reviewer: true,
+    enterprise_security_admin: false,
+  },
+  "recovery.revoke": {
+    task_owner: false,
+    security_handler: false,
+    independent_reviewer: true,
+    enterprise_security_admin: true,
+  },
+  "recovery.reconcile": {
+    task_owner: false,
+    security_handler: true,
+    independent_reviewer: false,
+    enterprise_security_admin: true,
+  },
   "role.grant": {
     task_owner: false,
     security_handler: false,
@@ -135,6 +156,20 @@ const EXPECTED: Record<SecurityAction, Record<SecurityDuty, boolean>> = {
     enterprise_security_admin: true,
   },
   "endpoint.configure": {
+    task_owner: false,
+    security_handler: false,
+    independent_reviewer: false,
+    enterprise_security_admin: true,
+  },
+  // Audit access (DAT-213): handlers, reviewers, and administrators read the
+  // security trail; only the administrator may export it out of the service.
+  "audit.read": {
+    task_owner: false,
+    security_handler: true,
+    independent_reviewer: true,
+    enterprise_security_admin: true,
+  },
+  "audit.export": {
     task_owner: false,
     security_handler: false,
     independent_reviewer: false,

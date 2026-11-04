@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -82,6 +83,35 @@ type EnvironmentIdentity struct {
 	EnforcedLimits      EnforcedLimits `json:"enforced_limits"`
 }
 
+// ExecutionDomain is the process-lifecycle guarantee an isolation backend can
+// make for one untrusted execution. It is a property of the platform
+// mechanism, not of a grant: either every process the execution creates is
+// guaranteed to be gone when the execution ends, or it is not.
+type ExecutionDomain string
+
+const (
+	// DomainComplete means the backend owns the whole execution domain: a
+	// PID namespace, cgroup, or VM guarantees every descendant dies with the
+	// execution and its usage stays aggregated inside the domain. A child
+	// that forks, calls setsid, is reparented, and leaves the workspace is
+	// still part of the domain.
+	DomainComplete ExecutionDomain = "complete"
+	// DomainBestEffort means the backend confines what a process can reach
+	// but cannot guarantee the domain's lifecycle or aggregate accounting:
+	// a descendant that forks, creates its own session, is reparented, and
+	// changes its working directory between two observations leaves the
+	// tracked set (macOS Seatbelt; there is no cgroup or PID namespace).
+	// Untrusted execution is refused on such a backend instead of running
+	// behind a containment claim it cannot meet (DAT-253).
+	DomainBestEffort ExecutionDomain = "best_effort"
+)
+
+// ErrExecutionDomainIncomplete reports that no selected backend can guarantee
+// a complete execution domain on this host. An untrusted execution is refused
+// rather than run with best-effort lifecycle control whose escape window
+// cannot be closed without privilege (DAT-253).
+var ErrExecutionDomainIncomplete = errors.New("sandbox: no backend guarantees a complete execution domain")
+
 // Isolator wraps one command in OS-level process/filesystem/network
 // isolation. Wrap mutates the command in place and returns the identity that
 // was applied; an error means the command must not run at all.
@@ -90,8 +120,27 @@ type Isolator interface {
 	Name() string
 	// Available reports whether the backend can isolate on this host.
 	Available() error
+	// ExecutionDomain reports the process-lifecycle guarantee this backend
+	// can make. Untrusted execution requires DomainComplete.
+	ExecutionDomain() ExecutionDomain
 	// Wrap applies the isolation and returns its environment identity.
 	Wrap(cmd *exec.Cmd, req IsolationRequest) (EnvironmentIdentity, error)
+}
+
+// requireCompleteExecutionDomain refuses an execution whose backend cannot
+// guarantee that every process it starts dies with it. The refusal wraps both
+// ErrIsolationUnavailable (the existing 503 DSH_SANDBOX_UNAVAILABLE path) and
+// ErrExecutionDomainIncomplete (the operator-facing reason).
+func requireCompleteExecutionDomain(isolator Isolator) error {
+	if isolator == nil {
+		return fmt.Errorf("%w: %w: no isolation backend is configured",
+			ErrIsolationUnavailable, ErrExecutionDomainIncomplete)
+	}
+	if domain := isolator.ExecutionDomain(); domain != DomainComplete {
+		return fmt.Errorf("%w: %w: backend %q provides %q execution-domain containment",
+			ErrIsolationUnavailable, ErrExecutionDomainIncomplete, isolator.Name(), domain)
+	}
+	return nil
 }
 
 // NewIsolator returns the OS-level isolation backend for this host. The
