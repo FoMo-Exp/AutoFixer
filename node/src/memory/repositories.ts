@@ -108,6 +108,12 @@ export interface MemoryItemRepository {
     itemId: MemoryItemId,
     status: MemoryStatus,
     expectedVersion: number,
+    /**
+     * Fixed machine reason for a governance transition (DAT-251). It is an
+     * enum token, never free text, and it is audited on the same
+     * `status_changed` event as `from`/`to`.
+     */
+    options?: { reason_code?: string },
   ): MemoryItem;
   /**
    * Recompute the derived confidence counters from the item's evidence and
@@ -171,8 +177,36 @@ export interface MemoryEmbeddingRepository {
   listByItem(scope: WorkspaceScope, itemId: MemoryItemId): MemoryEmbedding[];
 }
 
+/**
+ * A resume point in a per-item audit stream (DAT-251 timeline pagination).
+ * `at` is the row's canonical UTC timestamp and `sequence` is its SQLite
+ * rowid; together they form a total order that survives equal timestamps.
+ */
+export interface MemoryTimelinePosition {
+  at: string;
+  sequence: number;
+}
+
+/** One audit row with its stream position. */
+export interface MemoryTimelineEntry {
+  event: MemoryEvent;
+  sequence: number;
+}
+
 export interface MemoryAuditRepository {
   list(scope: WorkspaceScope, filter?: MemoryEventFilter): MemoryEvent[];
+  /**
+   * Keyset page of one item's audit events, oldest first. `after` is exclusive
+   * so a caller can traverse the whole history without an offset: the
+   * governance timeline pages across `memory_events`, promotion decisions, and
+   * consolidation ops, and never silently stops at a fixed count.
+   */
+  listTimelinePage(
+    scope: WorkspaceScope,
+    itemId: MemoryItemId,
+    after: MemoryTimelinePosition | undefined,
+    limit: number,
+  ): MemoryTimelineEntry[];
 }
 
 export interface MemoryTombstoneRepository {
@@ -512,14 +546,16 @@ const REQUIRES_APPROVAL_KINDS: readonly MemoryKind[] = [
 /**
  * ADR-0009 lifecycle state machine. `retired` is terminal; `quarantined` is
  * reachable from every non-terminal state; restore moves a quarantined item
- * back to `candidate`.
+ * back to `proposed`, `candidate`, or `deprecated` (DAT-251). Restoring to
+ * `active` is deliberately absent: returning to `active` must go through the
+ * promotion path so approval cannot be bypassed.
  */
 const STATUS_TRANSITIONS: Readonly<Record<MemoryStatus, readonly MemoryStatus[]>> = {
   proposed: ["candidate", "deprecated", "quarantined"],
   candidate: ["active", "deprecated", "quarantined"],
   active: ["deprecated", "quarantined"],
   deprecated: ["active", "retired", "quarantined"],
-  quarantined: ["candidate", "retired"],
+  quarantined: ["proposed", "candidate", "deprecated", "retired"],
   retired: [],
 };
 
@@ -1054,10 +1090,17 @@ class SqliteMemoryItemRepository implements MemoryItemRepository {
     itemId: MemoryItemId,
     status: MemoryStatus,
     expectedVersion: number,
+    options: { reason_code?: string } = {},
   ): MemoryItem {
     requireWorkspaceScope(scope);
     if (!MEMORY_STATUSES.includes(status)) {
       throw new ValidationError(`unsupported memory status: ${String(status)}`);
+    }
+    const reasonCode = options.reason_code;
+    if (reasonCode !== undefined && !/^[a-z][a-z0-9_]{0,63}$/.test(reasonCode)) {
+      // The audit detail never carries free text or memory content; a reason
+      // that is not a fixed machine token is refused here as well.
+      throw new ValidationError("reason_code must be a fixed snake_case machine code");
     }
     return this.store.runAtomically(() => {
       const record = requireRow("MemoryItem", itemId, this.getRecord(scope, itemId));
@@ -1120,7 +1163,11 @@ class SqliteMemoryItemRepository implements MemoryItemRepository {
         item_version: expectedVersion,
         event_type: "status_changed",
         run_id: null,
-        detail: { from, to: status },
+        detail: {
+          from,
+          to: status,
+          ...(reasonCode !== undefined ? { reason_code: reasonCode } : {}),
+        },
       });
       return requireRow("MemoryItem", itemId, this.getRecord(scope, itemId)).item;
     });
@@ -1673,6 +1720,32 @@ class SqliteMemoryEmbeddingRepository implements MemoryEmbeddingRepository {
 
 class SqliteMemoryAuditRepository implements MemoryAuditRepository {
   constructor(private readonly db: ControlPlaneDb) {}
+
+  listTimelinePage(
+    scope: WorkspaceScope,
+    itemId: MemoryItemId,
+    after: MemoryTimelinePosition | undefined,
+    limit: number,
+  ): MemoryTimelineEntry[] {
+    requireWorkspaceScope(scope);
+    const bounded = Math.min(Math.max(limit, 1), 500);
+    const keyset =
+      after === undefined ? "" : " AND (created_at > ? OR (created_at = ? AND rowid > ?))";
+    const params: (string | number)[] = [scope.enterprise_id, scope.workspace_id, itemId];
+    if (after !== undefined) {
+      params.push(after.at, after.at, after.sequence);
+    }
+    params.push(bounded);
+    const rows = this.db
+      .prepare(
+        `SELECT rowid AS sequence, * FROM memory_events
+          WHERE enterprise_id = ? AND workspace_id = ? AND item_id = ?${keyset}
+          ORDER BY created_at, rowid
+          LIMIT ?`,
+      )
+      .all(...params) as unknown as (MemoryEventRow & { sequence: number })[];
+    return rows.map((row) => ({ event: toMemoryEvent(row), sequence: row.sequence }));
+  }
 
   list(scope: WorkspaceScope, filter: MemoryEventFilter = {}): MemoryEvent[] {
     requireWorkspaceScope(scope);

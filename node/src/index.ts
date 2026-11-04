@@ -50,6 +50,8 @@ import type { GatewayScope, GatewayScopeBinding, ModelGateway } from "./gateway/
 import { createUsageLedgerStore } from "./ledger/index.js";
 import {
   createMemoryConsolidationRunner,
+  createMemoryGovernanceService,
+  createMemoryLifecycleStore,
   createMemoryRepositories,
   createMemoryRetrievalService,
   createRetrievalStore,
@@ -58,6 +60,7 @@ import {
 } from "./memory/index.js";
 import type {
   MemoryConsolidationRunner,
+  MemoryGovernanceService,
   MemoryRepositories,
   MemoryRetrievalService,
   RsiService,
@@ -440,6 +443,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let memoryConsolidation: MemoryConsolidationRunner | undefined;
   let memory: MemoryRetrievalService | undefined;
   let memoryRepositories: MemoryRepositories | undefined;
+  let memoryGovernance: MemoryGovernanceService | undefined;
   let rsi: RsiService | undefined;
   let rsiStore: RsiStore | undefined;
   if (config.oauthClientsFile !== undefined) {
@@ -482,6 +486,17 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     memory = createMemoryRetrievalService({
       memory: memoryRepositories,
       store: retrievalStore,
+    });
+    // Memory governance (DAT-251) is the named-human half of the lifecycle:
+    // detail, per-version content, the audit timeline, and promote/deprecate/
+    // quarantine/restore. It reads the same scoped store as retrieval, and
+    // resolves team leadership from the workspace's team rows so authority is
+    // never a client claim.
+    memoryGovernance = createMemoryGovernanceService({
+      memory: memoryRepositories,
+      retrieval: memory,
+      lifecycle: createMemoryLifecycleStore(controlPlane),
+      teams: repos.teams,
     });
     // Bounded RSI (DAT-238) shares the same store. Offline replay uses the
     // retrieval preview path, so an evaluated candidate policy is never
@@ -601,8 +616,10 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
           memory: {
             auth,
             service: memory,
+            apiToken,
             ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
             ...(rsi !== undefined ? { rsi } : {}),
+            ...(memoryGovernance !== undefined ? { governance: memoryGovernance } : {}),
           },
         }
       : {}),

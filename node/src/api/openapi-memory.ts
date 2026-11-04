@@ -11,10 +11,18 @@ import {
   MEMORY_EVIDENCE_TYPES,
   MEMORY_FEEDBACK_OUTCOMES,
   MEMORY_KINDS,
+  MEMORY_SENSITIVITIES,
   MEMORY_STATUSES,
+  MEMORY_TRUSTS,
   MEMORY_BUNDLE_VERSION,
   RETRIEVAL_HARD_LIMITS,
 } from "../memory/retrieval/index.js";
+import {
+  MEMORY_EVENT_SOURCES,
+  MEMORY_GOVERNANCE_ACTIONS,
+  MEMORY_GOVERNANCE_REASON_CODES,
+  MEMORY_RESTORE_TARGET_STATUSES,
+} from "../memory/governance/index.js";
 
 const errorRef = { $ref: "#/components/schemas/Error" } as const;
 
@@ -455,11 +463,22 @@ const memoryItemViewSchema: JsonObject = {
     versions_count: { type: "integer", minimum: 0 },
     kind: { type: "string", enum: [...MEMORY_KINDS] },
     tier: { type: "string", enum: ["L1", "L2", "L3", "L4"] },
-    statement: { type: "string" },
+    statement: {
+      type: ["string", "null"],
+      description:
+        "The current statement. Null exactly when the item is quarantined: " +
+        "quarantine content is never served by this surface.",
+    },
+    statement_redacted: {
+      type: "boolean",
+      description:
+        "True when statement and preconditions were withheld (quarantine). " +
+        "Optional so DAT-236 clients keep working; the service always sets it.",
+    },
     preconditions: { type: "array", items: { type: "string" } },
     applicability: { $ref: "#/components/schemas/MemoryApplicability" },
-    trust: { type: "string", enum: ["human", "agent", "enterprise_template", "system"] },
-    sensitivity: { type: "string", enum: ["internal", "confidential", "restricted"] },
+    trust: { type: "string", enum: [...MEMORY_TRUSTS] },
+    sensitivity: { type: "string", enum: [...MEMORY_SENSITIVITIES] },
     approved: { type: "boolean" },
     valid_from: { type: "string", format: "date-time" },
     valid_to: { oneOf: [{ type: "string", format: "date-time" }, { type: "null" }] },
@@ -468,6 +487,8 @@ const memoryItemViewSchema: JsonObject = {
     contradiction_count: { type: "integer", minimum: 0 },
     evidence: { type: "array", items: { $ref: "#/components/schemas/MemoryEvidence" } },
     updated_at: { type: "string", format: "date-time" },
+    provenance: { $ref: "#/components/schemas/MemoryProvenance" },
+    review: { oneOf: [{ $ref: "#/components/schemas/MemoryReview" }, { type: "null" }] },
   },
 };
 
@@ -686,6 +707,253 @@ const memoryEvalRunRecordSchema: JsonObject = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Governance schemas (DAT-251)
+// ---------------------------------------------------------------------------
+
+const memoryProvenanceSchema: JsonObject = {
+  type: "object",
+  description:
+    "Who authored a version and under which agent configuration. Provenance is " +
+    "a claim recorded at write time; it never grants authority.",
+  required: ["author_type"],
+  additionalProperties: false,
+  properties: {
+    author_type: { type: "string", enum: ["human", "agent", "system"] },
+    agent_model: { type: "string" },
+    config_digest: { type: "string" },
+    prompt_template_version: { type: "string" },
+  },
+};
+
+const memoryReviewSchema: JsonObject = {
+  type: "object",
+  description:
+    "Named human approval of exactly one immutable version. Set once; a later " +
+    "version needs its own approval.",
+  required: ["approver_id", "approved_at"],
+  additionalProperties: false,
+  properties: {
+    approver_id: { type: "string" },
+    approved_at: { type: "string", format: "date-time" },
+  },
+};
+
+const memoryItemVersionSchema: JsonObject = {
+  type: "object",
+  description:
+    "One immutable content version, served so the UI can diff versions. A " +
+    "version above the caller's sensitivity ceiling is absent entirely — a " +
+    "high-sensitivity history cannot be enumerated through this surface.",
+  required: [
+    "version",
+    "kind",
+    "tier",
+    "statement",
+    "statement_redacted",
+    "preconditions",
+    "applicability",
+    "trust",
+    "sensitivity",
+    "valid_from",
+    "valid_to",
+    "content_hash",
+    "provenance",
+    "review",
+    "created_at",
+    "created_by",
+  ],
+  additionalProperties: false,
+  properties: {
+    version: { type: "integer", minimum: 1 },
+    kind: { type: "string", enum: [...MEMORY_KINDS] },
+    tier: { type: "string", enum: ["L1", "L2", "L3", "L4"] },
+    statement: {
+      type: ["string", "null"],
+      description: "Null exactly when statement_redacted is true (quarantined item).",
+    },
+    statement_redacted: { type: "boolean" },
+    preconditions: { type: "array", items: { type: "string" } },
+    applicability: { $ref: "#/components/schemas/MemoryApplicability" },
+    trust: { type: "string", enum: [...MEMORY_TRUSTS] },
+    sensitivity: { type: "string", enum: [...MEMORY_SENSITIVITIES] },
+    valid_from: { type: "string", format: "date-time" },
+    valid_to: { oneOf: [{ type: "string", format: "date-time" }, { type: "null" }] },
+    content_hash: { type: "string" },
+    provenance: { $ref: "#/components/schemas/MemoryProvenance" },
+    review: { oneOf: [{ $ref: "#/components/schemas/MemoryReview" }, { type: "null" }] },
+    created_at: { type: "string", format: "date-time" },
+    created_by: { type: "string" },
+  },
+};
+
+const memoryItemVersionsSchema: JsonObject = {
+  type: "object",
+  required: ["schema_version", "item_id", "status", "current_version", "versions"],
+  additionalProperties: false,
+  properties: {
+    schema_version: { type: "integer" },
+    item_id: { type: "string" },
+    status: { type: "string", enum: [...MEMORY_STATUSES] },
+    current_version: { type: "integer", minimum: 1 },
+    versions: { type: "array", items: { $ref: "#/components/schemas/MemoryItemVersion" } },
+  },
+};
+
+const memoryItemEventSchema: JsonObject = {
+  type: "object",
+  description:
+    "One normalized audit entry, merged from memory events, promotion " +
+    "decisions, and consolidation operations. `detail` holds only fixed " +
+    "enums, counts, and opaque ids — never free text and never memory content.",
+  required: ["at", "source", "action", "actor", "item_version"],
+  additionalProperties: false,
+  properties: {
+    at: { type: "string", format: "date-time" },
+    source: { type: "string", enum: [...MEMORY_EVENT_SOURCES] },
+    action: {
+      type: "string",
+      description:
+        "The recorded action: a memory event type, `promotion_decision`, or the " +
+        "consolidation operation (merge, supersede, expire, deprecate, quarantine).",
+    },
+    actor: {
+      type: "object",
+      required: ["type", "id"],
+      additionalProperties: false,
+      properties: {
+        type: { type: "string", enum: ["user", "system"] },
+        id: { type: "string" },
+      },
+    },
+    item_version: { oneOf: [{ type: "integer" }, { type: "null" }] },
+    from_status: { type: "string", enum: [...MEMORY_STATUSES] },
+    to_status: { type: "string", enum: [...MEMORY_STATUSES] },
+    reason_code: { type: "string" },
+    detail: {
+      type: "object",
+      additionalProperties: {
+        oneOf: [{ type: "string" }, { type: "number" }, { type: "boolean" }],
+      },
+    },
+  },
+};
+
+const memoryItemEventsSchema: JsonObject = {
+  type: "object",
+  description:
+    "One page of the merged audit timeline. The timeline is traversable: " +
+    "`next_cursor` is non-null exactly when older-to-newer traversal has more " +
+    "rows, so a client can always reach the complete history.",
+  required: ["item_id", "events", "next_cursor"],
+  additionalProperties: false,
+  properties: {
+    item_id: { type: "string" },
+    events: {
+      type: "array",
+      description: "Ascending by `at`. Append-only: entries are never rewritten.",
+      items: { $ref: "#/components/schemas/MemoryItemEvent" },
+    },
+    next_cursor: {
+      oneOf: [{ type: "string" }, { type: "null" }],
+      description:
+        "Opaque cursor for the next page; null at the end of the timeline. A " +
+        "bounded page is never presented as the complete audit history.",
+    },
+  },
+};
+
+const versionConcurrencyProperties = {
+  version: {
+    type: "integer",
+    minimum: 1,
+    description: "The exact content version the human acted on; must be current.",
+  },
+  expected_version: {
+    type: "integer",
+    minimum: 1,
+    description: "Optimistic concurrency token; must equal the current version.",
+  },
+} as const;
+
+const reasonCodeProperty = {
+  reason_code: {
+    type: "string",
+    enum: [...MEMORY_GOVERNANCE_REASON_CODES],
+    description: "Fixed machine reason; free-text reasons are not accepted or stored.",
+  },
+} as const;
+
+const memoryPromoteRequestSchema: JsonObject = {
+  type: "object",
+  description:
+    "Named human promotion. Only candidate -> active is accepted; procedural " +
+    "content and policy receive the approver's exact-version review stamp.",
+  required: ["version", "expected_version"],
+  additionalProperties: false,
+  properties: { ...versionConcurrencyProperties },
+};
+
+const memoryDeprecateRequestSchema: JsonObject = {
+  type: "object",
+  required: ["version", "expected_version", "reason_code"],
+  additionalProperties: false,
+  properties: { ...versionConcurrencyProperties, ...reasonCodeProperty },
+};
+
+const memoryQuarantineRequestSchema: JsonObject = {
+  type: "object",
+  required: ["version", "expected_version", "reason_code"],
+  additionalProperties: false,
+  properties: { ...versionConcurrencyProperties, ...reasonCodeProperty },
+};
+
+const memoryRestoreRequestSchema: JsonObject = {
+  type: "object",
+  description:
+    "Restore a quarantined item. `active` is not a permitted target: returning " +
+    "to active must go through promote so approval cannot be bypassed.",
+  required: ["version", "expected_version", "target_status", "reason_code"],
+  additionalProperties: false,
+  properties: {
+    ...versionConcurrencyProperties,
+    target_status: { type: "string", enum: [...MEMORY_RESTORE_TARGET_STATUSES] },
+    ...reasonCodeProperty,
+  },
+};
+
+const memoryGovernanceResultSchema: JsonObject = {
+  type: "object",
+  description:
+    "The applied transition plus the item's post-transition view, served under " +
+    "the same sensitivity ceiling as browse.",
+  required: [
+    "action",
+    "item_id",
+    "from_status",
+    "to_status",
+    "item_version",
+    "reason_code",
+    "item",
+  ],
+  additionalProperties: false,
+  properties: {
+    action: { type: "string", enum: [...MEMORY_GOVERNANCE_ACTIONS] },
+    item_id: { type: "string" },
+    from_status: { type: "string", enum: [...MEMORY_STATUSES] },
+    to_status: { type: "string", enum: [...MEMORY_STATUSES] },
+    item_version: { type: "integer" },
+    reason_code: {
+      oneOf: [
+        { type: "string", enum: [...MEMORY_GOVERNANCE_REASON_CODES] },
+        { type: "string", enum: ["human_approved"] },
+        { type: "null" },
+      ],
+    },
+    item: { $ref: "#/components/schemas/MemoryItemView" },
+  },
+};
+
 export const MEMORY_OPENAPI_SCHEMAS: Record<string, unknown> = {
   MemoryApplicability: memoryApplicabilitySchema,
   MemoryEvidence: memoryEvidenceSchema,
@@ -704,6 +972,17 @@ export const MEMORY_OPENAPI_SCHEMAS: Record<string, unknown> = {
   MemoryVersions: memoryVersionsSchema,
   MemoryEvalRunRequest: memoryEvalRunRequestSchema,
   MemoryEvalRunRecord: memoryEvalRunRecordSchema,
+  MemoryProvenance: memoryProvenanceSchema,
+  MemoryReview: memoryReviewSchema,
+  MemoryItemVersion: memoryItemVersionSchema,
+  MemoryItemVersions: memoryItemVersionsSchema,
+  MemoryItemEvent: memoryItemEventSchema,
+  MemoryItemEvents: memoryItemEventsSchema,
+  MemoryPromoteRequest: memoryPromoteRequestSchema,
+  MemoryDeprecateRequest: memoryDeprecateRequestSchema,
+  MemoryQuarantineRequest: memoryQuarantineRequestSchema,
+  MemoryRestoreRequest: memoryRestoreRequestSchema,
+  MemoryGovernanceResult: memoryGovernanceResultSchema,
 };
 
 const SESSION_ONLY_NOTE =
@@ -718,7 +997,19 @@ const workspaceIdParameter: JsonObject = {
   description: "Workspace the caller is a member of; resolved from the session.",
 };
 
-/** The five memory v1 operations from ADR-0009's proposed surface. */
+const itemIdParameter: JsonObject = {
+  name: "item_id",
+  in: "path",
+  required: true,
+  schema: { type: "string" },
+  description: "Memory item id. Ids never grant access; a foreign id answers 404.",
+};
+
+/**
+ * The memory v1 operations from ADR-0009's proposed surface: retrieval and
+ * browse (DAT-236), plus the governance surface promoted from the ADR's
+ * promote/deprecate/quarantine list (DAT-251).
+ */
 export function memoryOpenApiPaths(): Record<string, Record<string, unknown>> {
   return {
     "/api/v1/workspaces/{workspace_id}/memory/search": {
@@ -814,6 +1105,52 @@ export function memoryOpenApiPaths(): Record<string, Record<string, unknown>> {
             schema: { type: "string", enum: ["L1", "L2", "L3", "L4"] },
           },
           {
+            name: "team_id",
+            in: "query",
+            required: false,
+            schema: { type: "string", maxLength: 200 },
+            description:
+              "Applicability filter (DAT-251): shows items scoped to this team " +
+              "plus broadly applicable items (no team scope). Items scoped to " +
+              "another team are excluded. Leaving it unset changes nothing.",
+          },
+          {
+            name: "path_prefix",
+            in: "query",
+            required: false,
+            schema: { type: "string", maxLength: 200 },
+            description:
+              "Applicability filter; matches on segment boundaries and includes " +
+              "broadly applicable items.",
+          },
+          {
+            name: "language",
+            in: "query",
+            required: false,
+            schema: { type: "string", maxLength: 200 },
+          },
+          {
+            name: "task_family",
+            in: "query",
+            required: false,
+            schema: { type: "string", maxLength: 200 },
+          },
+          {
+            name: "trust",
+            in: "query",
+            required: false,
+            schema: { type: "string", enum: [...MEMORY_TRUSTS] },
+          },
+          {
+            name: "sensitivity",
+            in: "query",
+            required: false,
+            schema: { type: "string", enum: [...MEMORY_SENSITIVITIES] },
+            description:
+              "Narrows the browse; it never widens the role ceiling, so a " +
+              "sensitivity above the caller's ceiling stays invisible.",
+          },
+          {
             name: "limit",
             in: "query",
             required: false,
@@ -887,6 +1224,216 @@ export function memoryOpenApiPaths(): Record<string, Record<string, unknown>> {
           401: errorResponse("UNAUTHENTICATED"),
           403: errorResponse("FORBIDDEN — owner role required"),
           404: errorResponse("NOT_FOUND"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}": {
+      get: {
+        operationId: "getMemoryItem",
+        summary: "One memory item in the browse view",
+        description:
+          SESSION_ONLY_NOTE +
+          "The same view and sensitivity ceiling as browse, for deep links. A " +
+          "quarantined item serves statement null with statement_redacted " +
+          "true; a restricted item and a foreign workspace id both answer 404.",
+        parameters: [workspaceIdParameter, itemIdParameter],
+        responses: {
+          200: {
+            description: "Item detail",
+            ...jsonRef("#/components/schemas/MemoryItemView"),
+          },
+          401: errorResponse("UNAUTHENTICATED"),
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND — unknown item, other workspace, or above the ceiling"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/versions": {
+      get: {
+        operationId: "getMemoryItemVersions",
+        summary: "Per-version content for diffing",
+        description:
+          SESSION_ONLY_NOTE +
+          "Every immutable version with its own statement, preconditions, trust, " +
+          "sensitivity, validity window, content hash, provenance, and review " +
+          "stamp. Each historical version is filtered by its own sensitivity " +
+          "ceiling: a high-sensitivity version is absent, not blanked. A " +
+          "quarantined item's statements and preconditions are withheld.",
+        parameters: [workspaceIdParameter, itemIdParameter],
+        responses: {
+          200: {
+            description: "Visible version history, ascending",
+            ...jsonRef("#/components/schemas/MemoryItemVersions"),
+          },
+          401: errorResponse("UNAUTHENTICATED"),
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/events": {
+      get: {
+        operationId: "getMemoryItemEvents",
+        summary: "Item audit timeline, paged",
+        description:
+          SESSION_ONLY_NOTE +
+          "Merges memory events, promotion decisions, and consolidation " +
+          "operations into one ascending timeline with actor, action, version, " +
+          "time, and a fixed reason code. `detail` carries only enums, counts, " +
+          "and opaque ids. Events about versions above the caller's ceiling are " +
+          "absent. The timeline is paginated rather than truncated: pass " +
+          "`limit` (default 50, max 200) and follow `next_cursor` until it is " +
+          "null to read the complete audit history.",
+        parameters: [
+          workspaceIdParameter,
+          itemIdParameter,
+          {
+            name: "limit",
+            in: "query",
+            required: false,
+            schema: { type: "integer", minimum: 1, maximum: 200, default: 50 },
+            description: "Timeline page size.",
+          },
+          {
+            name: "cursor",
+            in: "query",
+            required: false,
+            schema: { type: "string", maxLength: 512 },
+            description: "Opaque `next_cursor` from the previous page.",
+          },
+        ],
+        responses: {
+          200: {
+            description: "Audit timeline",
+            ...jsonRef("#/components/schemas/MemoryItemEvents"),
+          },
+          401: errorResponse("UNAUTHENTICATED"),
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/promote": {
+      post: {
+        operationId: "promoteMemoryItem",
+        summary: "Named human promotion of an exact version",
+        description:
+          SESSION_ONLY_NOTE +
+          "Workspace owner/admin, or the lead of the item's team. Only " +
+          "candidate -> active is accepted. The named approver's review stamp is " +
+          "written on the exact version; policy additionally must be " +
+          "human-authored. An item with no evidence cannot be promoted. " +
+          "`expected_version` or a non-current `version` answers 409 " +
+          "VERSION_CONFLICT; an illegal transition answers 409 INVALID_TRANSITION.",
+        parameters: [workspaceIdParameter, itemIdParameter],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/MemoryPromoteRequest" } },
+          },
+        },
+        responses: {
+          200: {
+            description: "Promoted item",
+            ...jsonRef("#/components/schemas/MemoryGovernanceResult"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          401: errorResponse("UNAUTHENTICATED"),
+          403: errorResponse("FORBIDDEN — member/viewer, other team, or agent credential"),
+          404: errorResponse("NOT_FOUND"),
+          409: errorResponse("VERSION_CONFLICT, INVALID_TRANSITION, or PRECONDITION_FAILED"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/deprecate": {
+      post: {
+        operationId: "deprecateMemoryItem",
+        summary: "Retire a candidate or active item with a fixed reason",
+        description:
+          SESSION_ONLY_NOTE +
+          "Workspace owner/admin, or the lead of the item's team. Only " +
+          "active|candidate -> deprecated is accepted. The reason is a fixed " +
+          "machine code; free text is not accepted or stored.",
+        parameters: [workspaceIdParameter, itemIdParameter],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/MemoryDeprecateRequest" } },
+          },
+        },
+        responses: {
+          200: {
+            description: "Deprecated item",
+            ...jsonRef("#/components/schemas/MemoryGovernanceResult"),
+          },
+          400: errorResponse("INVALID_REQUEST — unknown reason_code"),
+          401: errorResponse("UNAUTHENTICATED"),
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+          409: errorResponse("VERSION_CONFLICT or INVALID_TRANSITION"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/quarantine": {
+      post: {
+        operationId: "quarantineMemoryItem",
+        summary: "Quarantine an item as a security response",
+        description:
+          SESSION_ONLY_NOTE +
+          "Workspace owner/admin, or the lead of the item's team. Any " +
+          "non-terminal state may be quarantined. Quarantine removes the item " +
+          "from retrieval immediately and every later response serves statement " +
+          "null, empty preconditions, and evidence reduced to an irreversible " +
+          "identifier. v1 has no route that returns the original content.",
+        parameters: [workspaceIdParameter, itemIdParameter],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/MemoryQuarantineRequest" },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Quarantined item, content redacted",
+            ...jsonRef("#/components/schemas/MemoryGovernanceResult"),
+          },
+          400: errorResponse("INVALID_REQUEST — unknown reason_code"),
+          401: errorResponse("UNAUTHENTICATED"),
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+          409: errorResponse("VERSION_CONFLICT or INVALID_TRANSITION"),
+        },
+      },
+    },
+    "/api/v1/workspaces/{workspace_id}/memory/items/{item_id}/restore": {
+      post: {
+        operationId: "restoreMemoryItem",
+        summary: "Release a quarantined item to proposed, candidate, or deprecated",
+        description:
+          SESSION_ONLY_NOTE +
+          "Workspace owner/admin, or the lead of the item's team. Only a " +
+          "quarantined item can be restored, and `active` is not an accepted " +
+          "target: returning to active must go through promote so approval " +
+          "cannot be bypassed.",
+        parameters: [workspaceIdParameter, itemIdParameter],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/MemoryRestoreRequest" } },
+          },
+        },
+        responses: {
+          200: {
+            description: "Restored item",
+            ...jsonRef("#/components/schemas/MemoryGovernanceResult"),
+          },
+          400: errorResponse("INVALID_REQUEST — unknown target_status or reason_code"),
+          401: errorResponse("UNAUTHENTICATED"),
+          403: errorResponse("FORBIDDEN"),
+          404: errorResponse("NOT_FOUND"),
+          409: errorResponse("VERSION_CONFLICT or INVALID_TRANSITION"),
         },
       },
     },

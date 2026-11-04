@@ -2,11 +2,18 @@
  * Workspace memory v1 HTTP surface (DAT-236).
  *
  * Every route is authenticated by a web/desktop session and scoped by the
- * caller's workspace membership — never by a path or body identifier. The
- * route set is deliberately read-mostly: search, feedback, browse, versions,
- * and evaluation recording. There is no promotion, deprecation, quarantine,
- * or policy-write route here, because memory administration must not be
- * reachable from a retrieval credential.
+ * caller's workspace membership — never by a path or body identifier.
+ *
+ * The surface has two halves:
+ *
+ * - Retrieval-side (DAT-236/DAT-238): search, feedback, browse, versions,
+ *   evaluation recording, and bounded-RSI governance.
+ * - Governance (DAT-251): item detail, per-version content, the item audit
+ *   timeline, and the four named human transitions promote/deprecate/
+ *   quarantine/restore. These require a person with standing (owner/admin, or
+ *   the team lead of the item's team). An agent/process credential is refused
+ *   with 403 even though it authenticates the operator surface: memory
+ *   administration is not reachable from an agent credential.
  */
 
 import type http from "node:http";
@@ -15,8 +22,16 @@ import type { SessionContext } from "./auth-service.js";
 import type { AuthService } from "./auth-service.js";
 import { ApiError } from "./errors.js";
 import { readJsonBody, writeJson } from "./http-util.js";
-import { requireSessionActor } from "./auth-http.js";
+import { requireSessionActor, requestSessionToken } from "./auth-http.js";
+import { isAuthorizedBearer } from "./auth.js";
 import type { RequestAuthority } from "./request-authority.js";
+import type {
+  MemoryGovernanceActor,
+  MemoryGovernanceReasonCode,
+  MemoryGovernanceService,
+  MemoryRestoreTargetStatus,
+} from "../memory/governance/index.js";
+import { MEMORY_GOVERNANCE_ACTIONS } from "../memory/governance/index.js";
 import type { WorkspaceRole, WorkspaceScope } from "../control-plane/types.js";
 import type {
   MemoryEvalRunInput,
@@ -53,6 +68,17 @@ export interface MemoryHttpDeps {
    * budget, and kill-switch routes nonexistent.
    */
   rsi?: RsiService;
+  /**
+   * Memory governance (DAT-251). Unset keeps the detail, versions, events, and
+   * promote/deprecate/quarantine/restore routes nonexistent.
+   */
+  governance?: MemoryGovernanceService;
+  /**
+   * The deployment's local-operator bearer token. When a caller presents it
+   * instead of a session, governance writes answer 403: an agent credential
+   * may read retrieval, never administer memory.
+   */
+  apiToken?: string;
 }
 
 export interface MemoryRouteContext {
@@ -249,12 +275,23 @@ function evalRunInput(body: Record<string, unknown>): MemoryEvalRunInput {
   };
 }
 
+function optionalQuery(url: URL, name: string): string | undefined {
+  const value = url.searchParams.get(name);
+  return value === null || value.length === 0 ? undefined : value;
+}
+
 /** Parse and bound the browse query string. */
 function itemsFilter(url: URL): MemoryItemsFilter {
   const filter: MemoryItemsFilter = {};
   const kind = url.searchParams.get("kind");
   const status = url.searchParams.get("status");
   const tier = url.searchParams.get("tier");
+  const teamId = optionalQuery(url, "team_id");
+  const pathPrefix = optionalQuery(url, "path_prefix");
+  const language = optionalQuery(url, "language");
+  const taskFamily = optionalQuery(url, "task_family");
+  const trust = optionalQuery(url, "trust");
+  const sensitivity = optionalQuery(url, "sensitivity");
   const limit = url.searchParams.get("limit");
   const cursor = url.searchParams.get("cursor");
   if (kind !== null && kind.length > 0) {
@@ -265,6 +302,24 @@ function itemsFilter(url: URL): MemoryItemsFilter {
   }
   if (tier !== null && tier.length > 0) {
     filter.tier = tier as MemoryItemsFilter["tier"];
+  }
+  if (teamId !== undefined) {
+    filter.team_id = teamId;
+  }
+  if (pathPrefix !== undefined) {
+    filter.path_prefix = pathPrefix;
+  }
+  if (language !== undefined) {
+    filter.language = language;
+  }
+  if (taskFamily !== undefined) {
+    filter.task_family = taskFamily;
+  }
+  if (trust !== undefined) {
+    filter.trust = trust as MemoryItemsFilter["trust"];
+  }
+  if (sensitivity !== undefined) {
+    filter.sensitivity = sensitivity as MemoryItemsFilter["sensitivity"];
   }
   if (limit !== null && limit.length > 0) {
     const parsed = Number(limit);
@@ -277,6 +332,88 @@ function itemsFilter(url: URL): MemoryItemsFilter {
     filter.cursor = cursor;
   }
   return filter;
+}
+
+// ---------------------------------------------------------------------------
+// Memory governance (DAT-251)
+// ---------------------------------------------------------------------------
+
+function governanceService(deps: MemoryHttpDeps): MemoryGovernanceService {
+  if (deps.governance === undefined) {
+    throw new ApiError(404, "NOT_FOUND", "the memory governance surface is not configured");
+  }
+  return deps.governance;
+}
+
+function governanceActor(memory: MemoryScope): MemoryGovernanceActor {
+  return { user_id: memory.ctx.user.id, role: memory.role };
+}
+
+/**
+ * A user session governs memory; the deployment's operator/agent bearer token
+ * does not. Authentication and authorization are different questions here:
+ * the credential is valid, the authority is absent, so the answer is 403 and
+ * never a 401 that would invite a retry with the same token.
+ */
+function rejectAgentCredential(deps: MemoryHttpDeps, req: http.IncomingMessage): void {
+  if (deps.apiToken === undefined || deps.apiToken.length === 0) {
+    return;
+  }
+  const presented = requestSessionToken(req);
+  if (presented !== undefined && presented.via === "cookie") {
+    // A browser session is a person; the bearer check below is for the
+    // operator/agent credential only.
+    return;
+  }
+  if (isAuthorizedBearer(req.headers.authorization, deps.apiToken)) {
+    throw new ApiError(
+      403,
+      "FORBIDDEN",
+      "agent credentials cannot govern workspace memory; a user session is required",
+    );
+  }
+}
+
+/** Only the documented transition fields are accepted; nothing else is read. */
+function requireGovernanceBody(body: Record<string, unknown>, allowed: readonly string[]): void {
+  rejectScopeClaims(body);
+  for (const key of Object.keys(body)) {
+    if (!allowed.includes(key)) {
+      throw new ApiError(
+        400,
+        "INVALID_REQUEST",
+        `${key} is not part of this transition; only ${allowed.join(", ")} are accepted`,
+      );
+    }
+  }
+}
+
+function requiredPositiveInteger(body: Record<string, unknown>, field: string): number {
+  const value = body[field];
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new ApiError(400, "INVALID_REQUEST", `${field} must be a positive integer`);
+  }
+  return value;
+}
+
+function requiredReasonCode(body: Record<string, unknown>): MemoryGovernanceReasonCode {
+  const value = body["reason_code"];
+  if (typeof value !== "string" || value.length === 0) {
+    throw new ApiError(400, "INVALID_REQUEST", "reason_code is required");
+  }
+  // The service validates membership in the fixed vocabulary; this only
+  // rejects a missing or non-string value.
+  return value as MemoryGovernanceReasonCode;
+}
+
+function requiredTargetStatus(body: Record<string, unknown>): MemoryRestoreTargetStatus {
+  const value = body["target_status"];
+  if (typeof value !== "string" || value.length === 0) {
+    throw new ApiError(400, "INVALID_REQUEST", "target_status is required");
+  }
+  // The service rejects anything outside the restore vocabulary, including
+  // `active`.
+  return value as MemoryRestoreTargetStatus;
 }
 
 // ---------------------------------------------------------------------------
@@ -446,8 +583,19 @@ export async function handleMemoryRequest(
   if (segments.length < 6 || segments[4] !== "memory") {
     throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
   }
-  const memory = requireMemoryScope(deps, ctx);
   const resource = segments[5];
+  // Governance writes are refused for an agent/operator credential *before*
+  // session resolution: that credential is valid but has no standing here, so
+  // the honest answer is 403, not the 401 a missing session would produce.
+  const isGovernanceMutation =
+    method === "POST" &&
+    resource === "items" &&
+    segments.length === 8 &&
+    (MEMORY_GOVERNANCE_ACTIONS as readonly string[]).includes(segments[7] as string);
+  if (isGovernanceMutation) {
+    rejectAgentCredential(deps, req);
+  }
+  const memory = requireMemoryScope(deps, ctx);
 
   // POST /memory/search
   if (method === "POST" && resource === "search" && segments.length === 6) {
@@ -470,6 +618,120 @@ export async function handleMemoryRequest(
   if (method === "GET" && resource === "items" && segments.length === 6) {
     requireAuthority(deps, memory, "read");
     writeJson(res, 200, deps.service.listItems(memory.scope, memory.role, itemsFilter(url)));
+    return;
+  }
+
+  // GET /memory/items/{item_id} — detail, same view and ceiling as browse.
+  if (method === "GET" && resource === "items" && segments.length === 7) {
+    requireAuthority(deps, memory, "read");
+    writeJson(
+      res,
+      200,
+      governanceService(deps).getItem(memory.scope, memory.role, segments[6] as string),
+    );
+    return;
+  }
+
+  // GET /memory/items/{item_id}/versions — per-version content for diffing.
+  if (
+    method === "GET" &&
+    resource === "items" &&
+    segments.length === 8 &&
+    segments[7] === "versions"
+  ) {
+    requireAuthority(deps, memory, "read");
+    writeJson(
+      res,
+      200,
+      governanceService(deps).versions(memory.scope, memory.role, segments[6] as string),
+    );
+    return;
+  }
+
+  // GET /memory/items/{item_id}/events — the merged audit timeline, paged.
+  if (
+    method === "GET" &&
+    resource === "items" &&
+    segments.length === 8 &&
+    segments[7] === "events"
+  ) {
+    requireAuthority(deps, memory, "read");
+    const limit = optionalQuery(url, "limit");
+    if (limit !== undefined) {
+      const parsed = Number(limit);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new ApiError(400, "INVALID_REQUEST", "limit must be a positive integer");
+      }
+    }
+    const cursor = optionalQuery(url, "cursor");
+    writeJson(
+      res,
+      200,
+      governanceService(deps).events(memory.scope, memory.role, segments[6] as string, {
+        ...(limit !== undefined ? { limit: Number(limit) } : {}),
+        ...(cursor !== undefined ? { cursor } : {}),
+      }),
+    );
+    return;
+  }
+
+  // POST /memory/items/{item_id}/{promote|deprecate|quarantine|restore}
+  if (
+    method === "POST" &&
+    resource === "items" &&
+    segments.length === 8 &&
+    (MEMORY_GOVERNANCE_ACTIONS as readonly string[]).includes(segments[7] as string)
+  ) {
+    // Governance is a write; authority is checked before any body is read so
+    // an unauthorized caller cannot use error shape as an oracle.
+    requireAuthority(deps, memory, "write");
+    const action = segments[7] as (typeof MEMORY_GOVERNANCE_ACTIONS)[number];
+    const itemId = segments[6] as string;
+    const service = governanceService(deps);
+    const body = await readJsonBody(req);
+    const actor = governanceActor(memory);
+    if (action === "promote") {
+      requireGovernanceBody(body, ["version", "expected_version"]);
+      writeJson(
+        res,
+        200,
+        service.promote(memory.scope, actor, itemId, {
+          version: requiredPositiveInteger(body, "version"),
+          expected_version: requiredPositiveInteger(body, "expected_version"),
+        }),
+      );
+      return;
+    }
+    if (action === "deprecate" || action === "quarantine") {
+      requireGovernanceBody(body, ["version", "expected_version", "reason_code"]);
+      writeJson(
+        res,
+        200,
+        action === "deprecate"
+          ? service.deprecate(memory.scope, actor, itemId, {
+              version: requiredPositiveInteger(body, "version"),
+              expected_version: requiredPositiveInteger(body, "expected_version"),
+              reason_code: requiredReasonCode(body),
+            })
+          : service.quarantine(memory.scope, actor, itemId, {
+              version: requiredPositiveInteger(body, "version"),
+              expected_version: requiredPositiveInteger(body, "expected_version"),
+              reason_code: requiredReasonCode(body),
+            }),
+      );
+      return;
+    }
+    requireGovernanceBody(body, ["version", "expected_version", "target_status", "reason_code"]);
+    writeJson(
+      res,
+      200,
+      service.restore(memory.scope, actor, itemId, {
+        version: requiredPositiveInteger(body, "version"),
+        expected_version: requiredPositiveInteger(body, "expected_version"),
+        target_status: requiredTargetStatus(body),
+        reason_code: requiredReasonCode(body),
+      }),
+    );
     return;
   }
 

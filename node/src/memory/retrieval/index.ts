@@ -54,7 +54,9 @@ export {
   MEMORY_EVIDENCE_TYPES,
   MEMORY_KINDS,
   MEMORY_LINK_TYPES,
+  MEMORY_SENSITIVITIES,
   MEMORY_STATUSES,
+  MEMORY_TRUSTS,
 } from "./constants.js";
 
 export * from "./types.js";

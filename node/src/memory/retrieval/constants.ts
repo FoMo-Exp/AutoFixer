@@ -5,7 +5,14 @@
  * can iterate the same lists the type system uses.
  */
 
-import type { MemoryEvidenceType, MemoryKind, MemoryLinkType, MemoryStatus } from "../types.js";
+import type {
+  MemoryEvidenceType,
+  MemoryKind,
+  MemoryLinkType,
+  MemorySensitivity,
+  MemoryStatus,
+  MemoryTrust,
+} from "../types.js";
 
 export const MEMORY_EVIDENCE_TYPES: readonly MemoryEvidenceType[] = [
   "run",
@@ -33,6 +40,19 @@ export const MEMORY_STATUSES: readonly MemoryStatus[] = [
   "deprecated",
   "retired",
   "quarantined",
+];
+
+export const MEMORY_TRUSTS: readonly MemoryTrust[] = [
+  "human",
+  "agent",
+  "enterprise_template",
+  "system",
+];
+
+export const MEMORY_SENSITIVITIES: readonly MemorySensitivity[] = [
+  "internal",
+  "confidential",
+  "restricted",
 ];
 
 /** Iteration order for link typing in the retrieval read path. */

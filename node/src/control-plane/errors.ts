@@ -23,6 +23,45 @@ export class NotFoundError extends ControlPlaneError {
   }
 }
 
+/**
+ * The actor is authenticated and may see the target, but has no standing for
+ * this action (403). Authorization, not authentication; never a 401.
+ */
+export class ForbiddenError extends ControlPlaneError {
+  constructor(message: string) {
+    super("FORBIDDEN", message);
+  }
+}
+
+/**
+ * A lifecycle transition the state machine does not allow (DAT-251). A
+ * governance action on the wrong status is a state conflict, not a bad
+ * request: the client's *intent* is well-formed, the item is not in a state
+ * that can accept it.
+ */
+export class InvalidTransitionError extends ControlPlaneError {
+  constructor(
+    message: string,
+    readonly details: Record<string, unknown> = {},
+  ) {
+    super("INVALID_TRANSITION", message);
+  }
+}
+
+/**
+ * A write whose preconditions do not hold (DAT-251): for example promoting an
+ * item that has no evidence citation. The request is valid; the stored state
+ * does not support the action yet.
+ */
+export class PreconditionFailedError extends ControlPlaneError {
+  constructor(
+    message: string,
+    readonly details: Record<string, unknown> = {},
+  ) {
+    super("PRECONDITION_FAILED", message);
+  }
+}
+
 /** The caller's scope does not include the referenced entity. */
 export class ScopeError extends ControlPlaneError {
   constructor(message: string) {
