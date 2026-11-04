@@ -18,6 +18,11 @@ func platformIsolator() Isolator { return bwrapIsolator{} }
 
 func (bwrapIsolator) Name() string { return "bwrap" }
 
+// ExecutionDomain reports the kernel guarantee bubblewrap provides: the PID
+// namespace owns every descendant, so the kernel removes the whole domain
+// when the namespace dies and no process can escape by reparenting.
+func (bwrapIsolator) ExecutionDomain() ExecutionDomain { return DomainComplete }
+
 func (bwrapIsolator) Available() error {
 	if _, err := exec.LookPath("bwrap"); err != nil {
 		return fmt.Errorf("%w: bwrap is not on PATH", ErrIsolationUnavailable)

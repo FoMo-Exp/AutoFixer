@@ -89,6 +89,11 @@ type Config struct {
 	// Profiles is the registered test/dependency profile vocabulary. Nil
 	// uses sandbox.DefaultExecProfiles.
 	Profiles []sandbox.ExecProfile
+	// Isolator overrides the host's OS-level isolation backend. Nil uses
+	// sandbox.NewIsolator. Tests inject a backend here; production always
+	// selects the host backend, whose execution-domain guarantee decides
+	// whether untrusted execution is allowed (DAT-253).
+	Isolator sandbox.Isolator
 }
 
 const defaultApprovalWindow = 15 * time.Minute

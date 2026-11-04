@@ -17,6 +17,10 @@ func platformIsolator() Isolator { return unavailableIsolator{} }
 
 func (unavailableIsolator) Name() string { return "unavailable" }
 
+// ExecutionDomain reports that no backend exists here: there is no domain to
+// guarantee, and untrusted execution is refused.
+func (unavailableIsolator) ExecutionDomain() ExecutionDomain { return DomainBestEffort }
+
 func (unavailableIsolator) Available() error {
 	return fmt.Errorf("%w: no OS-level isolation backend for %s", ErrIsolationUnavailable, runtime.GOOS)
 }
