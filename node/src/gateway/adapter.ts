@@ -58,6 +58,13 @@ export function buildAdapterOptions(
  * credential always comes from the gateway, so pi-ai's environment-variable
  * key lookup is unreachable. Both are enforced here as well as in the gateway:
  * this adapter refuses to send anything without an explicit credential.
+ *
+ * Metering evidence: the pi-ai SDK normalizes provider usage and exposes no
+ * wire payload, so terminal messages from this adapter carry no
+ * `PROVIDER_USAGE_DIAGNOSTIC` and the gateway records their attempts as
+ * transport usage reports (preserved verbatim in the ledger). A transport
+ * that does surface provider-native usage attaches it to the terminal
+ * message's diagnostics instead.
  */
 export const piAiProviderAdapter: ProviderAdapter = {
   stream(

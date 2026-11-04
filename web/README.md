@@ -13,6 +13,45 @@ npm test
 npm run build
 ```
 
+## Enterprise sign-in and workspace scope
+
+Browser and desktop share one authentication gate. A session token never enters
+a URL, referrer, `localStorage`, or renderer JavaScript.
+
+- **Browser (cookie session).** The page lists `GET /api/v1/auth/providers`,
+  navigates to `GET /api/v1/auth/login` with the chosen provider instance id and
+  a relative `return_to`, and reads `GET /api/v1/auth/session` after the
+  callback. The session lives in the HttpOnly `fp_session` cookie; mutating
+  requests echo the session's CSRF token in `X-CSRF-Token`. A rejected CSRF
+  token is refreshed once from the session endpoint and the request retried
+  once. Browser mode requires the workbench to be served from the API's own
+  loopback origin (the OAuth callback redirects there and the cookie is scoped
+  to it); it is not available from the cross-origin Vite dev server.
+- **Desktop (system browser).** Electron main creates
+  `POST /api/v1/auth/desktop/flows`, opens the returned `login_url` with the
+  operating system browser, and polls the single-use
+  `/desktop/flows/{flow_id}/exchange` until the browser completes sign-in. The
+  flow secret and the resulting bearer token stay in the main process; the API
+  proxy attaches the token per request. The token is held in memory only, so a
+  workbench restart requires signing in again.
+- **Legacy local-operator mode.** When the Node service has no identity
+  subsystem (`GET /api/v1/auth/providers` returns 404), the workbench keeps the
+  launch-time local-operator bearer token path.
+
+The workbench deliberately has no workspace switch yet. `GET/POST /api/v1/tasks`
+take no workspace selector, and Node resolves session authority against one
+configured workspace (`AuthService.workspaceRole`). Relabeling tasks from
+another membership would therefore show the same data under a different name —
+a false affordance. Real switching needs a workspace-scoped task contract and
+server enforcement first; until then the session's `memberships` only decide
+the "no workspace access" gate. A client-supplied workspace id is never treated
+as proof of access.
+
+A 401 from the task surface drops the credential and shows the recoverable
+"session expired" sign-in screen. A 403 keeps the session and reports a
+dismissible permission banner; a revoked membership surfaces as the
+"no workspace access" gate.
+
 ## Provider account binding (settings)
 
 The workbench Settings dialog binds GitHub or GitLab accounts so the task

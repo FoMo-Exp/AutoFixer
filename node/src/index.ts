@@ -1,5 +1,4 @@
 import type http from "node:http";
-
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 
@@ -8,15 +7,26 @@ import type { Api, Model } from "@mariozechner/pi-ai";
 import { buildOpenApiDocument } from "./api/openapi.js";
 import { readOrCreateApiToken } from "./api/auth.js";
 import { AuthService } from "./api/auth-service.js";
+import { createInvitationAuthority } from "./api/invitation-authority.js";
+import { InvitationService, readOrCreateInvitationDigestKey } from "./api/invitation-service.js";
+import type { InvitationRateLimits } from "./api/invitation-service.js";
 import { ProviderOAuth, readOAuthCredentialsFile } from "./api/oauth.js";
 import { createApiServer } from "./api/server.js";
+import { createRequestAuthority } from "./api/request-authority.js";
+import type { RequestAuthority } from "./api/request-authority.js";
 import { TaskService } from "./api/task-service.js";
 import { TaskStore } from "./api/task-store.js";
+import {
+  createConfiguredWorkspaceRunBindingResolver,
+  createWorkspaceRunBindingResolver,
+} from "./api/workspace-bindings.js";
 import type { OrchestratorConfig } from "./config.js";
 import { configFromEnv, defaultSecurityStatePath } from "./config.js";
 import type { ControlPlaneDb } from "./control-plane/index.js";
 import {
   createIdentityRepositories,
+  createInvitationRepository,
+  createProviderAccessRepositories,
   createRepositories,
   openControlPlaneDb,
 } from "./control-plane/index.js";
@@ -33,6 +43,7 @@ import {
   readCredentialFile,
 } from "./gateway/index.js";
 import type { ModelGateway } from "./gateway/index.js";
+import { createUsageLedgerStore } from "./ledger/index.js";
 import { resolveConfiguredModel } from "./pi/model.js";
 import {
   DependentWorkPauseLedger,
@@ -43,6 +54,11 @@ import {
   createFileNotificationSink,
 } from "./security/index.js";
 import type { QuarantineKeyProvider, SecurityRoleDirectory } from "./security/index.js";
+import {
+  createStaticServiceCredentialStore,
+  readServiceCredentialFile,
+} from "./provider-access/credentials.js";
+import type { ServiceCredentialStore } from "./provider-access/credentials.js";
 
 export interface OrchestratorOptions {
   config: OrchestratorConfig;
@@ -58,6 +74,12 @@ export interface OrchestratorOptions {
   authFetchImpl?: typeof fetch;
   /** Injectable DNS lookup for the provider-origin policy (tests). */
   authDnsLookup?: (hostname: string) => Promise<string[]>;
+  /** Rate-limit overrides for the invitation surface (tests). */
+  invitationRateLimits?: InvitationRateLimits;
+  /** DAT-247 service credentials for the redemption point refresh (tests). */
+  providerServiceCredentials?: ServiceCredentialStore;
+  /** Provider API base override for the point refresh (tests: fake provider). */
+  providerApiBaseUrl?: string;
 }
 
 export interface OrchestratorHandle {
@@ -69,8 +91,16 @@ export interface OrchestratorHandle {
   model: Model<Api> | undefined;
   /** Identity/session subsystem; set when OAuth clients are configured. */
   auth: AuthService | undefined;
+  /** Owner-created invitation surface (DAT-204); set with the identity subsystem. */
+  invitations: InvitationService | undefined;
   /** Control-plane database behind the identity subsystem. */
   controlPlane: ControlPlaneDb | undefined;
+  /**
+   * Provider-authority request boundary (DAT-203); set with the identity
+   * subsystem. Exposed so revocation paths (provider events, reconcile) share
+   * its authority-change signal.
+   */
+  providerAuthority: RequestAuthority | undefined;
   /** Per-process bearer token callers must present on every API request. */
   apiToken: string;
   /** Start listening; resolves with the bound loopback address. */
@@ -186,6 +216,12 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
     ...(config.gatewayAuditFile ? { sink: createFileEventSink(config.gatewayAuditFile) } : {}),
     caseIntake: security,
     dependentWorkHold: security,
+    // Invocation usage ledger (DAT-227): every actual dispatch attempt is
+    // metered here — failures, retries and fallbacks included — so cost
+    // accounting reconciles against real attempts instead of guesses.
+    ...(config.usageLedgerFile
+      ? { usageLedger: createUsageLedgerStore({ persistencePath: config.usageLedgerFile }) }
+      : {}),
   });
 }
 
@@ -198,22 +234,21 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
  */
 export function createOrchestrator(options: OrchestratorOptions): OrchestratorHandle {
   const { config } = options;
-  const store = new TaskStore(
-    config.taskStateFile ? { persistencePath: config.taskStateFile } : {},
-  );
+  const store = new TaskStore({
+    ...(config.taskStateFile ? { persistencePath: config.taskStateFile } : {}),
+    // Pre-DAT-244 projections had no workspace ownership; one deployment
+    // served exactly one workspace, so that workspace is their owner.
+    legacyWorkspaceId: config.workspaceId,
+    // Pre-DAT-245 projections had no enterprise ownership; one deployment
+    // served exactly one enterprise, so that enterprise is their owner.
+    legacyEnterpriseId: config.enterpriseId,
+  });
   const dsh = new DshClient({
     socketPath: config.dshSocketPath,
     ...(config.dshTokenFile ? { tokenFile: config.dshTokenFile } : {}),
   });
   const model = options.model ?? resolveConfiguredModel(config);
   const gateway = options.gateway ?? deploymentGateway(config);
-  const service = new TaskService({
-    config,
-    dsh,
-    store,
-    gateway,
-    ...(model ? { model } : {}),
-  });
   // Fresh per-process token: possessing it is what authorizes API callers,
   // approvals included; the configured dsh identity alone is not proof of a
   // human decision.
@@ -221,12 +256,17 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   // Enterprise identity (ADR-0006) is enabled by the OAuth client file; its
   // absence keeps the local-operator surface exactly as before.
   let auth: AuthService | undefined;
+  let invitations: InvitationService | undefined;
   let controlPlane: ControlPlaneDb | undefined;
+  let providerAuthority: RequestAuthority | undefined;
+  let workspaceBindings = createConfiguredWorkspaceRunBindingResolver(config);
   if (config.oauthClientsFile !== undefined) {
     controlPlane = openControlPlaneDb({ path: config.controlPlaneFile ?? ":memory:" });
+    const repos = createRepositories(controlPlane);
+    const identity = createIdentityRepositories(controlPlane);
     auth = new AuthService({
-      repos: createRepositories(controlPlane),
-      identity: createIdentityRepositories(controlPlane),
+      repos,
+      identity,
       config: {
         enterpriseId: config.enterpriseId,
         workspaceId: config.workspaceId,
@@ -242,11 +282,81 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
         : {}),
       ...(options.authDnsLookup !== undefined ? { lookup: options.authDnsLookup } : {}),
     });
+    // Provider authority (DAT-203) shares the control plane with identity:
+    // the request boundary enforces effective access for session requests
+    // whenever a service integration is installed for this workspace.
+    const providerAccess = createProviderAccessRepositories(controlPlane);
+    providerAuthority = createRequestAuthority({
+      access: providerAccess,
+      memberships: repos.memberships,
+      workspaces: repos.workspaces,
+      users: identity.users,
+      identities: identity.identities,
+      enterpriseId: config.enterpriseId,
+      workspaceId: config.workspaceId,
+    });
+    // The workspace-scoped task family resolves each locator against the
+    // authenticated control plane, not against process config (DAT-245).
+    workspaceBindings = createWorkspaceRunBindingResolver({
+      config,
+      workspaces: repos.workspaces,
+      providerInstances: repos.providerInstances,
+    });
+    // The invitation digest key is deployment-owned and durable: a file next
+    // to the control-plane database unless configured explicitly. An ephemeral
+    // (in-memory) control plane gets a per-process key, which fails closed —
+    // its invitations die with the process anyway.
+    const digestKey =
+      config.invitationDigestKeyFile !== undefined
+        ? readOrCreateInvitationDigestKey(config.invitationDigestKeyFile)
+        : config.controlPlaneFile !== undefined
+          ? readOrCreateInvitationDigestKey(`${config.controlPlaneFile}.invitation-key`)
+          : randomBytes(32);
+    // DAT-247's service credential boundary: secrets come from a protected
+    // file (or explicit injection), never from a user OAuth token. An empty
+    // store makes the point refresh fail closed.
+    const serviceCredentials =
+      options.providerServiceCredentials ??
+      (config.providerServiceCredentialFile !== undefined
+        ? readServiceCredentialFile(config.providerServiceCredentialFile)
+        : createStaticServiceCredentialStore({}));
+    const providerApiBaseUrl = options.providerApiBaseUrl;
+    invitations = new InvitationService({
+      repos,
+      identity,
+      invitations: createInvitationRepository(controlPlane, providerAccess),
+      authority: createInvitationAuthority({
+        access: providerAccess,
+        identities: identity.identities,
+        providerInstances: repos.providerInstances,
+        credentials: serviceCredentials,
+        epoch: providerAuthority.epoch,
+        ...(providerApiBaseUrl !== undefined ? { apiBaseUrl: () => providerApiBaseUrl } : {}),
+      }),
+      config: {
+        enterpriseId: config.enterpriseId,
+        digestKey,
+        ...(options.invitationRateLimits !== undefined
+          ? { rateLimits: options.invitationRateLimits }
+          : {}),
+      },
+    });
   }
+  const service = new TaskService({
+    config,
+    dsh,
+    store,
+    gateway,
+    workspaceBindings,
+    ...(model ? { model } : {}),
+  });
   const server = createApiServer({
     service,
     apiToken,
+    legacyWorkspaceId: config.workspaceId,
     ...(auth !== undefined ? { auth } : {}),
+    ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
+    ...(invitations !== undefined ? { invitations } : {}),
     ...(config.publicOrigin !== undefined ? { publicOrigin: config.publicOrigin } : {}),
   });
   return {
@@ -257,7 +367,9 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     gateway,
     model,
     auth,
+    invitations,
     controlPlane,
+    providerAuthority,
     apiToken,
     start: () => {
       const { promise, resolve, reject } = Promise.withResolvers<{ host: string; port: number }>();
@@ -296,6 +408,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
 export { buildOpenApiDocument, configFromEnv };
 export * from "./gateway/index.js";
 export * from "./security/index.js";
+export * from "./ledger/index.js";
 
 async function main(): Promise<void> {
   const config = configFromEnv();

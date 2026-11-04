@@ -309,3 +309,16 @@ export interface DependentWorkHold {
   /** The open security case holding this run's dependent work, if any. */
   heldCaseFor(runId: string): { caseId: string; caseReference: string } | undefined;
 }
+
+/**
+ * Diagnostic type a provider transport uses to expose the provider's own
+ * usage payload on the terminal message (DAT-227). The gateway prefers it
+ * over the transport-derived usage report when present, records it as
+ * `provider_wire` evidence, and the metering adapter maps it with the
+ * provider's native semantics.
+ *
+ * The pi-ai SDK normalizes usage and exposes no wire payload, so pi-ai-backed
+ * terminal messages never carry this diagnostic and their attempts are
+ * recorded as transport reports instead — preserved verbatim either way.
+ */
+export const PROVIDER_USAGE_DIAGNOSTIC = "provider_usage";

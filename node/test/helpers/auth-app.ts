@@ -5,12 +5,16 @@ import path from "node:path";
 import { createOrchestrator } from "../../src/index.js";
 import type { OrchestratorHandle } from "../../src/index.js";
 import type { OrchestratorConfig } from "../../src/config.js";
+import type { InvitationRateLimits } from "../../src/api/invitation-service.js";
 import {
+  createProviderAccessRepositories,
   openControlPlaneDb,
   seedEnterprise,
   seedProviderInstance,
   seedWorkspace,
 } from "../../src/control-plane/index.js";
+import type { ServiceIntegration } from "../../src/control-plane/index.js";
+import { createStaticServiceCredentialStore } from "../../src/provider-access/credentials.js";
 import type { DshServerHandle } from "./dsh-server.js";
 import { scriptedStream, TEST_MODEL } from "./scripted-stream.js";
 import { scriptedGateway } from "./test-gateway.js";
@@ -25,7 +29,10 @@ import type { RawResponse } from "./http.js";
 
 export const BOOTSTRAP_TOKEN = "test-bootstrap-token-0123456789abcdef0123456789abcdef";
 export const GITHUB_ORIGIN = "https://github.com";
-const REPOSITORY_ID = "github:Luthiel/AutoFixer";
+export const REPOSITORY_ID = "github:Luthiel/AutoFixer";
+/** Service credential the seeded repository integration references (DAT-247). */
+export const SERVICE_CREDENTIAL_REF = "svc-source-1";
+export const SERVICE_CREDENTIAL = "ghs_test_service_credential_0123456789";
 const APPROVER = "github:local-operator";
 
 export interface FakeProfile {
@@ -89,6 +96,8 @@ export interface AuthApp {
   workspaceId: string;
   /** Seeded, already-approved GitHub provider instance. */
   providerInstanceId: string;
+  /** Repository-scoped service integration (set with `repositoryIntegration`). */
+  integration: ServiceIntegration | undefined;
   provider: FakeProvider;
   stop(): Promise<void>;
 }
@@ -98,6 +107,15 @@ export interface AuthAppOptions {
   provider?: FakeProvider;
   configOverrides?: Partial<OrchestratorConfig>;
   lookup?: (hostname: string) => Promise<string[]>;
+  /** Rate-limit overrides for the invitation surface (tests). */
+  invitationRateLimits?: InvitationRateLimits;
+  /**
+   * Seed a repository-scoped service integration for the workspace, so the
+   * DAT-247 point refresh has something to verify against.
+   */
+  repositoryIntegration?: boolean;
+  /** Provider API base override for the point refresh (fake provider). */
+  providerApiBaseUrl?: string;
 }
 
 let appCounter = 0;
@@ -137,6 +155,23 @@ export async function startAuthApp(options: AuthAppOptions): Promise<AuthApp> {
     repository_id: REPOSITORY_ID,
     provider_instance_id: instance.id,
   });
+  const integration = options.repositoryIntegration
+    ? createProviderAccessRepositories(db).integrations.create(
+        {
+          enterprise_id: enterprise.id,
+          workspace_id: workspace.id,
+          actor_id: "usr_seed",
+        },
+        {
+          provider_instance_id: instance.id,
+          repository_id: REPOSITORY_ID,
+          repository_name: "Luthiel/AutoFixer",
+          source_credential_ref: SERVICE_CREDENTIAL_REF,
+          permission_visibility: "full",
+          actor_id: "usr_seed",
+        },
+      )
+    : undefined;
   db.close();
 
   const config: OrchestratorConfig = {
@@ -172,6 +207,19 @@ export async function startAuthApp(options: AuthAppOptions): Promise<AuthApp> {
     gateway: scriptedGateway(TEST_MODEL, scripted.streamFn),
     authFetchImpl: provider.fetchImpl,
     authDnsLookup: options.lookup ?? (async () => ["104.16.0.1"]),
+    ...(options.invitationRateLimits !== undefined
+      ? { invitationRateLimits: options.invitationRateLimits }
+      : {}),
+    ...(options.repositoryIntegration
+      ? {
+          providerServiceCredentials: createStaticServiceCredentialStore({
+            [SERVICE_CREDENTIAL_REF]: SERVICE_CREDENTIAL,
+          }),
+        }
+      : {}),
+    ...(options.providerApiBaseUrl !== undefined
+      ? { providerApiBaseUrl: options.providerApiBaseUrl }
+      : {}),
   });
   const { port } = await orchestrator.start();
   return {
@@ -180,6 +228,7 @@ export async function startAuthApp(options: AuthAppOptions): Promise<AuthApp> {
     enterpriseId: enterprise.id,
     workspaceId: workspace.id,
     providerInstanceId: instance.id,
+    integration,
     provider,
     stop: () => orchestrator.stop(),
   };

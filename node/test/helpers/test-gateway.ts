@@ -17,6 +17,7 @@ import type {
   SecretScanner,
   SecretScanReport,
 } from "../../src/gateway/index.js";
+import type { UsageLedgerSink } from "../../src/ledger/index.js";
 import { DATA_CLASSES } from "../../src/gateway/index.js";
 
 /** Scope the test policies resolve for; matches the test configs' identity. */
@@ -128,6 +129,7 @@ export function scriptedGateway(
     sink?: GatewayEventSink;
     scanner?: SecretScanner;
     scanPolicy?: SecretScanPolicy;
+    usageLedger?: UsageLedgerSink;
   } = {},
 ): ModelGateway {
   return createModelGateway({
@@ -141,5 +143,6 @@ export function scriptedGateway(
     // Every dispatch needs its required audit sink; default an in-memory one.
     sink: extras.sink ?? memorySink().sink,
     ...securityStubs(),
+    ...(extras.usageLedger ? { usageLedger: extras.usageLedger } : {}),
   });
 }

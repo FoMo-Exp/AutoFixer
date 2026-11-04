@@ -83,6 +83,12 @@ export interface OrchestratorConfig {
    * process that minted them); a deployment sets it for cross-restart use.
    */
   securityReferenceSecret?: string;
+  /**
+   * Durable invocation usage ledger (JSON, 0600) — one reconcilable usage
+   * record per gateway invocation attempt (DAT-227). Separate from the audit
+   * stream: financial records are queried and retained on their own terms.
+   */
+  usageLedgerFile?: string;
   // --- Enterprise identity (ADR-0006) -------------------------------------
   /**
    * External origin for OAuth redirect URLs and desktop login links. Unset
@@ -97,6 +103,21 @@ export interface OrchestratorConfig {
   oauthClientsFile?: string;
   /** Durable control-plane database for identity/session state. */
   controlPlaneFile?: string;
+  /**
+   * Deployment-owned HMAC key file for the invitation token digest. Durable
+   * across restarts (invitations outlive processes); unset derives one next to
+   * the control-plane database. Losing the key fails closed — outstanding
+   * invitations become unredeemable.
+   */
+  invitationDigestKeyFile?: string;
+  /**
+   * Protected JSON file mapping service credential references to secrets
+   * (DAT-247 boundary). Invitation redemption point-refreshes the invitee's
+   * repository authority with the repository-scoped service credential; when
+   * unset the credential store is empty and every redemption fails closed
+   * (403) rather than falling back to any user credential.
+   */
+  providerServiceCredentialFile?: string;
   /** Deployment-owned bootstrap secret; unset disables admin bootstrap. */
   bootstrapToken?: string;
   /** Session lifetime in seconds (default 12 hours). */
@@ -155,6 +176,11 @@ function defaultGatewayAuditPath(): string {
 export function defaultSecurityStatePath(name: string): string {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, name);
+}
+
+function defaultUsageLedgerPath(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "usage-ledger.json");
 }
 
 function defaultControlPlanePath(): string {
@@ -218,6 +244,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
       defaultSecurityStatePath("security-notifications.jsonl"),
     securityHandlerIds: csv(env["FORGEPILOT_SECURITY_HANDLER_IDS"], []),
     securityAdminIds: csv(env["FORGEPILOT_SECURITY_ADMIN_IDS"], []),
+    usageLedgerFile: env["FORGEPILOT_USAGE_LEDGER_FILE"] ?? defaultUsageLedgerPath(),
   };
   // Security disposal options (DAT-210). Absent values keep fail-closed
   // defaults: no quarantine key means nothing is ever retained in plaintext,
@@ -271,6 +298,24 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     throw new Error(
       "FORGEPILOT_CONTROL_PLANE_DB requires FORGEPILOT_OAUTH_CLIENTS_FILE to enable the identity surfaces",
     );
+  }
+  const invitationDigestKeyFile = env["FORGEPILOT_INVITATION_DIGEST_KEY_FILE"]?.trim();
+  if (invitationDigestKeyFile) {
+    if (config.oauthClientsFile === undefined) {
+      throw new Error(
+        "FORGEPILOT_INVITATION_DIGEST_KEY_FILE requires FORGEPILOT_OAUTH_CLIENTS_FILE to enable the identity surfaces",
+      );
+    }
+    config.invitationDigestKeyFile = invitationDigestKeyFile;
+  }
+  const providerServiceCredentialFile = env["FORGEPILOT_SERVICE_CREDENTIAL_FILE"]?.trim();
+  if (providerServiceCredentialFile) {
+    if (config.oauthClientsFile === undefined) {
+      throw new Error(
+        "FORGEPILOT_SERVICE_CREDENTIAL_FILE requires FORGEPILOT_OAUTH_CLIENTS_FILE to enable the identity surfaces",
+      );
+    }
+    config.providerServiceCredentialFile = providerServiceCredentialFile;
   }
   const bootstrapToken = env["FORGEPILOT_BOOTSTRAP_TOKEN"];
   if (bootstrapToken !== undefined && bootstrapToken !== "") {

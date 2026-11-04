@@ -389,6 +389,249 @@ const MIGRATIONS: Migration[] = [
         ON memory_tombstones(enterprise_id, workspace_id)`,
     ],
   },
+  {
+    // Provider access (DAT-203): repository-scoped service integrations,
+    // normalized provider roster rows with provenance, per-subject authority
+    // state, capability grants, provider event sync, and reconciliation runs.
+    //
+    // Credential rules enforced at the storage level: integration rows carry
+    // only credential *references* — secret values live in the server
+    // credential boundary and never in the control-plane database, logs, or
+    // any renderer-visible payload. Authority rows key on the provider's
+    // stable subject (never email or display name), and every row is scoped by
+    // enterprise_id + workspace_id so ID substitution stays detectable.
+    version: 4,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS service_integration (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id),
+        provider_instance_id TEXT NOT NULL REFERENCES provider_instance(id),
+        -- Immutable provider-assigned repository identifier; a transfer
+        -- replaces it only through an authority-revalidated operation.
+        repository_id TEXT NOT NULL,
+        -- Display metadata only; renames update this without touching
+        -- authority or credentials.
+        repository_name TEXT NOT NULL,
+        install_status TEXT NOT NULL DEFAULT 'active'
+          CHECK (install_status IN ('active', 'suspended', 'uninstalled')),
+        -- Credential *references*. The secrets they name live in the server
+        -- credential boundary (a protected file or injected store), never in
+        -- this database or any application payload.
+        source_credential_ref TEXT NOT NULL,
+        checkout_credential_ref TEXT,
+        delivery_credential_ref TEXT,
+        -- What the provider adapter declared at install time: whether the
+        -- integration can see effective permissions at all.
+        permission_visibility TEXT NOT NULL
+          CHECK (permission_visibility IN ('full', 'partial', 'none')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_service_integration_repo
+        ON service_integration(enterprise_id, repository_id)
+        WHERE install_status != 'uninstalled'`,
+      `CREATE INDEX IF NOT EXISTS idx_service_integration_workspace
+        ON service_integration(workspace_id)`,
+      // Normalized provider roster rows with explicit provenance. A subject
+      // may appear through several sources at once (org owner + direct
+      // collaborator); every source is its own row so admins can inspect
+      // exactly where authority came from. source_kind records the
+      // normalization decision — GitHub repositories never get a fabricated
+      // 'owner' user; organization authority stays org_owner with the org as
+      // authority_ref.
+      `CREATE TABLE IF NOT EXISTS provider_member_role (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id),
+        integration_id TEXT NOT NULL REFERENCES service_integration(id),
+        subject TEXT NOT NULL,
+        login TEXT NOT NULL,
+        source_kind TEXT NOT NULL CHECK (
+          source_kind IN ('org_owner', 'org_member', 'group', 'inherited_role', 'direct_collaborator')
+        ),
+        provider_role TEXT NOT NULL,
+        authority_ref TEXT NOT NULL,
+        inherited_from TEXT,
+        observed_at TEXT NOT NULL,
+        last_verified_at TEXT NOT NULL,
+        UNIQUE (integration_id, subject, source_kind, authority_ref)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_provider_member_role_subject
+        ON provider_member_role(integration_id, subject)`,
+      // Current repository authority per provider subject. The state machine:
+      //   active  — verified present in the provider roster
+      //   stale   — verification aged out; sensitive actions are blocked
+      //   unknown — never verified or authority source moved (e.g. transfer);
+      //             everything is blocked pending reconciliation
+      //   removed — provider says the subject lost access; every action is
+      //             blocked and capability grants are revoked
+      `CREATE TABLE IF NOT EXISTS subject_authority (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id),
+        integration_id TEXT NOT NULL REFERENCES service_integration(id),
+        subject TEXT NOT NULL,
+        user_id TEXT,
+        state TEXT NOT NULL CHECK (state IN ('active', 'stale', 'unknown', 'removed')),
+        last_verified_at TEXT,
+        updated_at TEXT NOT NULL,
+        UNIQUE (integration_id, subject)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_subject_authority_user
+        ON subject_authority(integration_id, user_id)`,
+      // Execution capabilities, narrowly scoped and expiring. Checkout gets
+      // read; delivery gets a short-lived write grant. Revocation on authority
+      // loss sets revoked_at/revoked_reason; expiry is enforced on every read.
+      `CREATE TABLE IF NOT EXISTS capability_grant (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id),
+        integration_id TEXT NOT NULL REFERENCES service_integration(id),
+        grantee_user_id TEXT,
+        capability TEXT NOT NULL CHECK (capability IN ('checkout_read', 'delivery_write')),
+        branch_scope TEXT,
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT,
+        revoked_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_capability_grantee
+        ON capability_grant(integration_id, grantee_user_id)`,
+      // Provider event sync log. Payloads are secret-free metadata; delivery
+      // ids make event application idempotent under provider retries.
+      `CREATE TABLE IF NOT EXISTS provider_event (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        provider_instance_id TEXT NOT NULL REFERENCES provider_instance(id),
+        integration_id TEXT,
+        repository_id TEXT,
+        event_type TEXT NOT NULL CHECK (
+          event_type IN (
+            'member_added', 'member_removed', 'role_changed',
+            'repository_renamed', 'repository_transferred',
+            'integration_suspended', 'permission_changed'
+          )
+        ),
+        payload TEXT NOT NULL DEFAULT '{}',
+        delivery_id TEXT,
+        received_at TEXT NOT NULL,
+        processed_at TEXT,
+        UNIQUE (provider_instance_id, delivery_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_provider_event_repo
+        ON provider_event(provider_instance_id, repository_id)`,
+      // Reconciliation runs. An incomplete run (missing permissions,
+      // truncated pagination, rate limits) is recorded as such and applies
+      // nothing — an incomplete roster is an error, never an empty roster.
+      `CREATE TABLE IF NOT EXISTS reconcile_run (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        integration_id TEXT NOT NULL REFERENCES service_integration(id),
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'completed', 'incomplete')),
+        pages_seen INTEGER NOT NULL DEFAULT 0,
+        roster_size INTEGER NOT NULL DEFAULT 0,
+        members_added INTEGER NOT NULL DEFAULT 0,
+        members_removed INTEGER NOT NULL DEFAULT 0,
+        roles_changed INTEGER NOT NULL DEFAULT 0,
+        authority_reset INTEGER NOT NULL DEFAULT 0,
+        failure_code TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_reconcile_run_integration
+        ON reconcile_run(integration_id, started_at)`,
+    ],
+  },
+  {
+    // DAT-247: `effective_access` joins the provenance vocabulary. GitHub's
+    // collaborator list mixes direct collaborators, team inheritance,
+    // organization default permissions, and organization owners without
+    // saying which — the provider has no way to attribute the row, so the
+    // schema must be able to say exactly that instead of forcing every row to
+    // claim a direct grant.
+    //
+    // SQLite cannot alter a CHECK constraint, so the table is rebuilt:
+    // create the new shape, copy every row verbatim (ids, timestamps and all),
+    // drop the old table, then recreate the index and UNIQUE constraint. The
+    // migration runner records the version, so this runs once per database
+    // and repeating `migrate()` is a no-op.
+    version: 5,
+    statements: [
+      `CREATE TABLE provider_member_role_v5 (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id),
+        integration_id TEXT NOT NULL REFERENCES service_integration(id),
+        subject TEXT NOT NULL,
+        login TEXT NOT NULL,
+        source_kind TEXT NOT NULL CHECK (
+          source_kind IN (
+            'org_owner', 'org_member', 'group', 'inherited_role',
+            'direct_collaborator', 'effective_access'
+          )
+        ),
+        provider_role TEXT NOT NULL,
+        authority_ref TEXT NOT NULL,
+        inherited_from TEXT,
+        observed_at TEXT NOT NULL,
+        last_verified_at TEXT NOT NULL,
+        UNIQUE (integration_id, subject, source_kind, authority_ref)
+      )`,
+      `INSERT INTO provider_member_role_v5 (
+         id, enterprise_id, workspace_id, integration_id, subject, login,
+         source_kind, provider_role, authority_ref, inherited_from,
+         observed_at, last_verified_at
+       )
+       SELECT
+         id, enterprise_id, workspace_id, integration_id, subject, login,
+         source_kind, provider_role, authority_ref, inherited_from,
+         observed_at, last_verified_at
+       FROM provider_member_role`,
+      `DROP TABLE provider_member_role`,
+      `ALTER TABLE provider_member_role_v5 RENAME TO provider_member_role`,
+      `CREATE INDEX IF NOT EXISTS idx_provider_member_role_subject
+        ON provider_member_role(integration_id, subject)`,
+    ],
+  },
+  {
+    // Owner-created invitations (DAT-204): one opaque bearer per row. Only the
+    // HMAC-SHA-256 keyed digest of the bearer is stored, so a leaked database
+    // never yields a redeemable token. Single use: `redeemed_at`/`redeemed_by`
+    // record the one redemption (and the idempotent-replay subject);
+    // `revoked_at`/`revoked_by` record owner revocation. The bound subject, when
+    // set, restricts redemption to that verified provider subject. Rows die
+    // with their workspace; the audit of an invitation outlives it in auth_audit.
+    version: 6,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS invitation (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK (role IN ('member')),
+        token_digest TEXT NOT NULL UNIQUE,
+        bound_provider_subject TEXT,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        revoked_at TEXT,
+        revoked_by TEXT,
+        redeemed_at TEXT,
+        redeemed_by TEXT,
+        version INTEGER NOT NULL DEFAULT 1
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_invitation_workspace
+        ON invitation(workspace_id)`,
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -425,7 +668,7 @@ export function openControlPlaneDb(options: OpenOptions = {}): ControlPlaneDb {
  * skipped, so calling this on an up-to-date database is a no-op and calling it
  * on an older database applies only the missing versions.
  */
-export function migrate(db: ControlPlaneDb): void {
+export function migrate(db: ControlPlaneDb, options: { upTo?: number } = {}): void {
   // The schema_migrations table is created inside the first migration; create
   // it eagerly so the runner can query it before applying anything.
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -442,6 +685,9 @@ export function migrate(db: ControlPlaneDb): void {
 
   for (const migration of MIGRATIONS) {
     if (applied.has(migration.version)) {
+      continue;
+    }
+    if (options.upTo !== undefined && migration.version > options.upTo) {
       continue;
     }
     db.exec("BEGIN");
