@@ -29,11 +29,16 @@ export type AuditCommand =
   | "record_handoff"
   | "request_run_restart";
 
-export interface AuditRecord {
+/**
+ * One audit record. Generic over the command union so sibling state machines
+ * (e.g. routing) can reuse the record shape and digest chain with their own
+ * command vocabulary; collab code keeps the default parameter.
+ */
+export interface AuditRecord<Command extends string = AuditCommand> {
   sequence: number;
   event_id: string;
   operation_id: string;
-  command: AuditCommand;
+  command: Command;
   actor: string;
   at: string;
   outcome: AuditOutcome;
@@ -81,7 +86,9 @@ export function digestOf(value: unknown): string {
  * covered through `fingerprint`; the chain links records through
  * `previous_digest`.
  */
-export function auditDigest(record: Omit<AuditRecord, "digest">): string {
+export function auditDigest<Command extends string>(
+  record: Omit<AuditRecord<Command>, "digest">,
+): string {
   return digestOf({
     sequence: record.sequence,
     event_id: record.event_id,
@@ -102,7 +109,9 @@ export function auditDigest(record: Omit<AuditRecord, "digest">): string {
  * Verify sequence contiguity, payload fingerprints, and the digest chain.
  * Returns null when the log is intact, otherwise the first problem found.
  */
-export function auditChainProblem(records: readonly AuditRecord[]): string | null {
+export function auditChainProblem<Command extends string>(
+  records: readonly AuditRecord<Command>[],
+): string | null {
   let previous: string | null = null;
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
