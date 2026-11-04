@@ -336,8 +336,12 @@ describe("tamper evidence", () => {
   test("a deployment trail exposes no unscoped read port", () => {
     const { trail } = fileTrail();
     expect("entries" in trail).toBe(false);
-    // The test-only inspection port refuses a durable trail outright, so a
-    // deployment cannot bypass the duty-checked, scope-bound read path.
+    // No reflection port is attached to a durable trail: there is no symbol
+    // key to enumerate, so `Reflect.ownKeys` cannot find one to call.
+    expect(Reflect.ownKeys(trail).filter((key) => typeof key === "symbol")).toEqual([]);
+    // `durability` is a readable marker, not an authority: flipping it on the
+    // object does not register the trail in the private test registry.
+    (trail as { durability: "durable" | "test" }).durability = "test";
     expect(() => inspect(trail)).toThrowError(/test trail/);
   });
 

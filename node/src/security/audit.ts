@@ -334,31 +334,26 @@ export interface SecurityAuditTrail {
 }
 
 /**
- * Test-only chain view. Deliberately *not* part of `SecurityAuditTrail`: a
- * deployment trail has no unscoped read path, so callers must go through the
- * duty-checked, scope-bound `read()`/`export()`. The accessor refuses anything
- * but the in-memory `test` backend, which cannot exist in a deployment.
+ * Test-only chain view. Deliberately *not* part of `SecurityAuditTrail`, not a
+ * property, and not a symbol on the object: a deployment trail has no unscoped
+ * read path, and nothing reflectable may be attached to it. Only the in-memory
+ * `test` backend registers a reader here, in this module-private WeakMap, so
+ * `Reflect.ownKeys` on a durable trail finds no port and a forged `durability`
+ * value grants nothing.
  */
-const TEST_ONLY_ENTRIES = Symbol("securityAuditTrail.testEntries");
-
-interface SecurityAuditTestInspection {
-  [TEST_ONLY_ENTRIES](): readonly SecurityAuditEntry[];
-}
+const TEST_TRAIL_READERS = new WeakMap<SecurityAuditTrail, () => readonly SecurityAuditEntry[]>();
 
 export function inspectSecurityAuditTrailForTests(
   trail: SecurityAuditTrail,
 ): readonly SecurityAuditEntry[] {
-  if (trail.durability !== "test") {
+  const read = TEST_TRAIL_READERS.get(trail);
+  if (!read) {
     throw new SecurityError(
       "AUDIT_READ_FORBIDDEN",
       "unscoped audit inspection is only available to the in-memory test trail",
     );
   }
-  const inspect = (trail as Partial<SecurityAuditTestInspection>)[TEST_ONLY_ENTRIES];
-  if (typeof inspect !== "function") {
-    throw new SecurityError("AUDIT_READ_FORBIDDEN", "the trail exposes no test inspection port");
-  }
-  return inspect.call(trail);
+  return read();
 }
 
 /**
@@ -875,7 +870,7 @@ interface TrailInternals {
 function buildTrail(
   internals: TrailInternals,
   options: { now: () => Date; newEventId: () => string },
-): SecurityAuditTrail & SecurityAuditTestInspection {
+): SecurityAuditTrail {
   const auditDenied = (
     query: SecurityAuditQuery,
     access: SecurityAuditAccess,
@@ -937,9 +932,6 @@ function buildTrail(
     durability: internals.durability,
     record(event: SecurityAuditEvent): SecurityAuditEntry {
       return internals.append(normalizeSecurityAuditEvent(event, options));
-    },
-    [TEST_ONLY_ENTRIES](): readonly SecurityAuditEntry[] {
-      return internals.allEntries();
     },
     verify() {
       return internals.verify();
@@ -1070,7 +1062,7 @@ export function createMemorySecurityAuditTrail(
     hash = next;
     return next;
   };
-  return buildTrail(
+  const trail = buildTrail(
     {
       durability: "test",
       append(normalized: SecurityAuditEvent): SecurityAuditEntry {
@@ -1088,6 +1080,8 @@ export function createMemorySecurityAuditTrail(
     },
     { now, newEventId },
   );
+  TEST_TRAIL_READERS.set(trail, () => [...entries]);
+  return trail;
 }
 
 /** Apply the second line of defense to a value before it is chain-hashed. */
