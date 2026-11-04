@@ -8,6 +8,23 @@ export type ArtifactMetadata = components["schemas"]["ArtifactMetadata"];
 export type TaskStatus = Task["status"];
 export type TaskPage = operations["listTasks"]["responses"][200]["content"]["application/json"];
 
+export type Workspace = components["schemas"]["Workspace"];
+export type Issue = components["schemas"]["Issue"];
+export type IssueStage = components["schemas"]["IssueStage"];
+export type IssueTask = components["schemas"]["IssueTask"];
+export type IssueRun = components["schemas"]["IssueRun"];
+export type IssueEvent = components["schemas"]["IssueEvent"];
+export type ProductState = Issue["product_state"];
+export type IssueTaskState = IssueTask["state"];
+export type IssueRunState = IssueRun["state"];
+export type IssueStageTransition =
+  operations["transitionIssueStage"]["requestBody"]["content"]["application/json"];
+export type IssuePage = operations["listIssues"]["responses"][200]["content"]["application/json"];
+export type IssueTaskPage =
+  operations["listIssueTasks"]["responses"][200]["content"]["application/json"];
+export type IssueRunPage =
+  operations["listIssueRuns"]["responses"][200]["content"]["application/json"];
+
 type ErrorPayload = components["schemas"]["Error"];
 export type JsonFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -215,7 +232,23 @@ export interface ApprovalInput {
 export interface StreamOptions {
   lastEventId?: string;
   signal?: AbortSignal;
+  /** Called once the service accepted the stream, before the first frame. */
+  onOpen?: () => void;
   onEvent: (event: TaskEvent) => void;
+}
+
+export interface IssueStreamOptions {
+  lastEventId?: string;
+  signal?: AbortSignal;
+  onOpen?: () => void;
+  onEvent: (event: IssueEvent) => void;
+}
+
+function issuePath(workspaceId: string, issueId?: string, suffix?: string): string {
+  let path = `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/issues`;
+  if (issueId) path += `/${encodeURIComponent(issueId)}`;
+  if (suffix) path += `/${suffix}`;
+  return path;
 }
 
 export interface StreamResult {
@@ -306,20 +339,146 @@ export class ForgePilotClient extends ApiTransport {
     );
   }
 
+  async listWorkspaces(): Promise<Workspace[]> {
+    const workspaces: Workspace[] = [];
+    let cursor: string | undefined;
+    do {
+      const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+      const page = await this.request<
+        operations["listWorkspaces"]["responses"][200]["content"]["application/json"]
+      >(`/api/v1/workspaces${query}`);
+      workspaces.push(...page.items);
+      cursor = page.next_cursor ?? undefined;
+    } while (cursor);
+    return workspaces;
+  }
+
+  async listIssues(
+    workspaceId: string,
+    options: { productState?: ProductState; cursor?: string } = {},
+  ): Promise<IssuePage> {
+    const params = new URLSearchParams();
+    if (options.productState) params.set("product_state", options.productState);
+    if (options.cursor) params.set("cursor", options.cursor);
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    return this.request<IssuePage>(`${issuePath(workspaceId)}${query}`);
+  }
+
+  async getIssue(workspaceId: string, issueId: string): Promise<Issue> {
+    return this.request<Issue>(issuePath(workspaceId, issueId));
+  }
+
+  async getIssueStage(workspaceId: string, issueId: string): Promise<IssueStage> {
+    return this.request<IssueStage>(issuePath(workspaceId, issueId, "stage"));
+  }
+
+  async transitionIssueStage(
+    workspaceId: string,
+    issueId: string,
+    input: IssueStageTransition,
+    idempotencyKey?: string,
+  ): Promise<IssueStage> {
+    return this.request<IssueStage>(issuePath(workspaceId, issueId, "stage"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+      },
+      body: JSON.stringify(input),
+    });
+  }
+
+  async listIssueTasks(
+    workspaceId: string,
+    issueId: string,
+    cursor?: string,
+  ): Promise<IssueTaskPage> {
+    const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    return this.request<IssueTaskPage>(`${issuePath(workspaceId, issueId, "tasks")}${query}`);
+  }
+
+  async setIssueTaskState(
+    workspaceId: string,
+    issueId: string,
+    taskId: string,
+    to: IssueTaskState,
+    idempotencyKey?: string,
+  ): Promise<IssueTask> {
+    return this.request<IssueTask>(
+      `${issuePath(workspaceId, issueId, "tasks")}/${encodeURIComponent(taskId)}/state`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+        },
+        body: JSON.stringify({ to }),
+      },
+    );
+  }
+
+  async listIssueRuns(
+    workspaceId: string,
+    issueId: string,
+    cursor?: string,
+  ): Promise<IssueRunPage> {
+    const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    return this.request<IssueRunPage>(`${issuePath(workspaceId, issueId, "runs")}${query}`);
+  }
+
+  async getIssueRun(workspaceId: string, issueId: string, runId: string): Promise<IssueRun> {
+    return this.request<IssueRun>(
+      `${issuePath(workspaceId, issueId, "runs")}/${encodeURIComponent(runId)}`,
+    );
+  }
+
   async streamTaskEvents(taskId: string, options: StreamOptions): Promise<StreamResult> {
+    return this.readEventStream(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}/stream`,
+      options,
+      parseSseFrame,
+      (event) => event.type === "task.terminal",
+      "Unable to connect to task stream.",
+    );
+  }
+
+  async streamIssueEvents(
+    workspaceId: string,
+    issueId: string,
+    options: IssueStreamOptions,
+  ): Promise<StreamResult> {
+    return this.readEventStream(
+      issuePath(workspaceId, issueId, "stream"),
+      options,
+      parseIssueSseFrame,
+      (event) => event.type === "issue.terminal",
+      "Unable to connect to issue stream.",
+    );
+  }
+
+  private async readEventStream<T extends { event_id: string }>(
+    path: string,
+    options: {
+      lastEventId?: string;
+      signal?: AbortSignal;
+      onOpen?: () => void;
+      onEvent: (event: T) => void;
+    },
+    parse: (frame: string) => T | undefined,
+    isTerminal: (event: T) => boolean,
+    failureMessage: string,
+  ): Promise<StreamResult> {
     const headers = this.headers({ Accept: "text/event-stream" });
     if (options.lastEventId) headers["Last-Event-ID"] = options.lastEventId;
 
-    const response = await this.raw(`/api/v1/tasks/${encodeURIComponent(taskId)}/stream`, {
-      headers,
-      signal: options.signal,
-    });
+    const response = await this.raw(path, { headers, signal: options.signal });
     if (!response.ok) {
-      const error = await errorFromResponse(response, "Unable to connect to task stream.");
+      const error = await errorFromResponse(response, failureMessage);
       this.notifyAuthFailure(error);
       throw error;
     }
-    if (!response.body) throw new Error("Task stream returned no readable body.");
+    if (!response.body) throw new Error("Event stream returned no readable body.");
+    options.onOpen?.();
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -334,10 +493,10 @@ export class ForgePilotClient extends ApiTransport {
         const parsed = takeSseFrames(buffer, chunk.done);
         buffer = parsed.rest;
         for (const frame of parsed.frames) {
-          const event = parseSseFrame(frame);
+          const event = parse(frame);
           if (!event) continue;
           lastEventId = event.event_id;
-          terminal ||= event.type === "task.terminal";
+          terminal ||= isTerminal(event);
           options.onEvent(event);
         }
         if (chunk.done) break;
@@ -379,7 +538,7 @@ export function takeSseFrames(input: string, flush = false): { frames: string[];
   };
 }
 
-export function parseSseFrame(frame: string): TaskEvent | undefined {
+function readSseFrame(frame: string): Record<string, unknown> | undefined {
   const parsed: SseFrame = { data: "" };
   for (const line of frame.split("\n")) {
     if (line.startsWith(":")) continue;
@@ -393,22 +552,47 @@ export function parseSseFrame(frame: string): TaskEvent | undefined {
   if (!parsed.data) return undefined;
 
   try {
-    const event = JSON.parse(parsed.data) as Partial<TaskEvent>;
-    if (!event.event_id && parsed.id) event.event_id = parsed.id;
-    if (!event.type && parsed.event) event.type = parsed.event as TaskEvent["type"];
-    if (
-      typeof event.event_id !== "string" ||
-      typeof event.sequence !== "number" ||
-      typeof event.occurred_at !== "string" ||
-      typeof event.task_id !== "string" ||
-      typeof event.task_version !== "number" ||
-      typeof event.type !== "string" ||
-      !event.data
-    ) {
-      return undefined;
-    }
-    return event as TaskEvent;
+    const payload = JSON.parse(parsed.data) as Record<string, unknown>;
+    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return undefined;
+    if (!payload["event_id"] && parsed.id) payload["event_id"] = parsed.id;
+    if (!payload["type"] && parsed.event) payload["type"] = parsed.event;
+    return payload;
   } catch {
     return undefined;
   }
+}
+
+export function parseSseFrame(frame: string): TaskEvent | undefined {
+  const event = readSseFrame(frame) as Partial<TaskEvent> | undefined;
+  if (!event) return undefined;
+  if (
+    typeof event.event_id !== "string" ||
+    typeof event.sequence !== "number" ||
+    typeof event.occurred_at !== "string" ||
+    typeof event.task_id !== "string" ||
+    typeof event.task_version !== "number" ||
+    typeof event.type !== "string" ||
+    !event.data
+  ) {
+    return undefined;
+  }
+  return event as TaskEvent;
+}
+
+export function parseIssueSseFrame(frame: string): IssueEvent | undefined {
+  const event = readSseFrame(frame) as Partial<IssueEvent> | undefined;
+  if (!event) return undefined;
+  if (
+    typeof event.event_id !== "string" ||
+    typeof event.sequence !== "number" ||
+    typeof event.occurred_at !== "string" ||
+    typeof event.issue_id !== "string" ||
+    typeof event.type !== "string" ||
+    typeof event.data !== "object" ||
+    event.data === null ||
+    Array.isArray(event.data)
+  ) {
+    return undefined;
+  }
+  return event as IssueEvent;
 }

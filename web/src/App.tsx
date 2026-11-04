@@ -9,6 +9,7 @@ import { useAuth } from "./auth/useAuth";
 import type { AuthApi } from "./auth/useAuth";
 import { AuthLoadingScreen, LoginScreen, NoWorkspaceScreen } from "./auth/LoginScreen";
 import { useTaskStream } from "./api/hooks";
+import { IssuesWorkbench } from "./issues/IssuesWorkbench";
 import { CreateIdempotencyKeys } from "./api/idempotency";
 import { RepositoryPicker } from "./settings/RepositoryPicker";
 import { SettingsDialog } from "./settings/SettingsDialog";
@@ -176,6 +177,7 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
     [config],
   );
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [surface, setSurface] = useState<"tasks" | "issues">("tasks");
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   /** 窄屏钻取视图：list ↔ detail（≤900px 生效，桌面始终双栏并存） */
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
@@ -504,6 +506,24 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
           </div>
         </div>
         <div className="topbar-actions">
+          <nav className="surface-nav" aria-label="Workbench views">
+            <button
+              type="button"
+              className={`surface-tab ${surface === "tasks" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "tasks" ? "page" : undefined}
+              onClick={() => setSurface("tasks")}
+            >
+              Tasks
+            </button>
+            <button
+              type="button"
+              className={`surface-tab ${surface === "issues" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "issues" ? "page" : undefined}
+              onClick={() => setSurface("issues")}
+            >
+              Issues
+            </button>
+          </nav>
           {auth.session && (
             <div className="account-chip">
               <span className="account-name" title={auth.session.user.display_name}>
@@ -521,11 +541,12 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
           <button
             className="button button-quiet button-small"
             onClick={() => {
+              setSurface("tasks");
               selectTask(undefined);
               setMobileView("detail");
             }}
             aria-label="Home"
-            aria-current={!selectedId ? "page" : undefined}
+            aria-current={surface === "tasks" && !selectedId ? "page" : undefined}
           >
             <svg
               width="16"
@@ -586,17 +607,19 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
                 <span className="action-label">Workspaces</span>
               </button>
             )}
-          <button
-            className="button button-primary button-small"
-            onClick={() => setShowCreate(true)}
-            aria-label="New task"
-          >
-            <span aria-hidden="true">＋</span> <span className="action-label">New task</span>
-          </button>
+          {surface === "tasks" && (
+            <button
+              className="button button-primary button-small"
+              onClick={() => setShowCreate(true)}
+              aria-label="New task"
+            >
+              <span aria-hidden="true">＋</span> <span className="action-label">New task</span>
+            </button>
+          )}
         </div>
       </header>
 
-      <div className="workspace" data-view={mobileView}>
+      <div className="workspace" data-view={mobileView} hidden={surface === "issues"}>
         <aside className="sidebar">
           <div className="sidebar-heading">
             <div>
@@ -736,6 +759,8 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
           )}
         </main>
       </div>
+
+      {surface === "issues" && <IssuesWorkbench client={client} />}
 
       {showCreate && (
         <CreateTaskDialog

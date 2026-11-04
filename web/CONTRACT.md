@@ -92,6 +92,62 @@ This keeps the browser out of the API request path, so no CORS preflight is
 needed and the Node API's origin and bearer checks remain unchanged. The UI
 does not display the token, raw tool commands, or absolute workspace paths.
 
+## Collaboration issue surface (DAT-222)
+
+This surface targets `main` at `52393c682393757d6619cbb9fc973a37cdb61eaa`
+(DAT-221, OpenAPI `0.9.0`) and its merged captures under
+`docs/fixtures/collab-api-v1/` plus `docs/fixtures/identity-api-v1/workspace-page.json`.
+Every fixture field comes from those captures or from
+`web/src/api/contracts/openapi.json`; no field is invented by the UI.
+
+| Endpoint                                                         | Request fields                                                                      | Response type                       | Status |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------- | ------ |
+| `GET /api/v1/workspaces?cursor=`                                 | optional `cursor` (all pages are read)                                              | `{items: Workspace[], next_cursor}` | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/issues`                   | path `workspace_id`; optional `product_state`, `cursor`                             | `{items: Issue[], next_cursor}`     | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}`        | path `workspace_id`, `issue_id`                                                     | `Issue`                             | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stage`  | path `workspace_id`, `issue_id`                                                     | `IssueStage`                        | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stage` | `to`, optional `reason`, optional `disposition.reference`; `Idempotency-Key` header | `IssueStage`                        | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks`  | path ids; optional `cursor`                                                         | `{items: IssueTask[], next_cursor}` | ✅     |
+| `POST …/issues/{issue_id}/tasks/{task_id}/state`                 | `to`; `Idempotency-Key` header                                                      | `IssueTask`                         | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/runs`   | path ids; optional `cursor`                                                         | `{items: IssueRun[], next_cursor}`  | ✅     |
+| `GET …/issues/{issue_id}/runs/{run_id}`                          | path ids                                                                            | `IssueRun`                          | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stream` | path ids; optional `Last-Event-ID` header                                           | SSE `IssueEvent` envelopes          | ✅     |
+
+Scope boundaries:
+
+- **Product and harness states are separate.** `Issue.product_state` /
+  `IssueStage` render as "Product stage"; `IssueRun.state` renders as
+  "Harness". Each axis has its own labels and copy. `awaiting_change_approval`
+  says a frozen candidate awaits human change approval and no remote branch or
+  PR exists; harness `awaiting_review` is only the observed dsh state of one
+  run. Neither is derived from the other.
+- **Disposition is an explicit entry.** A stage transition to
+  `needs_human` or `cancelled` requires a reason; leaving `needs_human`
+  requires a `disposition.reference`. The UI only offers
+  `IssueStage.allowed_transitions`, never an inferred edge. A stopped,
+  timed-out, expired, rejected, or cancelled run is rendered as an outcome
+  with its stop reason; the surface offers no resume/retry affordance and
+  states that continuation needs a new bounded run and a recorded disposition.
+- **Replay is idempotent.** The stream is opened without an anchor first (the
+  service replays the retained log), then reconnects with the newest delivered
+  `event_id`. Events are deduplicated on `event_id`, ordered by `sequence`,
+  and a detected sequence hole triggers a full replay without an anchor.
+  Unknown event types and unknown stage/run/task states render explicitly
+  instead of being mapped or dropped.
+- **Scope and roles.** Workspace ids come from `GET /api/v1/workspaces`, and
+  only archive-free workspaces are offered. `viewer` renders the surface
+  read-only: stage transitions are disabled and task state controls are
+  hidden. The service remains the authority for every check.
+- The run worktree is shown by `worktree_id` only; the absolute `worktree.path`
+  is never rendered. Handoffs are the run's `head_sha` and immutable
+  `artifact_refs`; the surface shows those references and never fetches or
+  invents raw memory.
+- The Node service in this baseline exports the collaboration contract but does
+  not yet route `/api/v1/workspaces/{workspace_id}/issues`; a 404 therefore
+  renders as an explicit "no issue workspace available" state rather than an
+  empty issue list. Candidate review, approvals, and delivery remain DAT-223's
+  surface and are not implemented here.
+
 ### Pi summary
 
 `TaskEvent.data` is not a Pi display source. `pi.text_delta` carries raw
