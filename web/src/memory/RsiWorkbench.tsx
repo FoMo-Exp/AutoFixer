@@ -34,9 +34,12 @@ type RiskFilter = "all" | RsiRisk;
 export function RsiWorkbench({
   client,
   currentUserId,
+  loadWorkspaces,
 }: {
   client: ForgePilotClient;
   currentUserId?: string;
+  /** The caller's live workspace directory, owned by the identity surface. */
+  loadWorkspaces: () => Promise<Workspace[]>;
 }): ReactElement {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string | undefined>(undefined);
@@ -63,8 +66,7 @@ export function RsiWorkbench({
   useEffect(() => {
     let active = true;
     setWorkspaceLoading(true);
-    client
-      .listWorkspaces()
+    loadWorkspaces()
       .then((items) => {
         if (!active) return;
         setWorkspaces(items);
@@ -84,7 +86,7 @@ export function RsiWorkbench({
     return () => {
       active = false;
     };
-  }, [client, workspaceToken]);
+  }, [loadWorkspaces, workspaceToken]);
 
   const activeWorkspaces = workspaces.filter((workspace) => workspace.status === "active");
   const selectedWorkspace = activeWorkspaces.find((workspace) => workspace.id === workspaceId);

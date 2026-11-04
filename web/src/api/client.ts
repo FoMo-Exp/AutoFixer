@@ -247,7 +247,14 @@ export interface ApiTransportOptions {
   onForbidden?: (error: ApiError) => void;
 }
 
-export type ForgePilotClientOptions = ApiTransportOptions;
+export type ForgePilotClientOptions = ApiTransportOptions & {
+  /**
+   * Locator for the workspace-scoped task route family. `null` selects the
+   * legacy local-operator family, which the Node service serves only for its
+   * deployment-configured workspace (no identity subsystem).
+   */
+  workspaceId?: string | null;
+};
 
 /**
  * Loopback-only HTTP transport shared by the task surface and the identity
@@ -450,16 +457,30 @@ export interface StreamResult {
 }
 
 export class ForgePilotClient extends ApiTransport {
+  private readonly workspaceId: string | null;
+
+  constructor(options: ForgePilotClientOptions) {
+    super(options);
+    this.workspaceId = options.workspaceId ?? null;
+  }
+
+  /** The contract's workspace-scoped task family, or the legacy seam. */
+  private get taskRoutes(): string {
+    return this.workspaceId === null
+      ? "/api/v1/tasks"
+      : `/api/v1/workspaces/${encodeURIComponent(this.workspaceId)}/tasks`;
+  }
+
   async listTasks(status?: TaskStatus, cursor?: string): Promise<TaskPage> {
     const params = new URLSearchParams();
     if (status) params.set("status", status);
     if (cursor) params.set("cursor", cursor);
     const query = params.size > 0 ? `?${params.toString()}` : "";
-    return this.request<TaskPage>(`/api/v1/tasks${query}`);
+    return this.request<TaskPage>(`${this.taskRoutes}${query}`);
   }
 
   async createTask(input: CreateTaskInput, idempotencyKey: string): Promise<Task> {
-    return this.request<Task>("/api/v1/tasks", {
+    return this.request<Task>(this.taskRoutes, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -470,13 +491,13 @@ export class ForgePilotClient extends ApiTransport {
   }
 
   async getTask(taskId: string): Promise<Task> {
-    return this.request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}`);
+    return this.request<Task>(`${this.taskRoutes}/${encodeURIComponent(taskId)}`);
   }
 
   async getRuns(taskId: string): Promise<RunSummary[]> {
     const result = await this.request<
       operations["getTaskRuns"]["responses"][200]["content"]["application/json"]
-    >(`/api/v1/tasks/${encodeURIComponent(taskId)}/runs`);
+    >(`${this.taskRoutes}/${encodeURIComponent(taskId)}/runs`);
     return result.items;
   }
 
@@ -484,7 +505,7 @@ export class ForgePilotClient extends ApiTransport {
     taskId: string,
     input: operations["sendMessage"]["requestBody"]["content"]["application/json"],
   ): Promise<{ task_id: string; queued: boolean }> {
-    return this.request(`/api/v1/tasks/${encodeURIComponent(taskId)}/messages`, {
+    return this.request(`${this.taskRoutes}/${encodeURIComponent(taskId)}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -492,7 +513,7 @@ export class ForgePilotClient extends ApiTransport {
   }
 
   async approveTask(taskId: string, input: ApprovalInput): Promise<Task> {
-    return this.request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}/approvals`, {
+    return this.request<Task>(`${this.taskRoutes}/${encodeURIComponent(taskId)}/approvals`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -500,7 +521,7 @@ export class ForgePilotClient extends ApiTransport {
   }
 
   async cancelTask(taskId: string, reason?: string): Promise<Task> {
-    return this.request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`, {
+    return this.request<Task>(`${this.taskRoutes}/${encodeURIComponent(taskId)}/cancel`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: reason ? JSON.stringify({ reason }) : undefined,
@@ -508,13 +529,13 @@ export class ForgePilotClient extends ApiTransport {
   }
 
   async archiveTask(taskId: string): Promise<Task> {
-    return this.request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}/archive`, {
+    return this.request<Task>(`${this.taskRoutes}/${encodeURIComponent(taskId)}/archive`, {
       method: "POST",
     });
   }
 
   async recoverTask(taskId: string): Promise<Task> {
-    return this.request<Task>(`/api/v1/tasks/${encodeURIComponent(taskId)}/recover`, {
+    return this.request<Task>(`${this.taskRoutes}/${encodeURIComponent(taskId)}/recover`, {
       method: "POST",
     });
   }
@@ -522,28 +543,14 @@ export class ForgePilotClient extends ApiTransport {
   async getTimeline(taskId: string): Promise<TaskEvent[]> {
     const result = await this.request<
       operations["getTaskTimeline"]["responses"][200]["content"]["application/json"]
-    >(`/api/v1/tasks/${encodeURIComponent(taskId)}/timeline`);
+    >(`${this.taskRoutes}/${encodeURIComponent(taskId)}/timeline`);
     return result.items;
   }
 
   async getArtifact(taskId: string, artifactId: string): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>(
-      `/api/v1/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}`,
+      `${this.taskRoutes}/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}`,
     );
-  }
-
-  async listWorkspaces(): Promise<Workspace[]> {
-    const workspaces: Workspace[] = [];
-    let cursor: string | undefined;
-    do {
-      const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
-      const page = await this.request<
-        operations["listWorkspaces"]["responses"][200]["content"]["application/json"]
-      >(`/api/v1/workspaces${query}`);
-      workspaces.push(...page.items);
-      cursor = page.next_cursor ?? undefined;
-    } while (cursor);
-    return workspaces;
   }
 
   async listIssues(
@@ -1360,7 +1367,7 @@ export class ForgePilotClient extends ApiTransport {
 
   async streamTaskEvents(taskId: string, options: StreamOptions): Promise<StreamResult> {
     return this.readEventStream(
-      `/api/v1/tasks/${encodeURIComponent(taskId)}/stream`,
+      `${this.taskRoutes}/${encodeURIComponent(taskId)}/stream`,
       options,
       parseSseFrame,
       (event) => event.type === "task.terminal",

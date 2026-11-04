@@ -128,6 +128,8 @@ export interface MemoryWorkbenchProps {
   session?: MemorySessionView;
   /** Team leadership lookup; workspace owners and admins do not need it. */
   loadTeams?: (workspaceId: string) => Promise<Team[]>;
+  /** The caller's live workspace directory, owned by the identity surface. */
+  loadWorkspaces: () => Promise<Workspace[]>;
 }
 
 /**
@@ -140,6 +142,7 @@ export function MemoryWorkbench({
   client,
   session,
   loadTeams,
+  loadWorkspaces,
 }: MemoryWorkbenchProps): ReactElement {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string | undefined>(undefined);
@@ -239,8 +242,7 @@ export function MemoryWorkbench({
   useEffect(() => {
     let active = true;
     setWorkspaceLoading(true);
-    client
-      .listWorkspaces()
+    loadWorkspaces()
       .then((entries) => {
         if (!active) return;
         setWorkspaces(entries);
@@ -262,7 +264,7 @@ export function MemoryWorkbench({
     return () => {
       active = false;
     };
-  }, [client, workspaceToken]);
+  }, [loadWorkspaces, workspaceToken]);
 
   useEffect(() => {
     if (!workspaceId) return;

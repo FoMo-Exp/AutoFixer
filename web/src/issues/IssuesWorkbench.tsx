@@ -28,9 +28,12 @@ const ISSUE_FILTERS: IssueFilter[] = [
 export function IssuesWorkbench({
   client,
   currentUserId,
+  loadWorkspaces,
 }: {
   client: ForgePilotClient;
   currentUserId?: string;
+  /** The caller's live workspace directory, owned by the identity surface. */
+  loadWorkspaces: () => Promise<Workspace[]>;
 }): ReactElement {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string | undefined>(undefined);
@@ -54,8 +57,7 @@ export function IssuesWorkbench({
   useEffect(() => {
     let active = true;
     setWorkspaceLoading(true);
-    client
-      .listWorkspaces()
+    loadWorkspaces()
       .then((items) => {
         if (!active) return;
         setWorkspaces(items);
@@ -76,7 +78,7 @@ export function IssuesWorkbench({
     return () => {
       active = false;
     };
-  }, [client, workspaceToken]);
+  }, [loadWorkspaces, workspaceToken]);
 
   useEffect(() => {
     if (!workspaceId) {

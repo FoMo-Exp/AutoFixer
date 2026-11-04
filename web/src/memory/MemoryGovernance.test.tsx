@@ -60,6 +60,10 @@ function session(role: "owner" | "admin" | "member" | "viewer"): MemorySessionVi
   };
 }
 
+function loadWorkspaceDirectory(): Promise<Workspace[]> {
+  return Promise.resolve(workspaces);
+}
+
 function makeClient(): ForgePilotClient {
   return new ForgePilotClient({
     baseUrl: "http://127.0.0.1:4567",
@@ -83,7 +87,6 @@ async function openQuarantinedItem(): Promise<void> {
 }
 
 beforeEach(() => {
-  vi.spyOn(ForgePilotClient.prototype, "listWorkspaces").mockResolvedValue(workspaces);
   vi.spyOn(ForgePilotClient.prototype, "listMemoryItems").mockResolvedValue(page([activeItem]));
   vi.spyOn(ForgePilotClient.prototype, "getMemoryItem").mockResolvedValue(activeItem);
   vi.spyOn(ForgePilotClient.prototype, "listMemoryItemVersions").mockResolvedValue(versions);
@@ -98,7 +101,13 @@ afterEach(() => {
 describe("memory version diff", () => {
   it("diffs two returned versions side by side with marked additions and removals", async () => {
     const client = makeClient();
-    render(<MemoryWorkbench client={client} session={session("admin")} />);
+    render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        session={session("admin")}
+      />,
+    );
     await openItem(activeItem);
 
     expect(await screen.findByRole("heading", { name: "v2" })).toBeTruthy();
@@ -118,7 +127,13 @@ describe("memory version diff", () => {
       page([candidateItem]),
     );
     const client = makeClient();
-    render(<MemoryWorkbench client={client} session={session("admin")} />);
+    render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        session={session("admin")}
+      />,
+    );
     await openItem(candidateItem);
 
     expect(
@@ -138,7 +153,13 @@ describe("memory version diff", () => {
       versions: [],
     });
     const client = makeClient();
-    render(<MemoryWorkbench client={client} session={session("admin")} />);
+    render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        session={session("admin")}
+      />,
+    );
     await openItem(activeItem);
 
     expect(
@@ -159,7 +180,13 @@ describe("memory governance", () => {
     const client = makeClient();
     const promote = vi.spyOn(client, "promoteMemoryItem").mockReturnValue(pending);
 
-    render(<MemoryWorkbench client={client} session={session("owner")} />);
+    render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        session={session("owner")}
+      />,
+    );
     await openItem(candidateItem);
 
     const button = await screen.findByRole("button", { name: "Promote to active" });
@@ -200,7 +227,13 @@ describe("memory governance", () => {
       .spyOn(ForgePilotClient.prototype, "getMemoryItem")
       .mockResolvedValue(refreshed);
 
-    render(<MemoryWorkbench client={client} session={session("admin")} />);
+    render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        session={session("admin")}
+      />,
+    );
     await openItem(candidateItem);
     await userEvent.click(await screen.findByRole("button", { name: "Promote to active" }));
     await userEvent.click(screen.getByRole("button", { name: "Confirm Promote" }));
@@ -221,7 +254,13 @@ describe("memory governance", () => {
 
   it("denies governance to a member even when the workspace projection says admin", async () => {
     const client = makeClient();
-    render(<MemoryWorkbench client={client} session={session("member")} />);
+    render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        session={session("member")}
+      />,
+    );
     await openItem(activeItem);
 
     expect(await screen.findByRole("heading", { name: "Governance" })).toBeTruthy();
@@ -232,7 +271,13 @@ describe("memory governance", () => {
 
   it("hides governance from a viewer", async () => {
     const client = makeClient();
-    render(<MemoryWorkbench client={client} session={session("viewer")} />);
+    render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        session={session("viewer")}
+      />,
+    );
     await openItem(activeItem);
 
     expect(await screen.findByRole("heading", { name: "Governance" })).toBeTruthy();
@@ -253,7 +298,14 @@ describe("memory governance", () => {
     const client = makeClient();
     const loadTeams = vi.fn().mockResolvedValue([team]);
 
-    render(<MemoryWorkbench client={client} session={session("member")} loadTeams={loadTeams} />);
+    render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        session={session("member")}
+        loadTeams={loadTeams}
+      />,
+    );
 
     await openItem(activeItem);
     expect(await screen.findByRole("button", { name: "Deprecate" })).toBeTruthy();
@@ -269,7 +321,14 @@ describe("memory governance", () => {
   it("refuses to verify team leadership on a failed teams read", async () => {
     const client = makeClient();
     const loadTeams = vi.fn().mockRejectedValue(new Error("teams offline"));
-    render(<MemoryWorkbench client={client} session={session("member")} loadTeams={loadTeams} />);
+    render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        session={session("member")}
+        loadTeams={loadTeams}
+      />,
+    );
     await openItem(activeItem);
 
     expect(await screen.findByText(/Team leadership could not be verified/)).toBeTruthy();
@@ -290,7 +349,13 @@ describe("quarantine redaction", () => {
     vi.spyOn(ForgePilotClient.prototype, "listMemoryItems").mockResolvedValue(page([leaky]));
     const versionsSpy = vi.spyOn(ForgePilotClient.prototype, "listMemoryItemVersions");
     const client = makeClient();
-    const { container } = render(<MemoryWorkbench client={client} session={session("admin")} />);
+    const { container } = render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        session={session("admin")}
+      />,
+    );
 
     await openQuarantinedItem();
 
@@ -327,7 +392,13 @@ describe("quarantine redaction", () => {
       next_cursor: null,
     });
     const client = makeClient();
-    render(<MemoryWorkbench client={client} session={session("admin")} />);
+    render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        session={session("admin")}
+      />,
+    );
 
     await openQuarantinedItem();
     const card = (
@@ -343,7 +414,13 @@ describe("quarantine redaction", () => {
 describe("audit timeline and metadata", () => {
   it("renders actor, action, version, time, fixed reason, and paged detail", async () => {
     const client = makeClient();
-    render(<MemoryWorkbench client={client} session={session("admin")} />);
+    render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        session={session("admin")}
+      />,
+    );
     await openItem(activeItem);
 
     const timeline = (await screen.findByRole("heading", { name: "Audit timeline" })).closest(
@@ -371,7 +448,13 @@ describe("audit timeline and metadata", () => {
 
   it("shows provenance and the named review stamp", async () => {
     const client = makeClient();
-    render(<MemoryWorkbench client={client} session={session("admin")} />);
+    render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        session={session("admin")}
+      />,
+    );
     await openItem(activeItem);
 
     const card = (await screen.findByRole("heading", { name: "Provenance and review" })).closest(
@@ -386,7 +469,13 @@ describe("governance filters", () => {
   it("sends trust, sensitivity, and scope filters and clears them", async () => {
     const client = makeClient();
     const list = vi.spyOn(ForgePilotClient.prototype, "listMemoryItems");
-    render(<MemoryWorkbench client={client} session={session("admin")} />);
+    render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        session={session("admin")}
+      />,
+    );
     await screen.findByText(activeItem.statement as string);
 
     await userEvent.click(screen.getByRole("combobox", { name: "Trust" }));
@@ -452,7 +541,13 @@ describe("governance error surfaces", () => {
         "Denied",
       ),
     );
-    render(<MemoryWorkbench client={client} session={session("admin")} />);
+    render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        session={session("admin")}
+      />,
+    );
     await openItem(candidateItem);
     await userEvent.click(await screen.findByRole("button", { name: "Promote to active" }));
     await userEvent.click(screen.getByRole("button", { name: "Confirm Promote" }));
@@ -478,7 +573,13 @@ describe("governance error surfaces", () => {
       reason_code: "restore_after_review",
       item: { ...candidateItem, item_id: quarantinedItem.item_id, current_version: 3 },
     });
-    render(<MemoryWorkbench client={client} session={session("admin")} />);
+    render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        session={session("admin")}
+      />,
+    );
     await openQuarantinedItem();
 
     await userEvent.click(await screen.findByRole("button", { name: "Restore" }));

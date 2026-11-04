@@ -41,9 +41,12 @@ interface CaseSelection {
 export function SecurityWorkbench({
   client,
   session,
+  loadWorkspaces,
 }: {
   client: ForgePilotClient;
   session: WorkspaceSession | undefined;
+  /** The caller's live workspace directory, owned by the identity surface. */
+  loadWorkspaces: () => Promise<Workspace[]>;
 }): ReactElement {
   const [section, setSection] = useState<SecuritySection>("cases");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -72,8 +75,7 @@ export function SecurityWorkbench({
   useEffect(() => {
     let active = true;
     setWorkspaceLoading(true);
-    client
-      .listWorkspaces()
+    loadWorkspaces()
       .then((entries) => {
         if (!active) return;
         setWorkspaces(entries);
@@ -94,7 +96,7 @@ export function SecurityWorkbench({
     return () => {
       active = false;
     };
-  }, [client, workspaceToken]);
+  }, [loadWorkspaces, workspaceToken]);
 
   useEffect(() => {
     if (!workspaceId) {

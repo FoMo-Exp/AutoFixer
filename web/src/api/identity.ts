@@ -75,6 +75,27 @@ export class IdentityClient extends ApiTransport {
     });
   }
 
+  /**
+   * Every workspace the caller's live memberships grant. The switcher must see
+   * the complete set, so every page is read; a repeated cursor ends the walk
+   * instead of looping on a malformed server response.
+   */
+  async listAllWorkspaces(options: RequestOptions = {}): Promise<Workspace[]> {
+    const workspaces: Workspace[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await this.listWorkspaces(cursor, options);
+      workspaces.push(...page.items);
+      const next = page.next_cursor ?? undefined;
+      // A cursor that repeats a page already read ends the walk instead of
+      // looping on a malformed server response.
+      if (next === undefined || seenCursors.has(next)) return workspaces;
+      seenCursors.add(next);
+      cursor = next;
+    }
+  }
+
   async listWorkspaceMembers(
     workspaceId: string,
     cursor?: string,

@@ -35,6 +35,10 @@ function statementOf(item: MemoryItem): string {
   return item.statement;
 }
 
+function loadWorkspaceDirectory(): Promise<Workspace[]> {
+  return Promise.resolve(workspaces);
+}
+
 function makeClient(): ForgePilotClient {
   return new ForgePilotClient({
     baseUrl: "http://127.0.0.1:4567",
@@ -51,7 +55,6 @@ async function openFirstItem(): Promise<void> {
 }
 
 beforeEach(() => {
-  vi.spyOn(ForgePilotClient.prototype, "listWorkspaces").mockResolvedValue(workspaces);
   vi.spyOn(ForgePilotClient.prototype, "listMemoryItems").mockResolvedValue(firstPage);
   vi.spyOn(ForgePilotClient.prototype, "listMemoryItemVersions").mockResolvedValue({
     schema_version: 1,
@@ -75,7 +78,7 @@ afterEach(() => {
 describe("memory workbench", () => {
   it("browses workspace memory with status, tier, sensitivity, and citations", async () => {
     const client = makeClient();
-    render(<MemoryWorkbench client={client} />);
+    render(<MemoryWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
 
     expect(await screen.findByText(statementOf(firstPage.items[0]))).toBeTruthy();
     expect(
@@ -92,7 +95,7 @@ describe("memory workbench", () => {
 
   it("opens item detail from the list view data with evidence and applicability", async () => {
     const client = makeClient();
-    render(<MemoryWorkbench client={client} />);
+    render(<MemoryWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await openFirstItem();
 
     const heading = await screen.findByRole("heading", { name: statementOf(firstPage.items[0]) });
@@ -116,7 +119,7 @@ describe("memory workbench", () => {
 
   it("renders every precondition of a long procedural item and only the set applicability fields", async () => {
     const client = makeClient();
-    render(<MemoryWorkbench client={client} />);
+    render(<MemoryWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
 
     const item = firstPage.items.find((entry) => entry.preconditions.length > 1)!;
     await userEvent.click(
@@ -140,7 +143,7 @@ describe("memory workbench", () => {
 
   it("states broad applicability for an item that sets no scope", async () => {
     const client = makeClient();
-    render(<MemoryWorkbench client={client} />);
+    render(<MemoryWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
 
     const item = firstPage.items.find((entry) => Object.keys(entry.applicability).length === 0)!;
     await userEvent.click(
@@ -157,7 +160,7 @@ describe("memory workbench", () => {
   it("never renders the previous workspace's items while a new one loads", async () => {
     const client = makeClient();
     const twoWorkspaces = workspaces.map((entry) => ({ ...entry, status: "active" as const }));
-    vi.spyOn(client, "listWorkspaces").mockResolvedValue(twoWorkspaces);
+    const loadWorkspaces = (): Promise<Workspace[]> => Promise.resolve(twoWorkspaces);
     let resolveSecond: ((page: MemoryItemPage) => void) | undefined;
     const pending = new Promise<MemoryItemPage>((resolve) => {
       resolveSecond = resolve;
@@ -167,7 +170,7 @@ describe("memory workbench", () => {
       .mockResolvedValueOnce(firstPage)
       .mockImplementationOnce(() => pending);
 
-    render(<MemoryWorkbench client={client} />);
+    render(<MemoryWorkbench client={client} loadWorkspaces={loadWorkspaces} />);
     await screen.findByText(statementOf(firstPage.items[0]));
 
     await userEvent.click(screen.getByRole("combobox", { name: "Workspace scope" }));
@@ -185,12 +188,12 @@ describe("memory workbench", () => {
   it("hides an open item when the workspace changes", async () => {
     const client = makeClient();
     const twoWorkspaces = workspaces.map((entry) => ({ ...entry, status: "active" as const }));
-    vi.spyOn(client, "listWorkspaces").mockResolvedValue(twoWorkspaces);
+    const loadWorkspaces = (): Promise<Workspace[]> => Promise.resolve(twoWorkspaces);
     vi.spyOn(client, "listMemoryItems")
       .mockResolvedValueOnce(firstPage)
       .mockResolvedValueOnce(emptyPage);
 
-    render(<MemoryWorkbench client={client} />);
+    render(<MemoryWorkbench client={client} loadWorkspaces={loadWorkspaces} />);
     await openFirstItem();
     expect(
       await screen.findByRole("heading", { name: statementOf(firstPage.items[0]) }),
@@ -213,7 +216,7 @@ describe("memory workbench", () => {
       .spyOn(ForgePilotClient.prototype, "listMemoryItems")
       .mockResolvedValueOnce(firstPage)
       .mockResolvedValueOnce(lessonPage);
-    render(<MemoryWorkbench client={client} />);
+    render(<MemoryWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await screen.findByText(statementOf(firstPage.items[0]));
 
     await userEvent.click(screen.getByRole("combobox", { name: "Kind" }));
@@ -240,7 +243,7 @@ describe("memory workbench", () => {
       .spyOn(ForgePilotClient.prototype, "listMemoryItems")
       .mockResolvedValueOnce(firstPage)
       .mockResolvedValueOnce(secondPage);
-    render(<MemoryWorkbench client={client} />);
+    render(<MemoryWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await screen.findByText(statementOf(firstPage.items[0]));
 
     await userEvent.click(screen.getByRole("button", { name: "Load more items" }));
@@ -260,7 +263,7 @@ describe("memory workbench", () => {
   it("explains an empty result without inventing hidden items", async () => {
     vi.spyOn(ForgePilotClient.prototype, "listMemoryItems").mockResolvedValue(emptyPage);
     const client = makeClient();
-    render(<MemoryWorkbench client={client} />);
+    render(<MemoryWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
 
     expect(
       await screen.findByText("This workspace has no memory item at your sensitivity ceiling yet."),
@@ -273,7 +276,7 @@ describe("memory workbench", () => {
       new ApiError(404, { error: { ...notFound.error, retryable: false } } as never, "Not found"),
     );
     const client = makeClient();
-    render(<MemoryWorkbench client={client} />);
+    render(<MemoryWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
 
     expect(await screen.findByText(/never readable across workspaces/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
@@ -288,7 +291,7 @@ describe("memory workbench", () => {
       ),
     );
     const client = makeClient();
-    render(<MemoryWorkbench client={client} />);
+    render(<MemoryWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
 
     const alert = await screen.findByText(/Your workspace role cannot browse memory/);
     expect(
@@ -304,7 +307,7 @@ describe("memory workbench", () => {
       .mockRejectedValueOnce(new Error("socket closed"))
       .mockResolvedValueOnce(firstPage);
     const client = makeClient();
-    render(<MemoryWorkbench client={client} />);
+    render(<MemoryWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
 
     await userEvent.click(await screen.findByRole("button", { name: "Retry" }));
 

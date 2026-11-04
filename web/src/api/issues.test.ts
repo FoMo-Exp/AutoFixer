@@ -72,63 +72,6 @@ describe("issue API client", () => {
     );
   });
 
-  it("pages every visible workspace instead of truncating the scope list", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(
-        jsonResponse({
-          items: [
-            {
-              id: "ws_1",
-              enterprise_id: "ent",
-              name: "One",
-              status: "active",
-              repository: {
-                repository_id: "github:acme/one",
-                provider_instance_id: "pi",
-                provider_type: "github",
-              },
-              role: "member",
-              version: 1,
-              created_at: "2026-11-01T00:00:00Z",
-              updated_at: "2026-11-01T00:00:00Z",
-            },
-          ],
-          next_cursor: "cur_2",
-        }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({
-          items: [
-            {
-              id: "ws_2",
-              enterprise_id: "ent",
-              name: "Two",
-              status: "active",
-              repository: {
-                repository_id: "github:acme/two",
-                provider_instance_id: "pi",
-                provider_type: "github",
-              },
-              role: "viewer",
-              version: 1,
-              created_at: "2026-11-01T00:00:00Z",
-              updated_at: "2026-11-01T00:00:00Z",
-            },
-          ],
-          next_cursor: null,
-        }),
-      );
-    const client = clientWith(fetchImpl);
-
-    const workspaces = await client.listWorkspaces();
-
-    expect(workspaces.map((workspace) => workspace.id)).toEqual(["ws_1", "ws_2"]);
-    expect(fetchImpl.mock.calls[1]?.[0]).toBe(
-      "http://127.0.0.1:4567/api/v1/workspaces?cursor=cur_2",
-    );
-  });
-
   it("posts a stage transition with the reason, disposition, and idempotency key", async () => {
     const stage = fixture<IssueStage>("issue-stage.json");
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(stage));

@@ -51,13 +51,16 @@ function workspace(role: Workspace["role"]): Workspace {
   return { ...baseWorkspace, role };
 }
 
+function workspaceDirectory(role: Workspace["role"]): () => Promise<Workspace[]> {
+  return () => Promise.resolve([workspace(role)]);
+}
+
 function renderSurface(
   client: ForgePilotClient,
   proposals: RsiProposal[],
   details: RsiProposal[] = proposals,
   role: Workspace["role"] = "owner",
 ): void {
-  vi.spyOn(client, "listWorkspaces").mockResolvedValue([workspace(role)]);
   vi.spyOn(client, "getRsiStatus").mockResolvedValue(status);
   vi.spyOn(client, "listRsiProposals").mockResolvedValue(proposals);
   vi.spyOn(client, "getRsiProposal").mockImplementation(async (_workspace, proposalId) => {
@@ -65,7 +68,13 @@ function renderSurface(
     if (!found) throw new Error(`unexpected proposal ${proposalId}`);
     return found;
   });
-  render(<RsiWorkbench client={client} currentUserId="usr_operator" />);
+  render(
+    <RsiWorkbench
+      client={client}
+      currentUserId="usr_operator"
+      loadWorkspaces={workspaceDirectory(role)}
+    />,
+  );
 }
 
 async function openProposal(name: string): Promise<void> {
@@ -247,11 +256,16 @@ describe("RSI workbench", () => {
 
   it("does not offer evaluation or approval to the proposal's own author", async () => {
     const client = makeClient();
-    vi.spyOn(client, "listWorkspaces").mockResolvedValue([workspace("owner")]);
     vi.spyOn(client, "getRsiStatus").mockResolvedValue(status);
     vi.spyOn(client, "listRsiProposals").mockResolvedValue([awaiting]);
     vi.spyOn(client, "getRsiProposal").mockResolvedValue(awaiting);
-    render(<RsiWorkbench client={client} currentUserId={awaiting.proposer.id} />);
+    render(
+      <RsiWorkbench
+        client={client}
+        currentUserId={awaiting.proposer.id}
+        loadWorkspaces={workspaceDirectory("owner")}
+      />,
+    );
     await openProposal("Bounded relevance change");
 
     expect(screen.getByRole("button", { name: "Run offline replay" })).toHaveProperty(
@@ -268,11 +282,16 @@ describe("RSI workbench", () => {
 
   it("gates owner-only and admin-only actions by workspace role", async () => {
     const adminClient = makeClient();
-    vi.spyOn(adminClient, "listWorkspaces").mockResolvedValue([workspace("admin")]);
     vi.spyOn(adminClient, "getRsiStatus").mockResolvedValue(status);
     vi.spyOn(adminClient, "listRsiProposals").mockResolvedValue([awaiting]);
     vi.spyOn(adminClient, "getRsiProposal").mockResolvedValue(awaiting);
-    render(<RsiWorkbench client={adminClient} currentUserId="usr_operator" />);
+    render(
+      <RsiWorkbench
+        client={adminClient}
+        currentUserId="usr_operator"
+        loadWorkspaces={workspaceDirectory("admin")}
+      />,
+    );
     await openProposal("Bounded relevance change");
 
     expect(screen.getByRole("button", { name: "Record approval" })).toHaveProperty(
@@ -293,11 +312,16 @@ describe("RSI workbench", () => {
 
     cleanup();
     const memberClient = makeClient();
-    vi.spyOn(memberClient, "listWorkspaces").mockResolvedValue([workspace("member")]);
     vi.spyOn(memberClient, "getRsiStatus").mockResolvedValue(status);
     vi.spyOn(memberClient, "listRsiProposals").mockResolvedValue([awaiting]);
     vi.spyOn(memberClient, "getRsiProposal").mockResolvedValue(awaiting);
-    render(<RsiWorkbench client={memberClient} currentUserId="usr_operator" />);
+    render(
+      <RsiWorkbench
+        client={memberClient}
+        currentUserId="usr_operator"
+        loadWorkspaces={workspaceDirectory("member")}
+      />,
+    );
     await openProposal("Bounded relevance change");
     expect(screen.getByRole("button", { name: "Record approval" })).toHaveProperty(
       "disabled",
@@ -309,8 +333,7 @@ describe("RSI workbench", () => {
     const client = makeClient();
     const listStatus = vi.spyOn(client, "getRsiStatus");
     const listProposals = vi.spyOn(client, "listRsiProposals");
-    vi.spyOn(client, "listWorkspaces").mockResolvedValue([workspace("viewer")]);
-    render(<RsiWorkbench client={client} />);
+    render(<RsiWorkbench client={client} loadWorkspaces={workspaceDirectory("viewer")} />);
 
     expect(await screen.findByText("RSI requires the member role")).toBeTruthy();
     expect(listStatus).not.toHaveBeenCalled();

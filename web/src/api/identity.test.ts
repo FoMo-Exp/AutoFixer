@@ -7,6 +7,7 @@ import { ApiError } from "./client";
 import type { JsonFetch } from "./client";
 import type { components } from "./contracts/schema";
 import { IdentityClient } from "./identity";
+import type { WorkspacePage } from "./identity";
 
 const fixtureDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -175,6 +176,53 @@ describe("IdentityClient", () => {
     expect(fetchImpl.mock.calls[0]?.[0]).toBe(
       "http://127.0.0.1:4567/api/v1/admin/enterprises/ent_1/auth-audit?limit=25",
     );
+  });
+
+  it("walks every workspace page for the switcher", async () => {
+    const first = fixture<{ items: WorkspacePage["items"]; next_cursor: string | null }>(
+      "workspace-page.json",
+    );
+    const second = {
+      items: [fixture<components["schemas"]["Workspace"]>("workspace.json")],
+      next_cursor: null,
+    };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(json(first))
+      .mockResolvedValueOnce(json(second));
+
+    const workspaces = await client(fetchImpl).listAllWorkspaces();
+
+    expect(workspaces.map((item) => item.id)).toEqual([
+      ...first.items.map((item) => item.id),
+      second.items[0]?.id,
+    ]);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("http://127.0.0.1:4567/api/v1/workspaces");
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe(
+      "http://127.0.0.1:4567/api/v1/workspaces?cursor=cur_01J8Z3PQRS",
+    );
+  });
+
+  it("stops walking workspace pages on a repeated cursor", async () => {
+    const first = fixture<{ items: WorkspacePage["items"]; next_cursor: string | null }>(
+      "workspace-page.json",
+    );
+    const second = {
+      items: [fixture<components["schemas"]["Workspace"]>("workspace.json")],
+      next_cursor: "cur_loop",
+    };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(json({ ...first, next_cursor: "cur_loop" }))
+      .mockResolvedValueOnce(json(second));
+
+    const workspaces = await client(fetchImpl).listAllWorkspaces();
+
+    expect(workspaces.map((item) => item.id)).toEqual([
+      ...first.items.map((item) => item.id),
+      second.items[0]?.id,
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("builds the sign-in URL on the configured API origin, not the page origin", () => {

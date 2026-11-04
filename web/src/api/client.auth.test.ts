@@ -55,6 +55,7 @@ describe("ForgePilotClient cookie sessions", () => {
     const client = new ForgePilotClient({
       baseUrl: "http://127.0.0.1:4567",
       token: "",
+      workspaceId: "wsp_1",
       csrfToken: () => "csrf-1",
       fetchImpl,
     });
@@ -71,6 +72,7 @@ describe("ForgePilotClient cookie sessions", () => {
     const client = new ForgePilotClient({
       baseUrl: "http://127.0.0.1:4567",
       token: "",
+      workspaceId: "wsp_1",
       csrfToken: () => "csrf-1",
       fetchImpl,
     });
@@ -92,6 +94,7 @@ describe("ForgePilotClient cookie sessions", () => {
     const client = new ForgePilotClient({
       baseUrl: "http://127.0.0.1:4567",
       token: "",
+      workspaceId: "wsp_1",
       csrfToken: () => "csrf-1",
       refreshCsrfToken: refresh,
       fetchImpl,
@@ -110,6 +113,7 @@ describe("ForgePilotClient cookie sessions", () => {
     const client = new ForgePilotClient({
       baseUrl: "http://127.0.0.1:4567",
       token: "",
+      workspaceId: "wsp_1",
       csrfToken: () => "csrf-1",
       refreshCsrfToken: refresh,
       fetchImpl,
@@ -149,6 +153,7 @@ describe("ForgePilotClient cookie sessions", () => {
     const client = new ForgePilotClient({
       baseUrl: "http://127.0.0.1:4567",
       token: "",
+      workspaceId: "wsp_1",
       onUnauthorized,
       onForbidden,
       fetchImpl,

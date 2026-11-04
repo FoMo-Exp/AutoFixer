@@ -62,7 +62,14 @@ function summaryKey(
  * from the DAT-230 dashboard contract; missing telemetry keeps its status and
  * a null figure instead of becoming zero.
  */
-export function DashboardWorkbench({ client }: { client: ForgePilotClient }): ReactElement {
+export function DashboardWorkbench({
+  client,
+  loadWorkspaces,
+}: {
+  client: ForgePilotClient;
+  /** The caller's live workspace directory, owned by the identity surface. */
+  loadWorkspaces: () => Promise<Workspace[]>;
+}): ReactElement {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string | undefined>(undefined);
   const [workspaceError, setWorkspaceError] = useState<DashboardError | undefined>(undefined);
@@ -100,8 +107,7 @@ export function DashboardWorkbench({ client }: { client: ForgePilotClient }): Re
   useEffect(() => {
     let active = true;
     setWorkspaceLoading(true);
-    client
-      .listWorkspaces()
+    loadWorkspaces()
       .then((entries) => {
         if (!active) return;
         setWorkspaces(entries);
@@ -123,7 +129,7 @@ export function DashboardWorkbench({ client }: { client: ForgePilotClient }): Re
     return () => {
       active = false;
     };
-  }, [client, workspaceToken]);
+  }, [loadWorkspaces, workspaceToken]);
 
   useEffect(() => {
     if (workspaceId === undefined) return;

@@ -102,6 +102,10 @@ function approval(overrides: Partial<SecurityRecoveryApproval> = {}): SecurityRe
   };
 }
 
+function loadWorkspaceDirectory(): Promise<Workspace[]> {
+  return Promise.resolve(workspaces);
+}
+
 function makeClient(): ForgePilotClient {
   return new ForgePilotClient({
     baseUrl: "http://127.0.0.1:4567",
@@ -127,7 +131,6 @@ async function openRule(version: number): Promise<void> {
 }
 
 beforeEach(() => {
-  vi.spyOn(ForgePilotClient.prototype, "listWorkspaces").mockResolvedValue(workspaces);
   vi.spyOn(ForgePilotClient.prototype, "listSecurityCases").mockResolvedValue(casePage);
   vi.spyOn(ForgePilotClient.prototype, "getSecurityCase").mockResolvedValue(caseRecord);
   vi.spyOn(ForgePilotClient.prototype, "readSecurityAuditTrail").mockResolvedValue(auditPage);
@@ -145,7 +148,13 @@ describe("security case inbox", () => {
     const view = vi
       .spyOn(ForgePilotClient.prototype, "viewQuarantinedContext")
       .mockRejectedValue(new Error("must not be called"));
-    render(<SecurityWorkbench client={client} session={sessionFor("human_handler")} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+      />,
+    );
 
     expect(await screen.findByText(caseRecord.case_id)).toBeTruthy();
     await openCase();
@@ -163,7 +172,13 @@ describe("security case inbox", () => {
 
   it("offers no per-call bypass or override control anywhere in the case desk", async () => {
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_handler")} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+      />,
+    );
     await openCase();
 
     expect(screen.queryByRole("button", { name: /send anyway/i })).toBeNull();
@@ -182,7 +197,11 @@ describe("security case inbox", () => {
 
     const handlerClient = makeClient();
     const first = render(
-      <SecurityWorkbench client={handlerClient} session={sessionFor("human_handler")} />,
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={handlerClient}
+        session={sessionFor("human_handler")}
+      />,
     );
     await openCase();
     expect(await screen.findByRole("button", { name: "Approve & resolve" })).toHaveProperty(
@@ -197,7 +216,13 @@ describe("security case inbox", () => {
     first.unmount();
 
     const reviewerClient = makeClient();
-    render(<SecurityWorkbench client={reviewerClient} session={sessionFor("human_reviewer")} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={reviewerClient}
+        session={sessionFor("human_reviewer")}
+      />,
+    );
     await openCase();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Approve & resolve" })).toHaveProperty(
@@ -216,7 +241,13 @@ describe("security case inbox", () => {
       apiError("SOD_DUTY_REQUIRED", 403, "no audit duty"),
     );
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_reviewer")} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+      />,
+    );
     await openCase();
 
     expect(
@@ -239,7 +270,13 @@ describe("security case inbox", () => {
     );
     vi.spyOn(ForgePilotClient.prototype, "transitionSecurityCase").mockResolvedValue(next);
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_reviewer")} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+      />,
+    );
     await openCase();
 
     await userEvent.type(
@@ -269,7 +306,13 @@ describe("quarantine access", () => {
       viewed_at: new Date().toISOString(),
     });
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_admin", true)} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_admin", true)}
+      />,
+    );
     await openCase();
 
     const section = screen
@@ -314,7 +357,13 @@ describe("quarantine access", () => {
       apiError("QUARANTINE_ACCESS_GRANT_EXPIRED", 410, "expired"),
     );
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_handler")} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+      />,
+    );
     await openCase();
 
     const section = screen
@@ -349,7 +398,13 @@ describe("recovery authorization", () => {
       dispatchFixture,
     );
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_reviewer")} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+      />,
+    );
     await openCase();
 
     const section = screen
@@ -408,7 +463,13 @@ describe("recovery authorization", () => {
     );
     const dispatch = vi.spyOn(ForgePilotClient.prototype, "dispatchSecurityRecovery");
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_reviewer")} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+      />,
+    );
     await openCase();
 
     const section = screen
@@ -449,7 +510,13 @@ describe("recovery authorization", () => {
       outcome: "unknown",
     });
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_reviewer")} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+      />,
+    );
     await openCase();
 
     const section = screen
@@ -493,7 +560,13 @@ describe("rule corrections", () => {
       next_cursor: null,
     });
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_reviewer")} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+      />,
+    );
     await openRules();
     await openRule(3);
 
@@ -523,7 +596,13 @@ describe("rule corrections", () => {
       next_cursor: null,
     });
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_handler")} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+      />,
+    );
     await openRules();
     await openRule(3);
 
@@ -565,7 +644,13 @@ describe("rule corrections", () => {
       activated_by: "human_admin",
     });
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_reviewer")} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+      />,
+    );
     await openRules();
     await openRule(3);
 
@@ -620,7 +705,13 @@ describe("rule corrections", () => {
       rolls_back_version: 2,
     });
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_admin", true)} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_admin", true)}
+      />,
+    );
     await openRules();
     await openRule(3);
 
@@ -657,7 +748,13 @@ describe("rule corrections", () => {
         review: null,
       });
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_handler")} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+      />,
+    );
     await openRules();
 
     await userEvent.click(screen.getByRole("button", { name: "Propose correction" }));
@@ -706,7 +803,13 @@ describe("security audit trail", () => {
 
   it("starts with an empty purpose and requires the operator to state one before reading", async () => {
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_handler")} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+      />,
+    );
     await openAudit();
 
     const purpose = screen.getByLabelText(/Stated purpose/) as HTMLInputElement;
@@ -731,7 +834,13 @@ describe("security audit trail", () => {
   it("refuses both read and export without an operator-supplied purpose", async () => {
     const exportAudit = vi.spyOn(ForgePilotClient.prototype, "exportSecurityAuditTrail");
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_admin", true)} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_admin", true)}
+      />,
+    );
     await openAudit();
 
     await userEvent.click(screen.getByRole("button", { name: "Read trail" }));
@@ -753,7 +862,11 @@ describe("security audit trail", () => {
     });
     const nonAdmin = makeClient();
     const first = render(
-      <SecurityWorkbench client={nonAdmin} session={sessionFor("human_handler")} />,
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={nonAdmin}
+        session={sessionFor("human_handler")}
+      />,
     );
     await openAudit();
     expect(screen.getByRole("button", { name: "Export filtered slice" })).toHaveProperty(
@@ -763,7 +876,13 @@ describe("security audit trail", () => {
     first.unmount();
 
     const admin = makeClient();
-    render(<SecurityWorkbench client={admin} session={sessionFor("human_admin", true)} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={admin}
+        session={sessionFor("human_admin", true)}
+      />,
+    );
     await openAudit();
     await userEvent.type(screen.getByLabelText(/Stated purpose/), "Incident INC-42 export");
     const exportButton = screen.getByRole("button", { name: "Export filtered slice" });
@@ -785,7 +904,13 @@ describe("security audit trail", () => {
       apiError("SECURITY_AUDIT_LOG_TAMPERED", 503, "hash chain failed"),
     );
     const client = makeClient();
-    render(<SecurityWorkbench client={client} session={sessionFor("human_handler")} />);
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+      />,
+    );
     await openAudit();
     await userEvent.type(screen.getByLabelText(/Stated purpose/), "Verify trail integrity");
     await userEvent.click(screen.getByRole("button", { name: "Read trail" }));

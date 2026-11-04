@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { ForgePilotClient } from "./api/client";
+import { IdentityClient } from "./api/identity";
 import type { Task } from "./api/client";
 
 function task(id: string, summary: string): Task {
@@ -301,7 +302,7 @@ describe("invitation landing", () => {
 
 describe("surface navigation", () => {
   it("switches to the workspace-scoped issue surface", async () => {
-    vi.spyOn(ForgePilotClient.prototype, "listWorkspaces").mockResolvedValue([]);
+    vi.spyOn(IdentityClient.prototype, "listAllWorkspaces").mockResolvedValue([]);
     render(<App />);
     await screen.findByRole("button", { name: "Repair alpha owner/repo" });
 
@@ -312,7 +313,7 @@ describe("surface navigation", () => {
   });
 
   it("switches to the workspace-scoped RSI surface", async () => {
-    vi.spyOn(ForgePilotClient.prototype, "listWorkspaces").mockResolvedValue([]);
+    vi.spyOn(IdentityClient.prototype, "listAllWorkspaces").mockResolvedValue([]);
     render(<App />);
     await screen.findByRole("button", { name: "Repair alpha owner/repo" });
 

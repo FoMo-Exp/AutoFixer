@@ -57,6 +57,10 @@ function apiError(status: number, code: string, message: string): ApiError {
   );
 }
 
+function loadWorkspaceDirectory(): Promise<Workspace[]> {
+  return Promise.resolve(workspaces);
+}
+
 function makeClient(): ForgePilotClient {
   return new ForgePilotClient({
     baseUrl: "http://127.0.0.1:4567",
@@ -78,7 +82,6 @@ async function waitForOverview(): Promise<void> {
 }
 
 beforeEach(() => {
-  vi.spyOn(ForgePilotClient.prototype, "listWorkspaces").mockResolvedValue(workspaces);
   vi.spyOn(ForgePilotClient.prototype, "getDashboardSummary").mockResolvedValue(summaryFixture);
 });
 
@@ -90,7 +93,7 @@ afterEach(() => {
 describe("workspace dashboard", () => {
   it("renders known, estimated and unknown token figures separately with cost provenance", async () => {
     const client = makeClient();
-    render(<DashboardWorkbench client={client} />);
+    render(<DashboardWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await waitForOverview();
 
     const tokenTable = screen.getByRole("table", { name: "Tokens by category" });
@@ -128,7 +131,7 @@ describe("workspace dashboard", () => {
 
   it("charts tokens accessibly and keeps the same figures in a table", async () => {
     const client = makeClient();
-    render(<DashboardWorkbench client={client} />);
+    render(<DashboardWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await waitForOverview();
 
     const chart = screen.getByRole("img", { name: /token chart by known and estimated tokens/i });
@@ -164,7 +167,7 @@ describe("workspace dashboard", () => {
     vi.spyOn(ForgePilotClient.prototype, "getDashboardSummary").mockResolvedValue(missing);
 
     const client = makeClient();
-    render(<DashboardWorkbench client={client} />);
+    render(<DashboardWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await screen.findByRole("img", { name: /token chart/i });
 
     expect(within(metricCard("Requests")).getByText("—")).toBeTruthy();
@@ -220,7 +223,7 @@ describe("workspace dashboard", () => {
       .mockResolvedValue(costItemsFixture);
 
     const client = makeClient();
-    render(<DashboardWorkbench client={client} />);
+    render(<DashboardWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await screen.findByText(
       (_, element) =>
         element?.tagName === "SPAN" && element.textContent === "Financial: restricted",
@@ -242,7 +245,7 @@ describe("workspace dashboard", () => {
     );
 
     const client = makeClient();
-    render(<DashboardWorkbench client={client} />);
+    render(<DashboardWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await waitForOverview();
     await userEvent.click(screen.getByRole("button", { name: "Cost ledger" }));
 
@@ -264,7 +267,7 @@ describe("cost ledger drill-down", () => {
 
   it("drills from a posting to its bound rate revision and invocation ledger entry", async () => {
     const client = makeClient();
-    render(<DashboardWorkbench client={client} />);
+    render(<DashboardWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await waitForOverview();
     await userEvent.click(screen.getByRole("button", { name: "Cost ledger" }));
 
@@ -313,7 +316,7 @@ describe("cost ledger drill-down", () => {
     vi.spyOn(ForgePilotClient.prototype, "listDashboardCostItems").mockResolvedValue(page);
 
     const client = makeClient();
-    render(<DashboardWorkbench client={client} />);
+    render(<DashboardWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await waitForOverview();
     await userEvent.click(screen.getByRole("button", { name: "Cost ledger" }));
     await userEvent.click(await screen.findByRole("button", { name: /gpt-4o/ }));
@@ -340,7 +343,7 @@ describe("trace viewer", () => {
     vi.spyOn(ForgePilotClient.prototype, "getDashboardIssueDrilldown").mockResolvedValue(drilldown);
 
     const client = makeClient();
-    render(<DashboardWorkbench client={client} />);
+    render(<DashboardWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await waitForOverview();
     await userEvent.click(screen.getByRole("button", { name: "Trace" }));
 
@@ -370,7 +373,7 @@ describe("trace viewer", () => {
     );
 
     const client = makeClient();
-    render(<DashboardWorkbench client={client} />);
+    render(<DashboardWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await waitForOverview();
     await userEvent.click(screen.getByRole("button", { name: "Trace" }));
     await userEvent.type(screen.getByLabelText("Issue"), "issue-1");

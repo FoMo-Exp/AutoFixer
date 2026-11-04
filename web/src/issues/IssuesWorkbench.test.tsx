@@ -40,6 +40,10 @@ const workspaces = fixture<{ items: Workspace[]; next_cursor: string | null }>(
 
 const activeWorkspace = workspaces.find((workspace) => workspace.status === "active")!;
 
+function loadWorkspaceDirectory(): Promise<Workspace[]> {
+  return Promise.resolve(workspaces);
+}
+
 function makeClient(): ForgePilotClient {
   return new ForgePilotClient({
     baseUrl: "http://127.0.0.1:4567",
@@ -73,7 +77,6 @@ async function openIssue(): Promise<void> {
 }
 
 beforeEach(() => {
-  vi.spyOn(ForgePilotClient.prototype, "listWorkspaces").mockResolvedValue(workspaces);
   vi.spyOn(ForgePilotClient.prototype, "listIssues").mockResolvedValue(issuePage);
   vi.spyOn(ForgePilotClient.prototype, "streamIssueEvents").mockImplementation(
     () => new Promise(() => undefined),
@@ -104,7 +107,13 @@ describe("issue workbench", () => {
       next_cursor: null,
     });
 
-    render(<IssuesWorkbench client={client} currentUserId="usr_luthiel" />);
+    render(
+      <IssuesWorkbench
+        client={client}
+        currentUserId="usr_luthiel"
+        loadWorkspaces={loadWorkspaceDirectory}
+      />,
+    );
     await openIssue();
 
     expect(await screen.findByText(candidate.summary)).toBeTruthy();
@@ -117,7 +126,7 @@ describe("issue workbench", () => {
     mockDetail(client);
     streamReplay(client, [stageEvent]);
 
-    render(<IssuesWorkbench client={client} />);
+    render(<IssuesWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await openIssue();
 
     expect(screen.getAllByText("Awaiting change approval").length).toBeGreaterThan(0);
@@ -141,7 +150,7 @@ describe("issue workbench", () => {
       .spyOn(client, "transitionIssueStage")
       .mockResolvedValue({ ...stage, product_state: "needs_human" });
 
-    render(<IssuesWorkbench client={client} />);
+    render(<IssuesWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await openIssue();
     await userEvent.click(screen.getByRole("button", { name: /Move to Needs human disposition/ }));
 
@@ -181,7 +190,7 @@ describe("issue workbench", () => {
       .spyOn(client, "transitionIssueStage")
       .mockResolvedValue({ ...stage, product_state: "planning" });
 
-    render(<IssuesWorkbench client={client} />);
+    render(<IssuesWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await openIssue();
     await userEvent.click(screen.getByRole("button", { name: /Record disposition → Planning/ }));
 
@@ -222,7 +231,7 @@ describe("issue workbench", () => {
     vi.spyOn(client, "listIssueTasks").mockResolvedValue(taskPage);
     vi.spyOn(client, "listIssueRuns").mockResolvedValue(runPage);
 
-    render(<IssuesWorkbench client={client} />);
+    render(<IssuesWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await openIssue();
 
     expect(screen.getByText(/Cancelled is terminal for this issue/)).toBeTruthy();
@@ -239,10 +248,11 @@ describe("issue workbench", () => {
       name: "Acme Read Only",
       role: "viewer" as const,
     };
-    vi.mocked(ForgePilotClient.prototype.listWorkspaces).mockResolvedValue([viewerWorkspace]);
     mockDetail(client);
 
-    render(<IssuesWorkbench client={client} />);
+    render(
+      <IssuesWorkbench client={client} loadWorkspaces={() => Promise.resolve([viewerWorkspace])} />,
+    );
     await openIssue();
 
     expect(screen.getByText(/viewer · read-only/)).toBeTruthy();
@@ -285,7 +295,7 @@ describe("issue workbench", () => {
       });
     vi.spyOn(client, "listIssueRuns").mockResolvedValue(runPage);
 
-    render(<IssuesWorkbench client={client} />);
+    render(<IssuesWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await openIssue();
 
     expect(await screen.findAllByText(/tsk_analysis_0/)).not.toHaveLength(0);
@@ -316,7 +326,7 @@ describe("issue workbench", () => {
         next_cursor: null,
       });
 
-    render(<IssuesWorkbench client={client} />);
+    render(<IssuesWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await openIssue();
 
     expect(await screen.findAllByText("Second attempt stopped by policy.")).not.toHaveLength(0);
@@ -334,7 +344,7 @@ describe("issue workbench", () => {
       next_cursor: null,
     });
 
-    render(<IssuesWorkbench client={client} />);
+    render(<IssuesWorkbench client={client} loadWorkspaces={loadWorkspaceDirectory} />);
     await openIssue();
 
     expect(screen.getByText("Harness: Unknown harness state (paused)")).toBeTruthy();
@@ -344,12 +354,12 @@ describe("issue workbench", () => {
     const client = makeClient();
     mockDetail(client);
     const second = { ...activeWorkspace, id: "ws_second", name: "Acme Infra" };
-    vi.mocked(ForgePilotClient.prototype.listWorkspaces).mockResolvedValue([
-      activeWorkspace,
-      second,
-    ]);
-
-    render(<IssuesWorkbench client={client} />);
+    render(
+      <IssuesWorkbench
+        client={client}
+        loadWorkspaces={() => Promise.resolve([activeWorkspace, second])}
+      />,
+    );
 
     expect(await screen.findByRole("group", { name: "Workspace scope" })).toBeTruthy();
     expect(screen.getByRole("group", { name: "Product stage filters" })).toBeTruthy();
