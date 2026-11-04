@@ -129,6 +129,16 @@ function serviceFor(bindings: Record<string, WorkspaceRunBinding>) {
         return binding;
       },
     },
+    // DAT-242's authenticated-scope seam: these tests exercise the workspace
+    // binding, not egress authorization, so the authority resolves the scope
+    // the test is about. The fake gateway only records the binding identity.
+    runScope: () => ({
+      enterpriseId: BETA.enterpriseId,
+      workspaceId: BETA.workspaceId,
+      scopeAuthority: {
+        resolve: () => ({ enterpriseId: BETA.enterpriseId, workspaceId: BETA.workspaceId }),
+      },
+    }),
   });
   return { service, created: dsh.created, bound };
 }

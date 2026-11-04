@@ -56,32 +56,32 @@ npm run build && npm start
 
 Configuration (environment):
 
-| Variable                                                                    | Default                                         | Meaning                                                                                                                                 |
-| --------------------------------------------------------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `FORGEPILOT_DSH_SOCKET`                                                     | `$TMPDIR/dsh-<uid>/dsh-control.sock`            | dsh control socket (or pipe name)                                                                                                       |
-| `FORGEPILOT_DSH_TOKEN_FILE`                                                 | `<socket>.token`                                | dsh boot-token file                                                                                                                     |
-| `FORGEPILOT_API_HOST` / `FORGEPILOT_API_PORT`                               | `127.0.0.1` / `0`                               | loopback bind                                                                                                                           |
-| `FORGEPILOT_REPOSITORY_ID`                                                  | `github:Luthiel/AutoFixer`                      | only the pilot repository is accepted                                                                                                   |
-| `FORGEPILOT_BASE_REF` / `FORGEPILOT_BASE_SHA`                               | `main` / required                               | pinned base revision                                                                                                                    |
-| `FORGEPILOT_ACTOR_ID` / `FORGEPILOT_ACTOR_DISPLAY_NAME`                     | local operator                                  | identity recorded on runs                                                                                                               |
-| `FORGEPILOT_APPROVER_IDENTITY`                                              | `github:local-operator`                         | must match a dsh `--approver`                                                                                                           |
-| `FORGEPILOT_PATH_HINTS`                                                     | `node`                                          | comma-separated granted path roots                                                                                                      |
-| `FORGEPILOT_TOOL_CAPABILITIES`                                              | `echo,sleep`                                    | dsh tools tasks may request                                                                                                             |
-| `FORGEPILOT_MAX_WALL_CLOCK_SECONDS`                                         | `120`                                           | per-run wall clock                                                                                                                      |
-| `FORGEPILOT_API_TOKEN_FILE`                                                 | `$TMPDIR/forgepilot-<uid>/api-token`            | per-process API bearer-token file (0600)                                                                                                |
-| `FORGEPILOT_TASK_STATE_FILE`                                                | `$TMPDIR/forgepilot-<uid>/task-state.json`      | durable task projection (0600); restart re-associates tasks with dsh runs                                                               |
-| `FORGEPILOT_PI_PROVIDER` / `FORGEPILOT_PI_MODEL`                            | unset                                           | Pi provider/model; unset means approvals report `PI_UNAVAILABLE`                                                                        |
-| `FORGEPILOT_PI_BASE_URL`                                                    | unset                                           | requested model endpoint; must match a registered gateway endpoint                                                                      |
-| `FORGEPILOT_ENTERPRISE_ID` / `FORGEPILOT_WORKSPACE_ID`                      | `ent_forgepilot_local` / `ws_autofixer`         | scope whose enterprise/workspace policy governs model egress                                                                            |
-| `FORGEPILOT_GATEWAY_POLICY_FILE`                                            | unset                                           | model gateway policy JSON (endpoint allow-list, retry, fallbacks)                                                                       |
-| `FORGEPILOT_GATEWAY_CREDENTIALS_FILE`                                       | unset                                           | provider credentials JSON (0600), `credentialRef -> secret`                                                                             |
-| `FORGEPILOT_GATEWAY_AUDIT_FILE`                                             | `$TMPDIR/forgepilot-<uid>/gateway-audit.jsonl`  | durable gateway attempt records (audit/metering seam)                                                                                   |
-| `FORGEPILOT_OAUTH_CLIENTS_FILE`                                             | unset                                           | OAuth app credentials JSON (0600), `provider origin -> {client_id, client_secret}`; setting it enables `/api/v1/auth` + `/api/v1/admin` |
-| `FORGEPILOT_CONTROL_PLANE_DB`                                               | `$TMPDIR/forgepilot-<uid>/control-plane.sqlite` | durable identity/session database (settable only together with the clients file)                                                        |
-| `FORGEPILOT_BOOTSTRAP_TOKEN`                                                | unset (required with the clients file)          | deployment-owned secret for first-admin bootstrap and first provider approval (min 32 chars)                                            |
-| `FORGEPILOT_PUBLIC_ORIGIN`                                                  | unset (loopback per request)                    | external origin for OAuth redirects and desktop login links                                                                             |
-| `FORGEPILOT_SESSION_TTL_SECONDS`                                            | `43200`                                         | server-side session lifetime                                                                                                            |
-| `FORGEPILOT_OAUTH_FLOW_TTL_SECONDS` / `FORGEPILOT_DESKTOP_FLOW_TTL_SECONDS` | `600` / `600`                                   | authorization-flow / desktop-binding lifetimes                                                                                          |
+| Variable                                                                    | Default                                         | Meaning                                                                                                                                                                |
+| --------------------------------------------------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FORGEPILOT_DSH_SOCKET`                                                     | `$TMPDIR/dsh-<uid>/dsh-control.sock`            | dsh control socket (or pipe name)                                                                                                                                      |
+| `FORGEPILOT_DSH_TOKEN_FILE`                                                 | `<socket>.token`                                | dsh boot-token file                                                                                                                                                    |
+| `FORGEPILOT_API_HOST` / `FORGEPILOT_API_PORT`                               | `127.0.0.1` / `0`                               | loopback bind                                                                                                                                                          |
+| `FORGEPILOT_REPOSITORY_ID`                                                  | `github:Luthiel/AutoFixer`                      | only the pilot repository is accepted                                                                                                                                  |
+| `FORGEPILOT_BASE_REF` / `FORGEPILOT_BASE_SHA`                               | `main` / required                               | pinned base revision                                                                                                                                                   |
+| `FORGEPILOT_ACTOR_ID` / `FORGEPILOT_ACTOR_DISPLAY_NAME`                     | local operator                                  | identity recorded on runs                                                                                                                                              |
+| `FORGEPILOT_APPROVER_IDENTITY`                                              | `github:local-operator`                         | must match a dsh `--approver`                                                                                                                                          |
+| `FORGEPILOT_PATH_HINTS`                                                     | `node`                                          | comma-separated granted path roots                                                                                                                                     |
+| `FORGEPILOT_TOOL_CAPABILITIES`                                              | `echo,sleep`                                    | dsh tools tasks may request                                                                                                                                            |
+| `FORGEPILOT_MAX_WALL_CLOCK_SECONDS`                                         | `120`                                           | per-run wall clock                                                                                                                                                     |
+| `FORGEPILOT_API_TOKEN_FILE`                                                 | `$TMPDIR/forgepilot-<uid>/api-token`            | per-process API bearer-token file (0600)                                                                                                                               |
+| `FORGEPILOT_TASK_STATE_FILE`                                                | `$TMPDIR/forgepilot-<uid>/task-state.json`      | durable task projection (0600); restart re-associates tasks with dsh runs                                                                                              |
+| `FORGEPILOT_PI_PROVIDER` / `FORGEPILOT_PI_MODEL`                            | unset                                           | Pi provider/model; unset means approvals report `PI_UNAVAILABLE`                                                                                                       |
+| `FORGEPILOT_PI_BASE_URL`                                                    | unset                                           | requested model endpoint; must match a registered gateway endpoint                                                                                                     |
+| `FORGEPILOT_ENTERPRISE_ID` / `FORGEPILOT_WORKSPACE_ID`                      | `ent_forgepilot_local` / `ws_autofixer`         | the task surface's workspace only (session gating, DAT-203 authority boundary); model-egress scope follows authenticated membership (DAT-242) — see the migration note |
+| `FORGEPILOT_GATEWAY_POLICY_FILE`                                            | unset                                           | scoped model gateway policy set JSON — one policy per enterprise/workspace pair (endpoint allow-list, retry, fallbacks); see the policy shape below                    |
+| `FORGEPILOT_GATEWAY_CREDENTIALS_FILE`                                       | unset                                           | provider credentials JSON (0600), `credentialRef -> secret`                                                                                                            |
+| `FORGEPILOT_GATEWAY_AUDIT_FILE`                                             | `$TMPDIR/forgepilot-<uid>/gateway-audit.jsonl`  | durable gateway attempt records (audit/metering seam)                                                                                                                  |
+| `FORGEPILOT_OAUTH_CLIENTS_FILE`                                             | unset                                           | OAuth app credentials JSON (0600), `provider origin -> {client_id, client_secret}`; setting it enables `/api/v1/auth` + `/api/v1/admin`                                |
+| `FORGEPILOT_CONTROL_PLANE_DB`                                               | `$TMPDIR/forgepilot-<uid>/control-plane.sqlite` | durable identity/session database (settable only together with the clients file)                                                                                       |
+| `FORGEPILOT_BOOTSTRAP_TOKEN`                                                | unset (required with the clients file)          | deployment-owned secret for first-admin bootstrap and first provider approval (min 32 chars)                                                                           |
+| `FORGEPILOT_PUBLIC_ORIGIN`                                                  | unset (loopback per request)                    | external origin for OAuth redirects and desktop login links                                                                                                            |
+| `FORGEPILOT_SESSION_TTL_SECONDS`                                            | `43200`                                         | server-side session lifetime                                                                                                                                           |
+| `FORGEPILOT_OAUTH_FLOW_TTL_SECONDS` / `FORGEPILOT_DESKTOP_FLOW_TTL_SECONDS` | `600` / `600`                                   | authorization-flow / desktop-binding lifetimes                                                                                                                         |
 
 ## Model gateway (ADR-0005)
 
@@ -108,35 +108,70 @@ egress path:
   Retries, fallbacks, and model switches are separate, fully re-checked
   invocations.
 
-Scope constraint (Architect ruling on DAT-208, 2026-11-03): the deployment is
-single-enterprise/single-workspace and policy resolution is served by the
-static `createStaticPolicyResolver` on the `GatewayPolicyResolver` seam. A
-binding's scope is not caller authority — non-configured scopes resolve no
-policy and are denied. Before multi-tenant enablement the authoritative
-authenticated scope pipeline must be wired in (DAT-241 builds the scope
-helper; DAT-242 switches gateway policy resolution to it). Until DAT-242
-merges, this deployment must not serve more than one enterprise or workspace.
+Scope and multi-tenancy (DAT-242): gateway policy resolution and every run's
+binding identity follow the authoritative authenticated scope.
+`resolveRequestScope` (`node/src/control-plane/request-scope.ts`, DAT-241)
+resolves the caller's enterprise/workspace from live membership state at run
+bind time and again on every dispatch and attempt — never from deployment
+configuration and never from caller-supplied IDs. A binding's scope claim is
+only ever compared against that resolution: a claim that disagrees is a
+cross-tenant binding and is denied before any policy, credential, or provider
+is touched. Missing, revoked, ambiguous, or cross-tenant memberships — and
+requests with no authenticated scope at all — deny `MODEL_EGRESS_DENIED`
+(fail closed: no default scope, no static single-scope path). Audit/metering
+events are attributed to the authenticated scope. Policies are served per
+enterprise/workspace pair: workspace A's identity can only resolve and
+execute workspace A's policy and credential references.
 
-Policy file shape (credentials are referenced, never inlined):
+Policy file shape (credentials are referenced, never inlined; one policy per
+enterprise/workspace pair):
 
 ```json
 {
-  "revision": "2026-11-03.1",
-  "endpoints": [
+  "policies": [
     {
-      "endpointId": "ep_xiaomi_main",
-      "provider": "xiaomi",
-      "api": "anthropic-messages",
-      "baseUrl": "https://api.xiaomimimo.com/anthropic",
-      "internal": false,
-      "credentialRef": "cred_xiaomi",
-      "models": ["mimo-v2.5"]
+      "scope": {
+        "enterpriseId": "ent_forgepilot",
+        "workspaceId": "ws_autofixer"
+      },
+      "revision": "2026-11-04.1",
+      "endpoints": [
+        {
+          "endpointId": "ep_xiaomi_main",
+          "provider": "xiaomi",
+          "api": "anthropic-messages",
+          "baseUrl": "https://api.xiaomimimo.com/anthropic",
+          "internal": false,
+          "credentialRef": "cred_xiaomi",
+          "models": ["mimo-v2.5"]
+        }
+      ],
+      "retry": { "maxAttempts": 2 },
+      "fallbacks": []
     }
-  ],
-  "retry": { "maxAttempts": 2 },
-  "fallbacks": []
+  ]
 }
 ```
+
+Deployment configuration migration (DAT-242):
+
+- `FORGEPILOT_GATEWAY_POLICY_FILE` now carries the scoped policy set above:
+  wrap the previous single-policy document in a `policies` entry and give it
+  the `scope` it governs. A policy entry without a `scope`, a `policies` list
+  without entries, or two entries for the same scope all fail startup; there
+  is no legacy single-policy shape and no default scope.
+- `FORGEPILOT_ENTERPRISE_ID` / `FORGEPILOT_WORKSPACE_ID` no longer govern
+  model egress in any path (policy resolution, binding identity, or audit
+  attribution). They remain only as the legacy `/api/v1/tasks` seam's
+  deployment workspace and the DAT-203 provider-authority boundary; the
+  workspace-scoped task family (`/api/v1/workspaces/{workspace_id}/tasks`,
+  DAT-245) resolves its workspace and run binding from the control plane and
+  never from these variables.
+- Runs started without an authenticated workspace membership — e.g. through
+  the legacy local-operator bearer — materialize but dispatch no model bytes:
+  every dispatch is denied `MODEL_EGRESS_DENIED` (scope `SCOPE_UNAVAILABLE`).
+  Model egress requires session-authenticated requests with a live workspace
+  membership.
 
 The `openai-compatible` provider uses `openai-completions` against the
 registered base URL and accepts any model ID approved for that endpoint.

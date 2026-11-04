@@ -17,14 +17,15 @@ export {
 } from "./pattern-scanner.js";
 export type { SecretDetector } from "./pattern-scanner.js";
 export {
-  createStaticPolicyResolver,
+  createScopeBackedPolicyResolver,
   denyAllPolicyResolver,
   loadGatewayPolicyFile,
   matchEndpoint,
   matchFallback,
+  parseScopedPolicies,
   validateGatewayPolicy,
 } from "./policy.js";
-export type { EndpointMatch, GatewayPolicyResolver } from "./policy.js";
+export type { EndpointMatch, GatewayPolicyResolver, ScopedPolicyBinding } from "./policy.js";
 export { scrubSecrets } from "./redact.js";
 export {
   authorizeRequestDataClasses,
@@ -73,6 +74,8 @@ export type {
   GatewayPolicy,
   GatewayRequestIdentity,
   GatewayScope,
+  GatewayScopeAuthority,
+  GatewayScopeBinding,
   RequestScanEvidence,
   SecretClassification,
 } from "./types.js";
