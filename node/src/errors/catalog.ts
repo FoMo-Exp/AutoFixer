@@ -299,6 +299,16 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorCodeSpec>> = Object.fre
         "A security case has paused this run's dependent work; disposition it through the security case workflow to release the hold.",
       ),
       spec(
+        "RECOVERY_APPROVAL_INVALID",
+        "policy",
+        "denial",
+        "never",
+        "request_review",
+        "The recovery approval no longer authorizes rechecking this request.",
+        "Stop. An expired, revoked, consumed, or context-mismatched approval is never reused; only a fresh independent approval can authorize a recheck.",
+        "The approval was invalidated by expiry, revocation, prior consumption, or a change to the bound context, destination, policy, or rules; request a new independent review.",
+      ),
+      spec(
         "MODEL_DISPATCH_FAILED",
         "gateway",
         "retry",

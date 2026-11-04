@@ -116,6 +116,7 @@ export { RuleCorrectionService } from "./rule-service.js";
 export type { RuleServiceDeps } from "./rule-service.js";
 
 export { RecoveryAuthorizationStore } from "./recovery-authorization.js";
+export { RECOVERY_INVALID_REASONS } from "./recovery-authorization.js";
 export type {
   ConsumeResult,
   RecoveryApproval,
@@ -179,3 +180,39 @@ export type {
   RecoveryIdentityStatus,
   RecoveryServiceDeps,
 } from "./recovery.js";
+
+export {
+  SECURITY_AUDIT_EVENT_CLASSES,
+  SECURITY_AUDIT_EVENT_TYPES,
+  SECURITY_AUDIT_RESULTS,
+  createFileSecurityAuditTrail,
+  createMemorySecurityAuditTrail,
+  normalizeSecurityAuditEvent,
+  protectedAuditIdentifier,
+  scrubAuditText,
+} from "./audit.js";
+export type {
+  SecurityAuditAccess,
+  SecurityAuditActor,
+  SecurityAuditAuthorization,
+  SecurityAuditDestination,
+  SecurityAuditEntry,
+  SecurityAuditEvent,
+  SecurityAuditEventType,
+  SecurityAuditExport,
+  SecurityAuditQuery,
+  SecurityAuditResult,
+  SecurityAuditScanEvidence,
+  SecurityAuditScope,
+  SecurityAuditSink,
+  SecurityAuditTrail,
+  SecurityAuditTrailOptions,
+} from "./audit.js";
+export {
+  auditEventFromCaseEvent,
+  auditEventFromGatewayAttempt,
+  auditEventFromRecoveryRecord,
+  auditEventFromRuleEvent,
+  createSecurityAuditGatewaySink,
+  createSecurityAuditRecoverySink,
+} from "./audit-adapters.js";

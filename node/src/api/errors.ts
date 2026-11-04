@@ -57,6 +57,12 @@ export const ERROR_NEXT_ACTIONS = [
   "request_review",
   "request_new_invitation",
   "contact_admin",
+  /**
+   * Open or open the authenticated security case this invocation belongs to
+   * (ADR-0005). It is the only next action for uncertain sensitive data: it
+   * never authorizes resending the blocked request.
+   */
+  "enter_security_case",
 ] as const;
 export type ErrorNextAction = (typeof ERROR_NEXT_ACTIONS)[number];
 
@@ -77,6 +83,14 @@ export interface ApiErrorBody {
     retry_after_seconds: number | null;
     /** Trace/case reference to quote in support and security cases. */
     request_id: string;
+    /**
+     * Authenticated security-case identifier, when the failure belongs to one
+     * (ADR-0005 §6). A correlation handle only: possessing it authorizes
+     * nothing and it is never a credential to view quarantined content.
+     */
+    case_ref?: string | null;
+    /** Trace identifier for correlation, when one exists. */
+    trace_ref?: string | null;
     /** Safe structured context only; never secrets or raw sensitive data. */
     details: Record<string, unknown>;
     /** The authorized next action; null when no action applies. */
@@ -91,6 +105,10 @@ export interface ApiErrorOverrides {
   stage?: ErrorStage;
   category?: ErrorCategory;
   next_action?: ErrorNextAction | null;
+  /** Authenticated security-case identifier for this failure, when it has one. */
+  case_ref?: string | null;
+  /** Trace identifier for this failure, when one exists. */
+  trace_ref?: string | null;
 }
 
 interface ErrorSemantics {
@@ -261,6 +279,33 @@ const ERROR_SEMANTICS: Record<string, ErrorSemantics> = {
     category: "denial",
     retryable: false,
     next_action: "contact_admin",
+  },
+  // Stable ADR-0005 security codes (DAT-213). Every one is a non-retryable
+  // denial/stop: none of them authorizes resending the blocked request, and
+  // none names the policy internals behind the decision.
+  MODEL_EGRESS_DENIED: {
+    stage: "policy",
+    category: "denial",
+    retryable: false,
+    next_action: "request_review",
+  },
+  SENSITIVE_DATA_UNCERTAIN: {
+    stage: "policy",
+    category: "denial",
+    retryable: false,
+    next_action: "enter_security_case",
+  },
+  SECURITY_REVIEW_REQUIRED: {
+    stage: "policy",
+    category: "denial",
+    retryable: false,
+    next_action: "request_review",
+  },
+  RECOVERY_APPROVAL_INVALID: {
+    stage: "policy",
+    category: "denial",
+    retryable: false,
+    next_action: "request_review",
   },
   RATE_LIMITED: { stage: "execution", category: "retry", retryable: true, next_action: "retry" },
   INTERNAL_ERROR: {
@@ -467,6 +512,8 @@ export class ApiError extends Error {
   readonly retryAfterSeconds: number | null;
   readonly details: Record<string, unknown>;
   readonly nextAction: ErrorNextAction | null;
+  readonly caseRef: string | null;
+  readonly traceRef: string | null;
 
   constructor(
     status: number,
@@ -487,6 +534,8 @@ export class ApiError extends Error {
     this.details = details;
     this.nextAction =
       overrides.next_action === undefined ? defaults.next_action : overrides.next_action;
+    this.caseRef = overrides.case_ref ?? null;
+    this.traceRef = overrides.trace_ref ?? null;
   }
 
   toBody(requestId: string): ApiErrorBody {
@@ -500,6 +549,8 @@ export class ApiError extends Error {
         retryable: this.retryable,
         retry_after_seconds: this.retryAfterSeconds,
         request_id: requestId,
+        case_ref: this.caseRef,
+        trace_ref: this.traceRef,
         details: this.details,
         next_action: this.nextAction,
       },

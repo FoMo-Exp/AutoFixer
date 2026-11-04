@@ -35,25 +35,28 @@ import { SecurityError, requireNonEmpty } from "./types.js";
  * Every value is a non-secret machine reason suitable for audit and for the
  * `RECOVERY_APPROVAL_INVALID` error contract.
  */
-export type RecoveryInvalidReason =
-  | "unknown_authorization"
-  | "already_consumed"
-  | "already_invalidated"
-  | "revoked"
-  | "expired"
-  | "case_changed"
-  | "context_changed"
-  | "destination_changed"
-  | "policy_changed"
-  | "rules_changed"
-  | "scan_policy_changed"
-  | "approval_principal_no_longer_authorized"
-  | "identity_revoked"
-  | "recheck_failed"
-  | "data_class_not_authorized"
-  | "scope_mismatch"
-  | "request_unavailable"
-  | "approval_unrecorded";
+export const RECOVERY_INVALID_REASONS = [
+  "unknown_authorization",
+  "already_consumed",
+  "already_invalidated",
+  "revoked",
+  "expired",
+  "case_changed",
+  "context_changed",
+  "destination_changed",
+  "policy_changed",
+  "rules_changed",
+  "scan_policy_changed",
+  "approval_principal_no_longer_authorized",
+  "identity_revoked",
+  "recheck_failed",
+  "data_class_not_authorized",
+  "scope_mismatch",
+  "request_unavailable",
+  "approval_unrecorded",
+] as const;
+
+export type RecoveryInvalidReason = (typeof RECOVERY_INVALID_REASONS)[number];
 
 /** Stored lifecycle state; `expired` is derived, never stored. */
 export type RecoveryAuthorizationState = "approved" | "consumed" | "invalidated" | "revoked";

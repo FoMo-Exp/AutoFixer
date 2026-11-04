@@ -63,6 +63,25 @@ different code and a different category from `HARNESS_STOP_CONDITION` (category
 `INTERNAL_ERROR` cover the request, duplicate-submission, unknown-outcome,
 and policy refusals surfaces actually map into.
 
+### 2.1 ADR-0005 security refusals
+
+The model-egress gateway, security-case, rule, and recovery surfaces emit four
+stable codes. They are fixed: a denial is never rewritten as `INTERNAL_ERROR`,
+never made retryable, and never replaced by free-form policy text.
+
+| Code | Status | Category | `next_action` | What the caller may do |
+| --- | --- | --- | --- | --- |
+| `MODEL_EGRESS_DENIED` | 403 | denial | `request_review` | Nothing at the gateway. The request needs a security case, handling, independent review, and a fresh recheck under current rules. |
+| `SENSITIVE_DATA_UNCERTAIN` | 422 | denial | `enter_security_case` | Only authenticated handling. No automatic retry, no per-call bypass, no "send anyway" parameter exists on any contract operation. |
+| `SECURITY_REVIEW_REQUIRED` | 428 | denial | `request_review` | Wait for the independent reviewer. The caller cannot self-approve or reassign to itself. |
+| `RECOVERY_APPROVAL_INVALID` | 409 | denial | `request_review` | A new recovery approval bound to the current destination and context. The refused authorization is never reused. |
+
+Each response carries `case_ref` and `trace_ref` when those handles exist. Both
+are correlation handles only: they authorize nothing and never open
+quarantined content. The envelope carries no policy identifier, threshold,
+detector pattern, or matched fragment — the refusal names the stable code and
+the next action, and the non-secret rationale lives in the audited case.
+
 Category semantics:
 
 - `denial` — refused on policy/authorization grounds. Never retried with the
