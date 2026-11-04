@@ -80,11 +80,11 @@ export interface RequestAuthority {
    * single predicate {@link RequestAuthority.check} uses — there is no
    * second, weaker meaning of enforcement.
    */
-  isEnforcing(): boolean;
+  isEnforcing(workspaceId?: WorkspaceId): boolean;
   /** Non-throwing decision (used by live streams re-checking on change). */
-  check(userId: string, action: ActionKind): AccessDecision;
+  check(userId: string, action: ActionKind, workspaceId?: WorkspaceId): AccessDecision;
   /** Enforce one request action; throws {@link ApiError} 403 on denial. */
-  require(userId: string, action: ActionKind): void;
+  require(userId: string, action: ActionKind, workspaceId?: WorkspaceId): void;
   /** Subscribe to authority changes (revocation cuts live streams). */
   subscribe(listener: () => void): () => void;
   /** Shared authority-change signal; revoke/reconcile/events bump it. */
@@ -96,28 +96,43 @@ export interface RequestAuthority {
  * fall through to 404 — an unknown route needs no authorization decision.
  */
 export function actionForRequest(method: string, segments: string[]): ActionKind | null {
-  if (segments[0] !== "api" || segments[1] !== "v1" || segments[2] !== "tasks") {
+  if (segments[0] !== "api" || segments[1] !== "v1") {
     return null;
   }
-  const sub = segments[4];
+  // Two task route families share one action vocabulary: the legacy
+  // `/api/v1/tasks...` seam and the workspace-scoped
+  // `/api/v1/workspaces/{workspace_id}/tasks...` family (DAT-244).
+  let tail: string[];
+  if (segments[2] === "tasks") {
+    tail = segments.slice(3);
+  } else if (segments[2] === "workspaces" && segments[3] !== undefined && segments[4] === "tasks") {
+    tail = segments.slice(5);
+  } else {
+    return null;
+  }
+  const taskId = tail[0];
+  const sub = tail[1];
   const isReadMethod = method === "GET" || method === "HEAD";
-  if (segments.length === 3) {
+  if (tail.length === 0) {
     if (isReadMethod) return "read";
     if (method === "POST") return "write";
     return null;
   }
-  if (segments.length === 4) {
+  if (taskId === undefined) {
+    return null;
+  }
+  if (tail.length === 1) {
     return isReadMethod ? "read" : null;
   }
-  if (segments.length === 5 && isReadMethod) {
+  if (tail.length === 2 && isReadMethod) {
     if (sub === "runs" || sub === "timeline") return "read";
     if (sub === "stream") return "stream";
     return null;
   }
-  if (segments.length === 6 && isReadMethod && sub === "artifacts") {
+  if (tail.length === 3 && isReadMethod && sub === "artifacts" && tail[2] !== undefined) {
     return "artifact_read";
   }
-  if (segments.length === 5 && method === "POST") {
+  if (tail.length === 2 && method === "POST") {
     if (sub === "approvals") return "approval";
     if (sub === "messages" || sub === "cancel" || sub === "archive" || sub === "recover") {
       return "write";
@@ -151,10 +166,6 @@ function apiErrorForDenial(decision: AccessDecision): ApiError {
 }
 
 export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAuthority {
-  const scopeBase = {
-    enterprise_id: deps.enterpriseId,
-    workspace_id: deps.workspaceId,
-  };
   const epoch = createAuthorityEpoch();
   const gate: AccessGate = createAccessGate({
     access: deps.access,
@@ -169,8 +180,14 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
     ...(deps.staleAfterMs !== undefined ? { staleAfterMs: deps.staleAfterMs } : {}),
   });
 
-  function scopeFor(userId: string): WorkspaceScope {
-    return { ...scopeBase, actor_id: userId };
+  function scopeFor(userId: string, workspaceId?: WorkspaceId): WorkspaceScope {
+    return {
+      enterprise_id: deps.enterpriseId,
+      // The path workspace selects the scope to evaluate; it is not a grant.
+      // Only the membership read inside the gate can allow the action.
+      workspace_id: workspaceId ?? deps.workspaceId,
+      actor_id: userId,
+    };
   }
 
   // Authority in play = at least one integration row exists (any status).
@@ -178,12 +195,12 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
   // exactly when authority is least trustworthy and must fail closed — the
   // gate resolves no active integration and denies everything pending
   // reconciliation. Only a workspace with zero rows is a local prototype.
-  function authorityInPlay(): boolean {
-    return deps.access.integrations.listByWorkspace(scopeFor("system")).length > 0;
+  function authorityInPlay(workspaceId?: WorkspaceId): boolean {
+    return deps.access.integrations.listByWorkspace(scopeFor("system", workspaceId)).length > 0;
   }
 
-  function check(userId: string, action: ActionKind): AccessDecision {
-    if (!authorityInPlay()) {
+  function check(userId: string, action: ActionKind, workspaceId?: WorkspaceId): AccessDecision {
+    if (!authorityInPlay(workspaceId)) {
       // Zero integration rows: no provider roster exists anywhere for this
       // workspace, so the request stays bounded by the session-role checks.
       return {
@@ -194,15 +211,15 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
         checked_at: (deps.clock ? deps.clock() : new Date()).toISOString(),
       };
     }
-    return gate.authorize({ scope: scopeFor(userId), user_id: userId, action });
+    return gate.authorize({ scope: scopeFor(userId, workspaceId), user_id: userId, action });
   }
 
   return {
     epoch,
     isEnforcing: authorityInPlay,
     check,
-    require(userId: string, action: ActionKind): void {
-      const decision = check(userId, action);
+    require(userId: string, action: ActionKind, workspaceId?: WorkspaceId): void {
+      const decision = check(userId, action, workspaceId);
       if (!decision.allowed) {
         throw apiErrorForDenial(decision);
       }

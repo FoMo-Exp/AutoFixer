@@ -1,6 +1,6 @@
 # forgepilot-api/v1
 
-**Status:** normative public API contract (v0.7)
+**Status:** normative public API contract (v0.8)
 
 This is the Node-to-UI API: the Node-to-Electron/React workbench surface (M0)
 and the enterprise identity surface (ADR-0006). The UI only calls Node — at an
@@ -120,7 +120,7 @@ Endpoints (details in the OpenAPI document):
 
 ```json
 {
-  "id":"tsk_01J...","version":12,"created_at":"2026-10-26T12:00:00Z","updated_at":"2026-10-26T12:03:00Z",
+  "id":"tsk_01J...","workspace_id":"wsp_01J...","version":12,"created_at":"2026-10-26T12:00:00Z","updated_at":"2026-10-26T12:03:00Z",
   "current_run_id":"run_01J...","run_history_url":"/api/v1/tasks/tsk_01J.../runs",
   "repository":{"id":"github:acme/payments","display_name":"acme/payments","base_ref":"main","base_sha":"ab12cd..."},
   "request":{"summary":"Fix export exception.","source_reference":"https://github.com/acme/payments/issues/1234"},
@@ -134,6 +134,16 @@ Endpoints (details in the OpenAPI document):
   "artifacts":{"patch":null,"report":null,"evidence_bundle_available":false,"index":[{"artifact_id":"patch_report","available":true,"digest":"sha256:…","head_sha":"9ef012..."}]}
 }
 ```
+
+`run_history_url` is relative to the route family that served the task:
+`/api/v1/tasks/{task_id}/runs` on the legacy compatibility family and
+`/api/v1/workspaces/{workspace_id}/tasks/{task_id}/runs` on the
+workspace-scoped family, so following it can never cross workspaces.
+
+`workspace_id` is the task's durable workspace ownership. It is always equal
+to the workspace in a workspace-scoped path, is never a request input, and can
+never be changed: a task read through another workspace's route family is
+`404 TASK_NOT_FOUND`.
 
 `association` and `revision` are the verifiable task/run/repository/base-SHA/
 head-SHA bindings. `run_id` and `head_sha` are projected from the
@@ -206,6 +216,17 @@ run summaries for that task; terminal grants are never reused.
 | `GET /api/v1/tasks/{task_id}/timeline` | none | `200 {items: TimelineEvent[]}` |
 | `GET /api/v1/tasks/{task_id}/artifacts/{artifact_id}` | none | `200 redacted artifact` |
 | `GET /api/v1/tasks/{task_id}/stream` | `Last-Event-ID` optional | `200 text/event-stream` |
+| `GET /api/v1/workspaces/{workspace_id}/tasks?cursor=&status=` | none | `200 {items: Task[], next_cursor}` confined to that workspace |
+| `GET /api/v1/workspaces/{workspace_id}/tasks/{task_id}` | none | `200 Task` |
+| `GET /api/v1/workspaces/{workspace_id}/tasks/{task_id}/runs` | none | `200 {items: redacted RunSummary[]}` |
+| `POST /api/v1/workspaces/{workspace_id}/tasks/{task_id}/messages` | `{mode:"steer"\|"follow_up",content:"..."}` | `202 {task_id, queued:true}` |
+| `POST /api/v1/workspaces/{workspace_id}/tasks/{task_id}/approvals` | `{decision:"approve"\|"reject",scope_digest:"sha256:..."}` | `200 Task` |
+| `POST /api/v1/workspaces/{workspace_id}/tasks/{task_id}/cancel` | optional reason | `202 Task` |
+| `POST /api/v1/workspaces/{workspace_id}/tasks/{task_id}/archive` | none | `200 Task` with `archived: true` |
+| `POST /api/v1/workspaces/{workspace_id}/tasks/{task_id}/recover` | none | `200 Task` with `archived: false` |
+| `GET /api/v1/workspaces/{workspace_id}/tasks/{task_id}/timeline` | none | `200 {items: TimelineEvent[]}` |
+| `GET /api/v1/workspaces/{workspace_id}/tasks/{task_id}/artifacts/{artifact_id}` | none | `200 redacted artifact` |
+| `GET /api/v1/workspaces/{workspace_id}/tasks/{task_id}/stream` | `Last-Event-ID` optional | `200 text/event-stream` |
 | `GET /api/v1/workspaces?cursor=` | none | `200 {items: Workspace[], next_cursor}` |
 | `POST /api/v1/workspaces` | `{name, repository_id, provider_instance_id}` | `201 Workspace` |
 | `GET /api/v1/workspaces/{workspace_id}` | none | `200 Workspace` |
@@ -228,6 +249,41 @@ run summaries for that task; terminal grants are never reused.
 | `DELETE /api/v1/workspaces/{workspace_id}/invitations/{invitation_id}` | none | `204` |
 | `POST /api/v1/invitations/preview` | `{token}` | `200 InvitationPreview` |
 | `POST /api/v1/invitations/redeem` | `{token}` | `200 InvitationRedemption` |
+
+### Workspace-scoped task access (DAT-244)
+
+`/api/v1/workspaces/{workspace_id}/tasks...` is the switching-capable task
+surface. `{workspace_id}` is a **locator, not authorization**: on every
+request the server resolves the caller's live membership for that workspace
+from authenticated session state. Non-membership, revoked membership,
+cross-enterprise, and unknown workspace are all one indistinguishable
+`404 NOT_FOUND`; the response never says which condition applied. A session
+with several memberships selects a workspace by the path only, and
+`Task.workspace_id` always equals that path value. `viewer` is read-only
+(`403 FORBIDDEN` for writes, reads allowed).
+
+Task ownership is durable and checked on every subresource: a task id from
+another workspace is `404 TASK_NOT_FOUND` for list cursors, detail, runs,
+messages, approvals, cancel, archive, recover, timeline, artifacts, and the
+SSE stream. SSE subscriptions are bound to both the session and this
+workspace, so logout, suspension, or losing this workspace's membership
+closes the stream immediately; losing membership elsewhere does not.
+
+`GET /api/v1/workspaces` returns exactly the workspaces the caller holds a
+live membership in — name, repository binding, and the caller's role — as
+`{items, next_cursor}` ordered by workspace creation time. Substituting or
+enumerating ids cannot widen it.
+
+The pre-existing `/api/v1/tasks...` family remains a **local-operator
+compatibility seam**: it is bound to the deployment's configured workspace
+for both the operator bearer and sessions, and a session still needs
+membership in that configured workspace. It is not an enterprise switcher
+path, and no client-supplied workspace id, header, or body field ever becomes
+an authorization input.
+
+Creating a task in an arbitrary workspace (and binding that run to the
+workspace's repository and gateway identity) is DAT-245; this contract only
+defines reads and mutations for tasks that already have an owner.
 
 Archive and recover apply only to cancelled tasks and return `409` for other
 statuses. These operations move the existing task between workspace views;

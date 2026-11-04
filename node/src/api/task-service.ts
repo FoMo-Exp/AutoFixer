@@ -466,8 +466,12 @@ export class TaskService {
     }
   }
 
-  async approveTask(taskId: string, input: ApproveTaskInput): Promise<TaskResource> {
-    const record = this.requireRecord(taskId);
+  async approveTask(
+    taskId: string,
+    input: ApproveTaskInput,
+    workspaceId?: string,
+  ): Promise<TaskResource> {
+    const record = this.requireRecord(taskId, workspaceId);
     this.requireActive(record, "approve");
     if (record.status !== "awaiting_approval" || !record.runId) {
       throw new ApiError(
@@ -521,8 +525,8 @@ export class TaskService {
     }
   }
 
-  async cancelTask(taskId: string, reason?: string): Promise<TaskResource> {
-    const record = this.requireRecord(taskId);
+  async cancelTask(taskId: string, reason?: string, workspaceId?: string): Promise<TaskResource> {
+    const record = this.requireRecord(taskId, workspaceId);
     this.requireActive(record, "cancel");
     if (!record.runId) {
       throw new ApiError(409, "TASK_STATE_CONFLICT", `Task ${taskId} has no run to cancel`);
@@ -546,8 +550,8 @@ export class TaskService {
     }
   }
 
-  setTaskArchived(taskId: string, archived: boolean): TaskResource {
-    const record = this.requireRecord(taskId);
+  setTaskArchived(taskId: string, archived: boolean, workspaceId?: string): TaskResource {
+    const record = this.requireRecord(taskId, workspaceId);
     if (record.status !== "cancelled") {
       throw new ApiError(
         409,
@@ -565,8 +569,13 @@ export class TaskService {
     return toTaskResource(record);
   }
 
-  async sendMessage(taskId: string, mode: "steer" | "follow_up", content: string): Promise<void> {
-    const record = this.requireRecord(taskId);
+  async sendMessage(
+    taskId: string,
+    mode: "steer" | "follow_up",
+    content: string,
+    workspaceId?: string,
+  ): Promise<void> {
+    const record = this.requireRecord(taskId, workspaceId);
     this.requireActive(record, "send messages to");
     const runtime = this.runtimes.get(taskId);
     if (!runtime) {
@@ -593,8 +602,8 @@ export class TaskService {
     this.runPromptSafely(record, runtime, content);
   }
 
-  getTask(taskId: string): TaskResource {
-    return toTaskResource(this.requireRecord(taskId));
+  getTask(taskId: string, workspaceId?: string): TaskResource {
+    return toTaskResource(this.requireRecord(taskId, workspaceId));
   }
 
   /**
@@ -603,15 +612,23 @@ export class TaskService {
    * subscribe a client to a terminal task — including one whose replay has
    * nothing left to write (Last-Event-ID anchored at task.terminal).
    */
-  isTerminal(taskId: string): boolean {
-    return this.requireRecord(taskId).terminal;
+  isTerminal(taskId: string, workspaceId?: string): boolean {
+    return this.requireRecord(taskId, workspaceId).terminal;
   }
 
-  listTasks(cursor: string | null, status: string | null): TaskPage {
+  /**
+   * List tasks, optionally confined to one workspace. A workspace-scoped
+   * caller never sees a task outside it, and the cursor is resolved inside
+   * that same filtered set so a foreign id cannot be used as a cursor probe.
+   */
+  listTasks(cursor: string | null, status: string | null, workspaceId?: string): TaskPage {
     if (status !== null && !(UI_STATUSES as readonly string[]).includes(status)) {
       throw new ApiError(400, "INVALID_REQUEST", `Unknown status filter ${JSON.stringify(status)}`);
     }
-    let records = this.deps.store.list();
+    let records =
+      workspaceId === undefined
+        ? this.deps.store.list()
+        : this.deps.store.list().filter((record) => record.workspaceId === workspaceId);
     if (status !== null) {
       records = records.filter((record) => record.status === status);
     }
@@ -619,6 +636,12 @@ export class TaskService {
     if (cursor !== null) {
       const index = records.findIndex((record) => record.id === cursor);
       if (index === -1) {
+        // In a workspace-scoped list a cursor from another workspace is the
+        // same non-enumerating 404 as a foreign task id; the legacy list
+        // keeps its historical INVALID_CURSOR behavior.
+        if (workspaceId !== undefined) {
+          throw new ApiError(404, "TASK_NOT_FOUND", "Task was not found");
+        }
         throw new ApiError(400, "INVALID_CURSOR", `Unknown cursor ${JSON.stringify(cursor)}`);
       }
       startIndex = index + 1;
@@ -631,8 +654,8 @@ export class TaskService {
     };
   }
 
-  getRunSummaries(taskId: string) {
-    return this.requireRecord(taskId).runs;
+  getRunSummaries(taskId: string, workspaceId?: string) {
+    return this.requireRecord(taskId, workspaceId).runs;
   }
 
   /**
@@ -641,12 +664,16 @@ export class TaskService {
    * like the task's `pi_summary` (DAT-194). Records and durable bytes are
    * untouched — this returns gated copies in their recorded order.
    */
-  getTimeline(taskId: string): TimelineItem[] {
-    return this.requireRecord(taskId).events.map(projectEventForDisplay);
+  getTimeline(taskId: string, workspaceId?: string): TimelineItem[] {
+    return this.requireRecord(taskId, workspaceId).events.map(projectEventForDisplay);
   }
 
-  subscribe(taskId: string, listener: (event: TaskEvent) => void): () => void {
-    const record = this.requireRecord(taskId);
+  subscribe(
+    taskId: string,
+    listener: (event: TaskEvent) => void,
+    workspaceId?: string,
+  ): () => void {
+    const record = this.requireRecord(taskId, workspaceId);
     // Live events go through the same display gate as replayed ones, so a
     // subscriber sees one contract no matter how the event reaches it.
     const gated = (event: TaskEvent): void => listener(projectEventForDisplay(event));
@@ -665,8 +692,12 @@ export class TaskService {
     return this.diagnostics.read(caseRef, grant);
   }
 
-  async getArtifact(taskId: string, artifactId: string): Promise<Record<string, unknown>> {
-    const record = this.requireRecord(taskId);
+  async getArtifact(
+    taskId: string,
+    artifactId: string,
+    workspaceId?: string,
+  ): Promise<Record<string, unknown>> {
+    const record = this.requireRecord(taskId, workspaceId);
     if (!record.runId) {
       throw new ApiError(404, "TASK_NOT_FOUND", `Task ${taskId} has no run artifacts`);
     }
@@ -697,9 +728,15 @@ export class TaskService {
     }
   }
 
-  private requireRecord(taskId: string): TaskRecord {
+  /**
+   * Resolve a task, optionally under a workspace locator. A task that
+   * belongs to another workspace is indistinguishable from one that does not
+   * exist: both are 404 TASK_NOT_FOUND, so the scoped surface is not an
+   * enumeration oracle.
+   */
+  private requireRecord(taskId: string, workspaceId?: string): TaskRecord {
     const record = this.deps.store.get(taskId);
-    if (!record) {
+    if (!record || (workspaceId !== undefined && record.workspaceId !== workspaceId)) {
       throw new ApiError(404, "TASK_NOT_FOUND", `Task ${taskId} was not found`);
     }
     return record;
@@ -730,6 +767,7 @@ export class TaskService {
   ): TaskRecord {
     const record = createTaskRecord({
       id: taskId,
+      workspaceId: this.deps.config.workspaceId,
       repository: {
         id: this.deps.config.repositoryId,
         display_name: this.deps.config.repositoryId.replace(/^github:/, ""),
@@ -777,6 +815,7 @@ export class TaskService {
   ): TaskRecord {
     const record = createTaskRecord({
       id: taskId,
+      workspaceId: this.deps.config.workspaceId,
       repository: {
         id: this.deps.config.repositoryId,
         display_name: this.deps.config.repositoryId.replace(/^github:/, ""),

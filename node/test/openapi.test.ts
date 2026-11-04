@@ -57,6 +57,21 @@ const AUTH_ENDPOINTS: Array<[method: string, path: string]> = [
   ["post", "/api/v1/admin/users/{user_id}/activate"],
 ];
 
+/** Workspace-scoped task family (DAT-244). */
+const WORKSPACE_TASK_ENDPOINTS: Array<[method: string, path: string]> = [
+  ["get", "/api/v1/workspaces/{workspace_id}/tasks"],
+  ["get", "/api/v1/workspaces/{workspace_id}/tasks/{task_id}"],
+  ["get", "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/runs"],
+  ["post", "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/messages"],
+  ["post", "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/approvals"],
+  ["post", "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/cancel"],
+  ["post", "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/archive"],
+  ["post", "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/recover"],
+  ["get", "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/timeline"],
+  ["get", "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/artifacts/{artifact_id}"],
+  ["get", "/api/v1/workspaces/{workspace_id}/tasks/{task_id}/stream"],
+];
+
 const WORKSPACE_ENDPOINTS: Array<[method: string, path: string]> = [
   ["get", "/api/v1/workspaces"],
   ["post", "/api/v1/workspaces"],
@@ -82,7 +97,12 @@ const WORKSPACE_ENDPOINTS: Array<[method: string, path: string]> = [
   ["post", "/api/v1/invitations/redeem"],
 ];
 
-const ALL_ENDPOINTS = [...M0_ENDPOINTS, ...AUTH_ENDPOINTS, ...WORKSPACE_ENDPOINTS];
+const ALL_ENDPOINTS = [
+  ...M0_ENDPOINTS,
+  ...AUTH_ENDPOINTS,
+  ...WORKSPACE_ENDPOINTS,
+  ...WORKSPACE_TASK_ENDPOINTS,
+];
 
 describe("forgepilot-api/v1 OpenAPI document", () => {
   const document = buildOpenApiDocument();
@@ -141,6 +161,15 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
       properties: { status: { enum: string[] } };
     };
     expect(task.properties.status.enum).toEqual([...UI_STATUSES]);
+  });
+
+  test("Task carries the required workspace ownership field", () => {
+    const task = document.components.schemas["Task"] as {
+      required: string[];
+      properties: { workspace_id: { type: string } };
+    };
+    expect(task.required).toContain("workspace_id");
+    expect(task.properties.workspace_id.type).toBe("string");
   });
 
   test("Task carries the required pi_summary field with the PiSummary schema", () => {

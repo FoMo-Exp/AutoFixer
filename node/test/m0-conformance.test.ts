@@ -272,7 +272,7 @@ describe("independent conformance to the normative contract", () => {
         }
       }
     }
-    expect(checked).toBe(36);
+    expect(checked).toBe(47);
   });
 
   test("the committed openapi.json also carries the auth scheme", () => {
