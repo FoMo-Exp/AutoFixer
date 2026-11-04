@@ -3,6 +3,7 @@ package dsh
 import (
 	"encoding/json"
 	"net/http"
+	"os/exec"
 	"testing"
 
 	"github.com/Luthiel/AutoFixer/sandbox"
@@ -41,6 +42,55 @@ func structuredAction(actionID, toolID string, args map[string]any, pathScope ..
 			PathScope: pathScope,
 			Rationale: "Structured operation for the task.",
 		},
+	}
+}
+
+// requireCompleteExecutionDomain skips a test that runs an untrusted profile
+// when the host's backend cannot own the execution domain: the sandbox
+// refuses those executions by design (DAT-253).
+func requireCompleteExecutionDomain(t *testing.T) {
+	t.Helper()
+	isolator := sandbox.NewIsolator()
+	if err := isolator.Available(); err != nil {
+		t.Skipf("isolation backend unavailable on this host: %v", err)
+	}
+	if domain := isolator.ExecutionDomain(); domain != sandbox.DomainComplete {
+		t.Skipf("backend %q provides only %q execution-domain containment on this host", isolator.Name(), domain)
+	}
+}
+
+// bestEffortIsolatorStub reports a backend that confines what a process can
+// reach but cannot guarantee the execution domain (macOS Seatbelt).
+type bestEffortIsolatorStub struct{}
+
+func (bestEffortIsolatorStub) Name() string     { return "best-effort-stub" }
+func (bestEffortIsolatorStub) Available() error { return nil }
+func (bestEffortIsolatorStub) ExecutionDomain() sandbox.ExecutionDomain {
+	return sandbox.DomainBestEffort
+}
+
+func (bestEffortIsolatorStub) Wrap(*exec.Cmd, sandbox.IsolationRequest) (sandbox.EnvironmentIdentity, error) {
+	return sandbox.EnvironmentIdentity{}, sandbox.ErrIsolationUnavailable
+}
+
+// TestTestRunRefusedWithoutCompleteExecutionDomain pins the operator-facing
+// 503: a host whose backend cannot guarantee a complete execution domain
+// refuses the untrusted run and names the reason, instead of downgrading to
+// best-effort lifecycle control (DAT-253).
+func TestTestRunRefusedWithoutCompleteExecutionDomain(t *testing.T) {
+	env := startEnv(t,
+		func(c *Config) { c.RevisionSource = structuredSource() },
+		func(c *Config) { c.Isolator = bestEffortIsolatorStub{} },
+	)
+	status, raw := env.do("POST", "/v1/runs", structuredCreate("tsk_domain", "test.run"))
+	wantStatus(t, status, raw, http.StatusCreated)
+	created := decodeInto[createRunResponse](t, raw)
+
+	status, raw = env.do("POST", "/v1/runs/"+created.RunID+"/actions",
+		structuredAction("act_domain_1", "test.run", map[string]any{"profile": "go.test", "mode": "focused", "target": "web/src/export.ts"}, "web/src/export.ts"))
+	body := wantError(t, status, raw, http.StatusServiceUnavailable, CodeSandboxUnavailable)
+	if body.Error.Details["reason"] != "execution_domain_incomplete" {
+		t.Errorf("details = %v, want execution_domain_incomplete", body.Error.Details)
 	}
 }
 
@@ -127,9 +177,7 @@ func TestStructuredDispatchBlockedWithoutSandbox(t *testing.T) {
 }
 
 func TestDepPreparePrimesApprovedSourceThenInstallsIsolated(t *testing.T) {
-	if err := sandbox.NewIsolator().Available(); err != nil {
-		t.Skipf("isolation backend unavailable on this host: %v", err)
-	}
+	requireCompleteExecutionDomain(t)
 	primed := false
 	profiles := []sandbox.ExecProfile{{
 		ID:                  "go.mod",

@@ -215,10 +215,37 @@ func TestExecuteEditOpRefusesSymlinkWrite(t *testing.T) {
 	}
 }
 
-func TestExecuteProfileRunsIsolatedAndBindsEnvironment(t *testing.T) {
-	if err := NewIsolator().Available(); err != nil {
+// requireExecutableDomain skips a test that runs untrusted processes when the
+// host's backend cannot guarantee a complete execution domain: the runner
+// refuses those executions by design (DAT-253), so there is nothing to run.
+func requireExecutableDomain(t *testing.T) {
+	t.Helper()
+	isolator := NewIsolator()
+	if err := isolator.Available(); err != nil {
 		t.Skipf("isolation backend unavailable on this host: %v", err)
 	}
+	if domain := isolator.ExecutionDomain(); domain != DomainComplete {
+		t.Skipf("backend %q provides only %q execution-domain containment on this host", isolator.Name(), domain)
+	}
+}
+
+// passthroughCompleteIsolator stands in for a backend that owns the whole
+// execution domain without wrapping the command itself. It lets the
+// supervision tests exercise the runner's process lifecycle on hosts whose
+// real backend is refused for untrusted execution (macOS Seatbelt, DAT-253);
+// it must never be used outside tests.
+type passthroughCompleteIsolator struct{}
+
+func (passthroughCompleteIsolator) Name() string                     { return "test-passthrough" }
+func (passthroughCompleteIsolator) Available() error                 { return nil }
+func (passthroughCompleteIsolator) ExecutionDomain() ExecutionDomain { return DomainComplete }
+
+func (passthroughCompleteIsolator) Wrap(_ *exec.Cmd, req IsolationRequest) (EnvironmentIdentity, error) {
+	return isolationIdentity("test-passthrough", "test-supervision", req), nil
+}
+
+func TestExecuteProfileRunsIsolatedAndBindsEnvironment(t *testing.T) {
+	requireExecutableDomain(t)
 	profiles := []ExecProfile{{
 		ID:                  "probe.test",
 		Kind:                ProfileTest,
@@ -264,7 +291,8 @@ func TestExecuteProfileRunsIsolatedAndBindsEnvironment(t *testing.T) {
 
 type unavailableIsolatorStub struct{}
 
-func (unavailableIsolatorStub) Name() string { return "unavailable-stub" }
+func (unavailableIsolatorStub) Name() string                     { return "unavailable-stub" }
+func (unavailableIsolatorStub) ExecutionDomain() ExecutionDomain { return DomainComplete }
 func (unavailableIsolatorStub) Available() error {
 	return errors.New("stub: isolation unavailable")
 }
@@ -295,6 +323,56 @@ func TestExecuteProfileBlocksWhenIsolationIsUnavailable(t *testing.T) {
 	}
 	if strings.Contains(string(res.Output), "never") {
 		t.Errorf("command ran despite unavailable isolation: %q", res.Output)
+	}
+}
+
+// bestEffortIsolatorStub reports a backend that confines what a process can
+// reach but cannot own the execution domain, like macOS Seatbelt.
+type bestEffortIsolatorStub struct{ wrapped atomic.Bool }
+
+func (*bestEffortIsolatorStub) Name() string                     { return "best-effort-stub" }
+func (*bestEffortIsolatorStub) Available() error                 { return nil }
+func (*bestEffortIsolatorStub) ExecutionDomain() ExecutionDomain { return DomainBestEffort }
+
+func (s *bestEffortIsolatorStub) Wrap(*exec.Cmd, IsolationRequest) (EnvironmentIdentity, error) {
+	s.wrapped.Store(true)
+	return EnvironmentIdentity{}, ErrIsolationUnavailable
+}
+
+// TestExecuteProfileRefusesIncompleteExecutionDomain pins the platform gate:
+// a backend that cannot guarantee every descendant dies with the execution is
+// refused before anything runs, and the refusal names both the isolation and
+// the domain reason (DAT-253).
+func TestExecuteProfileRefusesIncompleteExecutionDomain(t *testing.T) {
+	profiles := []ExecProfile{{
+		ID:      "probe.test",
+		Kind:    ProfileTest,
+		Command: "/bin/echo",
+		Modes:   []string{"focused"},
+		Build:   func(mode, target string) ([]string, error) { return []string{"ran"}, nil },
+	}}
+	isolator := &bestEffortIsolatorStub{}
+	runner, _ := structuredFixture(t,
+		func(o *Options) { o.Profiles = profiles },
+		func(o *Options) { o.Isolator = isolator },
+	)
+	res, err := runner.Execute(context.Background(), Spec{
+		Tool:    "test.run",
+		Paths:   []string{"web/src/export.ts"},
+		Kind:    DispatchProfile,
+		Process: &ProcessRequest{ProfileID: "probe.test", Mode: "focused", Target: "web/src/export.ts"},
+	})
+	if !errors.Is(err, ErrIsolationUnavailable) {
+		t.Fatalf("Execute error = %v, want ErrIsolationUnavailable (blocked)", err)
+	}
+	if !errors.Is(err, ErrExecutionDomainIncomplete) {
+		t.Fatalf("Execute error = %v, want ErrExecutionDomainIncomplete", err)
+	}
+	if isolator.wrapped.Load() {
+		t.Error("Wrap was called for a backend refused on execution-domain grounds")
+	}
+	if strings.Contains(string(res.Output), "ran") {
+		t.Errorf("command ran on a best-effort domain: %q", res.Output)
 	}
 }
 
@@ -352,6 +430,10 @@ type toggleIsolator struct {
 }
 
 func (t *toggleIsolator) Name() string { return "toggle-stub" }
+
+// ExecutionDomain simulates a backend that owns the whole execution domain,
+// so these tests exercise supervision rather than the platform gate.
+func (t *toggleIsolator) ExecutionDomain() ExecutionDomain { return DomainComplete }
 
 func (t *toggleIsolator) Available() error {
 	if t.fail.Load() {
@@ -456,7 +538,10 @@ func TestExecuteSuiteRequiresTreeWideGrant(t *testing.T) {
 
 	// A narrow grant cannot run the repository-wide suite: the profile's
 	// real execution scope is checked against the grant and refused.
-	runner, run := structuredFixture(t, func(o *Options) { o.Profiles = profiles })
+	runner, run := structuredFixture(t, func(o *Options) {
+		o.Profiles = profiles
+		o.Isolator = passthroughCompleteIsolator{}
+	})
 	res, err := runner.Execute(context.Background(), suiteSpec())
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -469,7 +554,10 @@ func TestExecuteSuiteRequiresTreeWideGrant(t *testing.T) {
 	}
 
 	// A repository-wide grant admits the suite.
-	rootRunner, _ := structuredFixtureWithPaths(t, []string{"."}, func(o *Options) { o.Profiles = profiles })
+	rootRunner, _ := structuredFixtureWithPaths(t, []string{"."}, func(o *Options) {
+		o.Profiles = profiles
+		o.Isolator = passthroughCompleteIsolator{}
+	})
 	res, err = rootRunner.Execute(context.Background(), suiteSpec())
 	if err != nil {
 		t.Fatalf("Execute under root grant: %v", err)

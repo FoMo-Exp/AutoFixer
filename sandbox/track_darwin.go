@@ -26,8 +26,11 @@ var (
 // (kqueue data is 0), so discovery is the tick's job; the notification only
 // makes it immediate. This is best-effort by construction — a child that
 // forks, creates its own session, is reparented, and leaves the workspace
-// between two observations cannot be attributed on this platform (DAT-253);
-// the OS sandbox still bounds what it can reach.
+// between two observations cannot be attributed on this platform (DAT-253).
+// The runner therefore refuses untrusted execution on the darwin backend
+// (DomainBestEffort) rather than claim supervision this watcher cannot
+// deliver; the watcher still underpins the supervision tests and any future
+// backend that supplies its own kernel-owned domain.
 //
 // Creating the kqueue and arming the leader are synchronous: a failure means
 // the watcher does not exist and the caller must refuse the execution. A

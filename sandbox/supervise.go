@@ -30,7 +30,10 @@ import (
 // control is best-effort: a child that forks, calls setsid, is reparented,
 // and moves its working directory out of the workspace between two
 // observations is not attributable without a cgroup or PID namespace
-// (DAT-253); the OS sandbox still bounds what it can reach.
+// (DAT-253). Because that window cannot be closed without a kernel-owned
+// domain, the darwin backend declares DomainBestEffort and the runner refuses
+// untrusted execution there; the supervisor below backs the Linux PID
+// namespace, where the domain itself is complete.
 //
 // A platform that cannot account a process domain refuses an execution with
 // declared limits instead of running it uncapped (fail closed), and

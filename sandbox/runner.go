@@ -497,6 +497,15 @@ func (r *Runner) executeProfile(ctx context.Context, spec Spec, req harness.Acti
 				[]string{spec.Process.ProfileID, spec.Process.Mode})
 		}
 	}
+	// A backend that cannot guarantee a complete execution domain cannot run
+	// untrusted commands: a descendant could outlive the execution and
+	// escape aggregate accounting, and no amount of supervisor polling
+	// closes that window without a kernel-owned domain (cgroup or PID
+	// namespace). Refuse before anything is materialized or primed, rather
+	// than run behind a containment claim the platform cannot meet (DAT-253).
+	if err := requireCompleteExecutionDomain(r.isolator); err != nil {
+		return result, err
+	}
 	if err := r.sandboxSetup(ctx); err != nil {
 		return result, err
 	}

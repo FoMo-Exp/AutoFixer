@@ -15,11 +15,26 @@ import (
 // all network egress, every write outside the workspace scope, and reads of
 // credential homes and control-plane files. The profile is generated per
 // execution and its digest is part of the environment identity.
+//
+// Seatbelt's boundary rules are inherited by every descendant and cannot be
+// dropped, so they remain the filesystem/network/credential boundary. They do
+// not, however, give the execution a complete process domain: macOS has no
+// cgroup or PID namespace, and a child that forks, calls setsid, is
+// reparented, and leaves the workspace before an observation escapes the
+// supervisor's tracked set and aggregate accounting (DAT-253). Measured
+// alternatives do not close that window without privilege — launchd job
+// removal leaves a setsid + reparented descendant running — so the backend is
+// deliberately best-effort and the runner refuses untrusted execution on it.
 type seatbeltIsolator struct{}
 
 func platformIsolator() Isolator { return seatbeltIsolator{} }
 
 func (seatbeltIsolator) Name() string { return "seatbelt" }
+
+// ExecutionDomain reports the measured platform limit: Seatbelt confines what
+// a descendant can reach but cannot guarantee that every descendant is gone
+// when the execution ends.
+func (seatbeltIsolator) ExecutionDomain() ExecutionDomain { return DomainBestEffort }
 
 func (seatbeltIsolator) Available() error {
 	if _, err := exec.LookPath("sandbox-exec"); err != nil {

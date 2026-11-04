@@ -310,9 +310,6 @@ func mustBeGone(t *testing.T, pid int) {
 // (the handler maps the isolation error to 503 DSH_SANDBOX_UNAVAILABLE)
 // instead of running unsupervised.
 func TestExecuteRefusesWhenForkWatcherCannotBeArmed(t *testing.T) {
-	if err := NewIsolator().Available(); err != nil {
-		t.Skipf("OS isolation backend unavailable: %v", err)
-	}
 	profiles := []ExecProfile{{
 		ID:                  "probe.test",
 		Kind:                ProfileTest,
@@ -324,7 +321,10 @@ func TestExecuteRefusesWhenForkWatcherCannotBeArmed(t *testing.T) {
 			return []string{"30"}, nil
 		},
 	}}
-	runner, _ := structuredFixture(t, func(o *Options) { o.Profiles = profiles })
+	runner, _ := structuredFixture(t, func(o *Options) {
+		o.Profiles = profiles
+		o.Isolator = passthroughCompleteIsolator{}
+	})
 
 	old := forkWatch
 	forkWatch = func(int, func() []int, func(), func()) (func(), error) {
@@ -365,7 +365,10 @@ func TestExecuteProfileTerminatesSurvivingChildren(t *testing.T) {
 		"p = subprocess.Popen(['/bin/sleep','30'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n" +
 		"print('child', p.pid, flush=True)\n" +
 		"import time\ntime.sleep(0.3)\n"
-	runner, _ := structuredFixture(t, func(o *Options) { o.Profiles = probeProfile(script) })
+	runner, _ := structuredFixture(t, func(o *Options) {
+		o.Profiles = probeProfile(script)
+		o.Isolator = passthroughCompleteIsolator{}
+	})
 	res, err := runner.Execute(context.Background(), Spec{
 		Tool:              "test.run",
 		Arguments:         []string{"probe.test", "focused", "path:target"},
@@ -395,7 +398,10 @@ func TestExecuteProfileTerminatesSetsidEscapedChildren(t *testing.T) {
 	script := "import subprocess\n" +
 		"p = subprocess.Popen(['/bin/sleep','30'], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n" +
 		"print('daemon', p.pid, flush=True)\n"
-	runner, _ := structuredFixture(t, func(o *Options) { o.Profiles = probeProfile(script) })
+	runner, _ := structuredFixture(t, func(o *Options) {
+		o.Profiles = probeProfile(script)
+		o.Isolator = passthroughCompleteIsolator{}
+	})
 	res, err := runner.Execute(context.Background(), Spec{
 		Tool:              "test.run",
 		Arguments:         []string{"probe.test", "focused", "path:target"},
@@ -436,7 +442,10 @@ func TestExecuteProfileEnforcesResourceLimits(t *testing.T) {
 		},
 	}}
 	runner, run := structuredFixtureFull(t, []string{"web/src"}, harness.ResourceLimits{MaxMemoryMB: 32, MaxCPUSeconds: 30},
-		func(o *Options) { o.Profiles = profiles })
+		func(o *Options) {
+			o.Profiles = profiles
+			o.Isolator = passthroughCompleteIsolator{}
+		})
 	res, err := runner.Execute(context.Background(), Spec{
 		Tool:              "test.run",
 		Arguments:         []string{"probe.test", "focused", "path:target"},
