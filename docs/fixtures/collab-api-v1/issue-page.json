@@ -1,0 +1,25 @@
+{
+  "items": [
+    {
+      "issue_id": "iss_7f3c2a9e51b84d0fa1c6",
+      "workspace": {
+        "enterprise_id": "ent_acme",
+        "workspace_id": "ws_payments"
+      },
+      "repository": {
+        "repository_id": "github:acme/payments-api",
+        "url": "https://github.com/acme/payments-api.git",
+        "base_ref": "main",
+        "base_sha": "5b1f0c2d9e7a4b6c8d0e2f1a3b5c7d9e0f1a2b3c"
+      },
+      "dedupe_key": "signal:v1:9f2c8a1d4e6b:checkout-retry-header-500",
+      "summary": "Checkout requests fail with 500 when the retry header is present.",
+      "source_reference": "log:payments-api/prod#evt-8d2f1a",
+      "product_state": "awaiting_change_approval",
+      "state_reason": "Local preparation complete; candidate frozen and awaiting human change approval.",
+      "created_at": "2026-11-02T09:12:00Z",
+      "updated_at": "2026-11-02T11:40:00Z"
+    }
+  ],
+  "next_cursor": null
+}

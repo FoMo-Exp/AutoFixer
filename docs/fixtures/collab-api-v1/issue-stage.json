@@ -1,0 +1,7 @@
+{
+  "issue_id": "iss_7f3c2a9e51b84d0fa1c6",
+  "product_state": "awaiting_change_approval",
+  "state_reason": "Local preparation complete; candidate frozen and awaiting human change approval.",
+  "allowed_transitions": ["delivering", "implementing", "needs_human", "cancelled"],
+  "updated_at": "2026-11-02T11:40:00Z"
+}

@@ -1,0 +1,18 @@
+{
+  "error": {
+    "envelope_version": 1,
+    "code": "DELIVERY_OUTCOME_UNKNOWN",
+    "stage": "delivery",
+    "category": "unknown",
+    "message": "The provider delivery outcome is unknown; reconcile it against provider evidence before any further write.",
+    "retryable": false,
+    "retry_after_seconds": null,
+    "request_id": "req_9d4e1a6b2f8c5073",
+    "details": {
+      "delivery_id": "dlv_8b2d4f6a0c1e3579",
+      "operation_id": "op_20261102_deliver_01",
+      "provider_state": "unreconciled"
+    },
+    "next_action": "reconcile"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "error": {
+    "envelope_version": 1,
+    "code": "ISSUE_NOT_FOUND",
+    "stage": "validation",
+    "category": "stop",
+    "message": "The issue was not found in your visible workspace scope.",
+    "retryable": false,
+    "retry_after_seconds": null,
+    "request_id": "req_0f3a7c1e9b5d4826",
+    "details": {},
+    "next_action": null
+  }
+}

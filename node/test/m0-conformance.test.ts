@@ -48,10 +48,15 @@ function parseEndpoints(markdown: string): Array<[method: string, path: string]>
     /## Enterprise identity, sessions, and administration \(DAT-202\)([\s\S]*?)\n## /.exec(
       markdown,
     )?.[1];
-  if (!taskTable || !identityTable) {
+  const collaborationTable = /## Collaboration v1 \(DAT-221\)([\s\S]*?)\n## /.exec(markdown)?.[1];
+  if (!taskTable || !identityTable || !collaborationTable) {
     throw new Error("could not locate the endpoints tables in the contract");
   }
-  return [...parseTableEndpoints(taskTable), ...parseTableEndpoints(identityTable)];
+  return [
+    ...parseTableEndpoints(taskTable),
+    ...parseTableEndpoints(identityTable),
+    ...parseTableEndpoints(collaborationTable),
+  ];
 }
 
 /** Pull the UI status enum from its sentence. */
@@ -251,10 +256,11 @@ describe("independent conformance to the normative contract", () => {
     expect(operations).toHaveLength(12);
   });
 
-  test("every identity-surface operation declares explicit auth", () => {
+  test("every non-task operation declares explicit auth", () => {
     // The identity surface authenticates with sessions or the deployment
-    // bootstrap token, and the login flows are deliberately anonymous — but
-    // every operation must still state its requirement explicitly.
+    // bootstrap token, the login flows are deliberately anonymous, and the
+    // collaboration surface uses the session/bearer default — but every
+    // operation must still state its requirement explicitly.
     let checked = 0;
     for (const [docPath, methods] of Object.entries(document.paths)) {
       if (docPath.startsWith("/api/v1/tasks")) {
@@ -272,7 +278,7 @@ describe("independent conformance to the normative contract", () => {
         }
       }
     }
-    expect(checked).toBe(48);
+    expect(checked).toBe(70);
   });
 
   test("the committed openapi.json also carries the auth scheme", () => {

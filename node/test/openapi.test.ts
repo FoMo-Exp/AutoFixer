@@ -6,12 +6,23 @@ import { describe, expect, test } from "vitest";
 
 import { buildOpenApiDocument } from "../src/api/openapi.js";
 import {
+  ApiError,
   ERROR_CATEGORIES,
   ERROR_ENVELOPE_VERSION,
   ERROR_NEXT_ACTIONS,
   ERROR_STAGES,
 } from "../src/api/errors.js";
 import { UI_STATUSES } from "../src/api/task-store.js";
+import { DSH_STATES } from "../src/dsh/types.js";
+import { PRODUCT_STATES, PRODUCT_TRANSITIONS } from "../src/collab/states.js";
+import { GRANT_STATES, ROLES, TASK_STATES } from "../src/collab/types.js";
+import {
+  APPROVAL_INVALIDATION_REASONS,
+  APPROVAL_STATES,
+  DELIVERY_STATES,
+  ISSUE_EVENT_TYPES,
+  TASK_EVIDENCE_CONTRACT_VERSION,
+} from "../src/collab/contract.js";
 import {
   TURN_REPORT_ACTIVITIES,
   TURN_REPORT_AREAS,
@@ -98,11 +109,39 @@ const WORKSPACE_ENDPOINTS: Array<[method: string, path: string]> = [
   ["post", "/api/v1/invitations/redeem"],
 ];
 
+/** Collaboration v1 surface (DAT-221, ADR-0007). */
+const COLLAB_BASE = "/api/v1/workspaces/{workspace_id}/issues";
+const COLLAB_ENDPOINTS: Array<[method: string, path: string]> = [
+  ["get", COLLAB_BASE],
+  ["post", COLLAB_BASE],
+  ["get", `${COLLAB_BASE}/{issue_id}`],
+  ["get", `${COLLAB_BASE}/{issue_id}/stage`],
+  ["post", `${COLLAB_BASE}/{issue_id}/stage`],
+  ["get", `${COLLAB_BASE}/{issue_id}/tasks`],
+  ["post", `${COLLAB_BASE}/{issue_id}/tasks`],
+  ["get", `${COLLAB_BASE}/{issue_id}/tasks/{task_id}`],
+  ["post", `${COLLAB_BASE}/{issue_id}/tasks/{task_id}/state`],
+  ["get", `${COLLAB_BASE}/{issue_id}/runs`],
+  ["post", `${COLLAB_BASE}/{issue_id}/runs`],
+  ["get", `${COLLAB_BASE}/{issue_id}/runs/{run_id}`],
+  ["get", `${COLLAB_BASE}/{issue_id}/candidates`],
+  ["get", `${COLLAB_BASE}/{issue_id}/candidates/{candidate_id}`],
+  ["get", `${COLLAB_BASE}/{issue_id}/approvals`],
+  ["get", `${COLLAB_BASE}/{issue_id}/approvals/{approval_id}`],
+  ["post", `${COLLAB_BASE}/{issue_id}/approvals/{approval_id}/decision`],
+  ["get", `${COLLAB_BASE}/{issue_id}/deliveries`],
+  ["post", `${COLLAB_BASE}/{issue_id}/deliveries`],
+  ["get", `${COLLAB_BASE}/{issue_id}/deliveries/{delivery_id}`],
+  ["post", `${COLLAB_BASE}/{issue_id}/deliveries/{delivery_id}/reconcile`],
+  ["get", `${COLLAB_BASE}/{issue_id}/stream`],
+];
+
 const ALL_ENDPOINTS = [
   ...M0_ENDPOINTS,
   ...AUTH_ENDPOINTS,
   ...WORKSPACE_ENDPOINTS,
   ...WORKSPACE_TASK_ENDPOINTS,
+  ...COLLAB_ENDPOINTS,
 ];
 
 describe("forgepilot-api/v1 OpenAPI document", () => {
@@ -437,6 +476,189 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
         (parameter) => parameter.name === "Last-Event-ID" && parameter.in === "header",
       ),
     ).toBe(true);
+  });
+
+  test("documents every collaboration endpoint", () => {
+    for (const [method, path] of COLLAB_ENDPOINTS) {
+      expect(document.paths[path], `missing path ${path}`).toBeDefined();
+      expect(document.paths[path]?.[method], `missing ${method} ${path}`).toBeDefined();
+    }
+  });
+
+  test("collaboration enums reuse the domain vocabularies verbatim", () => {
+    const issue = document.components.schemas["Issue"] as {
+      properties: { product_state: { enum: string[] } };
+    };
+    expect(issue.properties.product_state.enum).toEqual([...PRODUCT_STATES]);
+
+    const run = document.components.schemas["IssueRun"] as {
+      properties: { state: { enum: string[] }; role: { enum: string[] } };
+    };
+    expect(run.properties.state.enum).toEqual([...DSH_STATES]);
+    expect(run.properties.role.enum).toEqual([...ROLES]);
+
+    const task = document.components.schemas["IssueTask"] as {
+      properties: { state: { enum: string[] }; role: { enum: string[] } };
+    };
+    expect(task.properties.state.enum).toEqual([...TASK_STATES]);
+    expect(task.properties.role.enum).toEqual([...ROLES]);
+
+    const grant = document.components.schemas["RunGrant"] as {
+      properties: { state: { enum: string[] } };
+    };
+    expect(grant.properties.state.enum).toEqual([...GRANT_STATES]);
+
+    const approval = document.components.schemas["Approval"] as {
+      properties: { state: { enum: string[] }; invalidated_reason: { enum: Array<string | null> } };
+    };
+    expect(approval.properties.state.enum).toEqual([...APPROVAL_STATES]);
+    expect(approval.properties.invalidated_reason.enum).toEqual([
+      ...APPROVAL_INVALIDATION_REASONS,
+      null,
+    ]);
+
+    const delivery = document.components.schemas["Delivery"] as {
+      properties: { state: { enum: string[] } };
+    };
+    expect(delivery.properties.state.enum).toEqual([...DELIVERY_STATES]);
+
+    const event = document.components.schemas["IssueEvent"] as {
+      properties: { type: { enum: string[] } };
+    };
+    expect(event.properties.type.enum).toEqual([...ISSUE_EVENT_TYPES]);
+  });
+
+  test("product stages keep their ADR-0007 edges and never borrow harness states", () => {
+    // Product stages and harness run states are separate vocabularies: the
+    // stage enum must not contain a harness-only value and vice versa.
+    const issue = document.components.schemas["Issue"] as {
+      properties: { product_state: { enum: string[] } };
+    };
+    const harnessOnly = DSH_STATES.filter(
+      (state) => !(PRODUCT_STATES as readonly string[]).includes(state),
+    );
+    expect(
+      issue.properties.product_state.enum.some((state) => harnessOnly.includes(state as never)),
+    ).toBe(false);
+
+    const stage = document.components.schemas["IssueStage"] as {
+      properties: { allowed_transitions: { items: { enum: string[] } } };
+    };
+    expect(stage.properties.allowed_transitions.items.enum).toEqual([...PRODUCT_STATES]);
+    // `awaiting_change_approval` is a product stage with no PR; harness
+    // `awaiting_review` exists only once a provider PR exists.
+    expect(PRODUCT_TRANSITIONS["awaiting_change_approval"]).toContain("delivering");
+    expect(PRODUCT_TRANSITIONS["completed"]).toEqual([]);
+  });
+
+  test("every collaboration mutation carries the replay-safe Idempotency-Key", () => {
+    for (const [path, methods] of Object.entries(document.paths)) {
+      if (!path.startsWith(COLLAB_BASE)) continue;
+      for (const [method, rawOperation] of Object.entries(methods)) {
+        if (!["post", "patch", "put", "delete"].includes(method)) continue;
+        const operation = rawOperation as {
+          parameters?: Array<{ name?: string; in?: string }>;
+        };
+        expect(
+          (operation.parameters ?? []).some(
+            (parameter) => parameter.name === "Idempotency-Key" && parameter.in === "header",
+          ),
+          `${method} ${path} must document Idempotency-Key`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  test("the issue stream documents replay by Last-Event-ID and closes after terminal", () => {
+    const stream = document.paths[`${COLLAB_BASE}/{issue_id}/stream`]?.["get"] as {
+      parameters: Array<{ name: string; in: string }>;
+      responses: Record<
+        string,
+        { description: string; content?: Record<string, { schema?: Record<string, unknown> }> }
+      >;
+    };
+    expect(
+      stream.parameters.some(
+        (parameter) => parameter.name === "Last-Event-ID" && parameter.in === "header",
+      ),
+    ).toBe(true);
+    const response = stream.responses["200"];
+    expect(response?.content?.["text/event-stream"]?.schema).toEqual({
+      $ref: "#/components/schemas/IssueEvent",
+    });
+    expect(response?.description).toContain("issue.terminal");
+
+    const event = document.components.schemas["IssueEvent"] as {
+      required: string[];
+      description: string;
+      properties: { event_id: { type: string }; sequence: { type: string } };
+    };
+    expect([...event.required].sort()).toEqual(
+      ["event_id", "sequence", "occurred_at", "issue_id", "type", "data"].sort(),
+    );
+    // The replay-stable id is the consumer's idempotency key; the sequence is
+    // the ordering cursor — both are stated in the contract.
+    expect(event.description).toContain("idempotent");
+    expect(event.description).toContain("Replay semantics");
+    expect(event.properties.event_id.type).toBe("string");
+    expect(event.properties.sequence.type).toBe("integer");
+  });
+
+  test("candidate and approval records claim the evidence contract version", () => {
+    for (const schema of ["Candidate", "Approval"]) {
+      const record = document.components.schemas[schema] as {
+        required: string[];
+        properties: { contract_version: { enum: string[] } };
+      };
+      expect(record.required, schema).toContain("contract_version");
+      expect(record.properties.contract_version.enum, schema).toEqual([
+        TASK_EVIDENCE_CONTRACT_VERSION,
+      ]);
+    }
+  });
+
+  test("the approval decision body can never assert an approver identity", () => {
+    // Agent self-approval is impossible only if the request body cannot name
+    // the approver: the identity comes from the authenticated session.
+    const operation = document.paths[
+      `${COLLAB_BASE}/{issue_id}/approvals/{approval_id}/decision`
+    ]?.["post"] as {
+      requestBody: {
+        content: { "application/json": { schema: { required: string[]; properties: object } } };
+      };
+    };
+    const schema = operation.requestBody.content["application/json"].schema;
+    expect(Object.keys(schema.properties).sort()).toEqual(
+      ["decision", "diff_digest", "note"].sort(),
+    );
+    expect(schema.required).toEqual(["decision", "diff_digest"]);
+  });
+
+  test("collaboration outcomes declare stop, needs_human, and unknown retryability", () => {
+    const disposition = new ApiError(428, "DISPOSITION_REQUIRED", "needs human").toBody("req_1");
+    expect(disposition.error).toMatchObject({
+      stage: "policy",
+      category: "stop",
+      retryable: false,
+      next_action: "request_review",
+    });
+
+    const unknown = new ApiError(409, "DELIVERY_OUTCOME_UNKNOWN", "unknown").toBody("req_2");
+    expect(unknown.error).toMatchObject({
+      stage: "delivery",
+      category: "unknown",
+      retryable: false,
+      next_action: "reconcile",
+    });
+
+    const stopped = new ApiError(409, "TRANSITION_FORBIDDEN", "stopped run").toBody("req_3");
+    expect(stopped.error).toMatchObject({ category: "stop", retryable: false });
+
+    // A code outside the contract vocabulary must never be served as a
+    // retryable or optimistic outcome.
+    const unmapped = new ApiError(500, "SOMETHING_NEW", "unexpected").toBody("req_4");
+    expect(unmapped.error).toMatchObject({ category: "unknown", retryable: false });
+    expect(ERROR_CATEGORIES).toContain(unmapped.error.category);
   });
 
   test("the committed contract file matches a fresh generation (regenerate on drift)", () => {

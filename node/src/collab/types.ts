@@ -18,7 +18,16 @@ export interface WorkspaceScope {
   workspace_id: string;
 }
 
-export type Role = "analysis" | "planning" | "implementation" | "verification" | "delivery";
+/** Pi configurations a task or run may be routed under (ADR-0007 roles). */
+export const ROLES = [
+  "analysis",
+  "planning",
+  "implementation",
+  "verification",
+  "delivery",
+] as const;
+
+export type Role = (typeof ROLES)[number];
 
 /** Immutable repository identity (ADR-0006 binds an ID, not a mutable URL). */
 export interface RepositoryRef {
@@ -93,7 +102,9 @@ export interface CapabilityGrant {
   revoked_reason: string | null;
 }
 
-export type GrantState = "active" | "expired" | "revoked";
+export const GRANT_STATES = ["active", "expired", "revoked"] as const;
+
+export type GrantState = (typeof GRANT_STATES)[number];
 
 /**
  * Effective grant state at a point in time.
@@ -124,7 +135,10 @@ export interface ArtifactRef {
   head_sha: string | null;
 }
 
-export type TaskState = "open" | "active" | "done" | "cancelled";
+/** Child-task lifecycle (ADR-0007: durable issues and child tasks). */
+export const TASK_STATES = ["open", "active", "done", "cancelled"] as const;
+
+export type TaskState = (typeof TASK_STATES)[number];
 
 /** Child task of an issue (ADR-0007: durable issues and child tasks). */
 export interface TaskRecord {

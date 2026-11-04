@@ -751,6 +751,103 @@ are rate-limited by actor and request origin
 revocation, attempted redemption, results, and effective roles — never the
 bearer token.
 
+## Collaboration v1 (DAT-221)
+
+Status: implementation contract defined ahead of its serving code. It defines
+the durable issue/task/run/candidate/approval/delivery resources and their
+event stream of ADR-0007 so dependent web work is built against a merged
+contract; it claims no running control until the implementation lands, and dsh
+remains the execution gate.
+
+Product stages and harness run states are separate vocabularies. An issue's
+`product_state` is the product lifecycle (`triage`, `planning`, `implementing`,
+`validating`, `awaiting_change_approval`, `delivering`, `pr_review`,
+`completed`, `needs_human`, `cancelled`); a run's `state` is the observed dsh /
+FP-01 harness state. `awaiting_change_approval` means an immutable candidate
+awaits a candidate-bound human change approval and no PR exists; harness
+`awaiting_review` exists only once a provider PR exists. A published PR is not
+completion — only a provider-confirmed merge is.
+
+Mutating operations accept an optional `Idempotency-Key` header: a repeated
+request with the same key and payload returns the recorded result, the same key
+with a different payload is `409 IDEMPOTENCY_CONFLICT`, and safe retries reuse
+the key. A candidate/approval/delivery record is never client-authored and
+never client-mutated; an approval decision carries the reviewed `diff_digest`
+and the approver is the authenticated caller, so an agent can never approve its
+own work. No branch push or PR exists before a current candidate-bound human
+approval, and only the trusted delivery broker performs provider writes — no
+direct main write, merge, self-review, or check waiver.
+
+| Request | Request body | Response |
+|---|---|---|
+| `GET /api/v1/workspaces/{workspace_id}/issues?cursor=&product_state=` | none | `200 {items: Issue[], next_cursor}` |
+| `POST /api/v1/workspaces/{workspace_id}/issues` | `repository_id`, `base_ref`, `summary`, `source_reference?`; optional `Idempotency-Key` | `201 Issue` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}` | none | `200 Issue` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stage` | none | `200 IssueStage` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stage` | `{to, reason?, disposition?}` | `200 IssueStage` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks?cursor=` | none | `200 {items: IssueTask[], next_cursor}` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks` | `{role, assignee_agent_id?, depends_on?}` | `201 IssueTask` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks/{task_id}` | none | `200 IssueTask` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks/{task_id}/state` | `{to}` | `200 IssueTask` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/runs?cursor=` | none | `200 {items: IssueRun[], next_cursor}` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/runs` | `{task_id?, role, scope, limits}` | `201 IssueRun` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/runs/{run_id}` | none | `200 IssueRun` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/candidates?cursor=` | none | `200 {items: Candidate[], next_cursor}` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/candidates/{candidate_id}` | none | `200 Candidate` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals?cursor=` | none | `200 {items: Approval[], next_cursor}` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}` | none | `200 Approval` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}/decision` | `{decision, diff_digest, note?}` | `200 Approval` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries?cursor=` | none | `200 {items: Delivery[], next_cursor}` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries` | `{approval_id}` | `202 Delivery` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}` | none | `200 Delivery` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}/reconcile` | optional `note` | `202 Delivery` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stream` | `Last-Event-ID` optional | `200 text/event-stream` |
+
+### Issue events and replay
+
+Issue events contain `event_id`, `sequence`, `occurred_at`, `issue_id`, `type`,
+and projected `data`. Types are `issue.created`, `issue.stage_changed`,
+`issue.terminal`, `task.created`, `task.state_changed`, `run.opened`,
+`run.state_changed`, `run.grant_recorded`, `run.grant_revoked`,
+`run.artifact_attached`, `candidate.frozen`, `approval.requested`,
+`approval.decided`, `approval.invalidated`, `delivery.requested`,
+`delivery.state_changed`, `delivery.reconciled`, and `operation.denied`.
+
+`event_id` is stable and idempotent across replays: a replayed or redelivered
+event keeps the same id and payload, a new event never reuses an id, and a
+consumer MUST deduplicate on `event_id`. `sequence` is monotonic and gap-free
+per issue and is the ordering cursor. On reconnect the client sends the last
+delivered `event_id` in `Last-Event-ID`; Node replays every later event in
+`sequence` order from the durable projection — including events written while
+disconnected and across orchestrator restarts — so no business event is
+duplicated or lost. An unknown id replays from the start of the retained log.
+The stream closes after `issue.terminal`, including when the anchor is already
+terminal.
+
+### Outcome semantics
+
+Every failure uses the shared versioned envelope
+(`docs/contracts/error-envelope-v1.md`). The collaboration surface fixes three
+outcome classes and their retryability:
+
+- `stop` — a `stopped` run or a `needs_human` issue stop. Not retryable with
+  the same intent; continuation requires human disposition and a fresh
+  run/grant (`stopped -> running` does not exist). `DISPOSITION_REQUIRED`
+  (428) is the needs-human stop (`stage: policy`, `next_action:
+  request_review`); `TRANSITION_FORBIDDEN`, `PRODUCT_HARNESS_CONFLICT`,
+  `TASK_BLOCKED`, and `APPROVAL_NOT_APPROVED` are ordinary stops.
+- `unknown` — an ambiguous provider/delivery outcome
+  (`DELIVERY_OUTCOME_UNKNOWN`): never auto-retried, `retryable: false`,
+  `next_action: reconcile`; reconcile against branch/provider evidence before
+  any further write, and a safe retry reconciles the same operation instead of
+  creating a duplicate PR.
+- `retry` — only service-decided bounded retries are retryable, with
+  `retryable: true` and `retry_after_seconds` on the envelope; a denial is
+  never rewritten as a retryable server error.
+
+`partial` delivery (a pushed branch without a PR) is an explicit recorded
+outcome, never success and never automatically deleted.
+
 ## Pagination
 
 List endpoints paginate with an opaque cursor: request `?cursor=`, response
