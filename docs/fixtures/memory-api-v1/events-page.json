@@ -1,0 +1,56 @@
+{
+  "item_id": "mem_9b1d6f2c4e5a4b7f8c1d2e3f4a5b6c7d",
+  "events": [
+    {
+      "at": "2026-10-01T00:00:00Z",
+      "source": "memory_event",
+      "action": "item_created",
+      "actor": { "type": "user", "id": "usr_01J8Z5N4P7" },
+      "item_version": 1
+    },
+    {
+      "at": "2026-10-02T08:15:00Z",
+      "source": "memory_event",
+      "action": "status_changed",
+      "actor": { "type": "user", "id": "usr_01J8Z5N4P7" },
+      "item_version": 1,
+      "from_status": "proposed",
+      "to_status": "candidate",
+      "reason_code": "human_decision",
+      "detail": { "reason_code": "human_decision" }
+    },
+    {
+      "at": "2026-10-20T06:30:00Z",
+      "source": "memory_event",
+      "action": "version_created",
+      "actor": { "type": "user", "id": "usr_01J8Z5N4P7" },
+      "item_version": 2
+    },
+    {
+      "at": "2026-10-21T10:00:00Z",
+      "source": "promotion_decision",
+      "action": "promotion_decision",
+      "actor": { "type": "user", "id": "usr_01J8Z5N4P7" },
+      "item_version": 2,
+      "to_status": "active",
+      "reason_code": "human_approved",
+      "detail": {
+        "outcome": "promoted",
+        "reasons": "human_approved",
+        "independent_support_runs": 2
+      }
+    },
+    {
+      "at": "2026-11-04T09:12:00Z",
+      "source": "memory_event",
+      "action": "status_changed",
+      "actor": { "type": "user", "id": "usr_01J8Z5N4P7" },
+      "item_version": 3,
+      "from_status": "candidate",
+      "to_status": "active",
+      "reason_code": "human_approved",
+      "detail": { "reason_code": "human_approved", "reviewed": true }
+    }
+  ],
+  "next_cursor": "cur_mem_audit_1"
+}

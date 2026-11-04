@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "item_id": "mem_9b1d6f2c4e5a4b7f8c1d2e3f4a5b6c7d",
+  "status": "active",
+  "current_version": 3,
+  "versions": [
+    {
+      "version": 1,
+      "kind": "lesson",
+      "tier": "L2",
+      "statement": "Raise the share ceiling before raising the total retrieval budget, because a silent truncation drops policy items first",
+      "statement_redacted": false,
+      "preconditions": ["bundle at budget"],
+      "applicability": {
+        "team_id": "tem_01J8Z7G8H9",
+        "path_prefix": "web/src/memory",
+        "task_family": "retrieval"
+      },
+      "trust": "agent",
+      "sensitivity": "internal",
+      "valid_from": "2026-10-01T00:00:00Z",
+      "valid_to": null,
+      "content_hash": "45da8d9502db48209bfb2c8dfa3ab4e92098598500b33abf3d31b67bb1dc957a",
+      "provenance": { "author_type": "agent", "agent_model": "pi-4.1" },
+      "review": null,
+      "created_at": "2026-10-01T00:00:00Z",
+      "created_by": "usr_01J8Z5N4P7"
+    },
+    {
+      "version": 2,
+      "kind": "lesson",
+      "tier": "L2",
+      "statement": "Raise the retrieval share ceiling before the total budget, because silent truncation drops policy items first",
+      "statement_redacted": false,
+      "preconditions": ["bundle at budget"],
+      "applicability": {
+        "team_id": "tem_01J8Z7G8H9",
+        "path_prefix": "web/src/memory",
+        "task_family": "retrieval"
+      },
+      "trust": "agent",
+      "sensitivity": "internal",
+      "valid_from": "2026-10-20T00:00:00Z",
+      "valid_to": null,
+      "content_hash": "9a825a82f088fb97de14b54fb4da482eb9d474bb615ad18ee36b94ae6cf455f3",
+      "provenance": {
+        "author_type": "agent",
+        "agent_model": "pi-4.1",
+        "config_digest": "cfg_7d1a"
+      },
+      "review": null,
+      "created_at": "2026-10-20T06:30:00Z",
+      "created_by": "usr_01J8Z5N4P7"
+    },
+    {
+      "version": 3,
+      "kind": "lesson",
+      "tier": "L2",
+      "statement": "Raise the share ceiling before raising the total retrieval budget; a silent truncation loses policy items before lessons",
+      "statement_redacted": false,
+      "preconditions": ["bundle at budget", "policy item active"],
+      "applicability": {
+        "team_id": "tem_01J8Z7G8H9",
+        "path_prefix": "web/src/memory",
+        "task_family": "retrieval"
+      },
+      "trust": "human",
+      "sensitivity": "internal",
+      "valid_from": "2026-11-01T00:00:00Z",
+      "valid_to": null,
+      "content_hash": "32876dc38bb153a434b5bec6eb6e42be81994eb3dbe9f48d85a4ef38224dab89",
+      "provenance": { "author_type": "human" },
+      "review": {
+        "approver_id": "usr_01J8Z5N4P7",
+        "approved_at": "2026-11-04T09:12:00Z"
+      },
+      "created_at": "2026-11-04T09:12:00Z",
+      "created_by": "usr_01J8Z5N4P7"
+    }
+  ]
+}
