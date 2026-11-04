@@ -496,6 +496,30 @@ const ERROR_SEMANTICS: Record<string, ErrorSemantics> = {
     retryable: false,
     next_action: "refresh",
   },
+  APPROVAL_ALREADY_PENDING: {
+    stage: "policy",
+    category: "stop",
+    retryable: false,
+    next_action: "request_review",
+  },
+  APPROVER_NOT_AUTHORIZED: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  DELIVERY_FORBIDDEN: {
+    stage: "delivery",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  DELIVERY_AUDIT_UNAVAILABLE: {
+    stage: "delivery",
+    category: "stop",
+    retryable: false,
+    next_action: "contact_admin",
+  },
   DELIVERY_STATE_CONFLICT: {
     stage: "delivery",
     category: "stop",

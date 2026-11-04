@@ -135,6 +135,7 @@ const COLLAB_ENDPOINTS: Array<[method: string, path: string]> = [
   ["get", `${COLLAB_BASE}/{issue_id}/candidates`],
   ["get", `${COLLAB_BASE}/{issue_id}/candidates/{candidate_id}`],
   ["get", `${COLLAB_BASE}/{issue_id}/approvals`],
+  ["post", `${COLLAB_BASE}/{issue_id}/approvals`],
   ["get", `${COLLAB_BASE}/{issue_id}/approvals/{approval_id}`],
   ["post", `${COLLAB_BASE}/{issue_id}/approvals/{approval_id}/decision`],
   ["get", `${COLLAB_BASE}/{issue_id}/deliveries`],

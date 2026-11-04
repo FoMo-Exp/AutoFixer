@@ -1,10 +1,22 @@
 import type { AuditCommand } from "./audit.js";
 import { canonicalJson, digestOf } from "./audit.js";
-import { APPROVAL_INVALIDATION_REASONS } from "./contract.js";
-import type { ApprovalInvalidationReason } from "./contract.js";
+import {
+  APPROVAL_INVALIDATION_REASONS,
+  DELIVERY_STATES,
+  TASK_EVIDENCE_CONTRACT_VERSION,
+} from "./contract.js";
+import type { ApprovalInvalidationReason, DeliveryState } from "./contract.js";
+import { bindingForCandidate, bindingMismatch, approvalStateAt } from "./approval.js";
+import {
+  canTransitionDelivery,
+  deliveryBranchProblem,
+  providerMatchesRepository,
+} from "./delivery.js";
 import { CollabError } from "./errors.js";
 import { resolveRevisionEvidence, resolveValidationEvidence } from "./evidence.js";
 import type {
+  ApprovalDecision,
+  ApprovalRecord,
   ArtifactRef,
   CandidateDiff,
   CandidateRecord,
@@ -13,6 +25,7 @@ import type {
   CapabilityGrant,
   ChangeRisk,
   CollabState,
+  DeliveryRecord,
   Disposition,
   GrantTool,
   HandoffRecord,
@@ -28,6 +41,7 @@ import type {
   TaskState,
   TestPlanRecord,
   TestPolicyRecord,
+  UserRef,
   WorkspaceScope,
   WorktreeRef,
 } from "./types.js";
@@ -56,6 +70,10 @@ import type { ProductState } from "./states.js";
 const HANDOFF_SUMMARY_MAX = 2000;
 const SUMMARY_MAX = 1000;
 const REASON_MAX = 500;
+const APPROVAL_NOTE_MAX = 1000;
+const DELIVERY_ERROR_CODE_MAX = 160;
+const BRANCH_MAX = 200;
+const DISPLAY_NAME_MAX = 200;
 
 type Payload = Record<string, unknown>;
 
@@ -330,6 +348,126 @@ function parseDigestRef(value: unknown, field: string): { algorithm: string; val
     });
   }
   return { algorithm, value: digest };
+}
+
+function parseUserRef(value: unknown, field: string): UserRef {
+  const source = object(value, field);
+  assertExactKeys(source, ["id", "display_name"], field);
+  return {
+    id: str(source["id"], `${field}.id`),
+    display_name: bounded(source["display_name"], `${field}.display_name`, DISPLAY_NAME_MAX),
+  };
+}
+
+function parseUserRefOrNull(value: unknown, field: string): UserRef | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return parseUserRef(value, field);
+}
+
+/** The approver-authority facts the trusted caller observed at command time. */
+interface ApproverAuthorityFacts {
+  member_active: boolean;
+  repository_access: boolean;
+  approval_authority: boolean;
+  authority_version: string;
+}
+
+function parseApproverAuthority(value: unknown, field: string): ApproverAuthorityFacts {
+  const source = object(value, field);
+  assertExactKeys(
+    source,
+    ["member_active", "repository_access", "approval_authority", "authority_version"],
+    field,
+  );
+  return {
+    member_active: bool(source["member_active"], `${field}.member_active`),
+    repository_access: bool(source["repository_access"], `${field}.repository_access`),
+    approval_authority: bool(source["approval_authority"], `${field}.approval_authority`),
+    authority_version: bounded(source["authority_version"], `${field}.authority_version`, 200),
+  };
+}
+
+function approverAuthorized(facts: ApproverAuthorityFacts): boolean {
+  return facts.member_active && facts.repository_access && facts.approval_authority;
+}
+
+/** The delivery-authority/audit facts the trusted broker observed before a write. */
+interface DeliveryAuthorityFacts {
+  approver_authorized: boolean;
+  delivery_authorized: boolean;
+  audit_available: boolean;
+}
+
+function parseDeliveryAuthority(value: unknown, field: string): DeliveryAuthorityFacts {
+  const source = object(value, field);
+  assertExactKeys(source, ["approver_authorized", "delivery_authorized", "audit_available"], field);
+  return {
+    approver_authorized: bool(source["approver_authorized"], `${field}.approver_authorized`),
+    delivery_authorized: bool(source["delivery_authorized"], `${field}.delivery_authorized`),
+    audit_available: bool(source["audit_available"], `${field}.audit_available`),
+  };
+}
+
+function parseDeliveryState(value: unknown, field: string): DeliveryState {
+  const text = str(value, field);
+  if (!(DELIVERY_STATES as readonly string[]).includes(text)) {
+    throw new CollabError("INVALID_INPUT", `${field} is not a delivery state`, {
+      field,
+      value: text,
+    });
+  }
+  return text as DeliveryState;
+}
+
+function parseProvider(value: unknown, field: string): "github" | "gitlab" {
+  const text = str(value, field);
+  if (text !== "github" && text !== "gitlab") {
+    throw new CollabError("INVALID_INPUT", `${field} must be github or gitlab`, {
+      field,
+      value: text,
+    });
+  }
+  return text;
+}
+
+function parseBranch(value: unknown, field: string): string {
+  const branch = bounded(value, field, BRANCH_MAX);
+  if (
+    branch.startsWith("-") ||
+    branch.includes("..") ||
+    branch.includes("~") ||
+    branch.includes("^") ||
+    branch.includes(":") ||
+    branch.includes("?") ||
+    branch.includes("*") ||
+    branch.includes("[") ||
+    branch.includes("\\") ||
+    branch.includes(" ") ||
+    branch.endsWith("/") ||
+    branch.endsWith(".lock")
+  ) {
+    throw new CollabError("INVALID_INPUT", `${field} is not a valid branch name`, {
+      field,
+      value: branch,
+    });
+  }
+  return branch;
+}
+
+function parseErrorCodeOrNull(value: unknown, field: string): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const code = bounded(value, field, DELIVERY_ERROR_CODE_MAX);
+  if (!/^[A-Z][A-Z0-9_]*$/.test(code)) {
+    throw new CollabError("INVALID_INPUT", `${field} must be a safe machine code`, {
+      field,
+      value: code,
+    });
+  }
+  return code;
 }
 
 function relativePath(value: unknown, field: string): string {
@@ -1178,6 +1316,26 @@ function handleTransitionIssue(state: CollabState, payload: Payload): unknown {
       }
     }
   }
+  if (to === "cancelled") {
+    // Cancellation revokes remaining actions: pending approvals can no longer
+    // be decided, and an operation that has not produced a provider side
+    // effect is cancelled rather than left able to write later.
+    cancelApprovalsForIssue(state, issue.issue_id, payload["at"] as string);
+    for (const delivery of state.deliveries.values()) {
+      if (delivery.issue_id !== issue.issue_id) {
+        continue;
+      }
+      if (
+        delivery.state === "pending" ||
+        delivery.state === "pushing" ||
+        delivery.state === "opening_pr" ||
+        delivery.state === "unknown"
+      ) {
+        delivery.state = "cancelled";
+        delivery.updated_at = payload["at"] as string;
+      }
+    }
+  }
   issue.product_state = to;
   issue.state_reason = reason;
   issue.updated_at = payload["at"] as string;
@@ -1780,6 +1938,9 @@ function handleInvalidateCandidate(state: CollabState, payload: Payload): unknow
     candidate.invalidated_at = payload["at"] as string;
     candidate.invalidated_reason = reason;
   }
+  // An approval bound to a candidate that is no longer valid can never
+  // authorize delivery, so the request is invalidated in the same record.
+  invalidateApprovalsForCandidate(state, candidate.candidate_id, payload["at"] as string, reason);
   return clone(candidate);
 }
 
@@ -1816,7 +1977,800 @@ function handleRecordBaseAdvance(state: CollabState, payload: Payload): unknown 
       invalidatedCandidateIds.push(candidate.candidate_id);
     }
   }
-  return { issue: clone(issue), invalidated_candidate_ids: invalidatedCandidateIds };
+  // Base advancement and a changed target branch both invalidate an approval:
+  // the approved tree/evidence or the intended destination no longer describes
+  // what delivery would produce. A consumed approval is invalidated too, so a
+  // broker write after the change is refused rather than authorized by a
+  // consumed but stale request.
+  const invalidatedApprovalIds: string[] = [];
+  for (const approval of state.approvals.values()) {
+    if (approval.issue_id !== issue.issue_id) {
+      continue;
+    }
+    if (!approvalIsActionable(approval, at) && approval.state !== "consumed") {
+      continue;
+    }
+    if (approval.state === "invalidated" || approval.state === "cancelled") {
+      continue;
+    }
+    const reason =
+      baseRef !== null && approval.binding.target_branch !== baseRef
+        ? "target_changed"
+        : invalidatedCandidateIds.includes(approval.candidate_id)
+          ? "base_advanced"
+          : null;
+    if (reason === null) {
+      continue;
+    }
+    approval.state = "invalidated";
+    approval.invalidated_at = at;
+    approval.invalidated_reason = reason;
+    invalidatedApprovalIds.push(approval.approval_id);
+  }
+  return {
+    issue: clone(issue),
+    invalidated_candidate_ids: invalidatedCandidateIds,
+    invalidated_approval_ids: invalidatedApprovalIds,
+  };
+}
+
+function approvalOf(state: CollabState, approvalId: unknown, field: string): ApprovalRecord {
+  const id = str(approvalId, field);
+  const approval = state.approvals.get(id);
+  if (!approval) {
+    throw new CollabError("APPROVAL_NOT_FOUND", "unknown approval request", {
+      approval_id: id,
+    });
+  }
+  return approval;
+}
+
+function deliveryOf(state: CollabState, deliveryId: unknown, field: string): DeliveryRecord {
+  const id = str(deliveryId, field);
+  const delivery = state.deliveries.get(id);
+  if (!delivery) {
+    throw new CollabError("DELIVERY_NOT_FOUND", "unknown delivery operation", {
+      delivery_id: id,
+    });
+  }
+  return delivery;
+}
+
+function approvalIsActionable(approval: ApprovalRecord, at: string): boolean {
+  const effective = approvalStateAt(approval, at);
+  return effective === "pending" || effective === "approved";
+}
+
+/**
+ * Invalidate every still-actionable approval bound to one candidate. The old
+ * request is never reused; a new revision needs a new candidate and a newly
+ * addressed request.
+ */
+function invalidateApprovalsForCandidate(
+  state: CollabState,
+  candidateId: string,
+  at: string,
+  reason: ApprovalInvalidationReason,
+): string[] {
+  const invalidated: string[] = [];
+  for (const approval of state.approvals.values()) {
+    if (approval.candidate_id !== candidateId) {
+      continue;
+    }
+    if (!approvalIsActionable(approval, at) && approval.state !== "consumed") {
+      continue;
+    }
+    if (approval.state === "invalidated" || approval.state === "cancelled") {
+      continue;
+    }
+    approval.state = "invalidated";
+    approval.invalidated_at = at;
+    approval.invalidated_reason = reason;
+    invalidated.push(approval.approval_id);
+  }
+  return invalidated;
+}
+
+function cancelApprovalsForIssue(state: CollabState, issueId: string, at: string): string[] {
+  const cancelled: string[] = [];
+  for (const approval of state.approvals.values()) {
+    if (approval.issue_id !== issueId) {
+      continue;
+    }
+    if (!approvalIsActionable(approval, at)) {
+      continue;
+    }
+    approval.state = "cancelled";
+    cancelled.push(approval.approval_id);
+  }
+  return cancelled;
+}
+
+/** Deny with the approval-specific state conflict semantics. */
+function approvalStateConflict(approval: ApprovalRecord, at: string): CollabError {
+  const effective = approvalStateAt(approval, at);
+  return new CollabError("APPROVAL_STATE_CONFLICT", `approval is ${effective}, not pending`, {
+    approval_id: approval.approval_id,
+    state: effective,
+  });
+}
+
+function handleRequestApproval(state: CollabState, payload: Payload): unknown {
+  assertExactKeys(
+    payload,
+    [
+      ...BASE_KEYS,
+      "approval_id",
+      "issue_id",
+      "candidate_id",
+      "target_branch",
+      "approver",
+      "no_eligible_approver",
+      "authority",
+      "expires_at",
+    ],
+    "request_approval",
+  );
+  const issue = issueOf(state, payload["issue_id"], "issue_id");
+  if (issue.product_state !== "awaiting_change_approval") {
+    throw new CollabError(
+      "APPROVAL_REQUIRED",
+      `approval may only be requested while the issue awaits change approval (issue is ${issue.product_state})`,
+      { issue_id: issue.issue_id, product_state: issue.product_state },
+    );
+  }
+  const candidateId = str(payload["candidate_id"], "candidate_id");
+  const candidate = state.candidates.get(candidateId);
+  if (!candidate || candidate.issue_id !== issue.issue_id) {
+    throw new CollabError("CANDIDATE_NOT_FOUND", "candidate is not frozen on this issue", {
+      candidate_id: candidateId,
+      issue_id: issue.issue_id,
+    });
+  }
+  if (candidate.invalidated_at !== null) {
+    throw new CollabError("CANDIDATE_INVALID", "an invalidated candidate cannot be approved", {
+      candidate_id: candidate.candidate_id,
+      reason: candidate.invalidated_reason ?? "invalidated",
+    });
+  }
+  if (candidate.base_sha !== issue.repository.base_sha) {
+    throw new CollabError("BASE_ADVANCED", "the issue base advanced after the candidate froze", {
+      candidate_base_sha: candidate.base_sha,
+      issue_base_sha: issue.repository.base_sha,
+    });
+  }
+  const targetBranch = parseBranch(payload["target_branch"], "target_branch");
+  if (targetBranch !== issue.repository.base_ref) {
+    throw new CollabError(
+      "APPROVAL_BINDING_STALE",
+      "an approval may only bind the issue's intended target branch",
+      { target_branch: targetBranch, base_ref: issue.repository.base_ref },
+    );
+  }
+  const approver = parseUserRefOrNull(payload["approver"], "approver");
+  const noEligible = bool(payload["no_eligible_approver"], "no_eligible_approver");
+  const authority = parseApproverAuthority(payload["authority"], "authority");
+  if (approver === null) {
+    if (!noEligible) {
+      throw new CollabError(
+        "APPROVER_NOT_AUTHORIZED",
+        "an unaddressed approval request requires that no eligible approver exists",
+        { frame: "no_eligible_approver" },
+      );
+    }
+  } else {
+    if (noEligible) {
+      throw new CollabError(
+        "APPROVER_NOT_AUTHORIZED",
+        "an eligible approver exists; the request must name them",
+        { approver_id: approver.id },
+      );
+    }
+    if (!approverAuthorized(authority)) {
+      throw new CollabError(
+        "APPROVER_NOT_AUTHORIZED",
+        "the named approver lacks current repository access or approval authority",
+        { approver_id: approver.id, authority_version: authority.authority_version },
+      );
+    }
+  }
+  const at = payload["at"] as string;
+  for (const existing of state.approvals.values()) {
+    if (
+      existing.candidate_id === candidate.candidate_id &&
+      existing.issue_id === issue.issue_id &&
+      approvalIsActionable(existing, at)
+    ) {
+      throw new CollabError(
+        "APPROVAL_ALREADY_PENDING",
+        "the candidate already has an actionable approval request",
+        { approval_id: existing.approval_id, candidate_id: candidate.candidate_id },
+      );
+    }
+  }
+  const approvalId = str(payload["approval_id"], "approval_id");
+  if (state.approvals.has(approvalId)) {
+    throw new CollabError("APPROVAL_STATE_CONFLICT", "approval id already exists", {
+      approval_id: approvalId,
+    });
+  }
+  const expiresAt = iso(payload["expires_at"], "expires_at");
+  if (expiresAt <= at) {
+    throw new CollabError("INVALID_INPUT", "approval expiry must follow the request time", {
+      expires_at: expiresAt,
+    });
+  }
+  const approval: ApprovalRecord = {
+    contract_version: TASK_EVIDENCE_CONTRACT_VERSION,
+    approval_id: approvalId,
+    issue_id: issue.issue_id,
+    candidate_id: candidate.candidate_id,
+    state: "pending",
+    binding: bindingForCandidate(candidate, targetBranch),
+    approver: approver === null ? null : clone(approver),
+    requested_at: at,
+    decided_at: null,
+    expires_at: expiresAt,
+    decision: null,
+    invalidated_at: null,
+    invalidated_reason: null,
+    consumed_by_delivery_id: null,
+  };
+  state.approvals.set(approvalId, approval);
+  return clone(approval);
+}
+
+function handleDecideApproval(state: CollabState, payload: Payload): unknown {
+  assertExactKeys(
+    payload,
+    [
+      ...BASE_KEYS,
+      "approval_id",
+      "issue_id",
+      "decision",
+      "diff_digest",
+      "note",
+      "actor_user",
+      "authority",
+    ],
+    "decide_approval",
+  );
+  const issue = issueOf(state, payload["issue_id"], "issue_id");
+  const approval = approvalOf(state, payload["approval_id"], "approval_id");
+  if (approval.issue_id !== issue.issue_id) {
+    throw new CollabError("APPROVAL_NOT_FOUND", "approval is not addressed to this issue", {
+      approval_id: approval.approval_id,
+      issue_id: issue.issue_id,
+    });
+  }
+  const actorUser = parseUserRef(payload["actor_user"], "actor_user");
+  if (approval.approver === null || approval.approver.id !== actorUser.id) {
+    throw new CollabError(
+      "APPROVER_NOT_AUTHORIZED",
+      "only the addressed human approver may decide this request",
+      { approval_id: approval.approval_id },
+    );
+  }
+  const at = payload["at"] as string;
+  if (approvalStateAt(approval, at) !== "pending") {
+    throw approvalStateConflict(approval, at);
+  }
+  const authority = parseApproverAuthority(payload["authority"], "authority");
+  if (!approverAuthorized(authority)) {
+    throw new CollabError(
+      "APPROVER_NOT_AUTHORIZED",
+      "the approver lost current repository access or approval authority",
+      { approver_id: actorUser.id, authority_version: authority.authority_version },
+    );
+  }
+  const candidate = state.candidates.get(approval.candidate_id);
+  if (!candidate) {
+    throw new CollabError("APPROVAL_BINDING_STALE", "the bound candidate no longer exists", {
+      approval_id: approval.approval_id,
+    });
+  }
+  const mismatch = bindingMismatch(approval, candidate, issue.repository.base_sha);
+  if (mismatch !== null) {
+    throw new CollabError(
+      "APPROVAL_BINDING_STALE",
+      "the approval no longer binds the exact candidate revision",
+      { approval_id: approval.approval_id, mismatch },
+    );
+  }
+  const diffDigest = parseDigestRef(payload["diff_digest"], "diff_digest");
+  if (
+    diffDigest.algorithm !== approval.binding.diff_digest.algorithm ||
+    diffDigest.value !== approval.binding.diff_digest.value
+  ) {
+    throw new CollabError(
+      "APPROVAL_BINDING_STALE",
+      "the approved diff digest does not match the bound candidate",
+      { approval_id: approval.approval_id },
+    );
+  }
+  const decision = str(payload["decision"], "decision");
+  if (decision !== "approve" && decision !== "reject") {
+    throw new CollabError("INVALID_INPUT", 'decision must be "approve" or "reject"', {
+      field: "decision",
+    });
+  }
+  const note = strOrNull(payload["note"], "note");
+  if (note !== null && note.length > APPROVAL_NOTE_MAX) {
+    throw new CollabError("INVALID_INPUT", `note exceeds ${APPROVAL_NOTE_MAX} characters`, {
+      field: "note",
+    });
+  }
+  const recorded: ApprovalDecision = {
+    decision,
+    decided_by: clone(actorUser),
+    decided_at: at,
+    note,
+  };
+  approval.decision = recorded;
+  approval.decided_at = at;
+  approval.state = decision === "approve" ? "approved" : "rejected";
+  return clone(approval);
+}
+
+function handleInvalidateApproval(state: CollabState, payload: Payload): unknown {
+  assertExactKeys(
+    payload,
+    [...BASE_KEYS, "approval_id", "issue_id", "reason"],
+    "invalidate_approval",
+  );
+  const issue = issueOf(state, payload["issue_id"], "issue_id");
+  const approval = approvalOf(state, payload["approval_id"], "approval_id");
+  if (approval.issue_id !== issue.issue_id) {
+    throw new CollabError("APPROVAL_NOT_FOUND", "approval is not addressed to this issue", {
+      approval_id: approval.approval_id,
+      issue_id: issue.issue_id,
+    });
+  }
+  const reason = parseInvalidationReason(payload["reason"], "reason");
+  const at = payload["at"] as string;
+  if (approval.state === "invalidated" || approval.state === "cancelled") {
+    return clone(approval);
+  }
+  if (!approvalIsActionable(approval, at) && approval.state !== "consumed") {
+    return clone(approval);
+  }
+  approval.state = "invalidated";
+  approval.invalidated_at = at;
+  approval.invalidated_reason = reason;
+  return clone(approval);
+}
+
+function handleRequestDelivery(state: CollabState, payload: Payload): unknown {
+  assertExactKeys(
+    payload,
+    [
+      ...BASE_KEYS,
+      "delivery_id",
+      "issue_id",
+      "candidate_id",
+      "approval_id",
+      "target_branch",
+      "provider",
+      "branch",
+      "grant_id",
+      "requester_authorized",
+    ],
+    "request_delivery",
+  );
+  const issue = issueOf(state, payload["issue_id"], "issue_id");
+  if (issue.product_state !== "awaiting_change_approval" && issue.product_state !== "delivering") {
+    throw new CollabError(
+      "APPROVAL_REQUIRED",
+      `delivery requires an awaiting_change_approval or delivering issue (issue is ${issue.product_state})`,
+      { issue_id: issue.issue_id, product_state: issue.product_state },
+    );
+  }
+  if (!bool(payload["requester_authorized"], "requester_authorized")) {
+    throw new CollabError("DELIVERY_FORBIDDEN", "the requester lacks delivery authority", {
+      issue_id: issue.issue_id,
+    });
+  }
+  const candidateId = str(payload["candidate_id"], "candidate_id");
+  const candidate = state.candidates.get(candidateId);
+  if (!candidate || candidate.issue_id !== issue.issue_id) {
+    throw new CollabError("CANDIDATE_NOT_FOUND", "candidate is not frozen on this issue", {
+      candidate_id: candidateId,
+      issue_id: issue.issue_id,
+    });
+  }
+  const approvalId = str(payload["approval_id"], "approval_id");
+  const approval = state.approvals.get(approvalId);
+  if (!approval || approval.issue_id !== issue.issue_id) {
+    throw new CollabError("APPROVAL_NOT_FOUND", "unknown approval request", {
+      approval_id: approvalId,
+    });
+  }
+  if (approval.candidate_id !== candidate.candidate_id) {
+    throw new CollabError("APPROVAL_BINDING_STALE", "the approval is bound to another candidate", {
+      approval_id: approvalId,
+      candidate_id: candidate.candidate_id,
+    });
+  }
+  const at = payload["at"] as string;
+  const effective = approvalStateAt(approval, at);
+  if (effective === "consumed" || approval.consumed_by_delivery_id !== null) {
+    throw new CollabError(
+      "APPROVAL_CONSUMED",
+      "the approval was consumed by its delivery operation; safe retries reconcile that same operation",
+      { approval_id: approvalId },
+    );
+  }
+  if (effective !== "approved") {
+    throw new CollabError(
+      "APPROVAL_NOT_APPROVED",
+      `delivery requires a current approved request (approval is ${effective})`,
+      { approval_id: approvalId, state: effective },
+    );
+  }
+  const mismatch = bindingMismatch(approval, candidate, issue.repository.base_sha);
+  if (mismatch !== null) {
+    throw new CollabError(
+      "APPROVAL_BINDING_STALE",
+      "the approval no longer binds the exact candidate revision",
+      { approval_id: approvalId, mismatch },
+    );
+  }
+  const targetBranch = parseBranch(payload["target_branch"], "target_branch");
+  if (
+    targetBranch !== approval.binding.target_branch ||
+    targetBranch !== issue.repository.base_ref
+  ) {
+    throw new CollabError(
+      "APPROVAL_BINDING_STALE",
+      "the intended target branch changed after approval",
+      { target_branch: targetBranch, approved_target: approval.binding.target_branch },
+    );
+  }
+  const provider = parseProvider(payload["provider"], "provider");
+  if (!providerMatchesRepository(provider, issue.repository)) {
+    throw new CollabError("DELIVERY_FORBIDDEN", `repository is not a ${provider} repository`, {
+      provider,
+      repository_id: issue.repository.repository_id,
+    });
+  }
+  const branch = parseBranch(payload["branch"], "branch");
+  const branchProblem = deliveryBranchProblem(issue.repository, issue.issue_id, branch);
+  if (branchProblem !== null) {
+    const protectedMain =
+      branch === issue.repository.base_ref || branch === "main" || branch === "master";
+    throw new CollabError(protectedMain ? "DELIVERY_FORBIDDEN" : "INVALID_INPUT", branchProblem, {
+      branch,
+      issue_id: issue.issue_id,
+    });
+  }
+  const grantId = str(payload["grant_id"], "grant_id");
+  let grant: CapabilityGrant | undefined;
+  let grantRun: RunRecord | undefined;
+  for (const run of state.runs.values()) {
+    if (run.issue_id !== issue.issue_id) {
+      continue;
+    }
+    const found = run.grants.find((entry) => entry.grant_id === grantId);
+    if (found !== undefined) {
+      grant = found;
+      grantRun = run;
+      break;
+    }
+  }
+  if (grant === undefined || grantRun === undefined) {
+    throw new CollabError("GRANT_NOT_FOUND", "delivery requires a recorded delivery grant", {
+      grant_id: grantId,
+    });
+  }
+  if (grantRun.role !== "delivery") {
+    throw new CollabError(
+      "DELIVERY_FORBIDDEN",
+      "delivery writes require a delivery-role capability grant",
+      { run_id: grantRun.run_id, role: grantRun.role },
+    );
+  }
+  if (!grant.may_create_or_update_pr) {
+    throw new CollabError("DELIVERY_FORBIDDEN", "the delivery grant does not permit push/PR", {
+      grant_id: grant.grant_id,
+    });
+  }
+  if (grantRun.head_sha !== candidate.head_sha) {
+    throw new CollabError(
+      "DELIVERY_FORBIDDEN",
+      "the delivery grant is not bound to the approved candidate head",
+      { run_head_sha: grantRun.head_sha, candidate_head_sha: candidate.head_sha },
+    );
+  }
+  const grantState = grantStateAt(grant, at);
+  if (grantState === "revoked") {
+    throw new CollabError("GRANT_REVOKED", "revoked grants never authorize a write", {
+      grant_id: grant.grant_id,
+    });
+  }
+  if (grantState === "expired") {
+    throw new CollabError("GRANT_EXPIRED", "an expired grant never authorizes a write", {
+      grant_id: grant.grant_id,
+    });
+  }
+  const deliveryId = str(payload["delivery_id"], "delivery_id");
+  if (state.deliveries.has(deliveryId)) {
+    throw new CollabError("DELIVERY_STATE_CONFLICT", "delivery id already exists", {
+      delivery_id: deliveryId,
+    });
+  }
+  const delivery: DeliveryRecord = {
+    delivery_id: deliveryId,
+    operation_id: str(payload["operation_id"], "operation_id"),
+    issue_id: issue.issue_id,
+    candidate_id: candidate.candidate_id,
+    approval_id: approval.approval_id,
+    repository: clone(issue.repository),
+    target_branch: targetBranch,
+    head_sha: candidate.head_sha,
+    provider,
+    state: "pending",
+    branch: null,
+    pr_id: null,
+    pr_url: null,
+    error_code: null,
+    created_at: at,
+    updated_at: at,
+    reconciled_at: null,
+    grant_id: grant.grant_id,
+  };
+  approval.state = "consumed";
+  approval.consumed_by_delivery_id = delivery.delivery_id;
+  state.deliveries.set(delivery.delivery_id, delivery);
+  return clone(delivery);
+}
+
+function handleRecordDeliveryState(state: CollabState, payload: Payload): unknown {
+  assertExactKeys(
+    payload,
+    [...BASE_KEYS, "delivery_id", "to", "branch", "pr_id", "pr_url", "error_code", "authority"],
+    "record_delivery_state",
+  );
+  const delivery = deliveryOf(state, payload["delivery_id"], "delivery_id");
+  const authority = parseDeliveryAuthority(payload["authority"], "authority");
+  if (!authority.audit_available) {
+    throw new CollabError(
+      "DELIVERY_AUDIT_UNAVAILABLE",
+      "delivery requires an available audit sink before any provider write",
+      { delivery_id: delivery.delivery_id },
+    );
+  }
+  if (!authority.approver_authorized || !authority.delivery_authorized) {
+    throw new CollabError(
+      "DELIVERY_FORBIDDEN",
+      "current approval or delivery authority no longer permits the write",
+      { delivery_id: delivery.delivery_id },
+    );
+  }
+  const to = parseDeliveryState(payload["to"], "to");
+  if (!canTransitionDelivery(delivery.state, to)) {
+    throw new CollabError(
+      "DELIVERY_STATE_CONFLICT",
+      `delivery cannot move ${delivery.state} -> ${to}`,
+      { delivery_id: delivery.delivery_id, from: delivery.state, to },
+    );
+  }
+  const issue = issueOf(state, delivery.issue_id, "issue_id");
+  const candidate = state.candidates.get(delivery.candidate_id);
+  if (!candidate || candidate.issue_id !== issue.issue_id) {
+    throw new CollabError("APPROVAL_BINDING_STALE", "the delivered candidate no longer exists", {
+      delivery_id: delivery.delivery_id,
+    });
+  }
+  const approval = state.approvals.get(delivery.approval_id);
+  if (!approval || approval.consumed_by_delivery_id !== delivery.delivery_id) {
+    throw new CollabError(
+      "APPROVAL_BINDING_STALE",
+      "the delivery does not hold the consumed approval it was created with",
+      { delivery_id: delivery.delivery_id },
+    );
+  }
+  if (approval.state === "invalidated" || approval.state === "cancelled") {
+    throw new CollabError(
+      "APPROVAL_BINDING_STALE",
+      "the approval was invalidated before the provider write",
+      { approval_id: approval.approval_id },
+    );
+  }
+  const mismatch = bindingMismatch(approval, candidate, issue.repository.base_sha);
+  if (mismatch !== null || delivery.head_sha !== candidate.head_sha) {
+    throw new CollabError(
+      "APPROVAL_BINDING_STALE",
+      "the candidate or its base changed after approval",
+      { delivery_id: delivery.delivery_id, mismatch: mismatch ?? "head_sha" },
+    );
+  }
+  let grant: CapabilityGrant | undefined;
+  for (const run of state.runs.values()) {
+    if (run.issue_id !== delivery.issue_id) {
+      continue;
+    }
+    grant = run.grants.find((entry) => entry.grant_id === delivery.grant_id);
+    if (grant !== undefined) {
+      break;
+    }
+  }
+  if (grant === undefined) {
+    throw new CollabError("GRANT_NOT_FOUND", "delivery grant is no longer recorded", {
+      grant_id: delivery.grant_id,
+    });
+  }
+  const at = payload["at"] as string;
+  const grantState = grantStateAt(grant, at);
+  if (grantState === "revoked") {
+    throw new CollabError("GRANT_REVOKED", "revoked grants never authorize a write", {
+      grant_id: grant.grant_id,
+    });
+  }
+  if (grantState === "expired") {
+    throw new CollabError("GRANT_EXPIRED", "an expired grant never authorizes a write", {
+      grant_id: grant.grant_id,
+    });
+  }
+  if (!grant.may_create_or_update_pr) {
+    throw new CollabError("DELIVERY_FORBIDDEN", "the grant does not permit push/PR", {
+      grant_id: grant.grant_id,
+    });
+  }
+  const branch = strOrNull(payload["branch"], "branch");
+  if (branch !== null) {
+    const branchProblem = deliveryBranchProblem(issue.repository, issue.issue_id, branch);
+    if (branchProblem !== null) {
+      throw new CollabError("DELIVERY_FORBIDDEN", branchProblem, { branch });
+    }
+  }
+  const prId = strOrNull(payload["pr_id"], "pr_id");
+  const prUrl = strOrNull(payload["pr_url"], "pr_url");
+  const errorCode = parseErrorCodeOrNull(payload["error_code"], "error_code");
+  const effectiveBranch = branch ?? delivery.branch;
+  if (to === "pushing" && effectiveBranch !== null) {
+    throw new CollabError("INVALID_INPUT", "a pending push has no verified branch yet", {
+      branch: effectiveBranch,
+    });
+  }
+  if ((to === "opening_pr" || to === "partial" || to === "delivered") && effectiveBranch === null) {
+    throw new CollabError("INVALID_INPUT", `delivery state ${to} requires a verified branch`, {
+      to,
+    });
+  }
+  if (to === "delivered" && (prId === null || prUrl === null)) {
+    throw new CollabError("INVALID_INPUT", "delivered requires provider PR identity", {});
+  }
+  if ((to === "unknown" || to === "failed") && errorCode === null) {
+    throw new CollabError("INVALID_INPUT", `delivery state ${to} requires a safe error code`, {
+      to,
+    });
+  }
+  if (to === "partial" && errorCode === null) {
+    throw new CollabError("INVALID_INPUT", "partial delivery requires a safe error code", {});
+  }
+  delivery.state = to;
+  if (branch !== null) {
+    delivery.branch = branch;
+  }
+  if (prId !== null) {
+    delivery.pr_id = prId;
+  }
+  if (prUrl !== null) {
+    delivery.pr_url = prUrl;
+  }
+  if (errorCode !== null) {
+    delivery.error_code = errorCode;
+  }
+  delivery.updated_at = at;
+  return clone(delivery);
+}
+
+function handleReconcileDelivery(state: CollabState, payload: Payload): unknown {
+  assertExactKeys(
+    payload,
+    [...BASE_KEYS, "delivery_id", "to", "branch", "pr_id", "pr_url", "error_code", "evidence"],
+    "reconcile_delivery",
+  );
+  const delivery = deliveryOf(state, payload["delivery_id"], "delivery_id");
+  if (delivery.state !== "unknown" && delivery.state !== "partial") {
+    throw new CollabError(
+      "DELIVERY_STATE_CONFLICT",
+      `delivery state ${delivery.state} has nothing to reconcile`,
+      { delivery_id: delivery.delivery_id, state: delivery.state },
+    );
+  }
+  const to = parseDeliveryState(payload["to"], "to");
+  const allowed: DeliveryState[] = ["delivered", "partial", "failed", "unknown"];
+  if (!allowed.includes(to)) {
+    throw new CollabError(
+      "DELIVERY_STATE_CONFLICT",
+      `reconciliation cannot record ${to} from ${delivery.state}`,
+      { delivery_id: delivery.delivery_id, from: delivery.state, to },
+    );
+  }
+  const evidence = object(payload["evidence"], "evidence");
+  assertExactKeys(evidence, ["branch_head_sha", "pr_head_sha", "pr_branch"], "evidence");
+  const observedBranchHead = strOrNull(evidence["branch_head_sha"], "evidence.branch_head_sha");
+  const observedPrHead = strOrNull(evidence["pr_head_sha"], "evidence.pr_head_sha");
+  const observedPrBranch = strOrNull(evidence["pr_branch"], "evidence.pr_branch");
+  const branch = strOrNull(payload["branch"], "branch");
+  const prId = strOrNull(payload["pr_id"], "pr_id");
+  const prUrl = strOrNull(payload["pr_url"], "pr_url");
+  const errorCode = parseErrorCodeOrNull(payload["error_code"], "error_code");
+  const issue = issueOf(state, delivery.issue_id, "issue_id");
+  const effectiveBranch = branch ?? delivery.branch;
+  if (to === "delivered") {
+    if (effectiveBranch === null || prId === null || prUrl === null) {
+      throw new CollabError("INVALID_INPUT", "delivered requires branch and PR identity", {});
+    }
+    if (observedPrHead !== delivery.head_sha || observedPrBranch !== effectiveBranch) {
+      throw new CollabError(
+        "DELIVERY_STATE_CONFLICT",
+        "provider PR evidence is not bound to the approved head and branch",
+        { delivery_id: delivery.delivery_id },
+      );
+    }
+    if (observedBranchHead !== delivery.head_sha) {
+      throw new CollabError(
+        "DELIVERY_STATE_CONFLICT",
+        "delivered requires the provider branch to hold the approved commit",
+        { delivery_id: delivery.delivery_id },
+      );
+    }
+  }
+  if (to === "partial") {
+    if (effectiveBranch === null || errorCode === null) {
+      throw new CollabError("INVALID_INPUT", "partial requires a branch and error code", {});
+    }
+    if (observedBranchHead !== delivery.head_sha) {
+      throw new CollabError(
+        "DELIVERY_STATE_CONFLICT",
+        "partial requires the branch to hold the approved commit",
+        { delivery_id: delivery.delivery_id },
+      );
+    }
+  }
+  if (to === "failed") {
+    if (errorCode === null) {
+      throw new CollabError("INVALID_INPUT", "failed requires a safe error code", {});
+    }
+    if (observedBranchHead !== null || observedPrHead !== null || prId !== null) {
+      throw new CollabError(
+        "DELIVERY_STATE_CONFLICT",
+        "failed requires evidence that no provider side effect exists",
+        { delivery_id: delivery.delivery_id },
+      );
+    }
+  }
+  if (to === "unknown") {
+    if (errorCode === null) {
+      throw new CollabError(
+        "INVALID_INPUT",
+        "an unresolved outcome requires a safe error code",
+        {},
+      );
+    }
+  }
+  if (branch !== null) {
+    const branchProblem = deliveryBranchProblem(issue.repository, issue.issue_id, branch);
+    if (branchProblem !== null) {
+      throw new CollabError("DELIVERY_FORBIDDEN", branchProblem, { branch });
+    }
+    delivery.branch = branch;
+  }
+  if (prId !== null) {
+    delivery.pr_id = prId;
+  }
+  if (prUrl !== null) {
+    delivery.pr_url = prUrl;
+  }
+  if (errorCode !== null) {
+    delivery.error_code = errorCode;
+  }
+  delivery.state = to;
+  delivery.reconciled_at = payload["at"] as string;
+  delivery.updated_at = payload["at"] as string;
+  return clone(delivery);
 }
 
 export const HANDLERS: Record<AuditCommand, (state: CollabState, payload: Payload) => unknown> = {
@@ -1836,6 +2790,12 @@ export const HANDLERS: Record<AuditCommand, (state: CollabState, payload: Payloa
   freeze_candidate: handleFreezeCandidate,
   invalidate_candidate: handleInvalidateCandidate,
   record_base_advance: handleRecordBaseAdvance,
+  request_approval: handleRequestApproval,
+  decide_approval: handleDecideApproval,
+  invalidate_approval: handleInvalidateApproval,
+  request_delivery: handleRequestDelivery,
+  record_delivery_state: handleRecordDeliveryState,
+  reconcile_delivery: handleReconcileDelivery,
   transition_issue: handleTransitionIssue,
   record_handoff: handleRecordHandoff,
   request_run_restart: handleRequestRunRestart,

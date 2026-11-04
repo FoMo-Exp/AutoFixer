@@ -1,5 +1,5 @@
 import type { DshState } from "../dsh/types.js";
-import type { ApprovalInvalidationReason } from "./contract.js";
+import type { ApprovalInvalidationReason, ApprovalState, DeliveryState } from "./contract.js";
 import type { ProductState } from "./states.js";
 
 /**
@@ -36,6 +36,18 @@ export interface RepositoryRef {
   url: string;
   base_ref: string;
   base_sha: string;
+}
+
+/** A digest value with the algorithm that produced it (contract `Digest`). */
+export interface DigestRef {
+  algorithm: string;
+  value: string;
+}
+
+/** Authenticated human identity (contract `UserRef`). */
+export interface UserRef {
+  id: string;
+  display_name: string;
 }
 
 /**
@@ -360,6 +372,101 @@ export interface CandidateRecord {
   invalidated_reason: ApprovalInvalidationReason | null;
 }
 
+/**
+ * Everything one approval is bound to (ADR-0007 "Approval and delivery").
+ *
+ * The binding is fixed when the request is addressed and can never be edited:
+ * a delivery is authorized only for exactly this issue, repository, candidate
+ * commit, diff digest, test-evidence digest, intended target branch, and test
+ * policy version. Content, test evidence, base advancement, target, policy, or
+ * relevant authority changes invalidate the approval instead of mutating it.
+ */
+export interface ApprovalBinding {
+  workspace: WorkspaceScope;
+  repository: RepositoryRef;
+  candidate_id: string;
+  head_sha: string;
+  diff_digest: DigestRef;
+  test_evidence_digest: DigestRef;
+  target_branch: string;
+  policy_version: string;
+}
+
+/** The recorded decision of the one addressed human approver. */
+export interface ApprovalDecision {
+  decision: "approve" | "reject";
+  decided_by: UserRef;
+  decided_at: string;
+  note: string | null;
+}
+
+/**
+ * A candidate-bound pre-PR human approval request (ADR-0007).
+ *
+ * `state` is stored; `approvalStateAt` derives the effective state at read
+ * time so an approval whose finite TTL passed while the service was down comes
+ * back `expired`, never `approved`. `approver` is null only when the workspace
+ * has no eligible approver; such a request can never be decided automatically.
+ * `consumed_by_delivery_id` is set exactly once, by the delivery operation the
+ * approval authorized; every later delivery attempt using it is refused.
+ */
+export interface ApprovalRecord {
+  contract_version: string;
+  approval_id: string;
+  issue_id: string;
+  candidate_id: string;
+  state: ApprovalState;
+  binding: ApprovalBinding;
+  approver: UserRef | null;
+  requested_at: string;
+  decided_at: string | null;
+  expires_at: string;
+  decision: ApprovalDecision | null;
+  invalidated_at: string | null;
+  invalidated_reason: ApprovalInvalidationReason | null;
+  consumed_by_delivery_id: string | null;
+}
+
+/** The issue's autofixer branch naming rule (never a protected branch). */
+export const AUTOFIXER_BRANCH_PREFIX = "autofixer/";
+
+/** Deterministic, issue-scoped delivery branch. */
+export function autofixerBranchFor(issueId: string): string {
+  return `${AUTOFIXER_BRANCH_PREFIX}${issueId}`;
+}
+
+/**
+ * One broker-controlled delivery operation (ADR-0007 "Approval and delivery").
+ *
+ * `operation_id` is the idempotent operation identity persisted before any
+ * provider write; `grant_id` names the separate delivery capability grant the
+ * broker re-checks before each write (it is internal evidence, not part of the
+ * public `Delivery` projection). `state` distinguishes success (`delivered`),
+ * an explicit partial outcome (`partial`), and an ambiguous provider outcome
+ * (`unknown`) that must be reconciled before any further write.
+ */
+export interface DeliveryRecord {
+  delivery_id: string;
+  operation_id: string;
+  issue_id: string;
+  candidate_id: string;
+  approval_id: string;
+  repository: RepositoryRef;
+  target_branch: string;
+  head_sha: string;
+  provider: "github" | "gitlab";
+  state: DeliveryState;
+  branch: string | null;
+  pr_id: string | null;
+  pr_url: string | null;
+  error_code: string | null;
+  created_at: string;
+  updated_at: string;
+  reconciled_at: string | null;
+  /** The active delivery grant checked before each provider write. */
+  grant_id: string;
+}
+
 /** Human disposition reference for the stopped -> approved (new grant) path. */
 export interface Disposition {
   actor: string;
@@ -376,6 +483,8 @@ export interface CollabState {
   currentTestPolicies: Map<string, string>;
   testPlans: Map<string, TestPlanRecord>;
   candidates: Map<string, CandidateRecord>;
+  approvals: Map<string, ApprovalRecord>;
+  deliveries: Map<string, DeliveryRecord>;
   handoffs: HandoffRecord[];
   /** Signal fingerprint -> issue id; replays reuse the issue instead of a new one. */
   dedupe: Map<string, string>;
@@ -394,6 +503,8 @@ export function emptyCollabState(): CollabState {
     currentTestPolicies: new Map(),
     testPlans: new Map(),
     candidates: new Map(),
+    approvals: new Map(),
+    deliveries: new Map(),
     handoffs: [],
     dedupe: new Map(),
     attempts: new Map(),

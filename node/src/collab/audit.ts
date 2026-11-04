@@ -30,6 +30,12 @@ export type AuditCommand =
   | "freeze_candidate"
   | "invalidate_candidate"
   | "record_base_advance"
+  | "request_approval"
+  | "decide_approval"
+  | "invalidate_approval"
+  | "request_delivery"
+  | "record_delivery_state"
+  | "reconcile_delivery"
   | "transition_issue"
   | "record_handoff"
   | "request_run_restart";

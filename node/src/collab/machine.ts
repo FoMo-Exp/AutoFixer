@@ -6,14 +6,17 @@ import type { AuditCommand, AuditRecord } from "./audit.js";
 import { auditChainProblem, auditDigest, digestOf } from "./audit.js";
 import type { CandidateFreshness } from "./candidate.js";
 import { candidateFreshness as freshnessOf } from "./candidate.js";
+import { approvalStateAt } from "./approval.js";
 import { diffDigest } from "./candidate-store.js";
 import type { CandidateContentStore } from "./candidate-store.js";
 import type { ApprovalInvalidationReason } from "./contract.js";
 import { CollabError } from "./errors.js";
 import { HANDLERS } from "./handlers.js";
 import {
+  newApprovalId,
   newArtifactId,
   newCandidateId,
+  newDeliveryId,
   newGrantId,
   newHandoffId,
   newIssueId,
@@ -23,6 +26,7 @@ import {
   newTestPolicyId,
 } from "./ids.js";
 import type {
+  ApprovalRecord,
   ArtifactRef,
   CandidateDiff,
   CandidateRecord,
@@ -30,6 +34,8 @@ import type {
   CapabilityGrant,
   ChangeRisk,
   CollabState,
+  DeliveryRecord,
+  DigestRef,
   TestPlanRecord,
   TestPolicyRecord,
   Disposition,
@@ -44,11 +50,13 @@ import type {
   RunScope,
   TaskRecord,
   TaskState,
+  UserRef,
   WorkspaceScope,
   WorktreeRef,
 } from "./types.js";
-import { emptyCollabState, grantStateAt, testPolicyScopeKey } from "./types.js";
+import { autofixerBranchFor, emptyCollabState, grantStateAt, testPolicyScopeKey } from "./types.js";
 import type { DshState } from "../dsh/types.js";
+import type { ApprovalState, DeliveryState } from "./contract.js";
 import type { ProductState } from "./states.js";
 
 /**
@@ -261,7 +269,89 @@ export type RecordBaseAdvanceInput = CommandBase & {
 export interface BaseAdvanceResult {
   issue: IssueRecord;
   invalidated_candidate_ids: string[];
+  invalidated_approval_ids: string[];
 }
+
+/**
+ * The approver-authority facts the trusted command boundary observed before
+ * asking the machine to address or decide an approval. The machine never
+ * invents authority; it records these facts in the audited payload so a replay
+ * reaches the same decision.
+ */
+export type ApproverAuthorityFacts = {
+  member_active: boolean;
+  repository_access: boolean;
+  approval_authority: boolean;
+  authority_version: string;
+};
+
+export type RequestApprovalInput = CommandBase & {
+  issue_id: string;
+  candidate_id: string;
+  target_branch: string;
+  /** The one named eligible human delivery approver, or null when none exists. */
+  approver: UserRef | null;
+  no_eligible_approver: boolean;
+  authority: ApproverAuthorityFacts;
+};
+
+export type DecideApprovalInput = CommandBase & {
+  issue_id: string;
+  approval_id: string;
+  decision: "approve" | "reject";
+  diff_digest: DigestRef;
+  note?: string | null;
+  actor_user: UserRef;
+  authority: ApproverAuthorityFacts;
+};
+
+export type InvalidateApprovalInput = CommandBase & {
+  issue_id: string;
+  approval_id: string;
+  reason: ApprovalInvalidationReason;
+};
+
+export type RequestDeliveryInput = CommandBase & {
+  issue_id: string;
+  candidate_id: string;
+  approval_id: string;
+  target_branch: string;
+  provider: "github" | "gitlab";
+  /** Defaults to the issue's autofixer branch; anything else is refused. */
+  branch?: string;
+  grant_id: string;
+  requester_authorized: boolean;
+};
+
+export type DeliveryAuthorityFacts = {
+  approver_authorized: boolean;
+  delivery_authorized: boolean;
+  audit_available: boolean;
+};
+
+export type RecordDeliveryStateInput = CommandBase & {
+  delivery_id: string;
+  to: DeliveryState;
+  branch?: string | null;
+  pr_id?: string | null;
+  pr_url?: string | null;
+  error_code?: string | null;
+  authority: DeliveryAuthorityFacts;
+};
+
+export type ReconcileDeliveryInput = CommandBase & {
+  delivery_id: string;
+  to: DeliveryState;
+  branch?: string | null;
+  pr_id?: string | null;
+  pr_url?: string | null;
+  error_code?: string | null;
+  evidence: {
+    branch_head_sha: string | null;
+    pr_head_sha: string | null;
+    pr_branch: string | null;
+  };
+};
 
 export interface CollabMachineOptions {
   /** Durable audit log location. Omit for a process-local machine in tests. */
@@ -271,6 +361,11 @@ export interface CollabMachineOptions {
    * `freezeCandidate`; a candidate cannot exist without its verifiable diff.
    */
   candidateStore?: CandidateContentStore;
+  /**
+   * Trusted finite approval TTL (ADR-0007 proposes 24 hours). Configured on the
+   * service, never supplied per request, so a caller cannot extend an approval.
+   */
+  approvalTtlSeconds?: number;
   /** Clock seam; captured per command as the audited effective time. */
   now?: () => Date;
 }
@@ -285,16 +380,34 @@ export class CollabMachine {
   private readonly audit: AuditRecord[] = [];
   private readonly persistencePath: string | undefined;
   private readonly candidateStore: CandidateContentStore | undefined;
+  private readonly approvalTtlSeconds: number;
   private readonly clock: () => Date;
 
   constructor(options: CollabMachineOptions = {}) {
     this.persistencePath = options.persistencePath;
     this.candidateStore = options.candidateStore;
+    this.approvalTtlSeconds = options.approvalTtlSeconds ?? 24 * 60 * 60;
+    if (
+      !Number.isInteger(this.approvalTtlSeconds) ||
+      this.approvalTtlSeconds < 1 ||
+      this.approvalTtlSeconds > 30 * 24 * 60 * 60
+    ) {
+      throw new CollabError(
+        "INVALID_INPUT",
+        "approval TTL must be a positive integer of at most 30 days",
+        { approval_ttl_seconds: this.approvalTtlSeconds },
+      );
+    }
     this.clock = options.now ?? (() => new Date());
     if (this.persistencePath !== undefined && fs.existsSync(this.persistencePath)) {
       const raw = JSON.parse(fs.readFileSync(this.persistencePath, "utf8")) as unknown;
       this.restore(readPersistedState(raw).audit);
     }
+  }
+
+  /** The machine's effective time, so reads and commands share one clock. */
+  now(): string {
+    return this.clock().toISOString();
   }
 
   /** Rebuild a machine from an audit log; used for recovery and reproducibility proofs. */
@@ -446,6 +559,101 @@ export class CollabMachine {
     return this.execute("record_base_advance", input, payload) as BaseAdvanceResult;
   }
 
+  /**
+   * Address one candidate-bound approval request to exactly one named eligible
+   * human delivery approver (DAT-220). The finite TTL comes from trusted
+   * service configuration, never from the request, so a caller cannot extend
+   * its own approval window. No provider write exists in this command.
+   */
+  requestApproval(input: RequestApprovalInput): ApprovalRecord {
+    const at = this.clock().toISOString();
+    const expiresAt = new Date(Date.parse(at) + this.approvalTtlSeconds * 1000).toISOString();
+    const payload: Payload = {
+      ...input,
+      approver: input.approver === null ? null : { ...input.approver },
+      no_eligible_approver: input.no_eligible_approver,
+      authority: { ...input.authority },
+      at,
+      expires_at: expiresAt,
+      approval_id: newApprovalId(),
+    };
+    return this.execute("request_approval", input, payload) as ApprovalRecord;
+  }
+
+  /**
+   * Record the one addressed approver's confirmed decision. The decision must
+   * restate the reviewed diff digest; approving a different revision is a stale
+   * binding, not an approval.
+   */
+  decideApproval(input: DecideApprovalInput): ApprovalRecord {
+    const payload: Payload = {
+      ...input,
+      actor_user: { ...input.actor_user },
+      diff_digest: { ...input.diff_digest },
+      authority: { ...input.authority },
+      note: input.note ?? null,
+      at: this.clock().toISOString(),
+    };
+    return this.execute("decide_approval", input, payload) as ApprovalRecord;
+  }
+
+  /** Permanently invalidate an approval whose binding or authority changed. */
+  invalidateApproval(input: InvalidateApprovalInput): ApprovalRecord {
+    const payload: Payload = { ...input, at: this.clock().toISOString() };
+    return this.execute("invalidate_approval", input, payload) as ApprovalRecord;
+  }
+
+  /**
+   * Record the delivery operation identity and intention before any provider
+   * write, and consume the approval in the same atomic command. The branch is
+   * derived from the issue, never supplied by a caller.
+   */
+  requestDelivery(input: RequestDeliveryInput): DeliveryRecord {
+    const payload: Payload = {
+      ...input,
+      branch: input.branch ?? autofixerBranchFor(input.issue_id),
+      at: this.clock().toISOString(),
+      delivery_id: newDeliveryId(),
+    };
+    return this.execute("request_delivery", input, payload) as DeliveryRecord;
+  }
+
+  /**
+   * Record one broker-observed delivery state transition. The handler
+   * re-checks the consumed approval, candidate identity, and delivery grant,
+   * so an expired grant or a changed base stops the write here.
+   */
+  recordDeliveryState(input: RecordDeliveryStateInput): DeliveryRecord {
+    const payload: Payload = {
+      ...input,
+      branch: input.branch ?? null,
+      pr_id: input.pr_id ?? null,
+      pr_url: input.pr_url ?? null,
+      error_code: input.error_code ?? null,
+      authority: { ...input.authority },
+      at: this.clock().toISOString(),
+    };
+    return this.execute("record_delivery_state", input, payload) as DeliveryRecord;
+  }
+
+  /**
+   * Reconcile an ambiguous (`unknown`) or explicit `partial` outcome against
+   * provider evidence. This is the only path out of those states and is never
+   * automatically retried; it never creates a provider write by itself.
+   */
+  reconcileDelivery(input: ReconcileDeliveryInput): DeliveryRecord {
+    const payload: Payload = {
+      ...input,
+      branch: input.branch ?? null,
+      pr_id: input.pr_id ?? null,
+      pr_url: input.pr_url ?? null,
+      error_code: input.error_code ?? null,
+      evidence: { ...input.evidence },
+      at: this.clock().toISOString(),
+    };
+    return this.execute("reconcile_delivery", input, payload) as DeliveryRecord;
+  }
+
   registerTestPolicy(input: RegisterTestPolicyInput): TestPolicyRecord {
     const payload: Payload = {
       ...input,
@@ -575,6 +783,50 @@ export class CollabMachine {
       .map((issue) => structuredClone(issue));
   }
 
+  getApproval(approvalId: string): ApprovalRecord | undefined {
+    const approval = this.state.approvals.get(approvalId);
+    return approval ? structuredClone(approval) : undefined;
+  }
+
+  /** Approval requests in address order (oldest first). */
+  listApprovals(issueId: string): ApprovalRecord[] {
+    return [...this.state.approvals.values()]
+      .filter((approval) => approval.issue_id === issueId)
+      .sort(
+        (a, b) =>
+          a.requested_at.localeCompare(b.requested_at) ||
+          a.approval_id.localeCompare(b.approval_id),
+      )
+      .map((approval) => structuredClone(approval));
+  }
+
+  /** Effective approval state at a point in time (default: now). */
+  approvalState(approvalId: string, at?: string): ApprovalState {
+    const approval = this.state.approvals.get(approvalId);
+    if (!approval) {
+      throw new CollabError("APPROVAL_NOT_FOUND", "unknown approval request", {
+        approval_id: approvalId,
+      });
+    }
+    return approvalStateAt(approval, at ?? this.clock().toISOString());
+  }
+
+  getDelivery(deliveryId: string): DeliveryRecord | undefined {
+    const delivery = this.state.deliveries.get(deliveryId);
+    return delivery ? structuredClone(delivery) : undefined;
+  }
+
+  /** Delivery operations in creation order (oldest first). */
+  listDeliveries(issueId: string): DeliveryRecord[] {
+    return [...this.state.deliveries.values()]
+      .filter((delivery) => delivery.issue_id === issueId)
+      .sort(
+        (a, b) =>
+          a.created_at.localeCompare(b.created_at) || a.delivery_id.localeCompare(b.delivery_id),
+      )
+      .map((delivery) => structuredClone(delivery));
+  }
+
   listRuns(issueId: string): RunRecord[] {
     return [...this.state.runs.values()]
       .filter((run) => run.issue_id === issueId)
@@ -638,6 +890,12 @@ export class CollabMachine {
       ),
       candidates: [...this.state.candidates.values()].sort((a, b) =>
         a.candidate_id.localeCompare(b.candidate_id),
+      ),
+      approvals: [...this.state.approvals.values()].sort((a, b) =>
+        a.approval_id.localeCompare(b.approval_id),
+      ),
+      deliveries: [...this.state.deliveries.values()].sort((a, b) =>
+        a.delivery_id.localeCompare(b.delivery_id),
       ),
       handoffs: this.state.handoffs,
       dedupe: [...this.state.dedupe.entries()].sort(),
