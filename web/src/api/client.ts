@@ -52,6 +52,48 @@ export type RsiDataset = RsiEvaluation["dataset"];
 export type RsiControlsPatch =
   operations["updateRsiControls"]["requestBody"]["content"]["application/json"];
 
+export type DashboardSummary = components["schemas"]["DashboardSummary"];
+type DashboardPeriod = components["schemas"]["DashboardPeriod"];
+export type DashboardSourceState = components["schemas"]["DashboardSourceState"];
+export type DashboardTotals = components["schemas"]["DashboardTotals"];
+export type DashboardLatencyMetric = components["schemas"]["DashboardLatencyMetric"];
+export type DashboardNotMeasuredMetric = components["schemas"]["DashboardNotMeasuredMetric"];
+export type DashboardTokenMetric = components["schemas"]["DashboardTokenMetric"];
+export type DashboardTokenTotals = components["schemas"]["DashboardTokenTotals"];
+export type DashboardCostMetric = components["schemas"]["DashboardCostMetric"];
+export type DashboardBudgetMetric = components["schemas"]["DashboardBudgetMetric"];
+export type DashboardValidationMetric = components["schemas"]["DashboardValidationMetric"];
+export type DashboardDeliveryMetric = components["schemas"]["DashboardDeliveryMetric"];
+type DashboardBreakdown = components["schemas"]["DashboardBreakdown"];
+export type DashboardBreakdownRow = components["schemas"]["DashboardBreakdownRow"];
+export type DashboardCostItemPage = components["schemas"]["DashboardCostItemPage"];
+export type DashboardCostItem = components["schemas"]["DashboardCostItem"];
+export type DashboardCostComponent = components["schemas"]["DashboardCostComponent"];
+export type DashboardIssueDrilldown = components["schemas"]["DashboardIssueDrilldown"];
+export type DashboardTraceEvent = components["schemas"]["DashboardTraceEvent"];
+export type DashboardMetricStatus = components["schemas"]["DashboardCountMetric"]["status"];
+export type DashboardBreakdownDimension = DashboardBreakdown["dimension"];
+export type DashboardBucket = DashboardPeriod["bucket"];
+export type DashboardCompleteness = DashboardCostItem["completeness"];
+
+/**
+ * Query surface shared by the dashboard reads. Every field is a contract
+ * parameter; an absent field is never sent, so the service owns its default.
+ */
+export interface DashboardRangeOptions {
+  from?: string;
+  to?: string;
+  timezone?: string;
+  bucket?: DashboardBucket;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface DashboardSummaryOptions extends DashboardRangeOptions {
+  breakdown?: DashboardBreakdownDimension;
+  staleAfterSeconds?: number;
+}
+
 type ErrorPayload = components["schemas"]["Error"];
 export type JsonFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -280,6 +322,30 @@ function issuePath(workspaceId: string, issueId?: string, suffix?: string): stri
 
 function memoryPath(workspaceId: string, suffix: string): string {
   return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/memory/${suffix}`;
+}
+
+function dashboardPath(workspaceId: string, suffix: string): string {
+  return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/dashboard/${suffix}`;
+}
+
+function dashboardQuery(
+  options: DashboardRangeOptions & {
+    breakdown?: DashboardBreakdownDimension;
+    staleAfterSeconds?: number;
+  },
+): string {
+  const params = new URLSearchParams();
+  if (options.from) params.set("from", options.from);
+  if (options.to) params.set("to", options.to);
+  if (options.timezone) params.set("timezone", options.timezone);
+  if (options.bucket) params.set("bucket", options.bucket);
+  if (options.breakdown) params.set("breakdown", options.breakdown);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.cursor) params.set("cursor", options.cursor);
+  if (options.staleAfterSeconds !== undefined) {
+    params.set("stale_after_seconds", String(options.staleAfterSeconds));
+  }
+  return params.size > 0 ? `?${params.toString()}` : "";
 }
 
 export interface StreamResult {
@@ -629,6 +695,41 @@ export class ForgePilotClient extends ApiTransport {
       },
     );
     return result.controls;
+  }
+
+  /**
+   * Workspace dashboard aggregates (DAT-230). The service resolves scope from
+   * the live membership; the path workspace is only a locator. Missing
+   * telemetry is reported as a status with null figures, never a zero.
+   */
+  async getDashboardSummary(
+    workspaceId: string,
+    options: DashboardSummaryOptions = {},
+  ): Promise<DashboardSummary> {
+    return this.request<DashboardSummary>(
+      `${dashboardPath(workspaceId, "summary")}${dashboardQuery(options)}`,
+    );
+  }
+
+  async listDashboardCostItems(
+    workspaceId: string,
+    options: DashboardRangeOptions = {},
+  ): Promise<DashboardCostItemPage> {
+    return this.request<DashboardCostItemPage>(
+      `${dashboardPath(workspaceId, "cost-items")}${dashboardQuery(options)}`,
+    );
+  }
+
+  async getDashboardIssueDrilldown(
+    workspaceId: string,
+    issueId: string,
+    options: DashboardRangeOptions = {},
+  ): Promise<DashboardIssueDrilldown> {
+    return this.request<DashboardIssueDrilldown>(
+      `${dashboardPath(workspaceId, `issues/${encodeURIComponent(issueId)}`)}${dashboardQuery(
+        options,
+      )}`,
+    );
   }
 
   async streamTaskEvents(taskId: string, options: StreamOptions): Promise<StreamResult> {
