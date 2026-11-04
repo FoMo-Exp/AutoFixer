@@ -1,0 +1,36 @@
+{
+  "item_id": "mem_9b1d6f2c4e5a4b7f8c1d2e3f4a5b6c7d",
+  "status": "quarantined",
+  "current_version": 3,
+  "versions_count": 3,
+  "kind": "lesson",
+  "tier": "L2",
+  "statement": null,
+  "preconditions": [],
+  "applicability": {
+    "team_id": "tem_01J8Z7G8H9",
+    "path_prefix": "web/src/memory",
+    "task_family": "retrieval"
+  },
+  "trust": "human",
+  "sensitivity": "internal",
+  "approved": true,
+  "valid_from": "2026-10-01T00:00:00Z",
+  "valid_to": null,
+  "content_hash": "32876dc38bb153a434b5bec6eb6e42be81994eb3dbe9f48d85a4ef38224dab89",
+  "support_count": 2,
+  "contradiction_count": 0,
+  "evidence": [
+    {
+      "evidence_type": "issue",
+      "reference": "sha256:bc5e4165eceaa50b410d6ab514597cc9"
+    }
+  ],
+  "updated_at": "2026-11-04T10:05:00Z",
+  "provenance": { "author_type": "human" },
+  "review": {
+    "approver_id": "usr_01J8Z5N4P7",
+    "approved_at": "2026-11-04T09:12:00Z"
+  },
+  "statement_redacted": true
+}

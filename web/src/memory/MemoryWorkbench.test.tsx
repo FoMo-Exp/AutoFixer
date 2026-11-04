@@ -53,6 +53,18 @@ async function openFirstItem(): Promise<void> {
 beforeEach(() => {
   vi.spyOn(ForgePilotClient.prototype, "listWorkspaces").mockResolvedValue(workspaces);
   vi.spyOn(ForgePilotClient.prototype, "listMemoryItems").mockResolvedValue(firstPage);
+  vi.spyOn(ForgePilotClient.prototype, "listMemoryItemVersions").mockResolvedValue({
+    schema_version: 1,
+    item_id: firstPage.items[0].item_id,
+    status: firstPage.items[0].status,
+    current_version: firstPage.items[0].current_version,
+    versions: [],
+  });
+  vi.spyOn(ForgePilotClient.prototype, "listMemoryItemEvents").mockResolvedValue({
+    item_id: firstPage.items[0].item_id,
+    events: [],
+    next_cursor: null,
+  });
 });
 
 afterEach(() => {
@@ -85,8 +97,11 @@ describe("memory workbench", () => {
 
     const heading = await screen.findByRole("heading", { name: statementOf(firstPage.items[0]) });
     expect(heading).toBeTruthy();
-    expect(screen.getByText("Path prefix")).toBeTruthy();
-    expect(screen.getByText("web/src/memory")).toBeTruthy();
+    const applicability = (await screen.findByRole("heading", { name: "Applicability" })).closest(
+      "section",
+    ) as HTMLElement;
+    expect(within(applicability).getByText("Path prefix")).toBeTruthy();
+    expect(within(applicability).getByText("web/src/memory")).toBeTruthy();
     expect(screen.getByText("Run")).toBeTruthy();
     expect(screen.getByText("run:mem_02")).toBeTruthy();
     expect(screen.getByText(firstPage.items[0].content_hash)).toBeTruthy();
@@ -115,9 +130,12 @@ describe("memory workbench", () => {
     for (const condition of item.preconditions) {
       expect(within(section).getByText(condition)).toBeTruthy();
     }
-    expect(screen.getByText("Task family")).toBeTruthy();
-    expect(screen.getByText("retrieval")).toBeTruthy();
-    expect(screen.queryByText("Path prefix")).toBeNull();
+    const applicability = (await screen.findByRole("heading", { name: "Applicability" })).closest(
+      "section",
+    ) as HTMLElement;
+    expect(within(applicability).getByText("Task family")).toBeTruthy();
+    expect(within(applicability).getByText("retrieval")).toBeTruthy();
+    expect(within(applicability).queryByText("Path prefix")).toBeNull();
   });
 
   it("states broad applicability for an item that sets no scope", async () => {
@@ -247,7 +265,7 @@ describe("memory workbench", () => {
     expect(
       await screen.findByText("This workspace has no memory item at your sensitivity ceiling yet."),
     ).toBeTruthy();
-    expect(screen.queryByText(/hidden/i)).toBeNull();
+    expect(document.querySelector(".memory-list-item")).toBeNull();
   });
 
   it("refuses to browse a workspace outside the credential", async () => {

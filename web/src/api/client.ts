@@ -35,6 +35,24 @@ export type MemoryTrust = MemoryItem["trust"];
 export type MemorySensitivity = MemoryItem["sensitivity"];
 export type MemoryApplicability = components["schemas"]["MemoryApplicability"];
 export type MemoryEvidence = components["schemas"]["MemoryEvidence"];
+export type MemoryItemVersions = components["schemas"]["MemoryItemVersions"];
+export type MemoryItemVersion = components["schemas"]["MemoryItemVersion"];
+export type MemoryItemEvents = components["schemas"]["MemoryItemEvents"];
+export type MemoryItemEvent = components["schemas"]["MemoryItemEvent"];
+export type MemoryProvenance = components["schemas"]["MemoryProvenance"];
+export type MemoryReview = components["schemas"]["MemoryReview"];
+export type MemoryGovernanceResult = components["schemas"]["MemoryGovernanceResult"];
+export type MemoryGovernanceAction = MemoryGovernanceResult["action"];
+export type MemoryReasonCode = components["schemas"]["MemoryDeprecateRequest"]["reason_code"];
+export type MemoryRestoreTarget = components["schemas"]["MemoryRestoreRequest"]["target_status"];
+export type MemoryPromoteRequest =
+  operations["promoteMemoryItem"]["requestBody"]["content"]["application/json"];
+export type MemoryDeprecateRequest =
+  operations["deprecateMemoryItem"]["requestBody"]["content"]["application/json"];
+export type MemoryQuarantineRequest =
+  operations["quarantineMemoryItem"]["requestBody"]["content"]["application/json"];
+export type MemoryRestoreRequest =
+  operations["restoreMemoryItem"]["requestBody"]["content"]["application/json"];
 
 export type RsiProposal = components["schemas"]["RsiProposal"];
 export type RsiProposalStatus = RsiProposal["status"];
@@ -282,6 +300,11 @@ function memoryPath(workspaceId: string, suffix: string): string {
   return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/memory/${suffix}`;
 }
 
+function memoryItemPath(workspaceId: string, itemId: string, suffix?: string): string {
+  const base = `items/${encodeURIComponent(itemId)}`;
+  return memoryPath(workspaceId, suffix ? `${base}/${suffix}` : base);
+}
+
 export interface StreamResult {
   lastEventId: string | undefined;
   terminal: boolean;
@@ -495,6 +518,12 @@ export class ForgePilotClient extends ApiTransport {
       kind?: MemoryKind;
       status?: MemoryStatus;
       tier?: MemoryTier;
+      team_id?: string;
+      path_prefix?: string;
+      language?: string;
+      task_family?: string;
+      trust?: MemoryTrust;
+      sensitivity?: MemorySensitivity;
       limit?: number;
       cursor?: string;
     } = {},
@@ -503,12 +532,91 @@ export class ForgePilotClient extends ApiTransport {
     if (options.kind) params.set("kind", options.kind);
     if (options.status) params.set("status", options.status);
     if (options.tier) params.set("tier", options.tier);
+    if (options.team_id) params.set("team_id", options.team_id);
+    if (options.path_prefix) params.set("path_prefix", options.path_prefix);
+    if (options.language) params.set("language", options.language);
+    if (options.task_family) params.set("task_family", options.task_family);
+    if (options.trust) params.set("trust", options.trust);
+    if (options.sensitivity) params.set("sensitivity", options.sensitivity);
     if (options.limit !== undefined) params.set("limit", String(options.limit));
     if (options.cursor) params.set("cursor", options.cursor);
     const query = params.size > 0 ? `?${params.toString()}` : "";
     return this.request<MemoryItemPage>(
       `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/memory/items${query}`,
     );
+  }
+
+  /** One item in the browse view, for deep links and post-conflict refreshes. */
+  async getMemoryItem(workspaceId: string, itemId: string): Promise<MemoryItem> {
+    return this.request<MemoryItem>(memoryItemPath(workspaceId, itemId));
+  }
+
+  /** Per-version content, already filtered by each version's own sensitivity. */
+  async listMemoryItemVersions(workspaceId: string, itemId: string): Promise<MemoryItemVersions> {
+    return this.request<MemoryItemVersions>(memoryItemPath(workspaceId, itemId, "versions"));
+  }
+
+  /** One page of the merged item audit timeline; `next_cursor` reaches the rest. */
+  async listMemoryItemEvents(
+    workspaceId: string,
+    itemId: string,
+    options: { limit?: number; cursor?: string } = {},
+  ): Promise<MemoryItemEvents> {
+    const params = new URLSearchParams();
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    if (options.cursor) params.set("cursor", options.cursor);
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    return this.request<MemoryItemEvents>(
+      `${memoryItemPath(workspaceId, itemId, "events")}${query}`,
+    );
+  }
+
+  async promoteMemoryItem(
+    workspaceId: string,
+    itemId: string,
+    body: MemoryPromoteRequest,
+  ): Promise<MemoryGovernanceResult> {
+    return this.request<MemoryGovernanceResult>(memoryItemPath(workspaceId, itemId, "promote"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async deprecateMemoryItem(
+    workspaceId: string,
+    itemId: string,
+    body: MemoryDeprecateRequest,
+  ): Promise<MemoryGovernanceResult> {
+    return this.request<MemoryGovernanceResult>(memoryItemPath(workspaceId, itemId, "deprecate"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async quarantineMemoryItem(
+    workspaceId: string,
+    itemId: string,
+    body: MemoryQuarantineRequest,
+  ): Promise<MemoryGovernanceResult> {
+    return this.request<MemoryGovernanceResult>(memoryItemPath(workspaceId, itemId, "quarantine"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async restoreMemoryItem(
+    workspaceId: string,
+    itemId: string,
+    body: MemoryRestoreRequest,
+  ): Promise<MemoryGovernanceResult> {
+    return this.request<MemoryGovernanceResult>(memoryItemPath(workspaceId, itemId, "restore"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
   }
 
   async listRsiProposals(

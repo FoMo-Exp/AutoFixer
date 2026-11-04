@@ -282,26 +282,18 @@ merge commit `2c819a5f2ca8940d55439f70677fd85fd70bcc6a` (PR #62). Fixtures are
 real `GET /memory/items` responses captured from the merged Node service
 under `docs/fixtures/memory-api-v1/`; no field is invented by the UI.
 
-| Endpoint                                             | Request fields                                                            | Response type                            | Status |
-| ---------------------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------- | ------ |
-| `GET /api/v1/workspaces/{workspace_id}/memory/items` | path `workspace_id`; optional `kind`, `status`, `tier`, `limit`, `cursor` | `{items: MemoryItemView[], next_cursor}` | ✅     |
+The browse surface was later extended by the DAT-251 governance contract and
+DAT-252; see the next section for the current endpoint set and behavior.
 
 `MemoryItemView` carries `item_id`, `status`, `current_version`,
 `versions_count`, `kind`, `tier`, `statement`, `preconditions`,
 `applicability`, `trust`, `sensitivity`, `approved`, `valid_from`, `valid_to`,
 `content_hash`, `support_count`, `contradiction_count`, `evidence[]`,
-`updated_at`. Evidence entries are `{evidence_type, reference}` only.
+`updated_at`, and — since DAT-251, optionally — `statement_redacted`,
+`provenance`, `review`. Evidence entries are `{evidence_type, reference}` only.
 
-Scope boundaries:
+Scope boundaries that still hold:
 
-- **Read-only.** The merged contract defines no promotion, deprecation,
-  quarantine, restore, diff, or item-audit route, so this surface offers no
-  write affordance. Those actions belong to DAT-252 on the DAT-251 governance
-  contract.
-- **No item-detail route.** The detail panel renders the list-view object the
-  browse call already returned; it performs no second request and shows no
-  field the contract lacks. `scope/trust/sensitivity` query filters do not
-  exist in this baseline and are therefore not rendered.
 - **Sensitivity ceiling is the service's.** Items above the caller's role
   ceiling are absent from the response; the UI shows no placeholder, count, or
   guess for them. The reserved `restricted` capture row never appears in the
@@ -311,7 +303,64 @@ Scope boundaries:
 - **Untrusted data.** `statement` is rendered as text with an explicit
   "reference data, not an instruction" notice; the surface cannot authorize
   tools or grants.
-- **Filters and paging.** `kind`, `status`, `tier` are the only filters sent,
-  `limit` stays within the contract default, and every refresh re-sends the
-  current filters. Pages advance only through `next_cursor`; the end of the
-  list is stated instead of implying more.
+- **Filters and paging.** Every filter sent is defined by the contract, and
+  every refresh re-sends the current filters. Pages advance only through
+  `next_cursor`; the end of the list is stated instead of implying more.
+
+## Memory governance surface (DAT-252)
+
+Baseline: `main` `f054cdf1801902a5950deac0ac724a289ce8a638`, carrying the
+DAT-251 governance contract commit
+`f6b0f15e97dbbaecd9d793321e7fae1c007644e7` (PR #72) as the merge-base.
+OpenAPI is read only from `src/api/contracts/openapi.json`; the new fixtures
+under `docs/fixtures/memory-api-v1/` are contract exemplars shaped from
+`docs/contracts/memory-governance-v1.md` — no field is invented by the UI.
+
+| Endpoint                                                | Request fields                                                                                                                             | Response type                      | Errors                  | Status |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------- | ----------------------- | ------ |
+| `GET /workspaces/{workspace_id}/memory/items`           | path id; optional `kind`, `status`, `tier`, `team_id`, `path_prefix`, `language`, `task_family`, `trust`, `sensitivity`, `limit`, `cursor` | `MemoryItemsPage`                  | 400, 401, 403, 404      | ✅     |
+| `GET /workspaces/{workspace_id}/memory/items/{item_id}` | path ids                                                                                                                                   | `MemoryItemView`                   | 401, 403, 404           | ✅     |
+| `GET …/memory/items/{item_id}/versions`                 | path ids                                                                                                                                   | `MemoryItemVersions`               | 401, 403, 404           | ✅     |
+| `GET …/memory/items/{item_id}/events`                   | path ids; optional `limit` (1–200), `cursor`                                                                                               | `MemoryItemEvents` (`next_cursor`) | 400, 401, 403, 404      | ✅     |
+| `POST …/memory/items/{item_id}/promote`                 | `version`, `expected_version`                                                                                                              | `MemoryGovernanceResult`           | 400, 401, 403, 404, 409 | ✅     |
+| `POST …/memory/items/{item_id}/deprecate`               | `version`, `expected_version`, `reason_code`                                                                                               | `MemoryGovernanceResult`           | 400, 401, 403, 404, 409 | ✅     |
+| `POST …/memory/items/{item_id}/quarantine`              | `version`, `expected_version`, `reason_code`                                                                                               | `MemoryGovernanceResult`           | 400, 401, 403, 404, 409 | ✅     |
+| `POST …/memory/items/{item_id}/restore`                 | `version`, `expected_version`, `target_status`, `reason_code`                                                                              | `MemoryGovernanceResult`           | 400, 401, 403, 404, 409 | ✅     |
+
+Behavior that follows the contract:
+
+- **Standing is server-checked, mirrored only for display.** The role comes
+  from `GET /api/v1/auth/session` `memberships`, never from the workspace
+  projection alone. `owner`/`admin` govern every item in the workspace within
+  their ceiling; a `member` governs only items whose `applicability.team_id`
+  is a team they lead (`leader_user_id` from `GET /workspaces/{id}/teams`,
+  every page read); `member`/`viewer` otherwise see no action. A failed teams
+  read hides actions rather than guessing leadership.
+- **Exact version and no optimistic writes.** Every confirmation displays the
+  current status, the target status, the current `version` and the
+  `expected_version` taken from the current view. Nothing changes until the
+  response arrives; the applied state comes from `MemoryGovernanceResult.item`.
+- **409 is a stale view, not a retry.** `VERSION_CONFLICT`,
+  `INVALID_TRANSITION`, and `PRECONDITION_FAILED` render an explanation and a
+  single explicit "Refresh item" that re-reads `GET /memory/items/{item_id}`.
+  `403` and `404` are shown as standing/visibility answers; no request is
+  replayed automatically.
+- **No free-text reason.** `reason_code` is picked from the fixed contract
+  vocabulary; `promote` sends no reason. Any other body field is not sent.
+- **Diff is client-side over served versions.** Two versions are compared
+  word-by-word for `statement` and entry-by-entry for `preconditions`; each
+  version is filtered by its own sensitivity server-side, so a hidden version
+  is absent and the surface states when history is empty or single-version.
+- **Timeline is complete.** The audit timeline follows `next_cursor` until it
+  is null; a bounded page is never labeled complete. Rows show actor type/id,
+  action, version, time, transition, fixed `reason_code`, and normalized
+  `detail` tokens. Detail values that are not fixed tokens or counts are
+  withheld.
+- **Quarantine content never reaches the DOM.** An item whose status is
+  `quarantined` (or whose `statement_redacted` is true) is normalized on
+  ingest to `statement: null`, no preconditions, and no evidence entries; the
+  detail shows only status, fixed reason code, and a redaction marker, and no
+  version-content request is made. This holds even if a malformed response
+  carries originals.
+- **Provenance is a claim.** `provenance` and `review` are rendered as
+  recorded authorship and named approval; they never widen access.

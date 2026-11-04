@@ -178,6 +178,12 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
       }),
     [config],
   );
+  // Team leadership decides which items a member may govern; every page is
+  // read so a leader of a later-page team keeps standing.
+  const loadMemoryTeams = useCallback(
+    (workspaceId: string) => identityClient.listAllWorkspaceTeams(workspaceId),
+    [identityClient],
+  );
   const [tasks, setTasks] = useState<Task[]>([]);
   const [surface, setSurface] = useState<"tasks" | "issues" | "memory" | "rsi">("tasks");
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
@@ -780,7 +786,9 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
 
       {surface === "issues" && <IssuesWorkbench client={client} />}
 
-      {surface === "memory" && <MemoryWorkbench client={client} />}
+      {surface === "memory" && (
+        <MemoryWorkbench client={client} session={auth.session} loadTeams={loadMemoryTeams} />
+      )}
 
       {surface === "rsi" && <RsiWorkbench client={client} currentUserId={auth.session?.user.id} />}
 
