@@ -13,6 +13,7 @@ import { IssuesWorkbench } from "./issues/IssuesWorkbench";
 import { MemoryWorkbench } from "./memory/MemoryWorkbench";
 import { RsiWorkbench } from "./memory/RsiWorkbench";
 import { DashboardWorkbench } from "./dashboard/DashboardWorkbench";
+import { SecurityWorkbench } from "./security/SecurityWorkbench";
 import { CreateIdempotencyKeys } from "./api/idempotency";
 import { RepositoryPicker } from "./settings/RepositoryPicker";
 import { SettingsDialog } from "./settings/SettingsDialog";
@@ -179,10 +180,16 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
       }),
     [config],
   );
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [surface, setSurface] = useState<"tasks" | "issues" | "memory" | "rsi" | "dashboard">(
-    "tasks",
+  // Team leadership decides which items a member may govern; every page is
+  // read so a leader of a later-page team keeps standing.
+  const loadMemoryTeams = useCallback(
+    (workspaceId: string) => identityClient.listAllWorkspaceTeams(workspaceId),
+    [identityClient],
   );
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [surface, setSurface] = useState<
+    "tasks" | "issues" | "memory" | "rsi" | "dashboard" | "security"
+  >("tasks");
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   /** 窄屏钻取视图：list ↔ detail（≤900px 生效，桌面始终双栏并存） */
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
@@ -552,6 +559,14 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
             >
               Dashboard
             </button>
+            <button
+              type="button"
+              className={`surface-tab ${surface === "security" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "security" ? "page" : undefined}
+              onClick={() => setSurface("security")}
+            >
+              Security
+            </button>
           </nav>
           {auth.session && (
             <div className="account-chip">
@@ -791,11 +806,15 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
 
       {surface === "issues" && <IssuesWorkbench client={client} />}
 
-      {surface === "memory" && <MemoryWorkbench client={client} />}
+      {surface === "memory" && (
+        <MemoryWorkbench client={client} session={auth.session} loadTeams={loadMemoryTeams} />
+      )}
 
       {surface === "rsi" && <RsiWorkbench client={client} currentUserId={auth.session?.user.id} />}
 
       {surface === "dashboard" && <DashboardWorkbench client={client} />}
+
+      {surface === "security" && <SecurityWorkbench client={client} session={auth.session} />}
 
       {showCreate && (
         <CreateTaskDialog

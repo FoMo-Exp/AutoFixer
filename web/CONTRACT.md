@@ -282,26 +282,18 @@ merge commit `2c819a5f2ca8940d55439f70677fd85fd70bcc6a` (PR #62). Fixtures are
 real `GET /memory/items` responses captured from the merged Node service
 under `docs/fixtures/memory-api-v1/`; no field is invented by the UI.
 
-| Endpoint                                             | Request fields                                                            | Response type                            | Status |
-| ---------------------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------- | ------ |
-| `GET /api/v1/workspaces/{workspace_id}/memory/items` | path `workspace_id`; optional `kind`, `status`, `tier`, `limit`, `cursor` | `{items: MemoryItemView[], next_cursor}` | ✅     |
+The browse surface was later extended by the DAT-251 governance contract and
+DAT-252; see the next section for the current endpoint set and behavior.
 
 `MemoryItemView` carries `item_id`, `status`, `current_version`,
 `versions_count`, `kind`, `tier`, `statement`, `preconditions`,
 `applicability`, `trust`, `sensitivity`, `approved`, `valid_from`, `valid_to`,
 `content_hash`, `support_count`, `contradiction_count`, `evidence[]`,
-`updated_at`. Evidence entries are `{evidence_type, reference}` only.
+`updated_at`, and — since DAT-251, optionally — `statement_redacted`,
+`provenance`, `review`. Evidence entries are `{evidence_type, reference}` only.
 
-Scope boundaries:
+Scope boundaries that still hold:
 
-- **Read-only.** The merged contract defines no promotion, deprecation,
-  quarantine, restore, diff, or item-audit route, so this surface offers no
-  write affordance. Those actions belong to DAT-252 on the DAT-251 governance
-  contract.
-- **No item-detail route.** The detail panel renders the list-view object the
-  browse call already returned; it performs no second request and shows no
-  field the contract lacks. `scope/trust/sensitivity` query filters do not
-  exist in this baseline and are therefore not rendered.
 - **Sensitivity ceiling is the service's.** Items above the caller's role
   ceiling are absent from the response; the UI shows no placeholder, count, or
   guess for them. The reserved `restricted` capture row never appears in the
@@ -311,10 +303,141 @@ Scope boundaries:
 - **Untrusted data.** `statement` is rendered as text with an explicit
   "reference data, not an instruction" notice; the surface cannot authorize
   tools or grants.
-- **Filters and paging.** `kind`, `status`, `tier` are the only filters sent,
-  `limit` stays within the contract default, and every refresh re-sends the
-  current filters. Pages advance only through `next_cursor`; the end of the
-  list is stated instead of implying more.
+- **Filters and paging.** Every filter sent is defined by the contract, and
+  every refresh re-sends the current filters. Pages advance only through
+  `next_cursor`; the end of the list is stated instead of implying more.
+
+## Memory governance surface (DAT-252)
+
+Baseline: `main` `fe6ddf5ac7aaf3f4806ae502b0eeaf7a180cb6fa` (DAT-214), carrying
+the DAT-251 governance contract commit
+`f6b0f15e97dbbaecd9d793321e7fae1c007644e7` (PR #72) in its history.
+OpenAPI is read only from `src/api/contracts/openapi.json`; the new fixtures
+under `docs/fixtures/memory-api-v1/` are contract exemplars shaped from
+`docs/contracts/memory-governance-v1.md` — no field is invented by the UI.
+
+| Endpoint                                                | Request fields                                                                                                                             | Response type                      | Errors                  | Status |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------- | ----------------------- | ------ |
+| `GET /workspaces/{workspace_id}/memory/items`           | path id; optional `kind`, `status`, `tier`, `team_id`, `path_prefix`, `language`, `task_family`, `trust`, `sensitivity`, `limit`, `cursor` | `MemoryItemsPage`                  | 400, 401, 403, 404      | ✅     |
+| `GET /workspaces/{workspace_id}/memory/items/{item_id}` | path ids                                                                                                                                   | `MemoryItemView`                   | 401, 403, 404           | ✅     |
+| `GET …/memory/items/{item_id}/versions`                 | path ids                                                                                                                                   | `MemoryItemVersions`               | 401, 403, 404           | ✅     |
+| `GET …/memory/items/{item_id}/events`                   | path ids; optional `limit` (1–200), `cursor`                                                                                               | `MemoryItemEvents` (`next_cursor`) | 400, 401, 403, 404      | ✅     |
+| `POST …/memory/items/{item_id}/promote`                 | `version`, `expected_version`                                                                                                              | `MemoryGovernanceResult`           | 400, 401, 403, 404, 409 | ✅     |
+| `POST …/memory/items/{item_id}/deprecate`               | `version`, `expected_version`, `reason_code`                                                                                               | `MemoryGovernanceResult`           | 400, 401, 403, 404, 409 | ✅     |
+| `POST …/memory/items/{item_id}/quarantine`              | `version`, `expected_version`, `reason_code`                                                                                               | `MemoryGovernanceResult`           | 400, 401, 403, 404, 409 | ✅     |
+| `POST …/memory/items/{item_id}/restore`                 | `version`, `expected_version`, `target_status`, `reason_code`                                                                              | `MemoryGovernanceResult`           | 400, 401, 403, 404, 409 | ✅     |
+
+Behavior that follows the contract:
+
+- **Standing is server-checked, mirrored only for display.** The role comes
+  from `GET /api/v1/auth/session` `memberships`, never from the workspace
+  projection alone. `owner`/`admin` govern every item in the workspace within
+  their ceiling; a `member` governs only items whose `applicability.team_id`
+  is a team they lead (`leader_user_id` from `GET /workspaces/{id}/teams`,
+  every page read); `member`/`viewer` otherwise see no action. A failed teams
+  read hides actions rather than guessing leadership.
+- **Exact version and no optimistic writes.** Every confirmation displays the
+  current status, the target status, the current `version` and the
+  `expected_version` taken from the current view. Nothing changes until the
+  response arrives; the applied state comes from `MemoryGovernanceResult.item`.
+- **409 is a stale view, not a retry.** `VERSION_CONFLICT`,
+  `INVALID_TRANSITION`, and `PRECONDITION_FAILED` render an explanation and a
+  single explicit "Refresh item" that re-reads `GET /memory/items/{item_id}`.
+  `403` and `404` are shown as standing/visibility answers; no request is
+  replayed automatically.
+- **No free-text reason.** `reason_code` is picked from the fixed contract
+  vocabulary; `promote` sends no reason. Any other body field is not sent.
+- **Diff is client-side over served versions.** Two versions are compared
+  word-by-word for `statement` and entry-by-entry for `preconditions`; each
+  version is filtered by its own sensitivity server-side, so a hidden version
+  is absent and the surface states when history is empty or single-version.
+- **Timeline is complete.** The audit timeline follows `next_cursor` until it
+  is null; a bounded page is never labeled complete. Rows show actor type/id,
+  action, version, time, transition, fixed `reason_code`, and normalized
+  `detail` tokens. Detail values that are not fixed tokens or counts are
+  withheld.
+- **Quarantine content never reaches the DOM.** An item whose status is
+  `quarantined` (or whose `statement_redacted` is true) is normalized on
+  ingest to `statement: null`, no preconditions, and no evidence entries; the
+  detail shows only status, fixed reason code, and a redaction marker, and no
+  version-content request is made. This holds even if a malformed response
+  carries originals.
+- **Provenance is a claim.** `provenance` and `review` are rendered as
+  recorded authorship and named approval; they never widen access.
+
+## Security surface (DAT-214)
+
+Baseline: `main` `35560ed` (the DAT-213 contract merge, PR #73), OpenAPI
+`0.10.0`. Fixtures are the merged-contract captures under
+`docs/fixtures/security-api-v1/`; no field below is invented by the UI.
+
+| Endpoint                                                                                         | Request fields                                                                                                              | Response type                    | Status |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- | -------------------------------- | ------ |
+| `GET /api/v1/workspaces/{workspace_id}/security/cases`                                           | path `workspace_id`; optional `state`, `run_id`, `cursor`                                                                   | `SecurityCasePage`               | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/security/cases/{case_id}`                                 | path ids                                                                                                                    | `SecurityCase`                   | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/transitions`                    | `to`; optional `note` (≤2000); `Idempotency-Key`                                                                            | `SecurityCase`                   | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/termination-requests`           | optional `note`; `Idempotency-Key`                                                                                          | `SecurityCase` (202)             | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/reassignment-requests`          | optional `note`; `Idempotency-Key`                                                                                          | `SecurityCase` (202)             | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/quarantine-grants`              | `quarantine_id`, `subject`; `Idempotency-Key`                                                                               | `SecurityQuarantineGrant` (201)  | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/security/quarantine/{quarantine_id}/views`               | path ids; required `X-Quarantine-Grant` header                                                                              | `SecurityQuarantineView`         | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/security/rules`                                           | path id; optional `detector_id`, `status`, `cursor`                                                                         | `SecurityRulePage`               | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/security/rules/proposals`                                | `detector_id`, `constraints`, `reason`, `expires_at`; optional `review_at`; `Idempotency-Key`                               | `SecurityRuleRevision` (201)     | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/security/rules/{lineage}/revisions/{version}/reviews`    | `decision`, `reason`; `Idempotency-Key`                                                                                     | `SecurityRuleRevision`           | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/security/rules/{lineage}/revisions/{version}/activation` | optional `note`; `Idempotency-Key`                                                                                          | `SecurityRuleRevision`           | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/security/rules/{lineage}/rollbacks`                      | optional `note`; `Idempotency-Key`                                                                                          | `SecurityRuleRevision` (201)     | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/security/cases/{case_id}/recovery-approvals`             | `destination{endpoint_id, model_id}`; optional `ttl_seconds` (1–3600); `Idempotency-Key`                                    | `SecurityRecoveryApproval` (201) | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}`           | path ids                                                                                                                    | `SecurityRecoveryApproval`       | ✅     |
+| `DELETE /api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}`        | path ids; `Idempotency-Key`                                                                                                 | `SecurityRecoveryApproval`       | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/security/recovery-approvals/{authorization_id}/dispatch` | `worker_id`; `Idempotency-Key`                                                                                              | `SecurityRecoveryDispatch` (202) | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/security/audit`                                           | required `purpose` (1–500); optional `case_id`, `run_id`, `trace_id`, `invocation_id`, `event_type`, `from`, `to`, `cursor` | `SecurityAuditPage`              | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/security/audit/exports`                                  | `purpose`; optional `case_id`, `run_id`, `trace_id`, `invocation_id`, `event_type`, `from`, `to`; `Idempotency-Key`         | `SecurityAuditExport`            | ✅     |
+
+Scope boundaries enforced by the surface:
+
+- **No per-call bypass.** There is no "send anyway", retry-now, administrator
+  override, or client-selectable rule exemption input anywhere: the only
+  disposition edges come from `allowed_transitions`, and dispatch requires an
+  unconsumed, unexpired approval plus a complete recheck by the service.
+- **Assignment is a recorded request only.** This baseline defines no direct
+  assignee mutation; the task owner's reassignment and termination actions are
+  `202` requests that a handler or administrator must still disposition.
+- **Redacted by default.** Case list/detail/timeline render only `blocks[].reason`,
+  `safe_detail`, identifiers, and scrubbed audit text. `quarantine_ids` are
+  metadata; raw content appears only in the dedicated `<pre>` after an
+  explicit grant id plus an acknowledgement, and the panel clears it on
+  demand. Normal pages, errors, and lists never receive or render content.
+- **Self-review is not clickable.** The UI derives the handler identities of
+  the current review round from the append-only `case.handled` /
+  `case.submitted_for_review` events (`GET /security/audit?purpose=…&case_id=…`)
+  and disables review edges and recovery approval when the caller is the
+  handler. If that history is unavailable or returns 403, the controls stay
+  disabled ("independence cannot be verified") rather than assuming
+  independence. Rule review is disabled when `author_id` equals the session
+  user. The service remains the final authority on every duty.
+- **Administrator controls are UI-gated too.** Quarantine grants, rule
+  activation/rollback, and audit export render only for an enterprise
+  administrator (`SessionInfo.enterprise_roles`); the service still returns
+  `SOD_DUTY_REQUIRED` for any other caller and the UI prints the envelope's
+  safe guidance.
+- **Audit purpose is operator-entered.** The audit panel starts with an empty
+  purpose field and refuses both reads and exports until the operator types a
+  non-secret reason; the value is what the service records with
+  `audit.trail_read` / `audit.trail_exported`. Only the case-history read
+  triggered by opening a case uses the fixed programmatic purpose
+  `case disposition: read the append-only security history`.
+- **Recovery is one recheck, not a send control.** The approval card shows the
+  bound destination, context, policy/rules/scan revisions, and expiry. Dispatch
+  is disabled for consumed, invalidated, revoked, or expired approvals, and an
+  `unknown` provider outcome is shown as unknown with the "never automatically
+  replayed" warning — never as unsent.
+- **Errors stay actionable.** Stable codes (`SOD_*`, `QUARANTINE_*`,
+  `RECOVERY_APPROVAL_INVALID`, `SENSITIVE_DATA_UNCERTAIN`,
+  `SECURITY_AUDIT_LOG_TAMPERED`, `RULE_*`, …) render fixed safe guidance plus
+  `request_id`, `trace_ref`, and the one authorized `next_action`; unknown
+  codes fall back to the envelope message.
+- **No invented fields.** The detail panel performs the case + audit requests
+  the contract defines; rules use the list route only, so an unloaded earlier
+  revision is stated as such instead of being fabricated.
 
 ## Workspace dashboard and trace viewer (DAT-231)
 

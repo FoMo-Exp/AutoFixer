@@ -125,6 +125,18 @@ export class IdentityClient extends ApiTransport {
     );
   }
 
+  /** Every team page; team leadership gating must not stop at the first page. */
+  async listAllWorkspaceTeams(workspaceId: string, options: RequestOptions = {}): Promise<Team[]> {
+    const teams: Team[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.listWorkspaceTeams(workspaceId, cursor, options);
+      teams.push(...page.items);
+      cursor = page.next_cursor ?? undefined;
+    } while (cursor);
+    return teams;
+  }
+
   async createWorkspaceTeam(
     workspaceId: string,
     body: CreateTeamBody,
