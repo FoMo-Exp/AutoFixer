@@ -107,9 +107,9 @@ Every fixture field comes from those captures or from
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}`        | path `workspace_id`, `issue_id`                                                     | `Issue`                             | ✅     |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stage`  | path `workspace_id`, `issue_id`                                                     | `IssueStage`                        | ✅     |
 | `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stage` | `to`, optional `reason`, optional `disposition.reference`; `Idempotency-Key` header | `IssueStage`                        | ✅     |
-| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks`  | path ids; optional `cursor`                                                         | `{items: IssueTask[], next_cursor}` | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks`  | path ids; `cursor` (every page is read)                                             | `{items: IssueTask[], next_cursor}` | ✅     |
 | `POST …/issues/{issue_id}/tasks/{task_id}/state`                 | `to`; `Idempotency-Key` header                                                      | `IssueTask`                         | ✅     |
-| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/runs`   | path ids; optional `cursor`                                                         | `{items: IssueRun[], next_cursor}`  | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/runs`   | path ids; `cursor` (every page is read)                                             | `{items: IssueRun[], next_cursor}`  | ✅     |
 | `GET …/issues/{issue_id}/runs/{run_id}`                          | path ids                                                                            | `IssueRun`                          | ✅     |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stream` | path ids; optional `Last-Event-ID` header                                           | SSE `IssueEvent` envelopes          | ✅     |
 
@@ -128,9 +128,13 @@ Scope boundaries:
   timed-out, expired, rejected, or cancelled run is rendered as an outcome
   with its stop reason; the surface offers no resume/retry affordance and
   states that continuation needs a new bounded run and a recorded disposition.
+- **Lists are complete.** Child tasks and runs are read through every
+  `next_cursor` page, so dependency state and stop outcomes are not limited to
+  the first page.
 - **Replay is idempotent.** The stream is opened without an anchor first (the
   service replays the retained log), then reconnects with the newest delivered
-  `event_id`. Events are deduplicated on `event_id`, ordered by `sequence`,
+  `event_id`; the anchor advances on every delivered frame, including when the
+  connection fails before the stream call returns. Events are deduplicated on `event_id`, ordered by `sequence`,
   and a detected sequence hole triggers a full replay without an anchor.
   Unknown event types and unknown stage/run/task states render explicitly
   instead of being mapped or dropped.

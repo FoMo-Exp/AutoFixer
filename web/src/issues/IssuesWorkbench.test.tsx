@@ -222,6 +222,77 @@ describe("issue workbench", () => {
     expect(screen.queryByRole("button", { name: "Cancel task" })).toBeNull();
   });
 
+  it("resolves task dependencies from every task page", async () => {
+    const client = makeClient();
+    vi.spyOn(client, "getIssue").mockResolvedValue({ ...issue, product_state: "implementing" });
+    vi.spyOn(client, "getIssueStage").mockResolvedValue({
+      ...stage,
+      product_state: "implementing",
+    });
+    vi.spyOn(client, "listIssueTasks")
+      .mockResolvedValueOnce({
+        items: [
+          {
+            ...taskPage.items[0],
+            state: "open",
+            depends_on: ["tsk_analysis_01"],
+          },
+        ],
+        next_cursor: "cur_tasks",
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            ...taskPage.items[0],
+            task_id: "tsk_analysis_01",
+            role: "analysis",
+            state: "done",
+            depends_on: [],
+          },
+        ],
+        next_cursor: null,
+      });
+    vi.spyOn(client, "listIssueRuns").mockResolvedValue(runPage);
+
+    render(<IssuesWorkbench client={client} />);
+    await openIssue();
+
+    expect(await screen.findAllByText(/tsk_analysis_0/)).not.toHaveLength(0);
+    expect(screen.getByText("Done")).toBeTruthy();
+    expect(screen.queryByText(/Blocked:/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Start task" })).toHaveProperty("disabled", false);
+  });
+
+  it("shows stop outcomes from runs on later pages", async () => {
+    const client = makeClient();
+    vi.spyOn(client, "getIssue").mockResolvedValue(issue);
+    vi.spyOn(client, "getIssueStage").mockResolvedValue(stage);
+    vi.spyOn(client, "listIssueTasks").mockResolvedValue(taskPage);
+    vi.spyOn(client, "listIssueRuns")
+      .mockResolvedValueOnce({
+        items: [{ ...runPage.items[0], run_id: "run_first", state: "running", stop_reason: null }],
+        next_cursor: "cur_runs",
+      })
+      .mockResolvedValueOnce({
+        items: [
+          {
+            ...runPage.items[0],
+            run_id: "run_second",
+            state: "stopped",
+            stop_reason: "Second attempt stopped by policy.",
+          },
+        ],
+        next_cursor: null,
+      });
+
+    render(<IssuesWorkbench client={client} />);
+    await openIssue();
+
+    expect(await screen.findAllByText("Second attempt stopped by policy.")).not.toHaveLength(0);
+    expect(screen.getByText("Harness: Stopped")).toBeTruthy();
+    expect(screen.getByText("2 runs")).toBeTruthy();
+  });
+
   it("names an unknown harness state instead of mapping it", async () => {
     const client = makeClient();
     vi.spyOn(client, "getIssue").mockResolvedValue(issue);

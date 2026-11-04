@@ -109,6 +109,40 @@ describe("useIssueStream", () => {
     expect(result.current.connection).toBe("connected");
   });
 
+  it("keeps the newest delivered id when the stream errors mid-frame", async () => {
+    const client = fakeClient();
+    const stream = vi.mocked(client.streamIssueEvents);
+    const anchors: Array<string | undefined> = [];
+    stream.mockImplementationOnce(async (_workspace, _issue, options) => {
+      anchors.push(options.lastEventId);
+      options.onEvent(event(1));
+      options.onEvent(event(2));
+      throw new Error("socket closed");
+    });
+    stream.mockImplementationOnce(async (_workspace, _issue, options) => {
+      anchors.push(options.lastEventId);
+      return { lastEventId: "evt_2", terminal: true };
+    });
+
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useIssueStream(client, "ws_1", "iss_1"));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.events).toHaveLength(2);
+    expect(anchors).toEqual([undefined]);
+
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(anchors).toEqual([undefined, "evt_2"]);
+    expect(result.current.events).toHaveLength(2);
+  });
+
   it("repairs a sequence hole with a full replay and keeps every unique event", async () => {
     const client = fakeClient();
     const stream = vi.mocked(client.streamIssueEvents);

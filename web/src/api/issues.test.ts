@@ -191,6 +191,32 @@ describe("issue API client", () => {
     );
   });
 
+  it("reads every child-task and run page instead of only the first", async () => {
+    const tasks = fixture<IssueTaskPage>("task-page.json");
+    const runs = fixture<IssueRunPage>("run-page.json");
+    const secondTask = { ...tasks.items[0], task_id: "tsk_second" };
+    const secondRun = { ...runs.items[0], run_id: "run_second" };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ items: tasks.items, next_cursor: "cur_task" }))
+      .mockResolvedValueOnce(jsonResponse({ items: [secondTask], next_cursor: null }))
+      .mockResolvedValueOnce(jsonResponse({ items: runs.items, next_cursor: "cur_run" }))
+      .mockResolvedValueOnce(jsonResponse({ items: [secondRun], next_cursor: null }));
+    const client = clientWith(fetchImpl);
+
+    const allTasks = await client.listAllIssueTasks("ws_payments", "iss_7f3c2a9e51b84d0fa1c6");
+    const allRuns = await client.listAllIssueRuns("ws_payments", "iss_7f3c2a9e51b84d0fa1c6");
+
+    expect(allTasks.map((task) => task.task_id)).toEqual([tasks.items[0]?.task_id, "tsk_second"]);
+    expect(allRuns.map((run) => run.run_id)).toEqual([runs.items[0]?.run_id, "run_second"]);
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe(
+      "http://127.0.0.1:4567/api/v1/workspaces/ws_payments/issues/iss_7f3c2a9e51b84d0fa1c6/tasks?cursor=cur_task",
+    );
+    expect(fetchImpl.mock.calls[3]?.[0]).toBe(
+      "http://127.0.0.1:4567/api/v1/workspaces/ws_payments/issues/iss_7f3c2a9e51b84d0fa1c6/runs?cursor=cur_run",
+    );
+  });
+
   it("streams issue events with Last-Event-ID and parses the durable envelope", async () => {
     const event = fixture<IssueEvent>("issue-event.json");
     const body = `id: ${event.event_id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;

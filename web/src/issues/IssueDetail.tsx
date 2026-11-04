@@ -98,15 +98,15 @@ export function IssueDetail({
     void Promise.all([
       client.getIssue(workspaceId, issueId),
       client.getIssueStage(workspaceId, issueId),
-      client.listIssueTasks(workspaceId, issueId),
-      client.listIssueRuns(workspaceId, issueId),
+      client.listAllIssueTasks(workspaceId, issueId),
+      client.listAllIssueRuns(workspaceId, issueId),
     ])
-      .then(([nextIssue, nextStage, taskPage, runPage]) => {
+      .then(([nextIssue, nextStage, nextTasks, nextRuns]) => {
         if (!active) return;
         setIssue(nextIssue);
         setStage(nextStage);
-        setTasks(taskPage.items);
-        setRuns(runPage.items);
+        setTasks(nextTasks);
+        setRuns(nextRuns);
         setLoadError(undefined);
       })
       .catch((caught: unknown) => {

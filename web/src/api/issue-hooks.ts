@@ -106,6 +106,11 @@ export function useIssueStream(
     const addEvent = (event: IssueEvent): void => {
       const merged = mergeIssueEvents(events, [event]);
       events = merged.events;
+      // Advance the replay anchor on every delivered frame: a network error
+      // may abort before the stream call returns, and reconnecting from a
+      // stale anchor would replay the whole retained log.
+      const newest = merged.events.at(-1);
+      if (newest) lastEventId = newest.event_id;
       setState((current) => ({
         ...current,
         events: merged.events,

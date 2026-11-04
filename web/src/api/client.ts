@@ -397,6 +397,17 @@ export class ForgePilotClient extends ApiTransport {
     return this.request<IssueTaskPage>(`${issuePath(workspaceId, issueId, "tasks")}${query}`);
   }
 
+  async listAllIssueTasks(workspaceId: string, issueId: string): Promise<IssueTask[]> {
+    const tasks: IssueTask[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.listIssueTasks(workspaceId, issueId, cursor);
+      tasks.push(...page.items);
+      cursor = page.next_cursor ?? undefined;
+    } while (cursor);
+    return tasks;
+  }
+
   async setIssueTaskState(
     workspaceId: string,
     issueId: string,
@@ -424,6 +435,17 @@ export class ForgePilotClient extends ApiTransport {
   ): Promise<IssueRunPage> {
     const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
     return this.request<IssueRunPage>(`${issuePath(workspaceId, issueId, "runs")}${query}`);
+  }
+
+  async listAllIssueRuns(workspaceId: string, issueId: string): Promise<IssueRun[]> {
+    const runs: IssueRun[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.listIssueRuns(workspaceId, issueId, cursor);
+      runs.push(...page.items);
+      cursor = page.next_cursor ?? undefined;
+    } while (cursor);
+    return runs;
   }
 
   async getIssueRun(workspaceId: string, issueId: string, runId: string): Promise<IssueRun> {

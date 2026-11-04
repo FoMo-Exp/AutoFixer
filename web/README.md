@@ -73,10 +73,15 @@ mode) sees an explicit unavailable state instead of an empty list.
   `allowed_transitions` are offered. A stopped or otherwise exhausted run is
   shown as an outcome with its stop reason; there is no resume button, because
   continuing needs a fresh bounded run and grant.
+- **Complete lists.** Child tasks and runs are read through every cursor page,
+  so dependency state and every stop outcome are present even when the
+  service paginates them.
 - **Replay-safe timeline.** The workbench reads the retained log from
-  `…/stream`, reconnects with `Last-Event-ID`, deduplicates on `event_id`,
-  orders on `sequence`, and repairs a detected sequence hole with a full
-  replay. Unknown event types and unknown enum values are labelled as unknown.
+  `…/stream`, advances its `Last-Event-ID` anchor as each frame arrives, and
+  reconnects from that anchor after a network error. It deduplicates on
+  `event_id`, orders on `sequence`, and repairs a detected sequence hole with
+  a full replay. Unknown event types and unknown enum values are labelled as
+  unknown.
 - **Evidence boundaries.** Run cards show `worktree_id` (never the absolute
   path), grants, scope, limits, stop reason, and handoff evidence
   (`head_sha` plus immutable artifact references). Candidates, approvals, and
