@@ -141,8 +141,9 @@ describe("Memory migrations", () => {
     // Full migration lineage — extend on every new migration version:
     // v1 control-plane base, v2 identity, v3 memory, v4 DAT-203 provider
     // access, v5 DAT-247 effective_access, v6 DAT-204 invitation, v7 DAT-234
-    // admission decisions and retirement candidates.
-    expect(applied).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    // admission decisions and retirement candidates, v8 DAT-235 promotion
+    // and consolidation lifecycle.
+    expect(applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 });
 
@@ -521,7 +522,10 @@ describe("Version review", () => {
 
 describe("Memory status machine", () => {
   test("walks the ADR-0009 lifecycle with evidence gating on active", () => {
-    const record = createItem();
+    // A `fact` walks the machine on evidence alone; procedural and policy
+    // kinds additionally require named human approval before activation
+    // (DAT-235 promotion rules, covered in memory-promotion.test.ts).
+    const record = createItem({ kind: "fact" });
     memory.items.setStatus(scope, record.item.id, "candidate", 1);
     expect(() => memory.items.setStatus(scope, record.item.id, "active", 1)).toThrow(
       ValidationError,

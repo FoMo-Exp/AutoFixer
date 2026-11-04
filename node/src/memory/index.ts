@@ -103,3 +103,8 @@ export type {
   RetirementAction,
   RetirementCandidate,
 } from "./admission/index.js";
+
+// Lifecycle surface (DAT-235): risk-graded promotion, named human approval,
+// scheduled consolidation, and deletion rules. See
+// `docs/contracts/memory-lifecycle-v1.md`.
+export * from "./lifecycle/index.js";

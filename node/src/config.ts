@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { isLoopbackHost } from "./api/auth.js";
+import { DEFAULT_MEMORY_CONSOLIDATION_INTERVAL_MS } from "./memory/lifecycle/runner.js";
 
 /** Runtime configuration for the orchestrator, sourced from the environment. */
 export interface OrchestratorConfig {
@@ -139,6 +140,13 @@ export interface OrchestratorConfig {
   oauthFlowTtlSeconds?: number;
   /** Desktop system-browser flow lifetime in seconds (default 10 minutes). */
   desktopFlowTtlSeconds?: number;
+  /**
+   * Sleep-time memory consolidation interval in milliseconds (DAT-235).
+   * Applies whenever the identity control plane is enabled; defaults to six
+   * hours. The scheduled job never holds the process open and stops with the
+   * orchestrator.
+   */
+  memoryConsolidationIntervalMs?: number;
 }
 
 function csv(value: string | undefined, fallback: string[]): string[] {
@@ -363,6 +371,11 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     env["FORGEPILOT_DESKTOP_FLOW_TTL_SECONDS"],
     600,
     "FORGEPILOT_DESKTOP_FLOW_TTL_SECONDS",
+  );
+  config.memoryConsolidationIntervalMs = positiveInt(
+    env["FORGEPILOT_MEMORY_CONSOLIDATION_INTERVAL_MS"],
+    DEFAULT_MEMORY_CONSOLIDATION_INTERVAL_MS,
+    "FORGEPILOT_MEMORY_CONSOLIDATION_INTERVAL_MS",
   );
   return config;
 }

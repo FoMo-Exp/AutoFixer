@@ -714,6 +714,109 @@ const MIGRATIONS: Migration[] = [
         ON memory_retirement_candidates(workspace_id, status)`,
     ],
   },
+  {
+    // Promotion and consolidation lifecycle (DAT-235): per-workspace promotion
+    // policy, the record of every promotion assessment, and the auditable
+    // report of every scheduled consolidation run and the fixed-vocabulary
+    // operations it applied.
+    //
+    // Numbering: main already took v5 (DAT-247), v6 (DAT-204), and v7
+    // (DAT-234's admission gate, renumbered on merge), so this unmerged block
+    // is v8 — the next free version, immediately after the admission gate it
+    // builds on. Renumbering an unmerged block costs nothing and no merged
+    // migration is touched; a duplicate version would silently skip this
+    // schema.
+    //
+    // The policy row is workspace configuration and cascades with the
+    // workspace. Decisions and consolidation reports are audit records: like
+    // `memory_events` they carry plain scope IDs without foreign keys and
+    // outlive the items they describe. Every column here holds an opaque id,
+    // a fixed enum, a one-way digest, a count, or a timestamp — never memory
+    // statements, provenance payloads, or free-text reasons.
+    version: 8,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS memory_promotion_policy (
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        auto_promote_facts INTEGER NOT NULL CHECK (auto_promote_facts IN (0, 1)),
+        fact_min_independent_runs INTEGER NOT NULL CHECK (fact_min_independent_runs >= 2),
+        require_human_approval_all INTEGER NOT NULL CHECK (require_human_approval_all IN (0, 1)),
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        PRIMARY KEY (enterprise_id, workspace_id)
+      )`,
+      `CREATE TABLE IF NOT EXISTS memory_promotion_decisions (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        item_version INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (
+          kind IN ('fact', 'lesson', 'playbook', 'anti_pattern', 'episode', 'policy')
+        ),
+        outcome TEXT NOT NULL CHECK (outcome IN ('promoted', 'blocked')),
+        reasons TEXT NOT NULL,
+        independent_support_runs INTEGER NOT NULL,
+        evaluation_delta REAL,
+        policy_digest TEXT NOT NULL,
+        run_id TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_promotion_decisions_scope
+        ON memory_promotion_decisions(enterprise_id, workspace_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_promotion_decisions_item
+        ON memory_promotion_decisions(item_id)`,
+      `CREATE TABLE IF NOT EXISTS memory_consolidation_runs (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        items_scanned INTEGER NOT NULL DEFAULT 0,
+        counts_recomputed INTEGER NOT NULL DEFAULT 0,
+        ops_applied INTEGER NOT NULL DEFAULT 0,
+        ops_skipped INTEGER NOT NULL DEFAULT 0,
+        budget_exhausted INTEGER NOT NULL DEFAULT 0 CHECK (budget_exhausted IN (0, 1)),
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_consolidation_runs_scope
+        ON memory_consolidation_runs(enterprise_id, workspace_id, started_at)`,
+      `CREATE TABLE IF NOT EXISTS memory_consolidation_ops (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        op TEXT NOT NULL CHECK (
+          op IN ('merge', 'supersede', 'expire', 'deprecate', 'quarantine')
+        ),
+        item_id TEXT NOT NULL,
+        target_item_id TEXT,
+        item_version INTEGER,
+        reason_code TEXT NOT NULL CHECK (
+          reason_code IN (
+            'duplicate_content', 'past_valid_to', 'stale_fact', 'unused_decay',
+            'retirement_proposal', 'security_report',
+            'item_deleted', 'item_missing', 'status_not_applicable'
+          )
+        ),
+        applied INTEGER NOT NULL CHECK (applied IN (0, 1)),
+        detail TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_consolidation_ops_run
+        ON memory_consolidation_ops(run_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_consolidation_ops_scope
+        ON memory_consolidation_ops(enterprise_id, workspace_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_consolidation_ops_item
+        ON memory_consolidation_ops(item_id)`,
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
