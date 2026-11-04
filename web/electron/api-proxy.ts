@@ -26,9 +26,14 @@ export interface ApiProxyResponse {
 
 interface ApiProxyOptions {
   apiBaseUrl: string;
-  apiToken: string;
+  /** Legacy local-operator token used when no identity subsystem exists. */
+  apiToken?: string;
+  /** Resolves the current credential per request (desktop session or legacy). */
+  getApiToken?: () => string | undefined;
   fetchImpl?: typeof fetch;
   publish: (requestId: string, message: ApiStreamMessage) => void;
+  /** Called when the Node service rejects the credential of a request. */
+  onUnauthorized?: () => void;
 }
 
 const FORWARDED_HEADERS = new Set(["accept", "content-type", "idempotency-key", "last-event-id"]);
@@ -58,6 +63,7 @@ export function createApiProxy(options: ApiProxyOptions): {
         redirect: "error",
       });
       const responseHeaders = pickResponseHeaders(response.headers);
+      if (response.status === 401) options.onUnauthorized?.();
       if (isStream && response.ok && response.body) {
         streamStarted = true;
         void pumpStream(response.body, input.requestId, controller, options.publish, () => {
@@ -142,7 +148,8 @@ function validateRequest(
 } {
   if (!input || !isRequestId(input.requestId)) throw new Error("Invalid API request id.");
   if (!isLoopbackApiUrl(options.apiBaseUrl)) throw new Error("Local Node service is unavailable.");
-  if (!options.apiToken) throw new Error("Local Node service token is unavailable.");
+  const apiToken = options.getApiToken ? options.getApiToken() : options.apiToken;
+  if (!apiToken) throw new Error("ForgePilot sign-in is required.");
 
   const base = new URL(options.apiBaseUrl);
   const target = new URL(input.url);
@@ -171,7 +178,7 @@ function validateRequest(
       headers.set(name, value);
     }
   }
-  headers.set("Authorization", `Bearer ${options.apiToken}`);
+  headers.set("Authorization", `Bearer ${apiToken}`);
   return {
     target,
     method,
