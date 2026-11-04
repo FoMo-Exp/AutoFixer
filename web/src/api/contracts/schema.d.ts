@@ -1788,6 +1788,8 @@ export interface components {
             validation: {
                 config_digest: string;
                 environment: string;
+                /** @description Validation identities the approved test plan requires. A candidate freezes only when every required check has a recorded passing attempt against its exact revision; a failed or unexecuted required check stops the run instead of producing a review card. */
+                required_checks?: string[];
                 results: components["schemas"]["ValidationResult"][];
             };
             risk: components["schemas"]["ChangeRisk"];

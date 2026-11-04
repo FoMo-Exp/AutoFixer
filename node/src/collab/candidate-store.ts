@@ -22,6 +22,27 @@ import { CollabError } from "./errors.js";
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
+/**
+ * Resolve a path's real location, tolerating a leaf that does not exist yet:
+ * the nearest existing ancestor is resolved through symlinks and the missing
+ * remainder is appended. An all-missing path resolves to itself.
+ */
+function realPath(target: string): string {
+  const resolved = path.resolve(target);
+  let current = resolved;
+  const suffix: string[] = [];
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return resolved;
+    }
+    suffix.unshift(path.basename(current));
+    current = parent;
+  }
+  const real = fs.realpathSync(current);
+  return suffix.length === 0 ? real : path.join(real, ...suffix);
+}
+
 /** sha256 over the exact retained diff content (UTF-8 bytes). */
 export function diffDigest(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
@@ -112,15 +133,20 @@ export class CandidateContentStore {
    * Refuse a retention root that sits inside the preparation worktree (or is
    * the worktree itself). ADR-0007 requires the candidate to survive worktree
    * cleanup, so content stored under an ephemeral path is not a candidate.
+   *
+   * Containment is checked on resolved real paths: a store root that is a
+   * symlink into the worktree, or that lives below a symlinked parent, would
+   * otherwise pass a string prefix check and lose its blobs on cleanup.
    */
   assertOutsideWorktree(worktreePath: string): void {
-    const worktree = path.resolve(worktreePath);
-    const inside = this.root === worktree || this.root.startsWith(worktree + path.sep);
+    const worktree = realPath(worktreePath);
+    const root = realPath(this.root);
+    const inside = root === worktree || root.startsWith(worktree + path.sep);
     if (inside) {
       throw new CollabError(
         "CANDIDATE_INVALID",
         "candidate content must be retained outside the ephemeral worktree",
-        { worktree_path: worktree, store_root: this.root },
+        { worktree_path: worktree, store_root: root },
       );
     }
   }

@@ -239,10 +239,15 @@ export interface CandidateValidationResult {
   event_reference: string;
 }
 
-/** The test evidence an approval is bound to. */
+/**
+ * The test evidence an approval is bound to. `required_checks` names the
+ * validation identities the approved test plan requires; every one of them
+ * must have a passing attempt before a candidate may freeze.
+ */
 export interface CandidateValidation {
   config_digest: string;
   environment: string;
+  required_checks: string[];
   results: CandidateValidationResult[];
 }
 

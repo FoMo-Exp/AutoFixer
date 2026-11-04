@@ -814,7 +814,21 @@ validation configuration/environment and every validation attempt, the risk
 decision, and patch/report provenance references. The diff content is retained
 in a content-addressed store outside the ephemeral worktree, so the card and its
 evidence stay reviewable after cleanup; `diff.digest` is the sha256 of that
-retained content and can be recomputed independently instead of trusted.
+retained content and can be recomputed independently instead of trusted. The
+containment check resolves symlinks, so a retention root that only appears to be
+outside the worktree is refused.
+
+Validation evidence is passing evidence: `validation.required_checks` names the
+checks the approved test plan requires, and every required check must have a
+recorded attempt with exit status `0`. A failed attempt, an attempt with no exit
+status or output digest, or a missing required check stops the run instead of
+producing a review card.
+
+Every validation `event_reference` and `audit_refs` entry must resolve to a
+record the preparation run actually retained (`evidence://runs/{run_id}/...`:
+artifacts and recorded grants). Validation references must be artifacts produced
+from the frozen base and head, so a card cannot cite another run's artifact, a
+grant record as a test result, or a fabricated evidence path.
 
 `Candidate` carries optional `invalidated_at`/`invalidated_reason`. When the
 issue base advances, every candidate frozen against an older base is
@@ -822,6 +836,10 @@ permanently invalid (`base_advanced`) and can never be approved or delivered:
 refreshing a base requires a new run, new validation, and a new candidate. A
 frozen candidate has no branch or PR — no provider write exists before a
 current, candidate-bound human approval.
+
+`GET .../candidates` serves stable pages: `next_cursor` is the last served
+candidate id and an unknown cursor is `400 INVALID_CURSOR`, so a client never
+silently restarts or skips the list.
 
 The reviewer notification carries bounded metadata (summary, changed-path
 count, line counts, test totals, risk class) and an authenticated client link

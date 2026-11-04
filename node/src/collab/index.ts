@@ -65,6 +65,15 @@ export type {
   CandidateStaleReason,
 } from "./candidate.js";
 export { CandidateContentStore, diffDigest } from "./candidate-store.js";
+export {
+  RUN_EVIDENCE_PREFIX,
+  artifactEvidenceRef,
+  grantEvidenceRef,
+  resolveRevisionEvidence,
+  resolveRunEvidence,
+  runEvidenceIndex,
+} from "./evidence.js";
+export type { ResolvedEvidence } from "./evidence.js";
 export type { StoredDiff } from "./candidate-store.js";
 export { CandidateReviewService } from "./candidate-service.js";
 export type { CandidateCardPage, CandidateDiffView } from "./candidate-service.js";

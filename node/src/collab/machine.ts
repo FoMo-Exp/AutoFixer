@@ -467,11 +467,17 @@ export class CollabMachine {
     return candidate ? structuredClone(candidate) : undefined;
   }
 
-  /** Frozen candidates in freeze order (oldest first). */
+  /**
+   * Frozen candidates in freeze order (oldest first). Ties on `created_at`
+   * break on candidate id so pagination is stable across reads.
+   */
   listCandidates(issueId: string): CandidateRecord[] {
     return [...this.state.candidates.values()]
       .filter((candidate) => candidate.issue_id === issueId)
-      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .sort(
+        (a, b) =>
+          a.created_at.localeCompare(b.created_at) || a.candidate_id.localeCompare(b.candidate_id),
+      )
       .map((candidate) => structuredClone(candidate));
   }
 

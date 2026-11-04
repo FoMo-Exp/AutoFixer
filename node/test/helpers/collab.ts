@@ -1,4 +1,5 @@
 import { diffDigest } from "../../src/collab/candidate-store.js";
+import { artifactEvidenceRef, grantEvidenceRef } from "../../src/collab/evidence.js";
 import { CollabMachine } from "../../src/collab/machine.js";
 import type {
   ArtifactInput,
@@ -160,6 +161,8 @@ export interface PreparationContext {
   run: RunRecord;
   lease: { holder: string; fencing_token: number };
   artifacts: ArtifactRef[];
+  /** An artifact retained by the run but produced from another revision. */
+  other_revision_artifact: ArtifactRef;
   head_sha: string;
   tree_sha: string;
   diff_content: string;
@@ -174,12 +177,13 @@ export interface PreparationContext {
 export function stoppedPreparation(
   machine: CollabMachine,
   issueId: string,
-  overrides: { worktreePath?: string } = {},
+  overrides: { worktreePath?: string; worktreeId?: string } = {},
 ): PreparationContext {
+  const worktreeId = overrides.worktreeId ?? "wt_candidate";
   const run = openRun(machine, issueId, {
     worktree: {
-      worktree_id: "wt_candidate",
-      path: overrides.worktreePath ?? "/tmp/worktrees/wt_candidate",
+      worktree_id: worktreeId,
+      path: overrides.worktreePath ?? `/tmp/worktrees/${worktreeId}`,
     },
   });
   const lease = leaseRef(acquireLease(machine, run.run_id));
@@ -232,6 +236,17 @@ export function stoppedPreparation(
       }),
     }),
   ];
+  const otherRevisionArtifact = machine.attachArtifact({
+    operation_id: op(),
+    actor: "worker:a",
+    run_id: run.run_id,
+    lease,
+    artifact: artifactInput({
+      kind: "evidence_bundle",
+      digest: "ab".repeat(32),
+      head_sha: "e".repeat(40),
+    }),
+  });
   machine.recordRunState({
     operation_id: op(),
     actor: "worker:a",
@@ -241,18 +256,22 @@ export function stoppedPreparation(
     stop_reason: "local preparation complete; validation evidence recorded",
     head_sha: CANDIDATE_HEAD,
   });
-  machine.transitionIssue({
-    operation_id: op(),
-    actor: "human:operator",
-    issue_id: issueId,
-    to: "implementing",
-    reason: null,
-  });
+  const issue = machine.getIssue(issueId) as IssueRecord;
+  if (issue.product_state === "planning") {
+    machine.transitionIssue({
+      operation_id: op(),
+      actor: "human:operator",
+      issue_id: issueId,
+      to: "implementing",
+      reason: null,
+    });
+  }
   return {
     issue: machine.getIssue(issueId) as IssueRecord,
     run: machine.getRun(run.run_id) as RunRecord,
     lease,
     artifacts,
+    other_revision_artifact: otherRevisionArtifact,
     head_sha: CANDIDATE_HEAD,
     tree_sha: CANDIDATE_TREE,
     diff_content: CANDIDATE_DIFF,
@@ -265,6 +284,17 @@ export function freezeCandidateInput(
   context: PreparationContext,
   overrides: Partial<FreezeCandidateInput> = {},
 ): FreezeCandidateInput {
+  const patch = context.artifacts.find((artifact) => artifact.kind === "patch");
+  const report = context.artifacts.find((artifact) => artifact.kind === "report");
+  if (patch === undefined || report === undefined) {
+    throw new Error("preparation context has no patch/report artifact");
+  }
+  const patchRef = artifactEvidenceRef(context.run.run_id, patch.artifact_id);
+  const reportRef = artifactEvidenceRef(context.run.run_id, report.artifact_id);
+  const grant = context.run.grants[0];
+  if (grant === undefined) {
+    throw new Error("preparation context has no recorded grant");
+  }
   return {
     operation_id: op(),
     actor: "worker:a",
@@ -285,12 +315,13 @@ export function freezeCandidateInput(
     validation: {
       config_digest: `sha256:${OTHER_DIGEST}`,
       environment: "node20-linux-x64-isolated",
+      required_checks: ["npm test -- retry"],
       results: [
         {
           tool: "npm test -- retry",
           exit_status: 0,
           output_digest: { algorithm: "sha256", value: DIGEST },
-          event_reference: "evidence://events/run_candidate/7",
+          event_reference: reportRef,
         },
       ],
     },
@@ -300,7 +331,7 @@ export function freezeCandidateInput(
       requires_human_approval: false,
     },
     artifact_ids: context.artifacts.map((artifact) => artifact.artifact_id),
-    audit_refs: ["evidence://events/run_candidate/7", "evidence://artifacts/run_candidate/patch"],
+    audit_refs: [patchRef, reportRef, grantEvidenceRef(context.run.run_id, grant.grant_id)],
     ...overrides,
   };
 }

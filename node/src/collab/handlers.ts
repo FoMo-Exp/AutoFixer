@@ -3,6 +3,7 @@ import { canonicalJson } from "./audit.js";
 import { APPROVAL_INVALIDATION_REASONS } from "./contract.js";
 import type { ApprovalInvalidationReason } from "./contract.js";
 import { CollabError } from "./errors.js";
+import { resolveRevisionEvidence, resolveRunEvidence } from "./evidence.js";
 import type {
   ArtifactRef,
   CandidateDiff,
@@ -294,22 +295,6 @@ function parseArtifact(value: unknown, field: string): ArtifactRef {
 }
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
-const EVIDENCE_SCHEME = "evidence://";
-
-function evidenceRef(value: unknown, field: string): string {
-  const text = str(value, field);
-  if (!text.startsWith(EVIDENCE_SCHEME)) {
-    throw new CollabError(
-      "CANDIDATE_INVALID",
-      `${field} must reference an append-only evidence record (${EVIDENCE_SCHEME}...)`,
-      { field, value: text },
-    );
-  }
-  if (/\s/.test(text)) {
-    throw new CollabError("CANDIDATE_INVALID", `${field} must not contain whitespace`, { field });
-  }
-  return text;
-}
 
 function uniqueStrings(values: string[], field: string): string[] {
   const seen = new Set<string>();
@@ -398,29 +383,37 @@ function parseCandidateDiff(value: unknown, field: string): CandidateDiff {
 function parseValidationResult(value: unknown, field: string): CandidateValidationResult {
   const source = object(value, field);
   assertExactKeys(source, ["tool", "exit_status", "output_digest", "event_reference"], field);
-  let exitStatus: number | null = null;
-  if (source["exit_status"] !== null) {
-    if (typeof source["exit_status"] !== "number" || !Number.isInteger(source["exit_status"])) {
-      throw new CollabError("INVALID_INPUT", `${field}.exit_status must be an integer or null`, {
-        field: `${field}.exit_status`,
-      });
-    }
-    exitStatus = source["exit_status"];
+  if (
+    typeof source["exit_status"] !== "number" ||
+    !Number.isInteger(source["exit_status"]) ||
+    source["exit_status"] !== 0
+  ) {
+    // A frozen candidate carries passing evidence only. A failed attempt leaves
+    // the run in a stop state that needs human disposition, never a review card.
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      `${field}.exit_status must be 0: a frozen candidate cannot include a failed or unexecuted validation`,
+      { field: `${field}.exit_status`, value: source["exit_status"] },
+    );
+  }
+  if (source["output_digest"] === null || source["output_digest"] === undefined) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      `${field}.output_digest is required for executed validation evidence`,
+      { field: `${field}.output_digest` },
+    );
   }
   return {
     tool: str(source["tool"], `${field}.tool`),
-    exit_status: exitStatus,
-    output_digest:
-      source["output_digest"] === null
-        ? null
-        : parseDigestRef(source["output_digest"], `${field}.output_digest`),
-    event_reference: evidenceRef(source["event_reference"], `${field}.event_reference`),
+    exit_status: 0,
+    output_digest: parseDigestRef(source["output_digest"], `${field}.output_digest`),
+    event_reference: str(source["event_reference"], `${field}.event_reference`),
   };
 }
 
 function parseCandidateValidation(value: unknown, field: string): CandidateValidation {
   const source = object(value, field);
-  assertExactKeys(source, ["config_digest", "environment", "results"], field);
+  assertExactKeys(source, ["config_digest", "environment", "required_checks", "results"], field);
   const rawResults = source["results"];
   if (!Array.isArray(rawResults) || rawResults.length === 0) {
     throw new CollabError(
@@ -429,12 +422,34 @@ function parseCandidateValidation(value: unknown, field: string): CandidateValid
       { field: `${field}.results` },
     );
   }
+  const requiredChecks = uniqueStrings(
+    strArray(source["required_checks"], `${field}.required_checks`),
+    `${field}.required_checks`,
+  );
+  if (requiredChecks.length === 0) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      `${field}.required_checks must name the checks the approved test plan requires`,
+      { field: `${field}.required_checks` },
+    );
+  }
+  const results = rawResults.map((entry, index) =>
+    parseValidationResult(entry, `${field}.results[${index}]`),
+  );
+  for (const check of requiredChecks) {
+    if (!results.some((result) => result.tool === check)) {
+      throw new CollabError(
+        "CANDIDATE_INVALID",
+        `required check ${JSON.stringify(check)} has no recorded passing attempt`,
+        { field: `${field}.required_checks`, check },
+      );
+    }
+  }
   return {
     config_digest: str(source["config_digest"], `${field}.config_digest`),
     environment: str(source["environment"], `${field}.environment`),
-    results: rawResults.map((entry, index) =>
-      parseValidationResult(entry, `${field}.results[${index}]`),
-    ),
+    required_checks: requiredChecks,
+    results,
   };
 }
 
@@ -1408,13 +1423,31 @@ function handleFreezeCandidate(state: CollabState, payload: Payload): unknown {
     );
   }
 
-  const auditRefs = uniqueStrings(strArray(payload["audit_refs"], "audit_refs"), "audit_refs").map(
-    (ref, index) => evidenceRef(ref, `audit_refs[${index}]`),
-  );
+  // Every claimed reference must resolve to a record this run actually
+  // retained. Validation evidence is additionally bound to the exact frozen
+  // revision, so a card can never cite a test run that never happened here.
+  for (const [index, result] of validation.results.entries()) {
+    resolveRevisionEvidence(
+      run,
+      result.event_reference,
+      `validation.results[${index}].event_reference`,
+      { base_sha: baseSha, head_sha: headSha },
+    );
+  }
+  const auditRefs = uniqueStrings(strArray(payload["audit_refs"], "audit_refs"), "audit_refs");
   if (auditRefs.length === 0) {
     throw new CollabError("CANDIDATE_INVALID", "candidate evidence has no audit reference", {
       field: "audit_refs",
     });
+  }
+  for (const [index, reference] of auditRefs.entries()) {
+    const resolved = resolveRunEvidence(run, reference, `audit_refs[${index}]`);
+    if (resolved.kind === "artifact") {
+      resolveRevisionEvidence(run, reference, `audit_refs[${index}]`, {
+        base_sha: baseSha,
+        head_sha: headSha,
+      });
+    }
   }
 
   // One preparation run freezes exactly one candidate; a later revision is a

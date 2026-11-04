@@ -8,9 +8,11 @@ import {
   CandidateContentStore,
   CandidateReviewService,
   CollabMachine,
+  artifactEvidenceRef,
   assertCandidateCurrent,
   candidateFreshness,
   diffDigest,
+  grantEvidenceRef,
   validationEvidenceDigest,
 } from "../src/collab/index.js";
 import type { CollabError } from "../src/collab/errors.js";
@@ -27,7 +29,7 @@ import {
   stoppedPreparation,
 } from "./helpers/collab.js";
 import type { PreparationContext } from "./helpers/collab.js";
-import type { CandidateRecord } from "../src/collab/index.js";
+import type { CandidateRecord, CandidateValidationResult } from "../src/collab/index.js";
 
 function expectCode(fn: () => unknown, code: string): void {
   try {
@@ -107,10 +109,12 @@ describe("immutable candidate freeze (DAT-219)", () => {
       "patch",
       "report",
     ]);
-    expect(candidate?.audit_refs).toEqual([
-      "evidence://events/run_candidate/7",
-      "evidence://artifacts/run_candidate/patch",
-    ]);
+    expect(candidate?.audit_refs).toHaveLength(3);
+    for (const reference of candidate?.audit_refs ?? []) {
+      expect(reference).toMatch(
+        new RegExp(`^evidence://runs/${context.run.run_id}/(artifacts|grants)/`),
+      );
+    }
     // A frozen candidate carries no delivery surface: no branch, no PR.
     expect(Object.keys(candidate ?? {})).not.toContain("branch");
     expect(Object.keys(candidate ?? {})).not.toContain("pr_id");
@@ -211,6 +215,7 @@ describe("immutable candidate freeze (DAT-219)", () => {
       validation: {
         config_digest: `sha256:${OTHER_DIGEST}`,
         environment: "node20-linux-x64-isolated",
+        required_checks: ["npm test"],
         results: [
           {
             tool: "npm test",
@@ -253,6 +258,189 @@ describe("immutable candidate freeze (DAT-219)", () => {
         ),
       "CANDIDATE_INVALID",
     );
+  });
+
+  test("a failed, unexecuted, or digest-less validation attempt cannot freeze", () => {
+    const machine = machineWithStore();
+    const issue = planningIssue(machine);
+    const context = stoppedPreparation(machine, issue.issue_id);
+    const report = context.artifacts.find((artifact) => artifact.kind === "report");
+    const ref = artifactEvidenceRef(context.run.run_id, report?.artifact_id as string);
+
+    const cases: CandidateValidationResult[] = [
+      {
+        tool: "npm test -- retry",
+        exit_status: 1,
+        output_digest: { algorithm: "sha256", value: DIGEST },
+        event_reference: ref,
+      },
+      {
+        tool: "npm test -- retry",
+        exit_status: null,
+        output_digest: { algorithm: "sha256", value: DIGEST },
+        event_reference: ref,
+      },
+      { tool: "npm test -- retry", exit_status: 0, output_digest: null, event_reference: ref },
+    ];
+    for (const result of cases) {
+      expectCode(
+        () =>
+          machine.freezeCandidate(
+            freezeCandidateInput(context, {
+              validation: {
+                config_digest: `sha256:${OTHER_DIGEST}`,
+                environment: "node20-linux-x64-isolated",
+                required_checks: ["npm test -- retry"],
+                results: [result],
+              },
+            }),
+          ),
+        "CANDIDATE_INVALID",
+      );
+    }
+    expect(machine.listCandidates(issue.issue_id)).toEqual([]);
+  });
+
+  test("every required check needs a recorded passing attempt", () => {
+    const machine = machineWithStore();
+    const issue = planningIssue(machine);
+    const context = stoppedPreparation(machine, issue.issue_id);
+    const report = context.artifacts.find((artifact) => artifact.kind === "report");
+    const ref = artifactEvidenceRef(context.run.run_id, report?.artifact_id as string);
+    const results = [
+      {
+        tool: "npm test -- retry",
+        exit_status: 0,
+        output_digest: { algorithm: "sha256", value: DIGEST },
+        event_reference: ref,
+      },
+    ];
+
+    expectCode(
+      () =>
+        machine.freezeCandidate(
+          freezeCandidateInput(context, {
+            validation: {
+              config_digest: `sha256:${OTHER_DIGEST}`,
+              environment: "node20-linux-x64-isolated",
+              required_checks: ["npm test -- retry", "go test ./..."],
+              results,
+            },
+          }),
+        ),
+      "CANDIDATE_INVALID",
+    );
+    expectCode(
+      () =>
+        machine.freezeCandidate(
+          freezeCandidateInput(context, {
+            validation: {
+              config_digest: `sha256:${OTHER_DIGEST}`,
+              environment: "node20-linux-x64-isolated",
+              required_checks: [],
+              results,
+            },
+          }),
+        ),
+      "CANDIDATE_INVALID",
+    );
+  });
+
+  test("fabricated evidence references cannot freeze a candidate", () => {
+    const machine = machineWithStore();
+    const issue = planningIssue(machine);
+    const context = stoppedPreparation(machine, issue.issue_id);
+    const report = context.artifacts.find((artifact) => artifact.kind === "report");
+    const ref = artifactEvidenceRef(context.run.run_id, report?.artifact_id as string);
+
+    for (const reference of [
+      "evidence://events/run_does_not_exist/7",
+      `evidence://runs/${context.run.run_id}/artifacts/art_does_not_exist`,
+      `evidence://runs/${context.run.run_id}/grants/grt_does_not_exist`,
+    ]) {
+      expectCode(
+        () => machine.freezeCandidate(freezeCandidateInput(context, { audit_refs: [reference] })),
+        "CANDIDATE_INVALID",
+      );
+      expectCode(
+        () =>
+          machine.freezeCandidate(
+            freezeCandidateInput(context, {
+              validation: {
+                config_digest: `sha256:${OTHER_DIGEST}`,
+                environment: "node20-linux-x64-isolated",
+                required_checks: ["npm test -- retry"],
+                results: [
+                  {
+                    tool: "npm test -- retry",
+                    exit_status: 0,
+                    output_digest: { algorithm: "sha256", value: DIGEST },
+                    event_reference: reference,
+                  },
+                ],
+              },
+            }),
+          ),
+        "CANDIDATE_INVALID",
+      );
+    }
+    expect(machine.listCandidates(issue.issue_id)).toEqual([]);
+    void ref;
+  });
+
+  test("another run's artifact or a non-revision record cannot stand in as evidence", () => {
+    const machine = machineWithStore();
+    const issue = planningIssue(machine);
+    const first = stoppedPreparation(machine, issue.issue_id, {
+      worktreeId: "wt_first",
+      worktreePath: "/tmp/worktrees/wt_first",
+    });
+    const second = stoppedPreparation(machine, issue.issue_id, {
+      worktreeId: "wt_second",
+      worktreePath: "/tmp/worktrees/wt_second",
+    });
+    const foreignArtifact = second.artifacts.find((artifact) => artifact.kind === "report");
+    const foreignRef = artifactEvidenceRef(
+      second.run.run_id,
+      foreignArtifact?.artifact_id as string,
+    );
+    const grantRef = grantEvidenceRef(first.run.run_id, first.run.grants[0]?.grant_id as string);
+    const sameRunOtherRevision = artifactEvidenceRef(
+      first.run.run_id,
+      first.other_revision_artifact.artifact_id,
+    );
+
+    // Evidence of another run never freezes this run's candidate.
+    expectCode(
+      () => machine.freezeCandidate(freezeCandidateInput(first, { audit_refs: [foreignRef] })),
+      "CANDIDATE_INVALID",
+    );
+    // Validation evidence must be an artifact of the exact revision, not a
+    // grant record and not an artifact produced from another head.
+    for (const reference of [grantRef, sameRunOtherRevision]) {
+      expectCode(
+        () =>
+          machine.freezeCandidate(
+            freezeCandidateInput(first, {
+              validation: {
+                config_digest: `sha256:${OTHER_DIGEST}`,
+                environment: "node20-linux-x64-isolated",
+                required_checks: ["npm test -- retry"],
+                results: [
+                  {
+                    tool: "npm test -- retry",
+                    exit_status: 0,
+                    output_digest: { algorithm: "sha256", value: DIGEST },
+                    event_reference: reference,
+                  },
+                ],
+              },
+            }),
+          ),
+        "CANDIDATE_INVALID",
+      );
+    }
+    expect(machine.listCandidates(issue.issue_id)).toEqual([]);
   });
 
   test("prohibited risk never becomes a reviewable candidate", () => {
@@ -402,6 +590,99 @@ describe("candidate invalidation and base advancement", () => {
       results: candidate.validation.results.map((result) => ({ ...result, exit_status: 1 })),
     });
     expect(changed).not.toBe(baseline);
+  });
+});
+
+describe("candidate list pagination", () => {
+  test("the list pages with a stable cursor and rejects an unknown one", () => {
+    const clock = new Clock();
+    const machine = machineWithStore(root, clock);
+    const service = new CandidateReviewService(machine, store(), { pageSize: 2 });
+    const issue = planningIssue(machine);
+    const frozenIds: string[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const context = stoppedPreparation(machine, issue.issue_id, {
+        worktreeId: `wt_page_${index}`,
+        worktreePath: `/tmp/worktrees/wt_page_${index}`,
+      });
+      frozenIds.push(
+        machine.freezeCandidate(freezeCandidateInput(context, { summary: `candidate ${index}` }))
+          .candidate_id,
+      );
+      clock.advance(1);
+    }
+
+    const first = service.page(issue.issue_id);
+    expect(first.items.map((card) => card.candidate_id)).toEqual(frozenIds.slice(0, 2));
+    expect(first.next_cursor).toBe(frozenIds[1]);
+
+    const second = service.page(issue.issue_id, first.next_cursor);
+    expect(second.items.map((card) => card.candidate_id)).toEqual([frozenIds[2]]);
+    expect(second.next_cursor).toBeNull();
+
+    // A re-read of the same cursor yields the same page (no duplicate/loss).
+    expect(service.page(issue.issue_id, first.next_cursor)).toEqual(second);
+    expectCode(() => service.page(issue.issue_id, "cand_unknown"), "INVALID_CURSOR");
+  });
+
+  test("one page sizes the whole list when it fits", () => {
+    const machine = machineWithStore();
+    const service = new CandidateReviewService(machine, store());
+    const { issueId } = frozen(machine);
+    const page = service.page(issueId);
+    expect(page.items).toHaveLength(1);
+    expect(page.next_cursor).toBeNull();
+  });
+});
+
+describe("candidate retention boundary", () => {
+  test("a store root that is a symlink into the worktree is refused", () => {
+    const worktree = path.join(root, "wt_symlink");
+    fs.mkdirSync(worktree, { recursive: true });
+    const alias = path.join(root, "alias");
+    fs.symlinkSync(worktree, alias, "dir");
+
+    const machine = machineWithStore(alias);
+    const issue = planningIssue(machine);
+    const context = stoppedPreparation(machine, issue.issue_id, {
+      worktreeId: "wt_symlink",
+      worktreePath: worktree,
+    });
+    expectCode(() => machine.freezeCandidate(freezeCandidateInput(context)), "CANDIDATE_INVALID");
+  });
+
+  test("a store root below a symlinked parent inside the worktree is refused", () => {
+    const worktree = path.join(root, "wt_parent");
+    fs.mkdirSync(worktree, { recursive: true });
+    const alias = path.join(root, "alias_parent");
+    fs.symlinkSync(worktree, alias, "dir");
+    const storeRoot = path.join(alias, "retained");
+
+    const machine = machineWithStore(storeRoot);
+    const issue = planningIssue(machine);
+    const context = stoppedPreparation(machine, issue.issue_id, {
+      worktreeId: "wt_parent",
+      worktreePath: worktree,
+    });
+    expectCode(() => machine.freezeCandidate(freezeCandidateInput(context)), "CANDIDATE_INVALID");
+  });
+
+  test("a store reached through a symlink to a real outside directory is accepted", () => {
+    const worktree = path.join(root, "wt_real");
+    const retained = path.join(root, "retained_real");
+    fs.mkdirSync(worktree, { recursive: true });
+    fs.mkdirSync(retained, { recursive: true });
+    const alias = path.join(root, "alias_outside");
+    fs.symlinkSync(retained, alias, "dir");
+
+    const machine = machineWithStore(alias);
+    const issue = planningIssue(machine);
+    const context = stoppedPreparation(machine, issue.issue_id, {
+      worktreeId: "wt_real",
+      worktreePath: worktree,
+    });
+    const candidate = machine.freezeCandidate(freezeCandidateInput(context));
+    expect(candidate.issue_id).toBe(issue.issue_id);
   });
 });
 

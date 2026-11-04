@@ -1444,6 +1444,15 @@ const candidateSchema: JsonObject = {
       properties: {
         config_digest: { type: "string" },
         environment: { type: "string" },
+        required_checks: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Validation identities the approved test plan requires. A candidate " +
+            "freezes only when every required check has a recorded passing " +
+            "attempt against its exact revision; a failed or unexecuted required " +
+            "check stops the run instead of producing a review card.",
+        },
         results: {
           type: "array",
           items: { $ref: "#/components/schemas/ValidationResult" },

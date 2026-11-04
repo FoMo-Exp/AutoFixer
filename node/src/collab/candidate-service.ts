@@ -34,6 +34,11 @@ export interface CandidateCardPage {
   next_cursor: string | null;
 }
 
+export interface CandidateReviewServiceOptions {
+  /** Page size for the candidate list endpoint (default 50, matching the API). */
+  pageSize?: number;
+}
+
 export interface CandidateDiffView {
   candidate_id: string;
   digest_algorithm: "sha256";
@@ -48,13 +53,27 @@ export interface CandidateDiffView {
   content: string;
 }
 
+const DEFAULT_PAGE_SIZE = 50;
+
 export class CandidateReviewService {
   private readonly machine: CollabMachine;
   private readonly store: CandidateContentStore;
+  private readonly pageSize: number;
 
-  constructor(machine: CollabMachine, store: CandidateContentStore) {
+  constructor(
+    machine: CollabMachine,
+    store: CandidateContentStore,
+    options: CandidateReviewServiceOptions = {},
+  ) {
     this.machine = machine;
     this.store = store;
+    const pageSize = options.pageSize ?? DEFAULT_PAGE_SIZE;
+    if (!Number.isInteger(pageSize) || pageSize < 1) {
+      throw new CollabError("INVALID_INPUT", "pageSize must be a positive integer", {
+        field: "pageSize",
+      });
+    }
+    this.pageSize = pageSize;
   }
 
   /** Cards in freeze order, exactly the `Candidate[]` page of the contract. */
@@ -63,12 +82,28 @@ export class CandidateReviewService {
   }
 
   /**
-   * The `GET .../candidates` response body. The record set for one issue is
-   * bounded, so one page is served and `next_cursor` stays null; the envelope
-   * is still the contract's page shape rather than a bare array.
+   * The `GET .../candidates` response body: one stable page plus an opaque
+   * cursor. The cursor is the last served candidate id, so a reconnecting
+   * client resumes exactly after it; an unknown cursor is `INVALID_CURSOR`
+   * rather than a silently restarted list.
    */
-  page(issueId: string): CandidateCardPage {
-    return { items: this.list(issueId), next_cursor: null };
+  page(issueId: string, cursor: string | null = null): CandidateCardPage {
+    const candidates = this.machine.listCandidates(issueId);
+    let start = 0;
+    if (cursor !== null && cursor !== "") {
+      const index = candidates.findIndex((candidate) => candidate.candidate_id === cursor);
+      if (index === -1) {
+        throw new CollabError("INVALID_CURSOR", "unknown candidate cursor", { cursor });
+      }
+      start = index + 1;
+    }
+    const page = candidates.slice(start, start + this.pageSize);
+    const last = page[page.length - 1];
+    const more = start + page.length < candidates.length;
+    return {
+      items: page.map(candidateReviewCard),
+      next_cursor: last !== undefined && more ? last.candidate_id : null,
+    };
   }
 
   get(issueId: string, candidateId: string): CandidateReviewCard {
