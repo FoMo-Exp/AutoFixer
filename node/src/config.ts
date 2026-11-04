@@ -57,6 +57,12 @@ export interface OrchestratorConfig {
   gatewayCredentialsFile?: string;
   /** Durable gateway audit/metering event sink (JSONL, 0600). */
   gatewayAuditFile?: string;
+  /**
+   * Durable invocation usage ledger (JSON, 0600) — one reconcilable usage
+   * record per gateway invocation attempt (DAT-227). Separate from the audit
+   * stream: financial records are queried and retained on their own terms.
+   */
+  usageLedgerFile?: string;
   // --- Enterprise identity (ADR-0006) -------------------------------------
   /**
    * External origin for OAuth redirect URLs and desktop login links. Unset
@@ -125,6 +131,11 @@ function defaultGatewayAuditPath(): string {
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "gateway-audit.jsonl");
 }
 
+function defaultUsageLedgerPath(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "usage-ledger.json");
+}
+
 function defaultControlPlanePath(): string {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "control-plane.sqlite");
@@ -173,6 +184,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     enterpriseId: env["FORGEPILOT_ENTERPRISE_ID"] ?? "ent_forgepilot_local",
     workspaceId: env["FORGEPILOT_WORKSPACE_ID"] ?? "ws_autofixer",
     gatewayAuditFile: env["FORGEPILOT_GATEWAY_AUDIT_FILE"] ?? defaultGatewayAuditPath(),
+    usageLedgerFile: env["FORGEPILOT_USAGE_LEDGER_FILE"] ?? defaultUsageLedgerPath(),
   };
   if (env["FORGEPILOT_DSH_TOKEN_FILE"]) {
     config.dshTokenFile = env["FORGEPILOT_DSH_TOKEN_FILE"];
