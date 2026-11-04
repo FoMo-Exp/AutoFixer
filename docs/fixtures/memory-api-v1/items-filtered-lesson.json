@@ -1,0 +1,40 @@
+{
+  "items": [
+    {
+      "item_id": "mem_3acf6a8a8a2146b898f6f6c5cfd19bdd",
+      "status": "active",
+      "current_version": 1,
+      "versions_count": 1,
+      "kind": "lesson",
+      "tier": "L3",
+      "statement": "Run the node memory tests before claiming a retrieval change is done",
+      "preconditions": [
+        "node workspace",
+        "retrieval policy v1"
+      ],
+      "applicability": {
+        "path_prefix": "node/src/memory"
+      },
+      "trust": "human",
+      "sensitivity": "internal",
+      "approved": true,
+      "valid_from": "2026-11-01T00:00:00.000Z",
+      "valid_to": null,
+      "content_hash": "6d0285a68304e6e2d307733e563f0ddbafcc1a37e037f80c0c9cd06b9818b302",
+      "support_count": 2,
+      "contradiction_count": 0,
+      "evidence": [
+        {
+          "evidence_type": "reviewer_decision",
+          "reference": "pr:memory-retrieval"
+        },
+        {
+          "evidence_type": "test",
+          "reference": "node/test/memory-retrieval-api.test.ts"
+        }
+      ],
+      "updated_at": "2026-11-04T08:09:52.197Z"
+    }
+  ],
+  "next_cursor": null
+}

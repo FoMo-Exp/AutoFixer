@@ -25,6 +25,17 @@ export type IssueTaskPage =
 export type IssueRunPage =
   operations["listIssueRuns"]["responses"][200]["content"]["application/json"];
 
+export type MemoryItem = components["schemas"]["MemoryItemView"];
+export type MemoryItemPage =
+  operations["listMemoryItems"]["responses"][200]["content"]["application/json"];
+export type MemoryKind = MemoryItem["kind"];
+export type MemoryStatus = MemoryItem["status"];
+export type MemoryTier = MemoryItem["tier"];
+export type MemoryTrust = MemoryItem["trust"];
+export type MemorySensitivity = MemoryItem["sensitivity"];
+export type MemoryApplicability = components["schemas"]["MemoryApplicability"];
+export type MemoryEvidence = components["schemas"]["MemoryEvidence"];
+
 type ErrorPayload = components["schemas"]["Error"];
 export type JsonFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -451,6 +462,32 @@ export class ForgePilotClient extends ApiTransport {
   async getIssueRun(workspaceId: string, issueId: string, runId: string): Promise<IssueRun> {
     return this.request<IssueRun>(
       `${issuePath(workspaceId, issueId, "runs")}/${encodeURIComponent(runId)}`,
+    );
+  }
+
+  /**
+   * Bounded workspace memory browse. Only the filters the contract defines are
+   * sent; an unknown filter is a contract change, not a client-side guess.
+   */
+  async listMemoryItems(
+    workspaceId: string,
+    options: {
+      kind?: MemoryKind;
+      status?: MemoryStatus;
+      tier?: MemoryTier;
+      limit?: number;
+      cursor?: string;
+    } = {},
+  ): Promise<MemoryItemPage> {
+    const params = new URLSearchParams();
+    if (options.kind) params.set("kind", options.kind);
+    if (options.status) params.set("status", options.status);
+    if (options.tier) params.set("tier", options.tier);
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    if (options.cursor) params.set("cursor", options.cursor);
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    return this.request<MemoryItemPage>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/memory/items${query}`,
     );
   }
 
