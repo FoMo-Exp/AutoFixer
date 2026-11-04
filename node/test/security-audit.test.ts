@@ -15,6 +15,7 @@ import {
   auditEventFromRuleEvent,
   createFileSecurityAuditTrail,
   createMemorySecurityAuditTrail,
+  inspectSecurityAuditTrailForTests as inspect,
   protectedAuditIdentifier,
   staticDutyDirectory,
 } from "../src/security/index.js";
@@ -269,7 +270,7 @@ describe("ADR-0005 §6 audit coverage", () => {
       { enterpriseId: "ent_test", workspaceId: "ws_test" },
       access(HANDLER, "coverage check"),
     );
-    const events = new Set(trail.entries().map((entry) => entry.event.event));
+    const events = new Set(inspect(trail).map((entry) => entry.event.event));
     for (const [className, expected] of Object.entries(SECURITY_AUDIT_EVENT_CLASSES)) {
       const present = expected.filter((type) => events.has(type));
       expect(present.length, `no ${className} event recorded`).toBeGreaterThan(0);
@@ -287,7 +288,7 @@ describe("ADR-0005 §6 audit coverage", () => {
         caseEvent("case.state_changed", { from: "awaiting_review", to: "terminated" }, ADMIN),
       ),
     );
-    const types = trail.entries().map((entry) => entry.event.event);
+    const types = inspect(trail).map((entry) => entry.event.event);
     expect(types).toContain("block.detected");
     expect(types).toContain("block.enforced");
     expect(types).toContain("recovery.approval_recorded");
@@ -296,27 +297,27 @@ describe("ADR-0005 §6 audit coverage", () => {
     expect(types).toContain("recovery.dispatch_outcome");
     expect(types).toContain("case.terminated");
     // An approval never masquerades as a dispatch.
-    const approval = trail
-      .entries()
-      .find((entry) => entry.event.event === "recovery.approval_recorded");
+    const approval = inspect(trail).find(
+      (entry) => entry.event.event === "recovery.approval_recorded",
+    );
     expect(approval?.event.invocationId).toBeNull();
   });
 
   test("every event carries the full correlation identity it knows", () => {
     const trail = seededTrail();
-    for (const entry of trail.entries()) {
+    for (const entry of inspect(trail)) {
       expect(entry.event.scope.enterpriseId).toBe(SCOPE.enterpriseId);
       expect(entry.event.scope.workspaceId).toBe(SCOPE.workspaceId);
       expect(entry.event.eventId).toBeTruthy();
       expect(entry.event.at).toBeTruthy();
     }
-    const block = trail.entries().find((entry) => entry.event.event === "block.detected");
+    const block = inspect(trail).find((entry) => entry.event.event === "block.detected");
     expect(block?.event.caseId).toBe("case_1");
     expect(block?.event.invocationId).toBe("inv_1");
     expect(block?.event.traceId).toBe("trace_1");
-    const dispatch = trail
-      .entries()
-      .find((entry) => entry.event.event === "recovery.dispatch_attempted");
+    const dispatch = inspect(trail).find(
+      (entry) => entry.event.event === "recovery.dispatch_attempted",
+    );
     expect(dispatch?.event.authorization?.authorizationId).toBe("auth_1");
     expect(dispatch?.event.destination?.modelId).toBe("claude-sonnet-5-5");
   });
@@ -332,17 +333,25 @@ describe("tamper evidence", () => {
     return { dir, file, trail };
   }
 
+  test("a deployment trail exposes no unscoped read port", () => {
+    const { trail } = fileTrail();
+    expect("entries" in trail).toBe(false);
+    // The test-only inspection port refuses a durable trail outright, so a
+    // deployment cannot bypass the duty-checked, scope-bound read path.
+    expect(() => inspect(trail)).toThrowError(/test trail/);
+  });
+
   test("a modified record is detected", () => {
     const { file, trail } = fileTrail();
     writeFileSync(file, readFileSync(file, "utf8").replace('"recorded"', '"denied"'));
-    expect(() => trail.entries()).toThrowError(/integrity verification/);
+    expect(() => trail.verify()).toThrowError(/integrity verification/);
   });
 
   test("a deleted anchored record is detected", () => {
     const { file, trail } = fileTrail();
     const lines = readFileSync(file, "utf8").trimEnd().split("\n");
     writeFileSync(file, `${lines[0]}\n`);
-    expect(() => trail.entries()).toThrowError(/removed from the end/);
+    expect(() => trail.verify()).toThrowError(/removed from the end/);
   });
 
   test("tampering blocks new appends instead of extending a broken chain", () => {
@@ -356,20 +365,20 @@ describe("tamper evidence", () => {
   test("a missing anchor refuses to trust the log", () => {
     const { file, trail } = fileTrail();
     writeFileSync(`${file}.anchor`, "");
-    expect(() => trail.entries()).toThrowError(/anchor/);
+    expect(() => trail.verify()).toThrowError(/anchor/);
   });
 });
 
 describe("restricted audit access", () => {
   test("a read appends its own audit event and returns only its scope", () => {
     const trail = seededTrail();
-    const before = trail.entries().length;
+    const before = inspect(trail).length;
     const entries = trail.read(
       { enterpriseId: "ent_test", workspaceId: "ws_test", caseId: "case_1" },
       access(HANDLER),
     );
     expect(entries.length).toBeGreaterThan(0);
-    const recorded = trail.entries();
+    const recorded = inspect(trail);
     expect(recorded.length).toBe(before + 1);
     const readEvent = recorded[recorded.length - 1]!.event;
     expect(readEvent.event).toBe("audit.trail_read");
@@ -386,7 +395,7 @@ describe("restricted audit access", () => {
     expect(() =>
       trail.read({ enterpriseId: "ent_test", workspaceId: "ws_test" }, access(OUTSIDER)),
     ).toThrow(SecurityError);
-    const denied = trail.entries().filter((entry) => entry.event.event === "audit.access_denied");
+    const denied = inspect(trail).filter((entry) => entry.event.event === "audit.access_denied");
     expect(denied).toHaveLength(1);
     expect(denied[0]!.event.actor?.actorId).toBe("human_owner");
     expect(denied[0]!.event.result).toBe("denied");
@@ -403,7 +412,7 @@ describe("restricted audit access", () => {
     );
     expect(exported.eventCount).toBeGreaterThan(0);
     expect(exported.entries[0]?.event.eventId).toBeTruthy();
-    const last = trail.entries().at(-1)!.event;
+    const last = inspect(trail).at(-1)!.event;
     expect(last.event).toBe("audit.trail_exported");
     expect(last.actor?.actorId).toBe("human_admin");
     expect(last.detail["purpose"]).toBe("quarterly review");
@@ -446,7 +455,7 @@ describe("non-secret by construction", () => {
       link: null,
       detail: { note: `token ${SECRET}` },
     });
-    const serialized = JSON.stringify(trail.entries());
+    const serialized = JSON.stringify(inspect(trail));
     expect(serialized).not.toContain(SECRET);
     expect(serialized).toContain("[redacted]");
   });

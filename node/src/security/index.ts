@@ -187,10 +187,12 @@ export {
   SECURITY_AUDIT_RESULTS,
   createFileSecurityAuditTrail,
   createMemorySecurityAuditTrail,
+  inspectSecurityAuditTrailForTests,
   normalizeSecurityAuditEvent,
   protectedAuditIdentifier,
   scrubAuditText,
 } from "./audit.js";
+export { assertProtectedSecurityAuditKeyFile, readOrCreateSecurityAuditKey } from "./audit-key.js";
 export type {
   SecurityAuditAccess,
   SecurityAuditActor,

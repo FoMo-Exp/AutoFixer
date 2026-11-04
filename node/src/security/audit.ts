@@ -328,11 +328,37 @@ export interface SecurityAuditExport {
 export interface SecurityAuditTrail {
   readonly durability: "durable" | "test";
   record(event: SecurityAuditEvent): SecurityAuditEntry;
-  /** Chain-verified entries, oldest first. */
-  entries(): readonly SecurityAuditEntry[];
   verify(): { entries: number; headSeq: number; headHash: string };
   read(query: SecurityAuditQuery, access: SecurityAuditAccess): readonly SecurityAuditEntry[];
   export(query: SecurityAuditQuery, access: SecurityAuditAccess): SecurityAuditExport;
+}
+
+/**
+ * Test-only chain view. Deliberately *not* part of `SecurityAuditTrail`: a
+ * deployment trail has no unscoped read path, so callers must go through the
+ * duty-checked, scope-bound `read()`/`export()`. The accessor refuses anything
+ * but the in-memory `test` backend, which cannot exist in a deployment.
+ */
+const TEST_ONLY_ENTRIES = Symbol("securityAuditTrail.testEntries");
+
+interface SecurityAuditTestInspection {
+  [TEST_ONLY_ENTRIES](): readonly SecurityAuditEntry[];
+}
+
+export function inspectSecurityAuditTrailForTests(
+  trail: SecurityAuditTrail,
+): readonly SecurityAuditEntry[] {
+  if (trail.durability !== "test") {
+    throw new SecurityError(
+      "AUDIT_READ_FORBIDDEN",
+      "unscoped audit inspection is only available to the in-memory test trail",
+    );
+  }
+  const inspect = (trail as Partial<SecurityAuditTestInspection>)[TEST_ONLY_ENTRIES];
+  if (typeof inspect !== "function") {
+    throw new SecurityError("AUDIT_READ_FORBIDDEN", "the trail exposes no test inspection port");
+  }
+  return inspect.call(trail);
 }
 
 /**
@@ -849,7 +875,7 @@ interface TrailInternals {
 function buildTrail(
   internals: TrailInternals,
   options: { now: () => Date; newEventId: () => string },
-): SecurityAuditTrail {
+): SecurityAuditTrail & SecurityAuditTestInspection {
   const auditDenied = (
     query: SecurityAuditQuery,
     access: SecurityAuditAccess,
@@ -912,7 +938,7 @@ function buildTrail(
     record(event: SecurityAuditEvent): SecurityAuditEntry {
       return internals.append(normalizeSecurityAuditEvent(event, options));
     },
-    entries(): readonly SecurityAuditEntry[] {
+    [TEST_ONLY_ENTRIES](): readonly SecurityAuditEntry[] {
       return internals.allEntries();
     },
     verify() {

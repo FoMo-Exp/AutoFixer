@@ -15,6 +15,7 @@ import {
   SecurityNotifier,
   auditEventFromCaseEvent,
   createMemorySecurityAuditTrail,
+  inspectSecurityAuditTrailForTests,
   staticDutyDirectory,
 } from "../src/security/index.js";
 import type {
@@ -132,7 +133,7 @@ describe("a secret-bearing block never reaches an observable surface", () => {
       events: JSON.stringify(store.events(result.case.caseId)),
       pause: JSON.stringify(service.isRunHeld(SCOPE.runId)),
       notifications: JSON.stringify(sent),
-      audit: JSON.stringify(audit.entries()),
+      audit: JSON.stringify(inspectSecurityAuditTrailForTests(audit)),
     });
     expect(result.case.blocks[0]!.reason).toBe("SENSITIVE_DATA_UNCERTAIN");
     // The message never becomes a credential: the reference verifies for the

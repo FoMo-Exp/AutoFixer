@@ -76,7 +76,17 @@ change to destination or context invalidates the approval with
 Reads require a security duty (handler, independent reviewer, or enterprise
 security administrator); exports are restricted to the enterprise security
 administrator. A denied attempt records `audit.access_denied` and returns
-`FORBIDDEN` without revealing whether the queried case exists.
+`FORBIDDEN` without revealing whether the queried case exists. There is no
+unscoped read API: the service exposes no operation, contract method, or
+transition that returns trail entries without that authorization and scope
+filter, so a generated client cannot bypass `audit.trail_read`.
+
+The HMAC chain key is a protected file. An existing key that is a symlink, a
+non-regular file, or readable/writable by group or other is refused at startup
+(`SECURITY_AUDIT_KEY_UNPROTECTED`) rather than used, because anyone who can
+read the key can rewrite the log and anchor so a forged chain verifies. A
+missing key is created `0600`; a malformed key fails startup instead of
+silently starting a new chain.
 
 Each entry is `{ seq, hash, event }`. `hash` is the chain value for that
 sequence, so a client can verify continuity without trusting the server's
@@ -126,3 +136,5 @@ responses before the web client treats them as captured snapshots.
 - `node/test/security-audit.test.ts`, `security-leak.test.ts`,
   `security-error-contract.test.ts` — audit chain integrity, non-secret
   surfaces, and stable error semantics.
+- `node/test/security-audit-key.test.ts` — the audit key file rejects
+  symlinks, non-regular files, and group/world-accessible modes.

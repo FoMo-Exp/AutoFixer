@@ -1,7 +1,6 @@
 import type http from "node:http";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
-import path from "node:path";
 
 import type { Api, Model } from "@mariozechner/pi-ai";
 
@@ -77,6 +76,7 @@ import {
   createFileNotificationSink,
   createFileSecurityAuditTrail,
   createSecurityAuditGatewaySink,
+  readOrCreateSecurityAuditKey,
   staticDutyDirectory,
 } from "./security/index.js";
 import type {
@@ -180,36 +180,13 @@ function fileQuarantineKeyProvider(keyFile: string | undefined): QuarantineKeyPr
 }
 
 /**
- * Read the protected audit-chain key, creating it 0600 on first use. A key
- * that exists but is unreadable or malformed fails startup instead of
- * silently starting a new chain (which would orphan the anchored history).
+ * Read the protected audit-chain key, creating it 0600 on first use. An
+ * existing key that is a symlink, non-regular file, group/world-accessible, or
+ * malformed fails startup instead of silently starting a new chain (which
+ * would orphan the anchored history and let a forged log verify).
  */
 function readOrCreateAuditKey(keyFile: string): Buffer {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const decoded = Buffer.from(fs.readFileSync(keyFile, "utf8").trim(), "base64");
-      if (decoded.length !== 32) {
-        throw new Error("the security audit key must be a base64 32-byte value");
-      }
-      return decoded;
-    } catch (error) {
-      if ((error as { code?: unknown }).code !== "ENOENT") throw error;
-      fs.mkdirSync(path.dirname(keyFile), { recursive: true, mode: 0o700 });
-      try {
-        const fd = fs.openSync(keyFile, "wx", 0o600);
-        try {
-          fs.writeSync(fd, randomBytes(32).toString("base64"));
-          fs.fsyncSync(fd);
-        } finally {
-          fs.closeSync(fd);
-        }
-      } catch (createError) {
-        if ((createError as { code?: unknown }).code !== "EEXIST") throw createError;
-        // Another process created it first; re-read on the next iteration.
-      }
-    }
-  }
-  throw new Error(`could not read or create the security audit key at ${keyFile}`);
+  return readOrCreateSecurityAuditKey(keyFile);
 }
 
 /**
