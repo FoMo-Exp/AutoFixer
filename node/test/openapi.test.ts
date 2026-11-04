@@ -24,6 +24,12 @@ import {
   TASK_EVIDENCE_CONTRACT_VERSION,
 } from "../src/collab/contract.js";
 import {
+  DASHBOARD_BREAKDOWN_DIMENSIONS,
+  DASHBOARD_METRIC_STATUSES,
+  DASHBOARD_SOURCE_IDS,
+  DASHBOARD_SOURCE_STATUSES,
+} from "../src/dashboard/index.js";
+import {
   TURN_REPORT_ACTIVITIES,
   TURN_REPORT_AREAS,
   TURN_REPORT_OUTCOMES,
@@ -145,6 +151,15 @@ const MEMORY_ENDPOINTS: Array<[method: string, path: string]> = [
   ["post", "/api/v1/workspaces/{workspace_id}/memory/eval-runs"],
 ];
 
+/** Workspace dashboard v1 surface (DAT-230). */
+const DASHBOARD_ENDPOINTS: Array<[method: string, path: string]> = [
+  ["get", "/api/v1/workspaces/{workspace_id}/dashboard/summary"],
+  ["get", "/api/v1/workspaces/{workspace_id}/dashboard/cost-items"],
+  ["get", "/api/v1/workspaces/{workspace_id}/dashboard/issues/{issue_id}"],
+  ["get", "/api/v1/workspaces/{workspace_id}/dashboard/audit"],
+  ["get", "/api/v1/workspaces/{workspace_id}/dashboard/export"],
+];
+
 /** Bounded RSI surface (DAT-238). */
 const RSI_ENDPOINTS: Array<[method: string, path: string]> = [
   ["get", "/api/v1/workspaces/{workspace_id}/memory/proposals"],
@@ -168,6 +183,7 @@ const ALL_ENDPOINTS = [
   ...COLLAB_ENDPOINTS,
   ...MEMORY_ENDPOINTS,
   ...RSI_ENDPOINTS,
+  ...DASHBOARD_ENDPOINTS,
 ];
 
 describe("forgepilot-api/v1 OpenAPI document", () => {
@@ -699,6 +715,123 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
     const unmapped = new ApiError(500, "SOMETHING_NEW", "unexpected").toBody("req_4");
     expect(unmapped.error).toMatchObject({ category: "unknown", retryable: false });
     expect(ERROR_CATEGORIES).toContain(unmapped.error.category);
+  });
+
+  test("the dashboard contract keeps missing, stale and restricted states explicit", () => {
+    const summary = document.components.schemas["DashboardSummary"] as {
+      required: string[];
+    };
+    expect([...summary.required].sort()).toEqual(
+      [
+        "enterprise_id",
+        "workspace_id",
+        "period",
+        "generated_at",
+        "access",
+        "sources",
+        "denominators",
+        "unavailable_metrics",
+        "totals",
+        "breakdown",
+      ].sort(),
+    );
+
+    const totals = document.components.schemas["DashboardTotals"] as {
+      required: string[];
+    };
+    expect([...totals.required].sort()).toEqual(
+      [
+        "requests",
+        "invocations",
+        "retries",
+        "retry_rate",
+        "error_rate",
+        "denial_rate",
+        "tokens",
+        "latency_ms",
+        "queue_age_ms",
+        "approval_wait_ms",
+        "validation_outcomes",
+        "delivery_results",
+        "connector_lag_ms",
+        "worker_utilization",
+        "cost",
+        "budget",
+      ].sort(),
+    );
+
+    const count = document.components.schemas["DashboardCountMetric"] as {
+      properties: { status: { enum: string[] }; value: { type: string[] } };
+    };
+    expect(count.properties.status.enum).toEqual([...DASHBOARD_METRIC_STATUSES]);
+    // A count is nullable: null is "not measured", never a zero stand-in.
+    expect(count.properties.value.type).toEqual(["integer", "null"]);
+
+    const source = document.components.schemas["DashboardSourceState"] as {
+      properties: { source: { enum: string[] }; status: { enum: string[] } };
+    };
+    expect(source.properties.source.enum).toEqual([...DASHBOARD_SOURCE_IDS]);
+    expect(source.properties.status.enum).toEqual([...DASHBOARD_SOURCE_STATUSES]);
+
+    const cost = document.components.schemas["DashboardCostMetric"] as {
+      properties: { source: { enum: string[] } };
+    };
+    expect(cost.properties.source.enum).toEqual(["cost_ledger"]);
+    const budget = document.components.schemas["DashboardBudgetMetric"] as {
+      properties: { source: { enum: string[] } };
+    };
+    expect(budget.properties.source.enum).toEqual(["budget_journal"]);
+
+    const breakdown = document.components.schemas["DashboardBreakdown"] as {
+      properties: { dimension: { enum: string[] } };
+    };
+    expect(breakdown.properties.dimension.enum).toEqual([...DASHBOARD_BREAKDOWN_DIMENSIONS]);
+  });
+
+  test("the dashboard trace view never carries payload or content", () => {
+    const traceEvent = document.components.schemas["DashboardTraceEvent"] as {
+      properties: Record<string, unknown>;
+      required: string[];
+    };
+    expect(Object.keys(traceEvent.properties)).not.toContain("payload");
+    expect(traceEvent.required).not.toContain("payload");
+
+    const drilldown = document.components.schemas["DashboardIssueDrilldown"] as {
+      properties: {
+        content: { properties: { payload_included: { enum: unknown[] } } };
+      };
+    };
+    expect(drilldown.properties.content.properties.payload_included.enum).toEqual([false]);
+  });
+
+  test("the dashboard audit trail is metadata only and owner/admin gated", () => {
+    const entry = document.components.schemas["DashboardAuditEntry"] as {
+      properties: Record<string, unknown>;
+    };
+    const allowed = [
+      "audit_id",
+      "at",
+      "enterprise_id",
+      "workspace_id",
+      "subject",
+      "role",
+      "operation",
+      "resource",
+      "issue_id",
+      "query",
+      "record_count",
+      "request_id",
+    ];
+    expect(Object.keys(entry.properties).sort()).toEqual(allowed.sort());
+
+    const audit = document.paths["/api/v1/workspaces/{workspace_id}/dashboard/audit"]?.["get"] as {
+      responses: Record<string, unknown>;
+    };
+    expect(audit.responses["403"]).toBeDefined();
+    const costItems = document.paths["/api/v1/workspaces/{workspace_id}/dashboard/cost-items"]?.[
+      "get"
+    ] as { responses: Record<string, unknown> };
+    expect(costItems.responses["403"]).toBeDefined();
   });
 
   test("the committed contract file matches a fresh generation (regenerate on drift)", () => {

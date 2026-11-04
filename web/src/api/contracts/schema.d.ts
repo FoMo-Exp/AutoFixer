@@ -1587,6 +1587,106 @@ export interface paths {
         patch: operations["updateRsiControls"];
         trace?: never;
     };
+    "/api/v1/workspaces/{workspace_id}/dashboard/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Workspace usage, cost, latency and operational aggregates
+         * @description Read-only aggregate over the invocation ledger, cost ledger, budget journal, trace and task event log. The period is half-open and timezone-explicit; every rate publishes its denominator; a metric from an unwired source is null with an explicit status and is never rendered as zero. Financial sections are owner/admin only and appear as `restricted` for other roles. This surface never returns prompt content or quarantine material. Every read is audited.
+         */
+        get: operations["getDashboardSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/dashboard/cost-items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Priced cost items with their invocation ledger drill-down
+         * @description Owner/admin only. Each item is one immutable cost posting with its chargeable components, linked adjustments, the bound rate revision per component, and the invocation ledger entry it prices (`ledger_entry` + `ledger_lookup`). Unknown cost components stay null; estimates are labelled and never presented as invoiced amounts. Currencies are never merged. Every read is audited.
+         */
+        get: operations["listDashboardCostItems"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/dashboard/issues/{issue_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Issue drill-down: execution trace, runs, artifact/delivery references
+         * @description Follows one issue from its ledger/cost/budget entries to its causal trace, runs, and artifact, delivery and evidence references. Trace events are metadata only: `payload` is never included, and the response states `payload_included: false`. Approval waiting, queue age and validation outcomes need the trace to correlate task identity; without it they report `missing_source`. Financial sections follow the caller's role. Every read is audited.
+         */
+        get: operations["getDashboardIssueDrilldown"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/dashboard/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Dashboard read/export audit trail
+         * @description Owner/admin only. Newest-first metadata about every dashboard read and export in the caller's workspace: subject, role, resource, period/paging parameters, record count and request id. It contains no content, amounts, or token figures. Reading the trail is itself audited.
+         */
+        get: operations["listDashboardAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/dashboard/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export the workspace summary and cost items as JSON
+         * @description Owner/admin only. The bundle contains the same summary and cost-item page shapes the read endpoints serve; cost items are capped and `cost_items_truncated` says when the cap was hit. An export is audited as its own operation class. It never includes prompt content, quarantine material, or a currency-merged total.
+         */
+        get: operations["exportDashboard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2862,6 +2962,454 @@ export interface components {
         };
         RsiControlsResponse: {
             controls: components["schemas"]["RsiControls"];
+        };
+        DashboardAccess: {
+            /**
+             * @description Financial metrics are granted to owner/admin. Any other role gets `restricted` with null cost/budget values — never zeros.
+             * @enum {string}
+             */
+            financial: "granted" | "restricted";
+            /**
+             * @description This surface never serves captured model content. Content access is a separate grant held by the trace viewer (DAT-225).
+             * @enum {string}
+             */
+            content: "separate_authorization_required";
+            /**
+             * @description This surface never serves ADR-0005 quarantine material. Quarantine access is a separate grant held by the security case surface.
+             * @enum {string}
+             */
+            quarantine: "separate_authorization_required";
+        };
+        DashboardPeriod: {
+            /** Format: date-time */
+            from: string;
+            /** Format: date-time */
+            to: string;
+            timezone: string;
+            /** @enum {string} */
+            boundary: "half_open";
+            /** @enum {string} */
+            bucket: "hour" | "day" | "week" | "month";
+        };
+        DashboardSourceState: {
+            /** @enum {string} */
+            source: "invocation_ledger" | "cost_ledger" | "budget_journal" | "trace" | "task_events";
+            /**
+             * @description missing = source not wired (counts are null); empty = wired with no rows in the period (a real zero); stale = wired, newest record older than stale_after_seconds; restricted = the caller may not read this financial source, so even its count and watermark are null; ok otherwise.
+             * @enum {string}
+             */
+            status: "ok" | "empty" | "stale" | "missing" | "restricted";
+            /** @description Newest observed timestamp in the period; null when missing or empty. */
+            watermark: string | null;
+            /** @description Rows read in the period; null when the source is not wired. */
+            record_count: number | null;
+            stale_after_seconds: number;
+            note: string | null;
+        };
+        DashboardCountMetric: {
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            source: ("invocation_ledger" | "cost_ledger" | "budget_journal" | "trace" | "task_events") | null;
+            /** @description Null unless measured; a measured empty period is a real 0. */
+            value: number | null;
+        };
+        DashboardRatioMetric: {
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            source: ("invocation_ledger" | "cost_ledger" | "budget_journal" | "trace" | "task_events") | null;
+            numerator: number | null;
+            denominator: number | null;
+            /** @description numerator / denominator rounded to 6 decimals; null when unmeasured or when the denominator is 0. */
+            value: number | null;
+        };
+        DashboardLatencyMetric: {
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            source: ("invocation_ledger" | "cost_ledger" | "budget_journal" | "trace" | "task_events") | null;
+            p50_ms: number | null;
+            p95_ms: number | null;
+            sample_size: number | null;
+        };
+        DashboardNotMeasuredMetric: {
+            /** @enum {string} */
+            status: "not_measured";
+            source: null;
+            value: null;
+            /** @description Why the deployment has no source for this metric. */
+            note: string;
+        };
+        DashboardFigureTotals: {
+            known_tokens: number;
+            /** @description Provisional; never a reconciled or invoiced quantity. */
+            estimated_tokens: number;
+            /** @description Attempts whose figure was absent/unknown; they contribute to no sum. */
+            unknown_attempts: number;
+        };
+        DashboardTokenTotals: {
+            input: components["schemas"]["DashboardFigureTotals"];
+            output: components["schemas"]["DashboardFigureTotals"];
+            cache_read: components["schemas"]["DashboardFigureTotals"];
+            cache_write: components["schemas"]["DashboardFigureTotals"];
+            reasoning: components["schemas"]["DashboardFigureTotals"];
+            total_tokens: components["schemas"]["DashboardFigureTotals"];
+        };
+        DashboardTokenMetric: {
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            source: ("invocation_ledger" | "cost_ledger" | "budget_journal" | "trace" | "task_events") | null;
+            figures: components["schemas"]["DashboardTokenTotals"] | null;
+        };
+        DashboardCostLine: {
+            /** @description ISO 4217 currency; null when the line holds no priced component. */
+            currency: string | null;
+            /** @enum {string} */
+            cost_class: "provider_tokens" | "self_hosted_tokens" | "infrastructure";
+            /** @description Canonical fixed-precision decimal. */
+            known_cost: string;
+            /** @description Provisional; never a billed amount. */
+            estimated_cost: string;
+            unknown_components: number;
+            components: number;
+            postings: number;
+        };
+        DashboardCostMetric: {
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            /** @enum {string} */
+            source: "cost_ledger";
+            lines: components["schemas"]["DashboardCostLine"][] | null;
+            /** @description Every currency present in the period; currencies are never merged. */
+            currencies: string[] | null;
+            /** @description Rate revisions bound by the period's postings (sorted, capped at 100). */
+            rate_revision_ids: string[] | null;
+            completeness: {
+                known: number;
+                estimated: number;
+                unknown: number;
+            } | null;
+            updated_at: string | null;
+        };
+        DashboardCurrencyAmount: {
+            currency: string;
+            /** @description Canonical fixed-precision decimal. */
+            amount: string;
+        };
+        DashboardBudgetMetric: {
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            /** @enum {string} */
+            source: "budget_journal";
+            reservations: {
+                held: number;
+                settled: number;
+                reconciling: number;
+                released: number;
+            } | null;
+            /** @description Held plus reconciling bounds; an unknown outcome keeps its bound committed. */
+            outstanding_bound: components["schemas"]["DashboardCurrencyAmount"][] | null;
+            settled_known: components["schemas"]["DashboardCurrencyAmount"][] | null;
+            /** @description Ceiling-derived settlement; labelled internal estimate, not a provider invoice. */
+            settled_estimated: components["schemas"]["DashboardCurrencyAmount"][] | null;
+            unknown_money_accounts: number | null;
+            updated_at: string | null;
+        };
+        DashboardValidationMetric: {
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            /** @enum {string} */
+            source: "task_events";
+            total: number | null;
+            passed: number | null;
+            failed: number | null;
+            /** @description Events without a boolean `passed` field; never guessed. */
+            unclassified: number | null;
+        };
+        DashboardDeliveryMetric: {
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            /** @enum {string} */
+            source: "trace";
+            total: number | null;
+            succeeded: number | null;
+            failed: number | null;
+            unknown: number | null;
+        };
+        DashboardTotals: {
+            requests: components["schemas"]["DashboardCountMetric"];
+            invocations: components["schemas"]["DashboardCountMetric"];
+            retries: components["schemas"]["DashboardCountMetric"];
+            retry_rate: components["schemas"]["DashboardRatioMetric"];
+            error_rate: components["schemas"]["DashboardRatioMetric"];
+            denial_rate: components["schemas"]["DashboardRatioMetric"];
+            tokens: components["schemas"]["DashboardTokenMetric"];
+            latency_ms: components["schemas"]["DashboardLatencyMetric"];
+            queue_age_ms: components["schemas"]["DashboardLatencyMetric"];
+            approval_wait_ms: components["schemas"]["DashboardLatencyMetric"];
+            validation_outcomes: components["schemas"]["DashboardValidationMetric"];
+            delivery_results: components["schemas"]["DashboardDeliveryMetric"];
+            connector_lag_ms: components["schemas"]["DashboardNotMeasuredMetric"];
+            worker_utilization: components["schemas"]["DashboardNotMeasuredMetric"];
+            cost: components["schemas"]["DashboardCostMetric"];
+            budget: components["schemas"]["DashboardBudgetMetric"];
+        };
+        DashboardBreakdownRow: {
+            key: string;
+            request_count: number | null;
+            invocation_count: number | null;
+            retry_count: number | null;
+            error_rate: number | null;
+            tokens: components["schemas"]["DashboardTokenTotals"] | null;
+            /** @description Empty array = cost source wired with no postings for this key (a real zero); null = cost source not wired. */
+            cost: components["schemas"]["DashboardCostLine"][] | null;
+            latency_ms: {
+                p50_ms: number | null;
+                p95_ms: number | null;
+                sample_size: number | null;
+            } | null;
+        };
+        DashboardBreakdown: {
+            /** @enum {string} */
+            dimension: "task" | "agent" | "model" | "date";
+            /** @enum {string} */
+            status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+            rows: components["schemas"]["DashboardBreakdownRow"][];
+            next_cursor: string | null;
+            /** @description True when the scan exceeded 5000 distinct keys; aggregate totals stay exact, but omitted keys are only counted. */
+            truncated: boolean;
+            omitted_keys: number;
+        };
+        DashboardSummary: {
+            enterprise_id: string;
+            workspace_id: string;
+            period: components["schemas"]["DashboardPeriod"];
+            /** Format: date-time */
+            generated_at: string;
+            access: components["schemas"]["DashboardAccess"];
+            sources: components["schemas"]["DashboardSourceState"][];
+            /** @description Metric name -> exact denominator definition. A published rate always says what it is a rate of. */
+            denominators: {
+                [key: string]: string;
+            };
+            unavailable_metrics: {
+                metric: string;
+                reason: string;
+            }[];
+            totals: components["schemas"]["DashboardTotals"];
+            breakdown: components["schemas"]["DashboardBreakdown"];
+        };
+        DashboardLedgerEntryView: {
+            invocation_id: string;
+            attempt: number;
+            issue_id: string;
+            run_id: string;
+            trace_id: string;
+            provider: string;
+            api: string;
+            requested_model: string;
+            returned_model: string | null;
+            provider_request_id: string | null;
+            /** Format: date-time */
+            started_at: string;
+            /** Format: date-time */
+            ended_at: string;
+            finish_status: string;
+            /** @enum {string} */
+            usage_completeness: "known" | "estimated" | "unknown";
+            usage_provenance: string;
+            issue_drilldown_url: string | null;
+        };
+        DashboardCostComponent: {
+            category: string;
+            chargeable: boolean;
+            included_in: string | null;
+            chargeable_units: number | null;
+            unit: string;
+            cost_class: string;
+            currency: string | null;
+            rate_revision_id: string | null;
+            rate: string | null;
+            divisor: number | null;
+            /** @description Canonical decimal; null means unknown (never a stand-in zero). */
+            cost: string | null;
+            /** @enum {string} */
+            completeness: "known" | "estimated" | "unknown";
+            unknown_reason: string | null;
+        };
+        DashboardAdjustmentComponent: {
+            category: string;
+            /** @enum {string} */
+            completeness: "known" | "estimated" | "unknown";
+            corrected_units: number | null;
+            corrected_rate_revision_id: string | null;
+            corrected_cost: string | null;
+            corrected_currency: string | null;
+            note: string | null;
+        };
+        DashboardAdjustment: {
+            adjustment_id: string;
+            target_posting_id: string;
+            /** @enum {string} */
+            reason: "provider_correction" | "administrator_correction";
+            /** @enum {string} */
+            source: "provider" | "administrator";
+            /** Format: date-time */
+            created_at: string;
+            note: string | null;
+            components: components["schemas"]["DashboardAdjustmentComponent"][];
+        };
+        DashboardCostItem: {
+            posting_id: string;
+            /** @enum {string} */
+            kind: "invocation" | "infrastructure";
+            invocation_id: string | null;
+            attempt: number | null;
+            endpoint_id: string | null;
+            model_id: string | null;
+            requested_model: string | null;
+            returned_model: string | null;
+            /** @enum {string} */
+            target: "provider" | "self_hosted";
+            /** Format: date-time */
+            applicable_time: string;
+            currency: string | null;
+            /** @enum {string} */
+            completeness: "known" | "estimated" | "unknown";
+            components: components["schemas"]["DashboardCostComponent"][];
+            adjustments: components["schemas"]["DashboardAdjustment"][];
+            ledger_entry: components["schemas"]["DashboardLedgerEntryView"] | null;
+            /**
+             * @description Cost item -> invocation ledger entry drill-down state. `missing_source` means the ledger is not wired; `not_found` means no matching (invocation_id, attempt) in the period.
+             * @enum {string}
+             */
+            ledger_lookup: "ok" | "not_found" | "missing_source" | "infrastructure";
+            /** Format: date-time */
+            recorded_at: string;
+        };
+        DashboardCostItemPage: {
+            period: components["schemas"]["DashboardPeriod"];
+            /** Format: date-time */
+            generated_at: string;
+            access: components["schemas"]["DashboardAccess"];
+            /** @enum {string} */
+            ledger_lookup: "ok" | "missing_source";
+            items: components["schemas"]["DashboardCostItem"][];
+            next_cursor: string | null;
+            total: number;
+        };
+        DashboardTraceEvent: {
+            source: string;
+            event_id: string;
+            version: number;
+            sequence: number;
+            /** Format: date-time */
+            event_time: string;
+            /** Format: date-time */
+            ingest_time: string;
+            record_class: string;
+            kind: string;
+            issue_id: string | null;
+            task_id: string | null;
+            run_id: string | null;
+            attempt_id: string | null;
+            agent_id: string | null;
+            agent_config_revision: string | null;
+            invocation_id: string | null;
+            tool_id: string | null;
+            artifact_id: string | null;
+            delivery_id: string | null;
+            trace_id: string;
+            span_id: string;
+            parent_span_id: string | null;
+            causation_id: string | null;
+            evidence_refs: string[];
+            /** @description Metric-safe labels only; payload is never included by this surface. */
+            labels: {
+                [key: string]: string;
+            };
+            truncated: boolean;
+            late: boolean;
+        };
+        DashboardIssueDrilldown: {
+            enterprise_id: string;
+            workspace_id: string;
+            issue_id: string;
+            period: components["schemas"]["DashboardPeriod"];
+            /** Format: date-time */
+            generated_at: string;
+            access: components["schemas"]["DashboardAccess"];
+            sources: components["schemas"]["DashboardSourceState"][];
+            totals: components["schemas"]["DashboardTotals"];
+            runs: {
+                run_id: string;
+                task_ids: string[];
+                event_count: number;
+                /** Format: date-time */
+                first_event_at: string;
+                /** Format: date-time */
+                last_event_at: string;
+            }[];
+            trace: {
+                /** @enum {string} */
+                status: "ok" | "empty" | "missing_source" | "not_measured" | "restricted";
+                events: components["schemas"]["DashboardTraceEvent"][];
+                next_cursor: string | null;
+                freshness: {
+                    /** Format: date-time */
+                    as_of: string | null;
+                    /** Format: date-time */
+                    event_time_watermark: string | null;
+                } | null;
+                completeness: {
+                    complete: boolean;
+                    missing_ranges: number;
+                    truncated_event_refs: number;
+                } | null;
+            };
+            references: {
+                artifact_ids: string[];
+                delivery_ids: string[];
+                evidence_refs: string[];
+                task_ids: string[];
+                truncated: boolean;
+            };
+            content: {
+                /** @enum {string} */
+                access: "separate_authorization_required";
+                /** @enum {boolean} */
+                payload_included: false;
+            };
+        };
+        DashboardAuditEntry: {
+            audit_id: string;
+            /** Format: date-time */
+            at: string;
+            enterprise_id: string;
+            workspace_id: string;
+            subject: string;
+            role: string;
+            /** @enum {string} */
+            operation: "read" | "export";
+            /** @enum {string} */
+            resource: "summary" | "cost_items" | "issue_drilldown" | "audit" | "export";
+            issue_id: string | null;
+            /** @description Request metadata only; never content, amounts, or token figures. */
+            query: {
+                [key: string]: string | number | null;
+            };
+            record_count: number;
+            request_id: string;
+        };
+        DashboardAuditPage: {
+            items: components["schemas"]["DashboardAuditEntry"][];
+            next_cursor: string | null;
+            total: number;
+        };
+        DashboardExportBundle: {
+            /** Format: date-time */
+            exported_at: string;
+            summary: components["schemas"]["DashboardSummary"];
+            cost_items: components["schemas"]["DashboardCostItemPage"];
+            cost_items_truncated: boolean;
         };
         Error: {
             /** @description The shared versioned error envelope (ADR-0008, DAT-226 alignment): a stable machine code, the processing stage, the outcome category, a safe localizable user message, service-decided retryability, retry-after where applicable, the request_id trace/case reference, safe-only structured details, and the authorized next action. No field ever carries secrets, credentials, invitation tokens, or sensitive diagnostics; those stay behind separate access checks. */
@@ -8898,6 +9446,360 @@ export interface operations {
                 };
             };
             /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getDashboardSummary: {
+        parameters: {
+            query?: {
+                /** @description Inclusive lower bound (RFC 3339). Default: 24 hours before `to`. The period is half-open [from, to) and may span at most 366 days; a longer range is 400 RANGE_TOO_LARGE. */
+                from?: string;
+                /** @description Exclusive upper bound (RFC 3339). Default: the current instant. */
+                to?: string;
+                /** @description IANA timezone used for date buckets and calendar boundaries. An unknown zone is 400. */
+                timezone?: string;
+                /** @description Bucket size for `breakdown=date`. Bucket keys are local wall-clock labels in `timezone` (`2026-11-03`, `2026-11-03T14:00`, `2026-W45` style Monday week start, `2026-11`). */
+                bucket?: "hour" | "day" | "week" | "month";
+                /** @description Aggregate dimension. Enterprise/workspace are the scope itself and are not queryable as rows. `agent` requires the trace source (ledger `trace_id` joined to trace `agent_id`) and is reported as `missing_source` when trace is not wired. */
+                breakdown?: "task" | "agent" | "model" | "date";
+                /** @description Page size. The maximum is endpoint-specific; a larger value is 400 LIMIT_OUT_OF_RANGE. */
+                limit?: number;
+                /** @description Opaque cursor copied from a previous page's `next_cursor`. Clients must not construct or parse it; a malformed cursor is 400 INVALID_CURSOR. */
+                cursor?: string;
+                /** @description A wired source whose newest record is older than `to - stale_after_seconds` is reported `stale`; staleness never removes the data, and never turns it into a zero. */
+                stale_after_seconds?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace locator. It must equal the workspace resolved from the caller's live membership; any other id is 404 (indistinguishable from a missing workspace). */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Workspace dashboard summary */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardSummary"];
+                };
+            };
+            /** @description INVALID_REQUEST, INVALID_CURSOR, RANGE_TOO_LARGE or LIMIT_OUT_OF_RANGE */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN, SCOPE_MISSING, SCOPE_AMBIGUOUS, SCOPE_CROSS_TENANT, ACCOUNT_SUSPENDED, or CONTENT_ACCESS_DENIED / QUARANTINE_ACCESS_DENIED when content/quarantine is requested */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — the path names a workspace other than the caller's live membership; the answer is identical to a workspace that does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listDashboardCostItems: {
+        parameters: {
+            query?: {
+                /** @description Inclusive lower bound (RFC 3339). Default: 24 hours before `to`. The period is half-open [from, to) and may span at most 366 days; a longer range is 400 RANGE_TOO_LARGE. */
+                from?: string;
+                /** @description Exclusive upper bound (RFC 3339). Default: the current instant. */
+                to?: string;
+                /** @description IANA timezone used for date buckets and calendar boundaries. An unknown zone is 400. */
+                timezone?: string;
+                /** @description Page size. The maximum is endpoint-specific; a larger value is 400 LIMIT_OUT_OF_RANGE. */
+                limit?: number;
+                /** @description Opaque cursor copied from a previous page's `next_cursor`. Clients must not construct or parse it; a malformed cursor is 400 INVALID_CURSOR. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace locator. It must equal the workspace resolved from the caller's live membership; any other id is 404 (indistinguishable from a missing workspace). */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cost item page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardCostItemPage"];
+                };
+            };
+            /** @description INVALID_REQUEST, INVALID_CURSOR, RANGE_TOO_LARGE or LIMIT_OUT_OF_RANGE */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FINANCIAL_ACCESS_DENIED for roles other than owner/admin, or a scope failure */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — the path names a workspace other than the caller's live membership; the answer is identical to a workspace that does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getDashboardIssueDrilldown: {
+        parameters: {
+            query?: {
+                /** @description Inclusive lower bound (RFC 3339). Default: 24 hours before `to`. The period is half-open [from, to) and may span at most 366 days; a longer range is 400 RANGE_TOO_LARGE. */
+                from?: string;
+                /** @description Exclusive upper bound (RFC 3339). Default: the current instant. */
+                to?: string;
+                /** @description IANA timezone used for date buckets and calendar boundaries. An unknown zone is 400. */
+                timezone?: string;
+                /** @description Page size. The maximum is endpoint-specific; a larger value is 400 LIMIT_OUT_OF_RANGE. */
+                limit?: number;
+                /** @description Opaque cursor copied from a previous page's `next_cursor`. Clients must not construct or parse it; a malformed cursor is 400 INVALID_CURSOR. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace locator. It must equal the workspace resolved from the caller's live membership; any other id is 404 (indistinguishable from a missing workspace). */
+                workspace_id: string;
+                /** @description Issue locator; it is matched inside the authenticated workspace scope. */
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Issue drill-down */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardIssueDrilldown"];
+                };
+            };
+            /** @description INVALID_REQUEST, INVALID_CURSOR, RANGE_TOO_LARGE or LIMIT_OUT_OF_RANGE */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN or a scope failure; CONTENT_ACCESS_DENIED / QUARANTINE_ACCESS_DENIED when content or quarantine is requested */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — the path names a workspace other than the caller's live membership; the answer is identical to a workspace that does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listDashboardAudit: {
+        parameters: {
+            query?: {
+                operation?: "read" | "export";
+                resource?: "summary" | "cost_items" | "issue_drilldown" | "audit" | "export";
+                /** @description Page size. The maximum is endpoint-specific; a larger value is 400 LIMIT_OUT_OF_RANGE. */
+                limit?: number;
+                /** @description Opaque cursor copied from a previous page's `next_cursor`. Clients must not construct or parse it; a malformed cursor is 400 INVALID_CURSOR. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace locator. It must equal the workspace resolved from the caller's live membership; any other id is 404 (indistinguishable from a missing workspace). */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Audit page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardAuditPage"];
+                };
+            };
+            /** @description INVALID_REQUEST, INVALID_CURSOR or LIMIT_OUT_OF_RANGE */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description AUDIT_ACCESS_DENIED for roles other than owner/admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — the path names a workspace other than the caller's live membership; the answer is identical to a workspace that does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    exportDashboard: {
+        parameters: {
+            query?: {
+                /** @description Inclusive lower bound (RFC 3339). Default: 24 hours before `to`. The period is half-open [from, to) and may span at most 366 days; a longer range is 400 RANGE_TOO_LARGE. */
+                from?: string;
+                /** @description Exclusive upper bound (RFC 3339). Default: the current instant. */
+                to?: string;
+                /** @description IANA timezone used for date buckets and calendar boundaries. An unknown zone is 400. */
+                timezone?: string;
+                /** @description Bucket size for `breakdown=date`. Bucket keys are local wall-clock labels in `timezone` (`2026-11-03`, `2026-11-03T14:00`, `2026-W45` style Monday week start, `2026-11`). */
+                bucket?: "hour" | "day" | "week" | "month";
+                /** @description Aggregate dimension. Enterprise/workspace are the scope itself and are not queryable as rows. `agent` requires the trace source (ledger `trace_id` joined to trace `agent_id`) and is reported as `missing_source` when trace is not wired. */
+                breakdown?: "task" | "agent" | "model" | "date";
+            };
+            header?: never;
+            path: {
+                /** @description Workspace locator. It must equal the workspace resolved from the caller's live membership; any other id is 404 (indistinguishable from a missing workspace). */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Export bundle */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardExportBundle"];
+                };
+            };
+            /** @description INVALID_REQUEST, RANGE_TOO_LARGE or an invalid bucket/timezone */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FINANCIAL_ACCESS_DENIED for roles other than owner/admin, or a scope failure */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — the path names a workspace other than the caller's live membership; the answer is identical to a workspace that does not exist. */
             404: {
                 headers: {
                     [name: string]: unknown;

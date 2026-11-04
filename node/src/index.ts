@@ -34,6 +34,8 @@ import {
 } from "./control-plane/index.js";
 import type { AuthenticatedPrincipal, RequestScopeDeps } from "./control-plane/request-scope.js";
 import { resolveRequestScope } from "./control-plane/request-scope.js";
+import { DashboardAuditLog, DashboardService } from "./dashboard/index.js";
+import type { DashboardSources } from "./dashboard/index.js";
 import { DshClient } from "./dsh/client.js";
 import {
   createFileEventSink,
@@ -48,6 +50,8 @@ import {
 } from "./gateway/index.js";
 import type { GatewayScope, GatewayScopeBinding, ModelGateway } from "./gateway/index.js";
 import { createUsageLedgerStore } from "./ledger/index.js";
+import type { UsageLedgerStore } from "./ledger/index.js";
+import type { BudgetStore } from "./budget/index.js";
 import {
   createMemoryConsolidationRunner,
   createMemoryRepositories,
@@ -108,6 +112,12 @@ export interface OrchestratorOptions {
   providerServiceCredentials?: ServiceCredentialStore;
   /** Provider API base override for the point refresh (tests: fake provider). */
   providerApiBaseUrl?: string;
+  /**
+   * Dashboard read-model sources (tests inject in-memory stores). Unset uses
+   * the deployment's ledger/budget stores; a source that is still absent is
+   * reported as `missing_source`, never as zero.
+   */
+  dashboardSources?: Partial<DashboardSources>;
 }
 
 export interface OrchestratorHandle {
@@ -142,6 +152,8 @@ export interface OrchestratorHandle {
   rsi: RsiService | undefined;
   /** Scoped RSI store, for dataset provisioning and tests. */
   rsiStore: RsiStore | undefined;
+  /** Workspace dashboard read model (DAT-230); set with the identity surface. */
+  dashboard: DashboardService | undefined;
   /** Per-process bearer token callers must present on every API request. */
   apiToken: string;
   /** Start listening; resolves with the bound loopback address. */
@@ -253,7 +265,15 @@ function deploymentSecurity(config: OrchestratorConfig): {
  * prevent. Model egress without both gateway files fails closed — every
  * dispatch is denied.
  */
-function deploymentGateway(config: OrchestratorConfig): ModelGateway {
+interface DeploymentStores {
+  usageLedger?: UsageLedgerStore;
+  budgetStore?: BudgetStore;
+}
+
+function deploymentGateway(
+  config: OrchestratorConfig,
+  stores: DeploymentStores = {},
+): ModelGateway {
   const ambient = providerCredentialEnvVars(process.env);
   if (ambient.length > 0) {
     throw new Error(
@@ -268,12 +288,24 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
   // Budget authority (DAT-229): configured with a policy file, it enforces
   // enterprise/workspace/run limits with a durable journal; without one the
   // deployment is explicitly unbudgeted rather than silently zero-cost.
-  const budget = config.budgetPolicyFile
+  const budgetStore = config.budgetPolicyFile
+    ? createBudgetStore({ persistencePath: config.budgetStateFile })
+    : undefined;
+  const budget = budgetStore
     ? new BudgetAuthority({
-        store: createBudgetStore({ persistencePath: config.budgetStateFile }),
-        policyResolver: loadBudgetPolicyFile(config.budgetPolicyFile, scope),
+        store: budgetStore,
+        policyResolver: loadBudgetPolicyFile(config.budgetPolicyFile as string, scope),
       })
     : undefined;
+  const usageLedger = config.usageLedgerFile
+    ? createUsageLedgerStore({ persistencePath: config.usageLedgerFile })
+    : undefined;
+  if (usageLedger !== undefined) {
+    stores.usageLedger = usageLedger;
+  }
+  if (budgetStore !== undefined) {
+    stores.budgetStore = budgetStore;
+  }
   return createModelGateway({
     policyResolver: config.gatewayPolicyFile
       ? loadGatewayPolicyFile(config.gatewayPolicyFile)
@@ -294,9 +326,7 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
     // Invocation usage ledger (DAT-227): every actual dispatch attempt is
     // metered here — failures, retries and fallbacks included — so cost
     // accounting reconciles against real attempts instead of guesses.
-    ...(config.usageLedgerFile
-      ? { usageLedger: createUsageLedgerStore({ persistencePath: config.usageLedgerFile }) }
-      : {}),
+    ...(usageLedger !== undefined ? { usageLedger } : {}),
     ...(budget ? { budget } : {}),
   });
 }
@@ -367,7 +397,8 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     ...(config.dshTokenFile ? { tokenFile: config.dshTokenFile } : {}),
   });
   const model = options.model ?? resolveConfiguredModel(config);
-  const gateway = options.gateway ?? deploymentGateway(config);
+  const deploymentStores: DeploymentStores = {};
+  const gateway = options.gateway ?? deploymentGateway(config, deploymentStores);
   // Fresh per-process token: possessing it is what authorizes API callers,
   // approvals included; the configured dsh identity alone is not proof of a
   // human decision.
@@ -532,6 +563,28 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     runScope: options.runScope ?? deploymentRunScope(requestScopeDeps),
     ...(memory !== undefined && rsi !== undefined ? { memory: { memory, rsi } } : {}),
   });
+  // Workspace dashboard (DAT-230): a read-only projection over the ledger,
+  // budget journal, trace and task event log. It is only served when the
+  // identity surface exists, because every route is session-scoped; an
+  // injected test source wins over the deployment store.
+  const dashboardSources: DashboardSources = {
+    ...(deploymentStores.usageLedger !== undefined ? { ledger: deploymentStores.usageLedger } : {}),
+    ...(deploymentStores.budgetStore !== undefined ? { budget: deploymentStores.budgetStore } : {}),
+    ...options.dashboardSources,
+    tasks: options.dashboardSources?.tasks ?? store,
+  };
+  const dashboard =
+    auth !== undefined && requestScopeDeps !== undefined
+      ? new DashboardService({
+          sources: dashboardSources,
+          audit: new DashboardAuditLog({
+            ...(config.dashboardAuditFile !== undefined
+              ? { persistencePath: config.dashboardAuditFile }
+              : {}),
+          }),
+        })
+      : undefined;
+
   const server = createApiServer({
     service,
     apiToken,
@@ -548,6 +601,9 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
             ...(rsi !== undefined ? { rsi } : {}),
           },
         }
+      : {}),
+    ...(dashboard !== undefined && auth !== undefined && requestScopeDeps !== undefined
+      ? { dashboard: { auth, service: dashboard, scope: requestScopeDeps } }
       : {}),
     ...(config.publicOrigin !== undefined ? { publicOrigin: config.publicOrigin } : {}),
   });
@@ -567,6 +623,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     memoryRepositories,
     rsi,
     rsiStore,
+    dashboard,
     apiToken,
     start: () => {
       const { promise, resolve, reject } = Promise.withResolvers<{ host: string; port: number }>();

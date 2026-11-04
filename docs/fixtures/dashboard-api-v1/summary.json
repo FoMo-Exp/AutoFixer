@@ -1,0 +1,318 @@
+{
+  "enterprise_id": "ent_fixture",
+  "workspace_id": "ws_fixture",
+  "period": {
+    "from": "2026-06-01T00:00:00.000Z",
+    "to": "2026-06-02T00:00:00.000Z",
+    "timezone": "UTC",
+    "boundary": "half_open",
+    "bucket": "hour"
+  },
+  "generated_at": "2099-01-01T00:00:00.000Z",
+  "access": {
+    "financial": "granted",
+    "content": "separate_authorization_required",
+    "quarantine": "separate_authorization_required"
+  },
+  "sources": [
+    {
+      "source": "invocation_ledger",
+      "status": "stale",
+      "watermark": "2026-06-01T10:00:00.000Z",
+      "record_count": 1,
+      "stale_after_seconds": 3600,
+      "note": "newest record is older than 3600s before the period end"
+    },
+    {
+      "source": "cost_ledger",
+      "status": "stale",
+      "watermark": "2026-06-01T10:30:00.000Z",
+      "record_count": 1,
+      "stale_after_seconds": 3600,
+      "note": "newest record is older than 3600s before the period end"
+    },
+    {
+      "source": "budget_journal",
+      "status": "empty",
+      "watermark": null,
+      "record_count": 0,
+      "stale_after_seconds": 3600,
+      "note": null
+    },
+    {
+      "source": "trace",
+      "status": "stale",
+      "watermark": "2026-06-01T10:05:00.000Z",
+      "record_count": 1,
+      "stale_after_seconds": 3600,
+      "note": "newest record is older than 3600s before the period end"
+    },
+    {
+      "source": "task_events",
+      "status": "empty",
+      "watermark": null,
+      "record_count": 0,
+      "stale_after_seconds": 3600,
+      "note": null
+    }
+  ],
+  "denominators": {
+    "requests": "all invocation-ledger attempts whose started_at is in [from, to)",
+    "invocations": "distinct invocation_id among the period's attempts",
+    "retries": "attempts minus distinct invocations; never below zero",
+    "retry_rate": "retries / invocations",
+    "error_rate": "attempts whose finish_status is error, transport_failed, unknown or aborted / all attempts",
+    "denial_rate": "trace events whose `outcome` label is an allow/deny decision (`allowed` or `denied`) with `denied` as the numerator; other outcome vocabulary is outside the denominator",
+    "tokens": "each reported token category; known and estimated sums stay separate and unknown figures are counted, never zero-filled",
+    "latency_ms": "attempts with parseable started_at and ended_at where end >= start",
+    "queue_age_ms": "tasks whose first transition out of `queued` occurred in [from, to); age = transition - task creation",
+    "approval_wait_ms": "approval.resolved events in [from, to) with a preceding approval.required on the same task",
+    "validation_outcomes": "validation.completed task events in [from, to)",
+    "delivery_results": "trace events of kind delivery.finished in [from, to)",
+    "cost": "sum of chargeable posting components grouped by currency and cost class; estimated amounts are never added to known",
+    "budget": "reservations created in [from, to); held and reconciling bounds stay committed, released bounds are refunded"
+  },
+  "unavailable_metrics": [
+    {
+      "metric": "connector_lag_ms",
+      "reason": "no connector-lag telemetry source is wired into this deployment"
+    },
+    {
+      "metric": "worker_utilization",
+      "reason": "no worker-utilization telemetry source is wired into this deployment"
+    }
+  ],
+  "totals": {
+    "requests": {
+      "status": "ok",
+      "source": "invocation_ledger",
+      "value": 1
+    },
+    "invocations": {
+      "status": "ok",
+      "source": "invocation_ledger",
+      "value": 1
+    },
+    "retries": {
+      "status": "ok",
+      "source": "invocation_ledger",
+      "value": 0
+    },
+    "retry_rate": {
+      "status": "ok",
+      "source": "invocation_ledger",
+      "numerator": 0,
+      "denominator": 1,
+      "value": 0
+    },
+    "error_rate": {
+      "status": "ok",
+      "source": "invocation_ledger",
+      "numerator": 0,
+      "denominator": 1,
+      "value": 0
+    },
+    "denial_rate": {
+      "status": "empty",
+      "source": "trace",
+      "numerator": 0,
+      "denominator": 0,
+      "value": null
+    },
+    "tokens": {
+      "status": "ok",
+      "source": "invocation_ledger",
+      "figures": {
+        "input": {
+          "known_tokens": 1000,
+          "estimated_tokens": 0,
+          "unknown_attempts": 0
+        },
+        "output": {
+          "known_tokens": 500,
+          "estimated_tokens": 0,
+          "unknown_attempts": 0
+        },
+        "cache_read": {
+          "known_tokens": 0,
+          "estimated_tokens": 0,
+          "unknown_attempts": 0
+        },
+        "cache_write": {
+          "known_tokens": 0,
+          "estimated_tokens": 0,
+          "unknown_attempts": 0
+        },
+        "reasoning": {
+          "known_tokens": 0,
+          "estimated_tokens": 0,
+          "unknown_attempts": 1
+        },
+        "total_tokens": {
+          "known_tokens": 1500,
+          "estimated_tokens": 0,
+          "unknown_attempts": 0
+        }
+      }
+    },
+    "latency_ms": {
+      "status": "ok",
+      "source": "invocation_ledger",
+      "p50_ms": 2000,
+      "p95_ms": 2000,
+      "sample_size": 1
+    },
+    "queue_age_ms": {
+      "status": "empty",
+      "source": "task_events",
+      "p50_ms": null,
+      "p95_ms": null,
+      "sample_size": 0
+    },
+    "approval_wait_ms": {
+      "status": "empty",
+      "source": "task_events",
+      "p50_ms": null,
+      "p95_ms": null,
+      "sample_size": 0
+    },
+    "validation_outcomes": {
+      "status": "empty",
+      "source": "task_events",
+      "total": 0,
+      "passed": 0,
+      "failed": 0,
+      "unclassified": 0
+    },
+    "delivery_results": {
+      "status": "ok",
+      "source": "trace",
+      "total": 1,
+      "succeeded": 1,
+      "failed": 0,
+      "unknown": 0
+    },
+    "connector_lag_ms": {
+      "status": "not_measured",
+      "source": null,
+      "value": null,
+      "note": "no connector-lag telemetry source is wired into this deployment"
+    },
+    "worker_utilization": {
+      "status": "not_measured",
+      "source": null,
+      "value": null,
+      "note": "no worker-utilization telemetry source is wired into this deployment"
+    },
+    "cost": {
+      "status": "ok",
+      "source": "cost_ledger",
+      "lines": [
+        {
+          "currency": "USD",
+          "cost_class": "provider_tokens",
+          "known_cost": "0.010500000000",
+          "estimated_cost": "0.000000000000",
+          "unknown_components": 0,
+          "components": 5,
+          "postings": 1
+        }
+      ],
+      "currencies": [
+        "USD"
+      ],
+      "rate_revision_ids": [
+        "rev-cache_read",
+        "rev-cache_write",
+        "rev-input",
+        "rev-output",
+        "rev-reasoning"
+      ],
+      "completeness": {
+        "known": 1,
+        "estimated": 0,
+        "unknown": 0
+      },
+      "updated_at": "2026-06-01T10:30:00.000Z"
+    },
+    "budget": {
+      "status": "empty",
+      "source": "budget_journal",
+      "reservations": {
+        "held": 0,
+        "settled": 0,
+        "reconciling": 0,
+        "released": 0
+      },
+      "outstanding_bound": [],
+      "settled_known": [],
+      "settled_estimated": [],
+      "unknown_money_accounts": 0,
+      "updated_at": null
+    }
+  },
+  "breakdown": {
+    "dimension": "model",
+    "status": "ok",
+    "rows": [
+      {
+        "key": "gpt-4o",
+        "request_count": 1,
+        "invocation_count": 1,
+        "retry_count": 0,
+        "error_rate": 0,
+        "tokens": {
+          "input": {
+            "known_tokens": 1000,
+            "estimated_tokens": 0,
+            "unknown_attempts": 0
+          },
+          "output": {
+            "known_tokens": 500,
+            "estimated_tokens": 0,
+            "unknown_attempts": 0
+          },
+          "cache_read": {
+            "known_tokens": 0,
+            "estimated_tokens": 0,
+            "unknown_attempts": 0
+          },
+          "cache_write": {
+            "known_tokens": 0,
+            "estimated_tokens": 0,
+            "unknown_attempts": 0
+          },
+          "reasoning": {
+            "known_tokens": 0,
+            "estimated_tokens": 0,
+            "unknown_attempts": 1
+          },
+          "total_tokens": {
+            "known_tokens": 1500,
+            "estimated_tokens": 0,
+            "unknown_attempts": 0
+          }
+        },
+        "cost": [
+          {
+            "currency": "USD",
+            "cost_class": "provider_tokens",
+            "known_cost": "0.010500000000",
+            "estimated_cost": "0.000000000000",
+            "unknown_components": 0,
+            "components": 5,
+            "postings": 1
+          }
+        ],
+        "latency_ms": {
+          "p50_ms": 2000,
+          "p95_ms": 2000,
+          "sample_size": 1
+        }
+      }
+    ],
+    "next_cursor": null,
+    "truncated": false,
+    "omitted_keys": 0
+  }
+}

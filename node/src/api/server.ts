@@ -4,6 +4,8 @@ import http from "node:http";
 import { isAuthorizedBearer } from "./auth.js";
 import type { AuthService, SessionContext } from "./auth-service.js";
 import { handleAuthRequest, requireSessionActor } from "./auth-http.js";
+import { handleDashboardRequest } from "./dashboard-http.js";
+import type { DashboardHttpDeps } from "./dashboard-http.js";
 import { handleMemoryRequest } from "./memory-http.js";
 import type { MemoryHttpDeps } from "./memory-http.js";
 import { ApiError, apiErrorFromControlPlane } from "./errors.js";
@@ -62,6 +64,12 @@ export interface ApiServerDeps {
    * workspace membership; unset keeps the memory routes nonexistent.
    */
   memory?: MemoryHttpDeps;
+  /**
+   * Workspace dashboard v1 surface (DAT-230). Read-only, session-authenticated,
+   * and scoped by live membership; unset keeps the dashboard routes
+   * nonexistent.
+   */
+  dashboard?: DashboardHttpDeps;
 }
 
 function writeSseEvent(res: http.ServerResponse, event: TaskEvent): void {
@@ -479,6 +487,23 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
           },
           { req, res, url, segments, requestId },
         );
+        return;
+      }
+
+      // Workspace dashboard (DAT-230): read-only aggregate surface with its
+      // own session scope resolution (DAT-241). Dispatched before the
+      // task-plane actor logic below.
+      if (segments[2] === "workspaces" && segments[4] === "dashboard") {
+        if (deps.dashboard === undefined) {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+        }
+        await handleDashboardRequest(deps.dashboard, {
+          req,
+          res,
+          url,
+          segments,
+          requestId,
+        });
         return;
       }
 

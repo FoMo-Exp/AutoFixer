@@ -1000,6 +1000,43 @@ outcome classes and their retryability:
 `partial` delivery (a pushed branch without a PR) is an explicit recorded
 outcome, never success and never automatically deleted.
 
+## Workspace dashboard (DAT-230)
+
+Read-only, session-authenticated aggregation over the invocation ledger, cost
+ledger, budget journal, trace and task-event log of ADR-0008. `{workspace_id}`
+is a locator, never authority: the scope comes from the caller's live
+membership, client-supplied `workspace_id`/`enterprise_id` query parameters are
+`400 INVALID_REQUEST`, and a path naming another workspace is `404 NOT_FOUND`
+(the same answer as a workspace that does not exist). Periods are half-open
+`[from, to)` with an explicit IANA `timezone` (default `UTC`) and a `bucket` of
+`hour`, `day`, `week` or `month`; date keys are the local civil label in that
+zone. Ranges longer than 366 days are `400 RANGE_TOO_LARGE`.
+
+Every metric carries its own `status` — `ok`, `empty` (source wired, no data in
+the period: a real zero where the metric is a count), `missing_source` (source
+not wired), `not_measured` (no telemetry exists for it) or `restricted` — and a
+missing figure is `null`, never zero. Known, estimated and unknown token and
+cost figures stay separate, ratios publish numerator and denominator, and each
+source reports a watermark plus `ok`/`empty`/`stale`/`missing`/`restricted`; a
+restricted financial source hides even its record count and watermark.
+`connector_lag_ms`
+and `worker_utilization` are `not_measured` until such telemetry is wired.
+`cost` and `budget` are owner/admin only; other roles get `restricted` with
+`null` figures. Content and quarantine are never served by this surface:
+`include_content`/`content` is `403 CONTENT_ACCESS_DENIED` and
+`include_quarantine`/`quarantine` is `403 QUARANTINE_ACCESS_DENIED`. Trace views
+never carry the event payload. Every read and export appends an audit entry
+(metadata only: actor, scope, resource, query parameters, record count), and the
+audit trail itself is owner/admin only (`403 AUDIT_ACCESS_DENIED`).
+
+| Request | Request body | Response |
+|---|---|---|
+| `GET /api/v1/workspaces/{workspace_id}/dashboard/summary?from=&to=&timezone=&bucket=&breakdown=&limit=&cursor=&stale_after_seconds=` | none | `200 DashboardSummary` (totals + breakdown by `task`, `agent`, `model` or `date`) |
+| `GET /api/v1/workspaces/{workspace_id}/dashboard/cost-items?from=&to=&timezone=&bucket=&limit=&cursor=` | none | `200 DashboardCostItemPage` (cost item → ledger entry join; owner/admin only) |
+| `GET /api/v1/workspaces/{workspace_id}/dashboard/issues/{issue_id}?from=&to=&timezone=&bucket=&limit=&cursor=` | none | `200 DashboardIssueDrilldown` (execution, trace, runs, references; no content) |
+| `GET /api/v1/workspaces/{workspace_id}/dashboard/audit?limit=&cursor=&operation=&resource=` | none | `200 DashboardAuditPage` (owner/admin only) |
+| `GET /api/v1/workspaces/{workspace_id}/dashboard/export?from=&to=&timezone=&bucket=&breakdown=` | none | `200 DashboardExportBundle` as an attachment (owner/admin only; capped at 1000 cost items) |
+
 ## Pagination
 
 List endpoints paginate with an opaque cursor: request `?cursor=`, response
