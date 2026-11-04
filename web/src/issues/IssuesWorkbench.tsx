@@ -5,8 +5,9 @@ import { formatDate } from "../ui/format";
 import { productStageTone, productStateLabel } from "../ui/issues";
 import { redactText } from "../ui/redaction";
 import { Select } from "../ui/Select";
-import { describeIssueError, IssueDetail } from "./IssueDetail";
-import type { IssueError } from "./IssueDetail";
+import { IssueDetail } from "./IssueDetail";
+import { describeIssueError } from "./errors";
+import type { IssueError } from "./errors";
 
 type IssueFilter = "all" | ProductState;
 
@@ -24,7 +25,13 @@ const ISSUE_FILTERS: IssueFilter[] = [
   "cancelled",
 ];
 
-export function IssuesWorkbench({ client }: { client: ForgePilotClient }): ReactElement {
+export function IssuesWorkbench({
+  client,
+  currentUserId,
+}: {
+  client: ForgePilotClient;
+  currentUserId?: string;
+}): ReactElement {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string | undefined>(undefined);
   const [workspaceError, setWorkspaceError] = useState<IssueError | undefined>(undefined);
@@ -300,6 +307,7 @@ export function IssuesWorkbench({ client }: { client: ForgePilotClient }): React
             workspaceId={workspaceId}
             issueId={selectedIssueId}
             seed={seedIssue}
+            currentUserId={currentUserId}
             canMutate={canMutate}
             onBack={backToList}
             onChanged={refreshList}

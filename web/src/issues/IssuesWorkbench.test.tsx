@@ -7,6 +7,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ForgePilotClient } from "../api/client";
 import type {
+  Approval,
+  Candidate,
   Issue,
   IssueEvent,
   IssuePage,
@@ -51,6 +53,9 @@ function mockDetail(client: ForgePilotClient): void {
   vi.spyOn(client, "getIssueStage").mockResolvedValue(stage);
   vi.spyOn(client, "listIssueTasks").mockResolvedValue(taskPage);
   vi.spyOn(client, "listIssueRuns").mockResolvedValue(runPage);
+  vi.spyOn(client, "listIssueCandidates").mockResolvedValue({ items: [], next_cursor: null });
+  vi.spyOn(client, "listIssueApprovals").mockResolvedValue({ items: [], next_cursor: null });
+  vi.spyOn(client, "listIssueDeliveries").mockResolvedValue({ items: [], next_cursor: null });
 }
 
 function streamReplay(client: ForgePilotClient, events: IssueEvent[]): void {
@@ -81,6 +86,32 @@ afterEach(() => {
 });
 
 describe("issue workbench", () => {
+  it("loads the frozen candidate review for the named human approver", async () => {
+    const client = makeClient();
+    mockDetail(client);
+    const candidate = fixture<Candidate>("collab-api-v1/candidate.json");
+    const approval = fixture<Approval>("collab-api-v1/approval.json");
+    vi.spyOn(client, "listIssueCandidates").mockResolvedValue({
+      items: [candidate],
+      next_cursor: null,
+    });
+    vi.spyOn(client, "listIssueApprovals").mockResolvedValue({
+      items: [approval],
+      next_cursor: null,
+    });
+    vi.spyOn(client, "listIssueDeliveries").mockResolvedValue({
+      items: [],
+      next_cursor: null,
+    });
+
+    render(<IssuesWorkbench client={client} currentUserId="usr_luthiel" />);
+    await openIssue();
+
+    expect(await screen.findByText(candidate.summary)).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Approve candidate" })).toBeTruthy();
+    expect(screen.getByText(/No delivery operation exists yet/)).toBeTruthy();
+  });
+
   it("renders the issue, its product stage, harness run, and replayed event", async () => {
     const client = makeClient();
     mockDetail(client);
