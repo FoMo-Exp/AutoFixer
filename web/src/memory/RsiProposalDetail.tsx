@@ -488,7 +488,7 @@ export function RsiProposalDetail({
                     <EvaluationCard key={evaluation.evaluation_id} evaluation={evaluation} />
                   ))}
                   {grouped?.holdout.map((evaluation) => (
-                    <EvaluationCard key={evaluation.evaluation_id} evaluation={evaluation} />
+                    <HoldoutEvaluationCard key={evaluation.evaluation_id} evaluation={evaluation} />
                   ))}
                   <p className="rsi-hint">{HOLDOUT_NOTE}</p>
                 </>
@@ -788,20 +788,12 @@ function RolloutStages({ rollout }: { rollout: RsiRollout }): ReactElement {
 }
 
 function EvaluationCard({ evaluation }: { evaluation: RsiEvaluation }): ReactElement {
-  const holdout = evaluation.dataset === "holdout";
   return (
-    <article
-      className={`rsi-eval ${holdout ? "rsi-eval-holdout" : ""}`}
-      aria-labelledby={`eval-${evaluation.evaluation_id}`}
-    >
+    <article className="rsi-eval" aria-labelledby={`eval-${evaluation.evaluation_id}`}>
       <div className="rsi-eval-heading">
         <div>
-          <span className="eyebrow">
-            {holdout ? "Hidden holdout · aggregate only" : "Golden set"}
-          </span>
-          <h4 id={`eval-${evaluation.evaluation_id}`}>
-            {holdout ? "Holdout replay" : "Golden-set replay"}
-          </h4>
+          <span className="eyebrow">Golden set</span>
+          <h4 id={`eval-${evaluation.evaluation_id}`}>Golden-set replay</h4>
         </div>
         <span className={`rsi-verdict rsi-tone-${verdictTone(evaluation.verdict)}`}>
           {verdictLabel(evaluation.verdict)}
@@ -865,7 +857,36 @@ function EvaluationCard({ evaluation }: { evaluation: RsiEvaluation }): ReactEle
           <span className="mono">{redactText(evaluation.created_by)}</span>
         </span>
       </div>
-      {holdout && <p className="rsi-hint">{HOLDOUT_NOTE}</p>}
+    </article>
+  );
+}
+
+/**
+ * The hidden holdout contributes an aggregate sample counter only. Its
+ * per-arm outcomes, verdict, interval, cost, verifier, and version trace are
+ * deliberately not rendered: the learning loop cannot read its cases, and this
+ * administration view must not reconstruct them from evaluation rows.
+ */
+function HoldoutEvaluationCard({ evaluation }: { evaluation: RsiEvaluation }): ReactElement {
+  return (
+    <article className="rsi-eval rsi-eval-holdout" aria-label="Holdout evaluation aggregate">
+      <div className="rsi-eval-heading">
+        <div>
+          <span className="eyebrow">Hidden holdout · aggregate only</span>
+          <h4>Holdout evaluation</h4>
+        </div>
+      </div>
+      <div className="rsi-eval-grid">
+        <div>
+          <span className="metric-label">Holdout used</span>
+          <strong>{evaluation.holdout_used ? "Yes" : "No"}</strong>
+        </div>
+        <div>
+          <span className="metric-label">Sample</span>
+          <strong className="mono">{evaluation.sample_size}</strong>
+        </div>
+      </div>
+      <p className="rsi-hint">{HOLDOUT_NOTE}</p>
     </article>
   );
 }

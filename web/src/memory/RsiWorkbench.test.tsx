@@ -107,12 +107,37 @@ describe("RSI workbench", () => {
     expect(screen.getByText("Security event recorded")).toBeTruthy();
     expect(screen.getByText(/forbidden item injection/)).toBeTruthy();
     expect(screen.getByText("Regression evidence")).toBeTruthy();
-    expect(screen.getAllByText("Security events")).toHaveLength(2);
+    expect(screen.getAllByText("Security events")).toHaveLength(1);
     expect(screen.getByText("Server-reported blockers")).toBeTruthy();
     expect(screen.getByText("offline replay did not pass")).toBeTruthy();
-    expect(screen.getAllByText("Holdout replay")).toHaveLength(1);
     expect(document.body.textContent).not.toMatch(/HOLDOUT-SECRET/);
     expect(document.body.textContent).toContain("case content is never part of any response");
+
+    const holdoutEvaluation = failed.evaluations.find((entry) => entry.dataset === "holdout")!;
+    const holdoutCard = screen.getByRole("article", {
+      name: "Holdout evaluation aggregate",
+    });
+    expect(within(holdoutCard).getByText("Yes")).toBeTruthy();
+    expect(within(holdoutCard).getByText(String(holdoutEvaluation.sample_size))).toBeTruthy();
+    for (const text of [
+      "Success",
+      "Rework",
+      "Context cost",
+      "Security events",
+      "Verifier",
+      "Policy",
+      "Reflection tokens",
+      "Fail",
+      "Pass",
+    ]) {
+      expect(within(holdoutCard).queryByText(text)).toBeNull();
+    }
+    expect(within(holdoutCard).queryByText(/Δ success/)).toBeNull();
+    expect(within(holdoutCard).queryByText(/95% CI/)).toBeNull();
+    expect(within(holdoutCard).queryByText(holdoutEvaluation.verifier.reference)).toBeNull();
+    expect(within(holdoutCard).queryByText(holdoutEvaluation.policy_hash)).toBeNull();
+    expect(within(holdoutCard).queryByText(holdoutEvaluation.memory_version)).toBeNull();
+    expect(document.body.textContent).not.toContain(holdoutEvaluation.verifier.reference);
 
     const diff = screen.getByLabelText("Proposal artifact diff");
     expect(diff.textContent).toContain("- max_items: 8");
