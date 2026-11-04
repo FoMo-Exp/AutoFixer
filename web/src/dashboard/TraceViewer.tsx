@@ -45,6 +45,7 @@ export function TraceViewer({
   const [error, setError] = useState<{ key: string; error: DashboardError }>();
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [pageError, setPageError] = useState<string>();
   const [requestToken, setRequestToken] = useState(0);
   const requestRef = useRef(0);
 
@@ -70,6 +71,7 @@ export function TraceViewer({
         if (!active || requestId !== requestRef.current) return;
         setState({ key, drilldown: next });
         setError(undefined);
+        setPageError(undefined);
       })
       .catch((caught: unknown) => {
         if (!active || requestId !== requestRef.current) return;
@@ -117,7 +119,7 @@ export function TraceViewer({
       });
     } catch (caught: unknown) {
       if (requestId === requestRef.current) {
-        setError({ key: queryKey, error: describeDashboardError(caught) });
+        setPageError(describeDashboardError(caught).message);
       }
     } finally {
       setLoadingMore(false);
@@ -282,6 +284,11 @@ export function TraceViewer({
                   >
                     {loadingMore ? "Loading…" : "Load more events"}
                   </button>
+                )}
+                {pageError && (
+                  <p className="dashboard-inline-error" role="alert">
+                    {pageError}
+                  </p>
                 )}
               </>
             )}

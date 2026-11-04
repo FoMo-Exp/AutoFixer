@@ -86,6 +86,7 @@ export function DashboardWorkbench({ client }: { client: ForgePilotClient }): Re
   const [summaryError, setSummaryError] = useState<{ key: string; error: DashboardError }>();
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [breakdownLoadingMore, setBreakdownLoadingMore] = useState(false);
+  const [breakdownError, setBreakdownError] = useState<{ key: string; message: string }>();
   const [refreshToken, setRefreshToken] = useState(0);
   const requestRef = useRef(0);
 
@@ -142,6 +143,7 @@ export function DashboardWorkbench({ client }: { client: ForgePilotClient }): Re
         if (!active || requestId !== requestRef.current) return;
         setSummaryState({ key, summary: next });
         setSummaryError(undefined);
+        setBreakdownError(undefined);
       })
       .catch((caught: unknown) => {
         if (!active || requestId !== requestRef.current) return;
@@ -191,7 +193,10 @@ export function DashboardWorkbench({ client }: { client: ForgePilotClient }): Re
       });
     } catch (caught: unknown) {
       if (requestId === requestRef.current) {
-        setSummaryError({ key: queryKey, error: describeDashboardError(caught) });
+        setBreakdownError({
+          key: queryKey,
+          message: describeDashboardError(caught).message,
+        });
       }
     } finally {
       setBreakdownLoadingMore(false);
@@ -240,6 +245,14 @@ export function DashboardWorkbench({ client }: { client: ForgePilotClient }): Re
   const selectedWorkspace = activeWorkspaces.find((workspace) => workspace.id === workspaceId);
   const workspaceUnavailable =
     workspaceError !== undefined && (workspaceError.status === 404 || workspaceError.status === 0);
+  // The summary's access block is authoritative once it arrives; before that,
+  // the live membership role decides whether the ledger is even requested.
+  const ledgerGranted =
+    summary !== undefined
+      ? summary.access.financial === "granted"
+      : selectedWorkspace === undefined
+        ? undefined
+        : selectedWorkspace.role === "owner" || selectedWorkspace.role === "admin";
 
   return (
     <div className="workspace dashboard-workspace" data-view={mobileView}>
@@ -583,6 +596,11 @@ export function DashboardWorkbench({ client }: { client: ForgePilotClient }): Re
                           {breakdownLoadingMore ? "Loading…" : "Load more rows"}
                         </button>
                       )}
+                      {breakdownError?.key === queryKey && (
+                        <p className="dashboard-inline-error" role="alert">
+                          {breakdownError.message}
+                        </p>
+                      )}
                     </>
                   )}
                 </section>
@@ -629,7 +647,7 @@ export function DashboardWorkbench({ client }: { client: ForgePilotClient }): Re
               from={range.from}
               to={range.to}
               timezone={timezone}
-              granted={summary === undefined ? undefined : summary.access.financial === "granted"}
+              granted={ledgerGranted}
               onOpenIssue={openIssueTrace}
             />
           ))}

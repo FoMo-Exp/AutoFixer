@@ -5063,6 +5063,15 @@ p {
   margin-top: 12px;
 }
 
+.dashboard-inline-error {
+  border: 1px solid rgba(var(--red-rgb), 0.28);
+  border-radius: var(--r-sm);
+  color: var(--red);
+  font-size: var(--fs-body);
+  margin: 10px 0 0;
+  padding: 8px 10px;
+}
+
 .dashboard-ledger-grid {
   display: grid;
   gap: 18px;

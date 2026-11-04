@@ -91,7 +91,6 @@ export interface DashboardRangeOptions {
 
 export interface DashboardSummaryOptions extends DashboardRangeOptions {
   breakdown?: DashboardBreakdownDimension;
-  staleAfterSeconds?: number;
 }
 
 type ErrorPayload = components["schemas"]["Error"];
@@ -329,10 +328,7 @@ function dashboardPath(workspaceId: string, suffix: string): string {
 }
 
 function dashboardQuery(
-  options: DashboardRangeOptions & {
-    breakdown?: DashboardBreakdownDimension;
-    staleAfterSeconds?: number;
-  },
+  options: DashboardRangeOptions & { breakdown?: DashboardBreakdownDimension },
 ): string {
   const params = new URLSearchParams();
   if (options.from) params.set("from", options.from);
@@ -342,9 +338,6 @@ function dashboardQuery(
   if (options.breakdown) params.set("breakdown", options.breakdown);
   if (options.limit !== undefined) params.set("limit", String(options.limit));
   if (options.cursor) params.set("cursor", options.cursor);
-  if (options.staleAfterSeconds !== undefined) {
-    params.set("stale_after_seconds", String(options.staleAfterSeconds));
-  }
   return params.size > 0 ? `?${params.toString()}` : "";
 }
 

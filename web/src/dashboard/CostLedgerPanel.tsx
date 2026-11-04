@@ -52,6 +52,7 @@ export function CostLedgerPanel({
   const [error, setError] = useState<{ key: string; error: DashboardError }>();
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [pageError, setPageError] = useState<string>();
   const [requestToken, setRequestToken] = useState(0);
   const [selectedPostingId, setSelectedPostingId] = useState<string>();
   const requestRef = useRef(0);
@@ -75,6 +76,7 @@ export function CostLedgerPanel({
         if (!active || requestId !== requestRef.current) return;
         setPage({ key: queryKey, page: next });
         setError(undefined);
+        setPageError(undefined);
         setSelectedPostingId(undefined);
       })
       .catch((caught: unknown) => {
@@ -119,7 +121,7 @@ export function CostLedgerPanel({
       });
     } catch (caught: unknown) {
       if (requestId === requestRef.current) {
-        setError({ key: queryKey, error: describeDashboardError(caught) });
+        setPageError(describeDashboardError(caught).message);
       }
     } finally {
       setLoadingMore(false);
@@ -235,6 +237,11 @@ export function CostLedgerPanel({
             >
               {loadingMore ? "Loading…" : "Load more postings"}
             </button>
+          )}
+          {pageError && (
+            <p className="dashboard-inline-error" role="alert">
+              {pageError}
+            </p>
           )}
         </>
       )}
