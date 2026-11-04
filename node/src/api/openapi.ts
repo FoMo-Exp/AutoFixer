@@ -4308,6 +4308,61 @@ export function buildOpenApiDocument(): OpenApiDocument {
           404: errorResponse("ISSUE_NOT_FOUND"),
         },
       },
+      post: {
+        operationId: "requestIssueApproval",
+        summary: "Address a candidate-bound approval request to one eligible human",
+        description:
+          "Creates the one pre-PR human approval request for a frozen candidate " +
+          "in `awaiting_change_approval`. The approver is a current active " +
+          "workspace member with verified repository access and explicit " +
+          "delivery-approval authority — assignee, blame author, or team-leader " +
+          "status alone is insufficient. When `approver_user_id` is omitted, the " +
+          "service selects one eligible approver deterministically; when none " +
+          "exists the request is recorded unaddressed (`approver: null`) and can " +
+          "never be approved automatically. The finite TTL (default 24 hours) is " +
+          "service policy, never a request field.",
+        parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER, IDEMPOTENCY_KEY_PARAMETER],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["candidate_id"],
+                properties: {
+                  candidate_id: { type: "string" },
+                  target_branch: {
+                    type: "string",
+                    description:
+                      "Intended PR target; defaults to the issue's base branch. " +
+                      "A different value is a stale binding, never a silent retarget.",
+                  },
+                  approver_user_id: {
+                    type: "string",
+                    description:
+                      "Trusted selector for one eligible human approver. Omit to " +
+                      "let the service choose the first eligible approver.",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: "Approval request addressed",
+            ...jsonRef("#/components/schemas/Approval"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          403: errorResponse("APPROVER_NOT_AUTHORIZED — the named approver is ineligible"),
+          404: errorResponse("ISSUE_NOT_FOUND or CANDIDATE_NOT_FOUND"),
+          409: errorResponse(
+            "APPROVAL_REQUIRED (the issue is not awaiting change approval), " +
+              "APPROVAL_ALREADY_PENDING, CANDIDATE_INVALID, BASE_ADVANCED, or " +
+              "IDEMPOTENCY_CONFLICT",
+          ),
+        },
+      },
     },
     "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}": {
       get: {
@@ -4414,8 +4469,22 @@ export function buildOpenApiDocument(): OpenApiDocument {
             "application/json": {
               schema: {
                 type: "object",
-                required: ["approval_id"],
-                properties: { approval_id: { type: "string" } },
+                required: ["approval_id", "grant_id"],
+                properties: {
+                  approval_id: {
+                    type: "string",
+                    description:
+                      "The current approved request. It is consumed by exactly " +
+                      "this operation; reusing it is 409 APPROVAL_CONSUMED.",
+                  },
+                  grant_id: {
+                    type: "string",
+                    description:
+                      "The separate delivery-role capability grant bound to the " +
+                      "approved candidate head. A missing, expired, revoked, " +
+                      "non-PR, or wrong-head grant leaves delivery blocked.",
+                  },
+                },
               },
             },
           },

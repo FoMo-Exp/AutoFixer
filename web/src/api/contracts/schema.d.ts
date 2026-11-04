@@ -1158,7 +1158,11 @@ export interface paths {
          */
         get: operations["listIssueApprovals"];
         put?: never;
-        post?: never;
+        /**
+         * Address a candidate-bound approval request to one eligible human
+         * @description Creates the one pre-PR human approval request for a frozen candidate in `awaiting_change_approval`. The approver is a current active workspace member with verified repository access and explicit delivery-approval authority — assignee, blame author, or team-leader status alone is insufficient. When `approver_user_id` is omitted, the service selects one eligible approver deterministically; when none exists the request is recorded unaddressed (`approver: null`) and can never be approved automatically. The finite TTL (default 24 hours) is service policy, never a request field.
+         */
+        post: operations["requestIssueApproval"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7436,6 +7440,89 @@ export interface operations {
             };
         };
     };
+    requestIssueApproval: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the request with the same key and payload returns the recorded result instead of applying the command twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a new one. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    candidate_id: string;
+                    /** @description Intended PR target; defaults to the issue's base branch. A different value is a stale binding, never a silent retarget. */
+                    target_branch?: string;
+                    /** @description Trusted selector for one eligible human approver. Omit to let the service choose the first eligible approver. */
+                    approver_user_id?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Approval request addressed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Approval"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description APPROVER_NOT_AUTHORIZED — the named approver is ineligible */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND or CANDIDATE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description APPROVAL_REQUIRED (the issue is not awaiting change approval), APPROVAL_ALREADY_PENDING, CANDIDATE_INVALID, BASE_ADVANCED, or IDEMPOTENCY_CONFLICT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     getIssueApproval: {
         parameters: {
             query?: never;
@@ -7636,7 +7723,10 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description The current approved request. It is consumed by exactly this operation; reusing it is 409 APPROVAL_CONSUMED. */
                     approval_id: string;
+                    /** @description The separate delivery-role capability grant bound to the approved candidate head. A missing, expired, revoked, non-PR, or wrong-head grant leaves delivery blocked. */
+                    grant_id: string;
                 };
             };
         };

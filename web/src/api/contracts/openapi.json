@@ -7356,6 +7356,144 @@
             "bearerAuth": []
           }
         ]
+      },
+      "post": {
+        "operationId": "requestIssueApproval",
+        "summary": "Address a candidate-bound approval request to one eligible human",
+        "description": "Creates the one pre-PR human approval request for a frozen candidate in `awaiting_change_approval`. The approver is a current active workspace member with verified repository access and explicit delivery-approval authority — assignee, blame author, or team-leader status alone is insufficient. When `approver_user_id` is omitted, the service selects one eligible approver deterministically; when none exists the request is recorded unaddressed (`approver: null`) and can never be approved automatically. The finite TTL (default 24 hours) is service policy, never a request field.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "issue_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "description": "Replay-safe command identity. Repeating the request with the same key and payload returns the recorded result instead of applying the command twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a new one."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "candidate_id"
+                ],
+                "properties": {
+                  "candidate_id": {
+                    "type": "string"
+                  },
+                  "target_branch": {
+                    "type": "string",
+                    "description": "Intended PR target; defaults to the issue's base branch. A different value is a stale binding, never a silent retarget."
+                  },
+                  "approver_user_id": {
+                    "type": "string",
+                    "description": "Trusted selector for one eligible human approver. Omit to let the service choose the first eligible approver."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Approval request addressed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Approval"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "APPROVER_NOT_AUTHORIZED — the named approver is ineligible",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "ISSUE_NOT_FOUND or CANDIDATE_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "APPROVAL_REQUIRED (the issue is not awaiting change approval), APPROVAL_ALREADY_PENDING, CANDIDATE_INVALID, BASE_ADVANCED, or IDEMPOTENCY_CONFLICT",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}": {
@@ -7733,11 +7871,17 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "approval_id"
+                  "approval_id",
+                  "grant_id"
                 ],
                 "properties": {
                   "approval_id": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "The current approved request. It is consumed by exactly this operation; reusing it is 409 APPROVAL_CONSUMED."
+                  },
+                  "grant_id": {
+                    "type": "string",
+                    "description": "The separate delivery-role capability grant bound to the approved candidate head. A missing, expired, revoked, non-PR, or wrong-head grant leaves delivery blocked."
                   }
                 }
               }

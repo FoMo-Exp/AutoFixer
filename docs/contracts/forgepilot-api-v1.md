@@ -841,12 +841,13 @@ bearer token.
 ## Collaboration v1 (DAT-221)
 
 Status: implementation contract whose durable issue/task/run/approval/delivery
-serving code is still landing; the immutable-candidate freeze and review-card
-reads below are implemented in the collaboration domain (DAT-219). It defines
-the durable issue/task/run/candidate/approval/delivery resources and their
-event stream of ADR-0007 so dependent web work is built against a merged
-contract; it claims no running control until the implementation lands, and dsh
-remains the execution gate.
+domain is implemented in the collaboration domain (DAT-219 candidate freeze,
+DAT-220 candidate-bound approval and broker delivery); the HTTP/SSE serving
+wiring remains a separate landing surface. It defines the durable
+issue/task/run/candidate/approval/delivery resources and their event stream of
+ADR-0007 so dependent web work is built against a merged contract; it claims no
+running HTTP control until that serving code lands, and dsh remains the
+execution gate.
 
 Product stages and harness run states are separate vocabularies. An issue's
 `product_state` is the product lifecycle (`triage`, `planning`, `implementing`,
@@ -884,10 +885,11 @@ direct main write, merge, self-review, or check waiver.
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/candidates?cursor=` | none | `200 {items: Candidate[], next_cursor}` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/candidates/{candidate_id}` | none | `200 Candidate` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals?cursor=` | none | `200 {items: Approval[], next_cursor}` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals` | `{candidate_id, target_branch?, approver_user_id?}`; optional `Idempotency-Key` | `201 Approval` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}` | none | `200 Approval` |
 | `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/approvals/{approval_id}/decision` | `{decision, diff_digest, note?}` | `200 Approval` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries?cursor=` | none | `200 {items: Delivery[], next_cursor}` |
-| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries` | `{approval_id}` | `202 Delivery` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries` | `{approval_id, grant_id}`; optional `Idempotency-Key` | `202 Delivery` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}` | none | `200 Delivery` |
 | `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}/reconcile` | optional `note` | `202 Delivery` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stream` | `Last-Event-ID` optional | `200 text/event-stream` |
@@ -954,6 +956,85 @@ count, line counts, test totals, risk class) and an authenticated client link
 to the card. It never contains diff text, changed path names, tool output,
 digests, or a bearer/approval credential; the link selects a candidate and
 approval remains a confirmed authenticated mutation in the client.
+
+### Candidate-bound human approval (DAT-220)
+
+An approval request is addressed to exactly one **named eligible human** who
+has repository access and explicit approval authority. The workspace holds no
+eligible approver: the request is recorded `pending` with `approver: null`
+(unaddressed) and can never be decided, never becomes approved, and never
+authorizes delivery. Selection is deterministic (lowest eligible `user_id`) so
+a replay of the same operation records the same addressee; an explicit
+`approver_user_id` naming a member without authority is
+`403 APPROVER_NOT_AUTHORIZED`.
+
+Addressing freezes an immutable `binding` to one candidate: workspace,
+repository identity, `candidate_id`, candidate head SHA, sha256 diff digest,
+sha256 test-evidence digest, intended `target_branch`, and policy version. The
+approval additionally carries the trusted configuration's finite TTL (24 hours
+by default, never caller-supplied) and `expires_at`. The effective state is
+derived at read time: an approved request whose `expires_at` passed while the
+service was down comes back `expired`, never `approved`.
+
+The decision command accepts only `{decision, diff_digest, note?}`; the
+approver is the authenticated caller and must equal the addressed addressee.
+The reviewed `diff_digest` must restate the bound digest exactly, so an approver
+cannot confirm a diff they did not see and an agent cannot approve its own
+work (`403 APPROVER_NOT_AUTHORIZED`, `409 APPROVAL_BINDING_STALE`). Rejection is
+terminal for the request. One candidate holds at most one actionable request at
+a time (`409 APPROVAL_ALREADY_PENDING`).
+
+Approval state is `pending`, `approved`, `rejected`, `invalidated`, `expired`,
+`consumed`, or `cancelled`. `invalidated` is permanent and records its reason:
+candidate invalidation (`candidate_invalidated`), base advance or rebase
+(`base_advanced`), target branch change (`target_changed`), test-evidence change
+(`test_evidence_changed`), policy change (`policy_changed`), or authority change
+such as reassignment (`authority_changed`). A rebase therefore requires new
+validation against the new revision and a new request; the previous approval can
+never be revived. Cancelling the issue cancels its actionable approvals.
+
+### Controlled delivery broker (DAT-220)
+
+Only the trusted delivery broker performs provider writes. The broker obtains
+provider write credentials itself; clients and models never receive them, and no
+response or event contains one. The provider contract exposes exactly two write
+operations — push one branch ref and open one pull request — and structurally
+has no merge, close, delete, force-push, or review operation, so the broker
+cannot merge, self-review, or waive a check.
+
+`POST .../deliveries` takes `{approval_id, grant_id}` and is a no-op duplicate
+only for the same operation identity. The broker requires a current `approved`
+approval bound to a valid frozen candidate and an **active, unexpired,
+delivery-role capability grant** whose head binding matches the candidate
+(`grant_id` is a separate delivery grant — a preparation grant is not enough).
+The branch must be exactly `autofixer/{issue_id}`; the repository base branch,
+`main`, and `master` are refused (`403 DELIVERY_FORBIDDEN`). Repository base
+branch changes and target/policy/authority changes invalidate the approval, so a
+delivery cannot push to a target the approver did not see.
+
+Before **each** provider write the broker re-checks the current approval state,
+the delivery permission, the dsh grant, audit availability, the branch
+constraint, and the exact candidate identity. It records the operation identity
+and intent durably before writing, so a crash or ambiguous harness/provider
+result leaves an explicit state rather than an untracked write. Delivery state
+is `pending`, `pushing`, `opening_pr`, `delivered`, `partial`, `unknown`,
+`failed`, or `cancelled`:
+
+- `delivered` requires both provider branch and pull-request evidence naming the
+  approved head; an existing PR for the branch is adopted instead of opening a
+  duplicate.
+- `partial` means one write is confirmed and the other is not; it is never
+  reported as success.
+- `unknown` means the provider outcome could not be determined. `partial` and
+  `unknown` leave only through an explicit reconcile; a retry cannot start a
+  second write from them.
+
+`POST .../deliveries/{delivery_id}/reconcile` reads provider branch and PR
+evidence and records `delivered`, `partial`, `failed`, or `unknown` without
+performing a provider write. If the provider cannot be read, the reconcile fails
+`503 PROVIDER_ERROR` (retryable) and the delivery stays unreconciled. Delivering
+an approval consumes it exactly once (`consumed_by_delivery_id`); every later
+request naming that approval is `409 APPROVAL_CONSUMED`.
 
 ### Issue events and replay
 

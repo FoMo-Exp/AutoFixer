@@ -14,23 +14,31 @@ export { CollabMachine } from "./machine.js";
 export type {
   AcquireLeaseInput,
   AddTaskInput,
+  ApproverAuthorityFacts,
   ArtifactInput,
   BaseAdvanceResult,
   CollabMachineOptions,
   CommandBase,
   CreateIssueInput,
+  DecideApprovalInput,
+  DeliveryAuthorityFacts,
   FreezeCandidateInput,
   GrantInput,
+  InvalidateApprovalInput,
   InvalidateCandidateInput,
   LeaseInput,
   OpenRunInput,
+  ReconcileDeliveryInput,
   RecordBaseAdvanceInput,
+  RecordDeliveryStateInput,
   RecordGrantInput,
   RecordTestPlanInput,
   RegisterTestPolicyInput,
   RecordHandoffInput,
   RecordRunStateInput,
   RenewLeaseInput,
+  RequestApprovalInput,
+  RequestDeliveryInput,
   RequestRunRestartInput,
   RevokeGrantInput,
   SetTaskStateInput,
@@ -76,6 +84,49 @@ export type {
 } from "./candidate.js";
 export { CandidateContentStore, diffDigest } from "./candidate-store.js";
 export {
+  approvalStateAt,
+  bindingForCandidate,
+  bindingMismatch,
+  compareApprovals,
+  compareDeliveries,
+  userRef,
+} from "./approval.js";
+export type { BindingMismatch } from "./approval.js";
+export { ApprovalService, isEligibleApprover } from "./approval-service.js";
+export type {
+  ApprovalDirectory,
+  ApprovalMemberFact,
+  ApprovalPage,
+  ApprovalServiceOptions,
+  DecideApprovalOptions,
+  ReassignApprovalOptions,
+  RequestApprovalOptions,
+} from "./approval-service.js";
+export {
+  DELIVERY_TRANSITIONS,
+  RECONCILABLE_STATES,
+  canTransitionDelivery,
+  deliveryBranchProblem,
+  deliveryView,
+  isTerminalDeliveryState,
+  providerMatchesRepository,
+} from "./delivery.js";
+export type { DeliveryView } from "./delivery.js";
+export { DeliveryBroker, DeliveryProviderError } from "./delivery-broker.js";
+export type {
+  DeliverOptions,
+  DeliveryBrokerOptions,
+  DeliveryProvider,
+  DeliveryProviderCapabilities,
+  OpenPullRequestInput,
+  ProviderBranchEvidence,
+  ProviderPullRequestEvidence,
+  PushBranchInput,
+  PushBranchOutcome,
+  ReconcileOptions,
+  RequestDeliveryOptions,
+} from "./delivery-broker.js";
+export {
   RUN_EVIDENCE_PREFIX,
   VALIDATION_ARTIFACT_KINDS,
   artifactEvidenceRef,
@@ -104,6 +155,9 @@ export type {
   IssueEventType,
 } from "./contract.js";
 export type {
+  ApprovalBinding,
+  ApprovalDecision,
+  ApprovalRecord,
   ArtifactRef,
   CandidateDiff,
   CandidateRecord,
@@ -113,6 +167,8 @@ export type {
   CapabilityGrant,
   ChangeRisk,
   CollabState,
+  DeliveryRecord,
+  DigestRef,
   Disposition,
   GrantState,
   GrantTool,
@@ -129,8 +185,10 @@ export type {
   TaskState,
   TestPlanRecord,
   TestPolicyRecord,
+  UserRef,
   WorkspaceScope,
   WorktreeRef,
 } from "./types.js";
+export { AUTOFIXER_BRANCH_PREFIX, autofixerBranchFor } from "./types.js";
 export { auditChainProblem, canonicalJson, digestOf } from "./audit.js";
 export type { AuditCommand, AuditOutcome, AuditRecord } from "./audit.js";

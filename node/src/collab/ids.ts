@@ -44,6 +44,14 @@ export function newHandoffId(): string {
   return `hof_${randomUUID().replaceAll("-", "")}`;
 }
 
+export function newApprovalId(): string {
+  return `apr_${randomUUID().replaceAll("-", "")}`;
+}
+
+export function newDeliveryId(): string {
+  return `dlv_${randomUUID().replaceAll("-", "")}`;
+}
+
 export function newEventId(): string {
   return `evt_${randomUUID().replaceAll("-", "")}`;
 }
