@@ -12,7 +12,13 @@ import type {
   GrantInput,
   OpenRunInput,
 } from "../../src/collab/machine.js";
-import type { ArtifactRef, IssueRecord, LeaseRecord, RunRecord } from "../../src/collab/types.js";
+import type {
+  ArtifactRef,
+  IssueRecord,
+  LeaseRecord,
+  RunRecord,
+  TestPolicyRecord,
+} from "../../src/collab/types.js";
 
 /** Controllable clock so lease/grant expiry is deterministic in tests. */
 export class Clock {
@@ -163,6 +169,7 @@ export const TEST_REPORT_DIGEST = "cd".repeat(32);
 export const TEST_PLAN_CHECKS = ["npm test -- retry"];
 export const TEST_PLAN_CONFIG_DIGEST = "sha256:" + "ef".repeat(32);
 export const TEST_PLAN_ENVIRONMENT = "node20-linux-x64-isolated";
+export const TEST_POLICY_VERSION = "1";
 export const CANDIDATE_TREE = "d4e5f60718293a4b5c6d7e8f9012345678a1b2c3";
 
 export interface PreparationContext {
@@ -184,10 +191,49 @@ export interface PreparationContext {
  * candidate, patch, and report artifacts, then move the issue into
  * `implementing` so a candidate may freeze.
  */
+export interface TestPolicyOverrides {
+  workspace?: typeof WORKSPACE;
+  repository_id?: string;
+  repository_url?: string;
+  policy_version?: string;
+  checks?: string[];
+  config_digest?: string;
+  environment?: string;
+}
+
+/** Register one test-policy version, as a configuration administrator would. */
+export function registerTestPolicy(
+  machine: CollabMachine,
+  overrides: TestPolicyOverrides = {},
+): TestPolicyRecord {
+  return machine.registerTestPolicy({
+    operation_id: op(),
+    actor: "human:config-admin",
+    workspace: overrides.workspace ?? WORKSPACE,
+    repository_id: overrides.repository_id ?? REPOSITORY.repository_id,
+    repository_url: overrides.repository_url ?? REPOSITORY.url,
+    policy_version: overrides.policy_version ?? TEST_POLICY_VERSION,
+    checks: overrides.checks ?? [...TEST_PLAN_CHECKS],
+    config_digest: overrides.config_digest ?? TEST_PLAN_CONFIG_DIGEST,
+    environment: overrides.environment ?? TEST_PLAN_ENVIRONMENT,
+  });
+}
+
+/** The repository's current policy, registering the default version if absent. */
+export function ensureTestPolicy(machine: CollabMachine): TestPolicyRecord {
+  const current = machine.currentTestPolicy(WORKSPACE, REPOSITORY.repository_id);
+  return current ?? registerTestPolicy(machine);
+}
+
 export function stoppedPreparation(
   machine: CollabMachine,
   issueId: string,
-  overrides: { worktreePath?: string; worktreeId?: string; recordPlan?: boolean } = {},
+  overrides: {
+    worktreePath?: string;
+    worktreeId?: string;
+    recordPlan?: boolean;
+    policyId?: string;
+  } = {},
 ): PreparationContext {
   const worktreeId = overrides.worktreeId ?? "wt_candidate";
   const run = openRun(machine, issueId, {
@@ -219,14 +265,14 @@ export function stoppedPreparation(
     grant: grantInput(),
   });
   if (overrides.recordPlan !== false) {
+    // The plan is a binding to the repository's current registered policy. A
+    // trusted orchestration path records it; the worker lease is irrelevant.
+    const policyId = overrides.policyId ?? ensureTestPolicy(machine).policy_id;
     machine.recordTestPlan({
       operation_id: op(),
-      actor: "worker:a",
+      actor: "orchestrator:validation",
       run_id: run.run_id,
-      lease,
-      config_digest: TEST_PLAN_CONFIG_DIGEST,
-      environment: TEST_PLAN_ENVIRONMENT,
-      checks: TEST_PLAN_CHECKS,
+      policy_id: policyId,
     });
   }
   const digest = diffDigest(CANDIDATE_DIFF);

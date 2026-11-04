@@ -240,21 +240,53 @@ export interface CandidateValidationResult {
 }
 
 /**
- * The approved test plan of one run, recorded before validation executes
- * (ADR-0007 "validating": approved test plan against the exact revision).
+ * A versioned, workspace + repository scoped test policy (DAT-219, ADR-0007).
  *
- * The plan is the trusted source of the required checks: a candidate cannot
- * introduce or rename a check at freeze time, it can only show the recorded
- * checks passing. `checks` are the tool/command identities the plan requires,
- * and a validation result must carry the same identity plus an execution
- * artifact for its digest.
+ * Required checks are policy, not execution output: they are registered by a
+ * configuration administrator (recorded as `registered_by`) and a worker lease
+ * can never define or edit them. Each repository has exactly one current
+ * version; registering a new version moves that pointer and older versions stay
+ * for audit and replay, so a caller cannot shop for a friendlier policy.
+ */
+export interface TestPolicyRecord {
+  policy_id: string;
+  workspace: WorkspaceScope;
+  repository_id: string;
+  repository_url: string;
+  policy_version: string;
+  checks: string[];
+  config_digest: string;
+  environment: string;
+  /** Digest over the exact policy content this version froze. */
+  policy_digest: string;
+  registered_by: string;
+  registered_at: string;
+}
+
+/** Scope key of one repository's current-policy pointer. */
+export function testPolicyScopeKey(workspace: WorkspaceScope, repositoryId: string): string {
+  return `${workspace.enterprise_id}\u0000${workspace.workspace_id}\u0000${repositoryId}`;
+}
+
+/**
+ * The plan of one run: a binding to one registered test-policy version,
+ * recorded before validation executes (ADR-0007 "validating": approved test
+ * plan against the exact revision).
+ *
+ * The plan carries no caller-supplied checks or configuration — it freezes the
+ * referenced policy version's values, so a candidate can only show that
+ * policy's checks passing. `policy_version`, `policy_digest`, the checks,
+ * config digest, and environment are copied at binding time and never edited.
  */
 export interface TestPlanRecord {
   plan_id: string;
   run_id: string;
+  policy_id: string;
+  policy_version: string;
+  policy_digest: string;
+  checks: string[];
   config_digest: string;
   environment: string;
-  checks: string[];
   recorded_at: string;
 }
 
@@ -274,6 +306,13 @@ export interface CandidateValidation {
 export const RISK_CLASSES = ["low", "elevated", "prohibited"] as const;
 
 export type RiskClass = (typeof RISK_CLASSES)[number];
+
+/** The test-policy identity a frozen candidate's evidence is bound to. */
+export interface CandidateTestPolicy {
+  policy_id: string;
+  policy_version: string;
+  policy_digest: string;
+}
 
 /** The pre-approval risk decision for the candidate's work. */
 export interface ChangeRisk {
@@ -309,6 +348,8 @@ export interface CandidateRecord {
   diff: CandidateDiff;
   summary: string;
   validation: CandidateValidation;
+  /** The registered test-policy version this candidate's evidence is bound to. */
+  test_policy: CandidateTestPolicy;
   risk: ChangeRisk;
   /** Patch, report, and evidence-bundle references retained after cleanup. */
   artifacts: ArtifactRef[];
@@ -330,6 +371,9 @@ export interface CollabState {
   issues: Map<string, IssueRecord>;
   tasks: Map<string, TaskRecord>;
   runs: Map<string, RunRecord>;
+  testPolicies: Map<string, TestPolicyRecord>;
+  /** scope key -> current policy id; old versions stay in `testPolicies`. */
+  currentTestPolicies: Map<string, string>;
   testPlans: Map<string, TestPlanRecord>;
   candidates: Map<string, CandidateRecord>;
   handoffs: HandoffRecord[];
@@ -346,6 +390,8 @@ export function emptyCollabState(): CollabState {
     issues: new Map(),
     tasks: new Map(),
     runs: new Map(),
+    testPolicies: new Map(),
+    currentTestPolicies: new Map(),
     testPlans: new Map(),
     candidates: new Map(),
     handoffs: [],

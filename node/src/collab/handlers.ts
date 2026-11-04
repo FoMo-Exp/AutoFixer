@@ -1,5 +1,5 @@
 import type { AuditCommand } from "./audit.js";
-import { canonicalJson } from "./audit.js";
+import { canonicalJson, digestOf } from "./audit.js";
 import { APPROVAL_INVALIDATION_REASONS } from "./contract.js";
 import type { ApprovalInvalidationReason } from "./contract.js";
 import { CollabError } from "./errors.js";
@@ -27,10 +27,11 @@ import type {
   TaskRecord,
   TaskState,
   TestPlanRecord,
+  TestPolicyRecord,
   WorkspaceScope,
   WorktreeRef,
 } from "./types.js";
-import { RISK_CLASSES, grantStateAt } from "./types.js";
+import { RISK_CLASSES, grantStateAt, testPolicyScopeKey } from "./types.js";
 import type { DshState } from "../dsh/types.js";
 import {
   canTransitionProduct,
@@ -1299,15 +1300,120 @@ function handleRequestRunRestart(state: CollabState, payload: Payload): unknown 
   );
 }
 
-function handleRecordTestPlan(state: CollabState, payload: Payload): unknown {
+const POLICY_CONFIG_DIGEST = /^sha256:[0-9a-f]{64}$/;
+
+/** Digest over the immutable content of one test-policy version. */
+function testPolicyDigest(input: {
+  workspace: WorkspaceScope;
+  repository_id: string;
+  repository_url: string;
+  policy_version: string;
+  checks: string[];
+  config_digest: string;
+  environment: string;
+}): string {
+  return digestOf({
+    workspace: input.workspace,
+    repository_id: input.repository_id,
+    repository_url: input.repository_url,
+    policy_version: input.policy_version,
+    checks: input.checks,
+    config_digest: input.config_digest,
+    environment: input.environment,
+  });
+}
+
+/**
+ * Register one version of the workspace + repository test policy. Required
+ * checks, config digest, and environment are approved here by the caller
+ * boundary (the configuration administrator) and recorded as `registered_by`;
+ * a run lease never defines policy. The new version becomes the repository's
+ * current one and older versions stay for audit and replay.
+ */
+function handleRegisterTestPolicy(state: CollabState, payload: Payload): unknown {
   assertExactKeys(
     payload,
-    [...BASE_KEYS, "plan_id", "run_id", "lease", "config_digest", "environment", "checks"],
-    "record_test_plan",
+    [
+      ...BASE_KEYS,
+      "policy_id",
+      "workspace",
+      "repository_id",
+      "repository_url",
+      "policy_version",
+      "checks",
+      "config_digest",
+      "environment",
+    ],
+    "register_test_policy",
   );
+  const workspace = parseWorkspace(payload["workspace"], "workspace");
+  const repositoryId = str(payload["repository_id"], "repository_id");
+  const repositoryUrl = str(payload["repository_url"], "repository_url");
+  const policyVersion = str(payload["policy_version"], "policy_version");
+  const checks = uniqueStrings(strArray(payload["checks"], "checks"), "checks");
+  if (checks.length === 0) {
+    throw new CollabError("INVALID_INPUT", "a test policy requires at least one check", {
+      field: "checks",
+    });
+  }
+  const configDigest = str(payload["config_digest"], "config_digest");
+  if (!POLICY_CONFIG_DIGEST.test(configDigest)) {
+    throw new CollabError("INVALID_INPUT", "config_digest must be sha256:<64 hex characters>", {
+      field: "config_digest",
+      value: configDigest,
+    });
+  }
+  const environment = str(payload["environment"], "environment");
+  const content = {
+    workspace,
+    repository_id: repositoryId,
+    repository_url: repositoryUrl,
+    policy_version: policyVersion,
+    checks,
+    config_digest: configDigest,
+    environment,
+  };
+  const policyDigest = testPolicyDigest(content);
+  const scope = testPolicyScopeKey(workspace, repositoryId);
+  for (const existing of state.testPolicies.values()) {
+    if (
+      testPolicyScopeKey(existing.workspace, existing.repository_id) === scope &&
+      existing.policy_version === policyVersion
+    ) {
+      throw new CollabError(
+        "TEST_POLICY_CONFLICT",
+        "that policy version is already registered; a changed policy needs a new version",
+        { policy_version: policyVersion, policy_id: existing.policy_id },
+      );
+    }
+  }
+  const policy: TestPolicyRecord = {
+    policy_id: str(payload["policy_id"], "policy_id"),
+    workspace,
+    repository_id: repositoryId,
+    repository_url: repositoryUrl,
+    policy_version: policyVersion,
+    checks,
+    config_digest: configDigest,
+    environment,
+    policy_digest: policyDigest,
+    registered_by: str(payload["actor"], "actor"),
+    registered_at: payload["at"] as string,
+  };
+  state.testPolicies.set(policy.policy_id, policy);
+  state.currentTestPolicies.set(scope, policy.policy_id);
+  return clone(policy);
+}
+
+/**
+ * Bind one run to the repository's current test-policy version. The plan takes
+ * only the binding — checks, config digest, and environment are frozen from
+ * the registered policy and must never be supplied per command.
+ */
+function handleRecordTestPlan(state: CollabState, payload: Payload): unknown {
+  assertExactKeys(payload, [...BASE_KEYS, "plan_id", "run_id", "policy_id"], "record_test_plan");
   const run = runOf(state, payload["run_id"], "run_id");
   const at = payload["at"] as string;
-  assertLeaseHeld(run, payload["lease"], at);
   if (isTerminalRunState(run.state)) {
     throw new CollabError("RUN_TERMINAL", "terminal run records no test plan", {
       run_id: run.run_id,
@@ -1320,6 +1426,35 @@ function handleRecordTestPlan(state: CollabState, payload: Payload): unknown {
       { run_id: run.run_id, state: run.state },
     );
   }
+  const policyId = str(payload["policy_id"], "policy_id");
+  const policy = state.testPolicies.get(policyId);
+  if (policy === undefined) {
+    throw new CollabError("TEST_POLICY_NOT_FOUND", "unknown test policy", {
+      policy_id: policyId,
+    });
+  }
+  if (
+    policy.workspace.enterprise_id !== run.workspace.enterprise_id ||
+    policy.workspace.workspace_id !== run.workspace.workspace_id ||
+    policy.repository_id !== run.repository.repository_id ||
+    policy.repository_url !== run.repository.url
+  ) {
+    // Another repository's or workspace's policy is indistinguishable from a
+    // missing one: the binding cannot be used to enumerate other scopes.
+    throw new CollabError("TEST_POLICY_NOT_FOUND", "unknown test policy", {
+      policy_id: policyId,
+    });
+  }
+  const current = state.currentTestPolicies.get(
+    testPolicyScopeKey(policy.workspace, policy.repository_id),
+  );
+  if (current !== policyId) {
+    throw new CollabError(
+      "TEST_POLICY_CONFLICT",
+      "the run may only bind the repository's current policy version",
+      { policy_id: policyId, current_policy_id: current ?? null },
+    );
+  }
   for (const existing of state.testPlans.values()) {
     if (existing.run_id === run.run_id) {
       throw new CollabError(
@@ -1329,18 +1464,21 @@ function handleRecordTestPlan(state: CollabState, payload: Payload): unknown {
       );
     }
   }
-  const checks = uniqueStrings(strArray(payload["checks"], "checks"), "checks");
-  if (checks.length === 0) {
-    throw new CollabError("CANDIDATE_INVALID", "the approved test plan requires no check", {
-      field: "checks",
+  const planId = str(payload["plan_id"], "plan_id");
+  if (state.testPlans.has(planId)) {
+    throw new CollabError("TEST_PLAN_CONFLICT", "test plan id already exists", {
+      plan_id: planId,
     });
   }
   const plan: TestPlanRecord = {
-    plan_id: str(payload["plan_id"], "plan_id"),
+    plan_id: planId,
     run_id: run.run_id,
-    config_digest: str(payload["config_digest"], "config_digest"),
-    environment: str(payload["environment"], "environment"),
-    checks,
+    policy_id: policy.policy_id,
+    policy_version: policy.policy_version,
+    policy_digest: policy.policy_digest,
+    checks: [...policy.checks],
+    config_digest: policy.config_digest,
+    environment: policy.environment,
     recorded_at: at,
   };
   state.testPlans.set(plan.plan_id, plan);
@@ -1437,6 +1575,29 @@ function handleFreezeCandidate(state: CollabState, payload: Payload): unknown {
       "CANDIDATE_INVALID",
       "no approved test plan was recorded for the preparation run",
       { run_id: run.run_id },
+    );
+  }
+  const policy = state.testPolicies.get(plan.policy_id);
+  if (policy === undefined) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      "the test policy bound to the run's plan is no longer registered",
+      { run_id: run.run_id, policy_id: plan.policy_id },
+    );
+  }
+  // The plan is a binding, not a copy: its frozen values must still be exactly
+  // the registered version it claims, or the evidence is bound to nothing.
+  if (
+    plan.policy_digest !== policy.policy_digest ||
+    plan.policy_version !== policy.policy_version ||
+    plan.config_digest !== policy.config_digest ||
+    plan.environment !== policy.environment ||
+    canonicalJson(plan.checks) !== canonicalJson(policy.checks)
+  ) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      "the bound test plan diverges from its registered policy version",
+      { plan_id: plan.plan_id, policy_id: policy.policy_id },
     );
   }
   if (
@@ -1588,6 +1749,11 @@ function handleFreezeCandidate(state: CollabState, payload: Payload): unknown {
     summary,
     validation,
     risk,
+    test_policy: {
+      policy_id: plan.policy_id,
+      policy_version: plan.policy_version,
+      policy_digest: plan.policy_digest,
+    },
     artifacts: artifacts.map((artifact) => clone(artifact)),
     audit_refs: auditRefs,
     created_at: at,
@@ -1665,6 +1831,7 @@ export const HANDLERS: Record<AuditCommand, (state: CollabState, payload: Payloa
   revoke_grant: handleRevokeGrant,
   record_run_state: handleRecordRunState,
   attach_artifact: handleAttachArtifact,
+  register_test_policy: handleRegisterTestPolicy,
   record_test_plan: handleRecordTestPlan,
   freeze_candidate: handleFreezeCandidate,
   invalidate_candidate: handleInvalidateCandidate,

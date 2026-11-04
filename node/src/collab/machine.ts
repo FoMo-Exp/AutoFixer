@@ -20,6 +20,7 @@ import {
   newRunId,
   newTaskId,
   newTestPlanId,
+  newTestPolicyId,
 } from "./ids.js";
 import type {
   ArtifactRef,
@@ -30,6 +31,7 @@ import type {
   ChangeRisk,
   CollabState,
   TestPlanRecord,
+  TestPolicyRecord,
   Disposition,
   GrantTool,
   HandoffRecord,
@@ -45,7 +47,7 @@ import type {
   WorkspaceScope,
   WorktreeRef,
 } from "./types.js";
-import { emptyCollabState, grantStateAt } from "./types.js";
+import { emptyCollabState, grantStateAt, testPolicyScopeKey } from "./types.js";
 import type { DshState } from "../dsh/types.js";
 import type { ProductState } from "./states.js";
 
@@ -204,16 +206,30 @@ export type RequestRunRestartInput = CommandBase & {
  * append-only log never carries patch text or tool output.
  */
 /**
- * Record the approved test plan of one run before validation executes. The
- * plan is the trusted source of the required checks a frozen candidate must
- * prove passing; it is run-scoped, lease-guarded, and immutable.
+ * Register one version of a workspace + repository scoped test policy. The
+ * required checks, config digest, and environment are policy: a configuration
+ * administrator approves them here (`registered_by`), and the new version
+ * becomes the repository's current one. No run lease is involved — a worker
+ * cannot define or edit the checks it is measured against.
+ */
+export type RegisterTestPolicyInput = CommandBase & {
+  workspace: WorkspaceScope;
+  repository_id: string;
+  repository_url: string;
+  policy_version: string;
+  checks: string[];
+  config_digest: string;
+  environment: string;
+};
+
+/**
+ * Bind one run to the repository's current test-policy version before
+ * validation executes. The plan carries only the binding; policy content is
+ * frozen from the registered version and can never be supplied per command.
  */
 export type RecordTestPlanInput = CommandBase & {
   run_id: string;
-  lease: { holder: string; fencing_token: number };
-  config_digest: string;
-  environment: string;
-  checks: string[];
+  policy_id: string;
 };
 
 export type FreezeCandidateInput = CommandBase & {
@@ -430,6 +446,15 @@ export class CollabMachine {
     return this.execute("record_base_advance", input, payload) as BaseAdvanceResult;
   }
 
+  registerTestPolicy(input: RegisterTestPolicyInput): TestPolicyRecord {
+    const payload: Payload = {
+      ...input,
+      at: this.clock().toISOString(),
+      policy_id: newTestPolicyId(),
+    };
+    return this.execute("register_test_policy", input, payload) as TestPolicyRecord;
+  }
+
   recordTestPlan(input: RecordTestPlanInput): TestPlanRecord {
     const payload: Payload = {
       ...input,
@@ -484,6 +509,23 @@ export class CollabMachine {
   getRun(runId: string): RunRecord | undefined {
     const run = this.state.runs.get(runId);
     return run ? structuredClone(run) : undefined;
+  }
+
+  getTestPolicy(policyId: string): TestPolicyRecord | undefined {
+    const policy = this.state.testPolicies.get(policyId);
+    return policy ? structuredClone(policy) : undefined;
+  }
+
+  /** The repository's current test-policy version, if one was registered. */
+  currentTestPolicy(workspace: WorkspaceScope, repositoryId: string): TestPolicyRecord | undefined {
+    const policyId = this.state.currentTestPolicies.get(
+      testPolicyScopeKey(workspace, repositoryId),
+    );
+    if (policyId === undefined) {
+      return undefined;
+    }
+    const policy = this.state.testPolicies.get(policyId);
+    return policy ? structuredClone(policy) : undefined;
   }
 
   /** The run's recorded approved test plan, if one exists. */
@@ -587,6 +629,10 @@ export class CollabMachine {
       issues: [...this.state.issues.values()].sort((a, b) => a.issue_id.localeCompare(b.issue_id)),
       tasks: [...this.state.tasks.values()].sort((a, b) => a.task_id.localeCompare(b.task_id)),
       runs: [...this.state.runs.values()].sort((a, b) => a.run_id.localeCompare(b.run_id)),
+      test_policies: [...this.state.testPolicies.values()].sort((a, b) =>
+        a.policy_id.localeCompare(b.policy_id),
+      ),
+      current_test_policies: [...this.state.currentTestPolicies.entries()].sort(),
       test_plans: [...this.state.testPlans.values()].sort((a, b) =>
         a.plan_id.localeCompare(b.plan_id),
       ),

@@ -27,6 +27,7 @@ export type {
   RecordBaseAdvanceInput,
   RecordGrantInput,
   RecordTestPlanInput,
+  RegisterTestPolicyInput,
   RecordHandoffInput,
   RecordRunStateInput,
   RenewLeaseInput,
@@ -50,7 +51,14 @@ export {
   runTransitionIssueConflict,
 } from "./states.js";
 export type { ProductState, ProductRelation, RunView } from "./states.js";
-export { grantStateAt, GRANT_STATES, RISK_CLASSES, ROLES, TASK_STATES } from "./types.js";
+export {
+  grantStateAt,
+  GRANT_STATES,
+  RISK_CLASSES,
+  ROLES,
+  TASK_STATES,
+  testPolicyScopeKey,
+} from "./types.js";
 export {
   assertCandidateCurrent,
   candidateFreshness,
@@ -59,6 +67,7 @@ export {
   validationEvidenceDigest,
 } from "./candidate.js";
 export type {
+  CandidateCardValidation,
   CandidateFreshness,
   CandidateNotification,
   CandidateNotificationOptions,
@@ -98,6 +107,7 @@ export type {
   ArtifactRef,
   CandidateDiff,
   CandidateRecord,
+  CandidateTestPolicy,
   CandidateValidation,
   CandidateValidationResult,
   CapabilityGrant,
@@ -118,6 +128,7 @@ export type {
   TaskRecord,
   TaskState,
   TestPlanRecord,
+  TestPolicyRecord,
   WorkspaceScope,
   WorktreeRef,
 } from "./types.js";

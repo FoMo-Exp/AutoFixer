@@ -24,14 +24,18 @@ import {
   TEST_PLAN_CHECKS,
   TEST_PLAN_CONFIG_DIGEST,
   TEST_PLAN_ENVIRONMENT,
+  TEST_POLICY_VERSION,
   TEST_REPORT_DIGEST,
+  WORKSPACE,
   Clock,
   acquireLease,
+  ensureTestPolicy,
   freezeCandidateInput,
   leaseRef,
   op,
   openRun,
   planningIssue,
+  registerTestPolicy,
   stoppedPreparation,
 } from "./helpers/collab.js";
 import type { PreparationContext } from "./helpers/collab.js";
@@ -108,6 +112,25 @@ function planValidation(
     results: [passingResult(context)],
     ...overrides,
   };
+}
+
+function approvedRun(
+  machine: CollabMachine,
+  issueId: string,
+  worktreeId: string,
+): { run_id: string } {
+  const run = openRun(machine, issueId, {
+    worktree: { worktree_id: worktreeId, path: `/tmp/worktrees/${worktreeId}` },
+  });
+  const lease = leaseRef(acquireLease(machine, run.run_id));
+  machine.recordRunState({
+    operation_id: op(),
+    actor: "worker:a",
+    run_id: run.run_id,
+    lease,
+    to: "approved",
+  });
+  return { run_id: run.run_id };
 }
 
 function candidateOf(machine: CollabMachine, candidateId: string): CandidateRecord {
@@ -470,94 +493,172 @@ describe("immutable candidate freeze (DAT-219)", () => {
     expect(machine.listCandidates(issue.issue_id)).toEqual([]);
   });
 
-  test("a plan is lease-guarded, single per run, and recorded before the run stops", () => {
+  test("a plan only binds the repository's current registered test policy", () => {
     const machine = machineWithStore();
     const issue = planningIssue(machine);
-    const context = stoppedPreparation(machine, issue.issue_id);
+    const run = approvedRun(machine, issue.issue_id, "wt_policy_bind");
 
+    // No policy registered yet: the run cannot invent one.
     expectCode(
       () =>
         machine.recordTestPlan({
           operation_id: op(),
-          actor: "worker:other",
-          run_id: context.run.run_id,
-          lease: { holder: "worker:other", fencing_token: 99 },
-          config_digest: TEST_PLAN_CONFIG_DIGEST,
-          environment: TEST_PLAN_ENVIRONMENT,
-          checks: [...TEST_PLAN_CHECKS],
+          actor: "orchestrator:validation",
+          run_id: run.run_id,
+          policy_id: "pol_unknown",
         }),
-      "LEASE_STALE",
+      "TEST_POLICY_NOT_FOUND",
     );
+    // Another repository's policy is indistinguishable from a missing one.
+    const foreignRepo = registerTestPolicy(machine, {
+      repository_id: "github:other/repo",
+      repository_url: "https://github.com/other/repo.git",
+      policy_version: "1",
+    });
     expectCode(
       () =>
         machine.recordTestPlan({
           operation_id: op(),
-          actor: "worker:a",
-          run_id: context.run.run_id,
-          lease: context.lease,
-          config_digest: TEST_PLAN_CONFIG_DIGEST,
-          environment: TEST_PLAN_ENVIRONMENT,
-          checks: [...TEST_PLAN_CHECKS],
+          actor: "orchestrator:validation",
+          run_id: run.run_id,
+          policy_id: foreignRepo.policy_id,
         }),
-      "CANDIDATE_INVALID",
+      "TEST_POLICY_NOT_FOUND",
+    );
+    // Another workspace's policy is refused the same way.
+    const foreignWorkspace = registerTestPolicy(machine, {
+      workspace: { enterprise_id: "ent_other", workspace_id: "ws_other" },
+      policy_version: "1",
+    });
+    expectCode(
+      () =>
+        machine.recordTestPlan({
+          operation_id: op(),
+          actor: "orchestrator:validation",
+          run_id: run.run_id,
+          policy_id: foreignWorkspace.policy_id,
+        }),
+      "TEST_POLICY_NOT_FOUND",
     );
 
-    const running = stoppedPreparation(machine, issue.issue_id, {
-      worktreeId: "wt_running_plan",
-      worktreePath: "/tmp/worktrees/wt_running_plan",
+    const policy = ensureTestPolicy(machine);
+    const plan = machine.recordTestPlan({
+      operation_id: op(),
+      actor: "orchestrator:validation",
+      run_id: run.run_id,
+      policy_id: policy.policy_id,
+    });
+    expect(plan).toMatchObject({
+      run_id: run.run_id,
+      policy_id: policy.policy_id,
+      policy_version: policy.policy_version,
+      policy_digest: policy.policy_digest,
+      checks: policy.checks,
+      config_digest: policy.config_digest,
+      environment: policy.environment,
+    });
+    expect(machine.getTestPlan(run.run_id)?.plan_id).toBe(plan.plan_id);
+    // One plan per run; a revision needs a new run.
+    expectCode(
+      () =>
+        machine.recordTestPlan({
+          operation_id: op(),
+          actor: "orchestrator:validation",
+          run_id: run.run_id,
+          policy_id: policy.policy_id,
+        }),
+      "TEST_PLAN_CONFLICT",
+    );
+
+    // A version superseded by a newer registration can never be bound.
+    const next = registerTestPolicy(machine, { policy_version: "2" });
+    const laterRun = approvedRun(machine, issue.issue_id, "wt_policy_bind_later");
+    expectCode(
+      () =>
+        machine.recordTestPlan({
+          operation_id: op(),
+          actor: "orchestrator:validation",
+          run_id: laterRun.run_id,
+          policy_id: policy.policy_id,
+        }),
+      "TEST_POLICY_CONFLICT",
+    );
+    expect(
+      machine.recordTestPlan({
+        operation_id: op(),
+        actor: "orchestrator:validation",
+        run_id: laterRun.run_id,
+        policy_id: next.policy_id,
+      }).policy_version,
+    ).toBe("2");
+
+    // A stopped run is past the point where validation may be planned.
+    const stopped = stoppedPreparation(machine, issue.issue_id, {
+      worktreeId: "wt_policy_stopped",
+      worktreePath: "/tmp/worktrees/wt_policy_stopped",
       recordPlan: false,
     });
-    // The run is already stopped here, so a plan can no longer be recorded.
     expectCode(
       () =>
         machine.recordTestPlan({
           operation_id: op(),
-          actor: "worker:a",
-          run_id: running.run.run_id,
-          lease: running.lease,
-          config_digest: TEST_PLAN_CONFIG_DIGEST,
-          environment: TEST_PLAN_ENVIRONMENT,
-          checks: [...TEST_PLAN_CHECKS],
+          actor: "orchestrator:validation",
+          run_id: stopped.run.run_id,
+          policy_id: next.policy_id,
         }),
       "CANDIDATE_INVALID",
     );
   });
 
-  test("one run records exactly one approved test plan", () => {
+  test("the plan command rejects caller-supplied checks and configuration", () => {
     const machine = machineWithStore();
     const issue = planningIssue(machine);
-    const run = openRun(machine, issue.issue_id);
-    const lease = leaseRef(acquireLease(machine, run.run_id));
-    machine.recordRunState({
-      operation_id: op(),
-      actor: "worker:a",
-      run_id: run.run_id,
-      lease,
-      to: "approved",
-    });
-    const plan = machine.recordTestPlan({
-      operation_id: op(),
-      actor: "worker:a",
-      run_id: run.run_id,
-      lease,
-      config_digest: TEST_PLAN_CONFIG_DIGEST,
-      environment: TEST_PLAN_ENVIRONMENT,
-      checks: [...TEST_PLAN_CHECKS],
-    });
-    expect(machine.getTestPlan(run.run_id)?.plan_id).toBe(plan.plan_id);
+    const run = approvedRun(machine, issue.issue_id, "wt_plan_fields");
+    const policy = ensureTestPolicy(machine);
+
     expectCode(
       () =>
         machine.recordTestPlan({
           operation_id: op(),
-          actor: "worker:a",
+          actor: "orchestrator:validation",
           run_id: run.run_id,
-          lease,
+          policy_id: policy.policy_id,
+          checks: ["npm test -- retry"],
           config_digest: TEST_PLAN_CONFIG_DIGEST,
           environment: TEST_PLAN_ENVIRONMENT,
-          checks: [...TEST_PLAN_CHECKS],
-        }),
-      "TEST_PLAN_CONFLICT",
+        } as never),
+      "INVALID_INPUT",
     );
+  });
+
+  test("a test-policy version is validated and registered only once", () => {
+    const machine = machineWithStore();
+    const v1 = ensureTestPolicy(machine);
+    expect(v1.policy_version).toBe(TEST_POLICY_VERSION);
+    expect(machine.currentTestPolicy(WORKSPACE, REPOSITORY.repository_id)?.policy_id).toBe(
+      v1.policy_id,
+    );
+
+    expectCode(() => registerTestPolicy(machine, { policy_version: "1" }), "TEST_POLICY_CONFLICT");
+    expectCode(
+      () => registerTestPolicy(machine, { policy_version: "3", checks: [] }),
+      "INVALID_INPUT",
+    );
+    expectCode(
+      () =>
+        registerTestPolicy(machine, {
+          policy_version: "4",
+          config_digest: "sha256:not-a-hex-digest",
+        }),
+      "INVALID_INPUT",
+    );
+
+    const v2 = registerTestPolicy(machine, { policy_version: "2" });
+    expect(machine.currentTestPolicy(WORKSPACE, REPOSITORY.repository_id)?.policy_id).toBe(
+      v2.policy_id,
+    );
+    // The superseded version stays registered for audit and replay.
+    expect(machine.getTestPolicy(v1.policy_id)).toEqual(v1);
   });
 
   test("prohibited risk never becomes a reviewable candidate", () => {
@@ -814,6 +915,14 @@ describe("candidate durability and audit replay", () => {
       now: new Clock().now,
     });
     expect(replayed.getCandidate(candidateId)).toEqual(before);
+    // The trusted policy and the run's binding are durable state, not derived
+    // from the current worktree or the worker's memory.
+    const policy = machine.currentTestPolicy(WORKSPACE, REPOSITORY.repository_id);
+    expect(policy).toBeDefined();
+    expect(replayed.getTestPolicy(policy?.policy_id as string)).toEqual(policy);
+    expect(replayed.getTestPlan(candidateOf(machine, candidateId).run_id)).toEqual(
+      machine.getTestPlan(candidateOf(machine, candidateId).run_id),
+    );
     expect(replayed.snapshotDigest()).toBe(machine.snapshotDigest());
   });
 
@@ -833,6 +942,12 @@ describe("candidate durability and audit replay", () => {
       now: clock.now,
     });
     expect(restarted.getCandidate(candidateId)?.candidate_id).toBe(candidateId);
+    const runId = candidateOf(restarted, candidateId).run_id;
+    const plan = restarted.getTestPlan(runId);
+    expect(plan).toBeDefined();
+    expect(restarted.getTestPolicy(plan?.policy_id as string)?.policy_digest).toBe(
+      plan?.policy_digest,
+    );
     const issueId = candidateOf(restarted, candidateId).issue_id;
     const service = new CandidateReviewService(restarted, store());
     expect(service.diff(issueId, candidateId).content).toBe(CANDIDATE_DIFF);

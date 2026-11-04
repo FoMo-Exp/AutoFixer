@@ -818,15 +818,29 @@ retained content and can be recomputed independently instead of trusted. The
 containment check resolves symlinks, so a retention root that only appears to be
 outside the worktree is refused.
 
-Validation evidence is passing evidence, and its scope is not the candidate
-submitter's to declare. Before validation executes, the run records one
-immutable approved test plan (`plan_id`, configuration digest, environment, and
-the required check identities) through its lease. `validation.required_checks`
-must equal that plan's checks, the configuration digest and environment must
-match, and every result must name a planned check with exit status `0`. A
-failed attempt, an attempt with no exit status or output digest, an unplanned
-check, or a missing required check stops the run instead of producing a review
-card. A run records exactly one plan; a revised plan needs a new run.
+Validation evidence is passing evidence, and the required checks are **policy**,
+not execution output. A configuration administrator registers a versioned test
+policy scoped to one workspace and repository: required checks, `config_digest`
+(`sha256:<64 hex>`), and environment, recorded with `registered_by`. Each
+repository has exactly one current version; registering a new version moves that
+pointer, and older versions stay registered for audit and replay. A worker lease
+never defines or edits policy.
+
+Before validation executes, the run binds exactly one immutable plan to the
+repository's **current** policy version. The plan command accepts only the run
+and the policy id — checks, config digest, and environment are frozen from the
+registered policy and can never be supplied per command. A plan for a stopped
+or terminal run, a second plan for the same run, a policy from another
+workspace/repository, or a superseded policy version is refused.
+
+`validation.required_checks` must equal the bound policy's checks, its
+`config_digest`/`environment` must match, and every result must name a policy
+check with exit status `0`. A failed attempt, an attempt with no exit status or
+output digest, an unplanned check, or a missing required check stops the run
+instead of producing a review card. The card exposes `policy_id`,
+`policy_version`, and `policy_digest`, so an approval (DAT-220) binds to one
+exact policy version even after a newer one becomes current; a policy update
+does not retroactively invalidate an already frozen candidate.
 
 Every validation `event_reference` must be a retained `test_report` artifact of
 the same run produced from the frozen base and head whose digest equals the

@@ -321,6 +321,18 @@ const ERROR_SEMANTICS: Record<string, ErrorSemantics> = {
     retryable: false,
     next_action: null,
   },
+  TEST_POLICY_NOT_FOUND: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  TEST_POLICY_CONFLICT: {
+    stage: "policy",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
   TEST_PLAN_CONFLICT: {
     stage: "validation",
     category: "stop",

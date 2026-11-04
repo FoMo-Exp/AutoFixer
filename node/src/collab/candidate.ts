@@ -29,6 +29,17 @@ import type {
 
 const NOTIFICATION_SUMMARY_MAX = 240;
 
+/**
+ * The card's validation evidence: the run's approved plan plus the registered
+ * test-policy identity it is bound to, so an approver and DAT-220 can bind the
+ * approval to one exact policy version rather than "whatever ran".
+ */
+export interface CandidateCardValidation extends CandidateValidation {
+  policy_id: string;
+  policy_version: string;
+  policy_digest: string;
+}
+
 /** The exact provenance an independent verification needs. */
 export interface CandidateReviewCard {
   contract_version: typeof TASK_EVIDENCE_CONTRACT_VERSION;
@@ -41,7 +52,7 @@ export interface CandidateReviewCard {
   tree_sha: string;
   diff: CandidateDiff;
   summary: string;
-  validation: CandidateValidation;
+  validation: CandidateCardValidation;
   risk: ChangeRisk;
   artifacts: ArtifactRef[];
   audit_refs: string[];
@@ -66,7 +77,12 @@ export function candidateReviewCard(candidate: CandidateRecord): CandidateReview
     tree_sha: candidate.tree_sha,
     diff: structuredClone(candidate.diff),
     summary: candidate.summary,
-    validation: structuredClone(candidate.validation),
+    validation: {
+      ...structuredClone(candidate.validation),
+      policy_id: candidate.test_policy.policy_id,
+      policy_version: candidate.test_policy.policy_version,
+      policy_digest: candidate.test_policy.policy_digest,
+    },
     risk: structuredClone(candidate.risk),
     artifacts: candidate.artifacts.map((artifact) => ({ ...artifact })),
     audit_refs: [...candidate.audit_refs],

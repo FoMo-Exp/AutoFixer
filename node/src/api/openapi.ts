@@ -1449,11 +1449,26 @@ const candidateSchema: JsonObject = {
           items: { type: "string" },
           description:
             "Validation identities of the run's approved test plan. The set must " +
-            "equal the plan recorded before validation ran; every check needs a " +
-            "passing attempt backed by a retained execution artifact whose digest " +
-            "is the attempt's `output_digest`, produced from this exact revision. " +
-            "A failed, unexecuted, unplanned, or digest-mismatched check stops the " +
-            "run instead of producing a review card.",
+            "equal the registered test-policy checks the plan is bound to; every " +
+            "check needs a passing attempt backed by a retained execution artifact " +
+            "whose digest is the attempt's `output_digest`, produced from this " +
+            "exact revision. A failed, unexecuted, unplanned, or digest-mismatched " +
+            "check stops the run instead of producing a review card.",
+        },
+        policy_id: {
+          type: "string",
+          description:
+            "The registered test-policy version this evidence is bound to. " +
+            "Required checks, config digest, and environment are policy content " +
+            "approved by a configuration administrator, never supplied by the run " +
+            "or the candidate.",
+        },
+        policy_version: { type: "string" },
+        policy_digest: {
+          type: "string",
+          description:
+            "Digest of the exact policy content, so an approval binds to that " +
+            "policy version even after a newer version becomes current.",
         },
         results: {
           type: "array",

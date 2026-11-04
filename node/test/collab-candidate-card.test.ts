@@ -11,7 +11,13 @@ import { CandidateContentStore } from "../src/collab/candidate-store.js";
 import { CandidateReviewService } from "../src/collab/candidate-service.js";
 import { CollabMachine } from "../src/collab/machine.js";
 import type { CollabError } from "../src/collab/errors.js";
-import { freezeCandidateInput, planningIssue, stoppedPreparation } from "./helpers/collab.js";
+import {
+  REPOSITORY,
+  WORKSPACE,
+  freezeCandidateInput,
+  planningIssue,
+  stoppedPreparation,
+} from "./helpers/collab.js";
 
 // ajv-formats ships CJS: NodeNext types its default import as the module
 // namespace while the runtime binding is the plugin function itself.
@@ -122,6 +128,19 @@ describe("candidate review-card API contract", () => {
     expect(result.error).toBe("No errors");
     expect(result.ok).toBe(true);
     expect(card.contract_version).toBe("1.0.0");
+
+    // The card names the registered test-policy version its evidence is bound
+    // to, so DAT-220 can bind an approval to one exact policy.
+    const policy = machine.currentTestPolicy(WORKSPACE, REPOSITORY.repository_id);
+    expect(policy).toBeDefined();
+    expect(card.validation).toMatchObject({
+      policy_id: policy?.policy_id,
+      policy_version: policy?.policy_version,
+      policy_digest: policy?.policy_digest,
+      required_checks: policy?.checks,
+      config_digest: policy?.config_digest,
+      environment: policy?.environment,
+    });
   });
 
   test("the candidate page validates against the merged list response schema", () => {

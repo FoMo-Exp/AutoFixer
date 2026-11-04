@@ -25,6 +25,7 @@ export type AuditCommand =
   | "revoke_grant"
   | "record_run_state"
   | "attach_artifact"
+  | "register_test_policy"
   | "record_test_plan"
   | "freeze_candidate"
   | "invalidate_candidate"

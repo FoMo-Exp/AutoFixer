@@ -1788,8 +1788,13 @@ export interface components {
             validation: {
                 config_digest: string;
                 environment: string;
-                /** @description Validation identities of the run's approved test plan. The set must equal the plan recorded before validation ran; every check needs a passing attempt backed by a retained execution artifact whose digest is the attempt's `output_digest`, produced from this exact revision. A failed, unexecuted, unplanned, or digest-mismatched check stops the run instead of producing a review card. */
+                /** @description Validation identities of the run's approved test plan. The set must equal the registered test-policy checks the plan is bound to; every check needs a passing attempt backed by a retained execution artifact whose digest is the attempt's `output_digest`, produced from this exact revision. A failed, unexecuted, unplanned, or digest-mismatched check stops the run instead of producing a review card. */
                 required_checks?: string[];
+                /** @description The registered test-policy version this evidence is bound to. Required checks, config digest, and environment are policy content approved by a configuration administrator, never supplied by the run or the candidate. */
+                policy_id?: string;
+                policy_version?: string;
+                /** @description Digest of the exact policy content, so an approval binds to that policy version even after a newer version becomes current. */
+                policy_digest?: string;
                 results: components["schemas"]["ValidationResult"][];
             };
             risk: components["schemas"]["ChangeRisk"];
