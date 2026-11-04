@@ -157,12 +157,21 @@ export interface RsiEvidenceRisk {
   failed: RsiEvaluation[];
 }
 
-/** Surface real failure and security evidence instead of burying it in a table. */
+/**
+ * Surface real failure and security evidence from the golden set only.
+ *
+ * Hidden-holdout outcomes never reach this summary: aggregating them into a
+ * banner would reveal a holdout-only regression or security event through a
+ * second channel even though the holdout row itself is aggregate-only. The
+ * server gate still reports pass/fail and its generic blockers; that is the
+ * only holdout-derived signal this surface repeats.
+ */
 export function evidenceRisk(proposal: RsiProposal): RsiEvidenceRisk {
+  const golden = proposal.evaluations.filter((entry) => entry.dataset === "golden");
   return {
-    safetyEvents: proposal.evaluations.reduce((sum, entry) => sum + entry.safety_events, 0),
-    regressions: proposal.evaluations.filter((entry) => entry.success_delta < 0),
-    failed: proposal.evaluations.filter((entry) => entry.verdict === "fail"),
+    safetyEvents: golden.reduce((sum, entry) => sum + entry.safety_events, 0),
+    regressions: golden.filter((entry) => entry.success_delta < 0),
+    failed: golden.filter((entry) => entry.verdict === "fail"),
   };
 }
 

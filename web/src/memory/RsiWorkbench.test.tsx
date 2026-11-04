@@ -104,9 +104,9 @@ describe("RSI workbench", () => {
     renderSurface(client, [failed]);
     await openProposal("Rejected retrieval bound change");
 
-    expect(screen.getByText("Security event recorded")).toBeTruthy();
+    expect(screen.getByText("Security event in the golden set")).toBeTruthy();
     expect(screen.getByText(/forbidden item injection/)).toBeTruthy();
-    expect(screen.getByText("Regression evidence")).toBeTruthy();
+    expect(screen.getByText("Golden-set regression")).toBeTruthy();
     expect(screen.getAllByText("Security events")).toHaveLength(1);
     expect(screen.getByText("Server-reported blockers")).toBeTruthy();
     expect(screen.getByText("offline replay did not pass")).toBeTruthy();
@@ -142,6 +142,52 @@ describe("RSI workbench", () => {
     const diff = screen.getByLabelText("Proposal artifact diff");
     expect(diff.textContent).toContain("- max_items: 8");
     expect(diff.textContent).toContain("+ max_items: 12");
+  });
+
+  it("keeps a holdout-only failure out of the golden evidence alerts", async () => {
+    const client = makeClient();
+    const goldenClean = {
+      ...failed,
+      evaluations: failed.evaluations.map((entry) =>
+        entry.dataset === "golden"
+          ? {
+              ...entry,
+              verdict: "pass" as const,
+              success_delta: 0.05,
+              safety_events: 0,
+              baseline_successes: 18,
+              candidate_successes: 19,
+            }
+          : entry,
+      ),
+    };
+    const holdoutEvaluation = goldenClean.evaluations.find((entry) => entry.dataset === "holdout")!;
+    renderSurface(client, [goldenClean]);
+    await openProposal("Rejected retrieval bound change");
+
+    // The golden evidence is clean, so the alert channels stay silent even
+    // though the hidden holdout failed with a security event.
+    expect(screen.queryByText("Security event recorded")).toBeNull();
+    expect(screen.queryByText("Security event in the golden set")).toBeNull();
+    expect(screen.queryByText("Regression evidence")).toBeNull();
+    expect(screen.queryByText("Golden-set regression")).toBeNull();
+    expect(screen.queryByText(/forbidden item injection/)).toBeNull();
+    expect(screen.queryByText(/dataset verdicts failed/)).toBeNull();
+    expect(screen.queryByText(/-15\.00 pp/)).toBeNull();
+
+    // Only the server gate repeats the aggregate failure, without naming a
+    // dataset or exposing a holdout metric.
+    expect(screen.getByText("Not eligible")).toBeTruthy();
+    expect(screen.getByText("offline replay did not pass")).toBeTruthy();
+
+    const holdoutCard = screen.getByRole("article", {
+      name: "Holdout evaluation aggregate",
+    });
+    expect(within(holdoutCard).getByText("Yes")).toBeTruthy();
+    expect(within(holdoutCard).getByText(String(holdoutEvaluation.sample_size))).toBeTruthy();
+    expect(within(holdoutCard).queryByText(holdoutEvaluation.verifier.reference)).toBeNull();
+    expect(document.body.textContent).not.toContain(holdoutEvaluation.verifier.reference);
+    expect(document.body.textContent).not.toContain(holdoutEvaluation.evaluation_id);
   });
 
   it("runs the replay, records approval, and starts the canary from a ready proposal", async () => {

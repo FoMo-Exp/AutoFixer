@@ -59,9 +59,35 @@ describe("RSI rendering vocabulary", () => {
   it("extracts security events and regressions from server verdicts", () => {
     const failed = fixture<RsiProposal>("proposal-failed.json");
     const risk = evidenceRisk(failed);
-    expect(risk.safetyEvents).toBe(2);
-    expect(risk.regressions).toHaveLength(2);
-    expect(risk.failed).toHaveLength(2);
+    expect(risk.safetyEvents).toBe(1);
+    expect(risk.regressions).toHaveLength(1);
+    expect(risk.failed).toHaveLength(1);
+  });
+
+  it("never aggregates hidden-holdout outcomes into the golden evidence summary", () => {
+    const failed = fixture<RsiProposal>("proposal-failed.json");
+    const goldenOnlyPass = {
+      ...failed,
+      evaluations: failed.evaluations.map((entry) =>
+        entry.dataset === "golden"
+          ? {
+              ...entry,
+              verdict: "pass" as const,
+              success_delta: 0.05,
+              safety_events: 0,
+              baseline_successes: 18,
+              candidate_successes: 19,
+            }
+          : entry,
+      ),
+    };
+    const risk = evidenceRisk(goldenOnlyPass);
+    expect(risk.safetyEvents).toBe(0);
+    expect(risk.regressions).toHaveLength(0);
+    expect(risk.failed).toHaveLength(0);
+    // The holdout-only failure remains visible to the server gate, not here.
+    expect(goldenOnlyPass.gate.offline_evaluation).toBe("fail");
+    expect(goldenOnlyPass.evaluations.some((entry) => entry.verdict === "fail")).toBe(true);
   });
 
   it("does not derive pass from a clean-looking diff", () => {

@@ -249,11 +249,11 @@ export function RsiProposalDetail({
               <div className="rsi-alert rsi-alert-danger" role="alert">
                 <span className="reason-icon">!</span>
                 <div>
-                  <strong>Security event recorded</strong>
+                  <strong>Security event in the golden set</strong>
                   <p>
                     {evidence.safetyEvents} forbidden item injection
-                    {evidence.safetyEvents === 1 ? "" : "s"} appeared in the offline evidence. A
-                    single event fails the replay and blocks promotion.
+                    {evidence.safetyEvents === 1 ? "" : "s"} appeared in the golden-set replay. A
+                    single event fails that replay and blocks promotion.
                   </p>
                 </div>
               </div>
@@ -263,15 +263,14 @@ export function RsiProposalDetail({
               <div className="rsi-alert rsi-alert-attention" role="alert">
                 <span className="reason-icon">!</span>
                 <div>
-                  <strong>Regression evidence</strong>
+                  <strong>Golden-set regression</strong>
                   <p>
-                    {evidence.failed.length > 0
-                      ? `${evidence.failed.length} dataset verdict${evidence.failed.length === 1 ? "" : "s"} failed. `
-                      : ""}
+                    {evidence.failed.length > 0 ? "The golden-set replay did not pass. " : ""}
                     {evidence.regressions.length > 0
-                      ? `${evidence.regressions.length} dataset${evidence.regressions.length === 1 ? "" : "s"} show a negative success delta. `
+                      ? "The golden-set success delta is negative. "
                       : ""}
-                    Inconclusive blocks promotion; it is never a soft pass.
+                    Promotion remains blocked until the server gate passes; an inconclusive verdict
+                    is never a soft pass.
                   </p>
                 </div>
               </div>
