@@ -1,34 +1,37 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
 import { ApiConfigurationError, ApiError, ForgePilotClient } from "./api/client";
-import type {
-  ArtifactMetadata,
-  RunSummary,
-  Task,
-  TaskEvent,
-  TaskStatus,
-  Workspace,
-} from "./api/client";
+import type { ArtifactMetadata, RunSummary, Task, TaskEvent, TaskStatus } from "./api/client";
+import { IdentityClient } from "./api/identity";
+import type { Workspace } from "./api/identity";
 import { resolveApiConfig } from "./api/config";
 import type { ApiConfig } from "./api/config";
 import { useAuth } from "./auth/useAuth";
 import type { AuthApi } from "./auth/useAuth";
 import { AuthLoadingScreen, LoginScreen, NoWorkspaceScreen } from "./auth/LoginScreen";
 import { useTaskStream } from "./api/hooks";
+import { IssuesWorkbench } from "./issues/IssuesWorkbench";
+import { MemoryWorkbench } from "./memory/MemoryWorkbench";
+import { RsiWorkbench } from "./memory/RsiWorkbench";
+import { DashboardWorkbench } from "./dashboard/DashboardWorkbench";
+import { SecurityWorkbench } from "./security/SecurityWorkbench";
 import { CreateIdempotencyKeys } from "./api/idempotency";
 import {
   clearStoredWorkspaceId,
   readStoredWorkspaceId,
   resolveWorkspace,
   storeWorkspaceId,
-} from "./workspace/selection";
+} from "./workspaces/selection";
 import {
   WorkspaceChooser,
   WorkspaceSwitcher,
   WorkspaceUnavailableScreen,
-} from "./workspace/WorkspaceSwitcher";
+} from "./workspaces/WorkspaceSwitcher";
 import { RepositoryPicker } from "./settings/RepositoryPicker";
 import { SettingsDialog } from "./settings/SettingsDialog";
+import { captureInviteToken } from "./workspaces/invite-token";
+import { InviteJoin } from "./workspaces/InviteJoin";
+import { WorkspaceAdminDialog } from "./workspaces/WorkspaceAdminDialog";
 import {
   approvalScopeDigest,
   buildTimelineRows,
@@ -93,6 +96,7 @@ function isTaskArchived(task: Task): boolean {
 interface WorkbenchProps {
   config: ApiConfig;
   auth: AuthApi;
+  identityClient: IdentityClient;
   /** Undefined only for the legacy local-operator seam and startup failures. */
   workspace?: Workspace;
   workspaces: Workspace[];
@@ -125,13 +129,59 @@ function useApiClient(
 
 export default function App(): ReactElement {
   const config = useMemo(resolveApiConfig, []);
-  const auth = useAuth(config);
+  const [inviteToken, setInviteToken] = useState<string>();
+  const inviteTokenRef = useRef<string | undefined>(undefined);
 
+  // Registered before useAuth so the fragment is captured and cleared before
+  // the auth controller's session request can observe it.
+  useEffect(() => {
+    const token = captureInviteToken(
+      window.location.hash,
+      window.history,
+      window.sessionStorage,
+      `${window.location.pathname}${window.location.search}`,
+    );
+    if (!token) return;
+    inviteTokenRef.current = token;
+    setInviteToken(token);
+  }, []);
+
+  const auth = useAuth(config);
+  const authRef = useRef(auth);
+  authRef.current = auth;
+  const identityClient = useMemo(
+    () =>
+      new IdentityClient({
+        baseUrl: config.baseUrl,
+        token: config.token,
+        ...(config.fetchImpl ? { fetchImpl: config.fetchImpl } : {}),
+        csrfToken: () => authRef.current.csrfToken(),
+        refreshCsrfToken: () => authRef.current.refreshCsrfToken(),
+        onUnauthorized: () => authRef.current.handleUnauthorized(),
+        onForbidden: (error) => authRef.current.handleForbidden(error.message),
+      }),
+    [config],
+  );
+
+  if (inviteToken) {
+    return (
+      <InviteJoin
+        client={identityClient}
+        token={inviteToken}
+        onDismiss={() => {
+          inviteTokenRef.current = undefined;
+          setInviteToken(undefined);
+          void auth.retry();
+        }}
+      />
+    );
+  }
   if (config.startupError && auth.status !== "signed_in" && auth.status !== "legacy") {
     return (
       <Workbench
         config={config}
         auth={auth}
+        identityClient={identityClient}
         workspaces={[]}
         onSelectWorkspace={NOOP}
         onWorkspaceUnavailable={NOOP}
@@ -173,13 +223,14 @@ export default function App(): ReactElement {
       <Workbench
         config={config}
         auth={auth}
+        identityClient={identityClient}
         workspaces={[]}
         onSelectWorkspace={NOOP}
         onWorkspaceUnavailable={NOOP}
       />
     );
   }
-  return <WorkspaceGate config={config} auth={auth} />;
+  return <WorkspaceGate config={config} auth={auth} identityClient={identityClient} />;
 }
 
 type WorkspaceLoadStatus = "loading" | "ready" | "error";
@@ -189,11 +240,16 @@ type WorkspaceLoadStatus = "loading" | "ready" | "error";
  * The task surface is not mounted until a workspace is chosen, so a task
  * call can never fall back to another workspace's scope.
  */
-function WorkspaceGate({ config, auth }: { config: ApiConfig; auth: AuthApi }): ReactElement {
-  const authRef = useRef(auth);
-  authRef.current = auth;
+function WorkspaceGate({
+  config,
+  auth,
+  identityClient,
+}: {
+  config: ApiConfig;
+  auth: AuthApi;
+  identityClient: IdentityClient;
+}): ReactElement {
   const userId = auth.session?.user.id ?? "";
-  const directory = useApiClient(config, authRef, null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [status, setStatus] = useState<WorkspaceLoadStatus>("loading");
   const [error, setError] = useState<string>();
@@ -207,7 +263,7 @@ function WorkspaceGate({ config, auth }: { config: ApiConfig; auth: AuthApi }): 
       const requestId = ++requestRef.current;
       if (mode === "initial") setStatus("loading");
       try {
-        const items = await directory.listWorkspaces();
+        const items = await identityClient.listAllWorkspaces();
         if (requestId !== requestRef.current) return;
         setWorkspaces(items);
         setStatus("ready");
@@ -221,7 +277,7 @@ function WorkspaceGate({ config, auth }: { config: ApiConfig; auth: AuthApi }): 
         setError(errorMessage(caught));
       }
     },
-    [directory],
+    [identityClient],
   );
 
   useEffect(() => {
@@ -294,6 +350,7 @@ function WorkspaceGate({ config, auth }: { config: ApiConfig; auth: AuthApi }): 
       key={selected.id}
       config={config}
       auth={auth}
+      identityClient={identityClient}
       workspace={selected}
       workspaces={workspaces}
       onSelectWorkspace={selectWorkspace}
@@ -305,6 +362,7 @@ function WorkspaceGate({ config, auth }: { config: ApiConfig; auth: AuthApi }): 
 function Workbench({
   config,
   auth,
+  identityClient,
   workspace,
   workspaces,
   onSelectWorkspace,
@@ -314,7 +372,22 @@ function Workbench({
   authRef.current = auth;
   const client = useApiClient(config, authRef, workspace?.id ?? null);
   const readOnly = workspace?.role === "viewer";
+  // Callbacks key off this scalar, never the workspace object: a membership
+  // refresh rebuilds the list and would otherwise re-run every load effect.
+  const scoped = workspace !== undefined;
+  // Team leadership decides which items a member may govern; every page is
+  // read so a leader of a later-page team keeps standing.
+  const loadMemoryTeams = useCallback(
+    (workspaceId: string) => identityClient.listAllWorkspaceTeams(workspaceId),
+    [identityClient],
+  );
+  // The workspace directory belongs to the identity surface; every surface's
+  // selector reads it here instead of through the task client.
+  const loadWorkspaces = useCallback(() => identityClient.listAllWorkspaces(), [identityClient]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [surface, setSurface] = useState<
+    "tasks" | "issues" | "memory" | "rsi" | "dashboard" | "security"
+  >("tasks");
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   /** 窄屏钻取视图：list ↔ detail（≤900px 生效，桌面始终双栏并存） */
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
@@ -337,6 +410,7 @@ function Workbench({
   const [filter, setFilter] = useState<"all" | TaskStatus>("all");
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showWorkspaces, setShowWorkspaces] = useState(false);
   // Bumped whenever the settings dialog closes so open pickers re-run
   // discovery against the (possibly changed) account set.
   const [settingsEpoch, setSettingsEpoch] = useState(0);
@@ -391,13 +465,13 @@ function Workbench({
       if (caught instanceof ApiError && (caught.status === 401 || caught.status === 403)) return;
       // A scoped 404 means this locator is no longer the caller's workspace:
       // re-read the live membership list instead of showing a task error.
-      if (workspace && caught instanceof ApiError && caught.code === "NOT_FOUND") {
+      if (scoped && caught instanceof ApiError && caught.code === "NOT_FOUND") {
         onWorkspaceUnavailable();
         return;
       }
       setActionError(errorMessage(caught));
     },
-    [onWorkspaceUnavailable, workspace],
+    [onWorkspaceUnavailable, scoped],
   );
 
   const loadTasks = useCallback(
@@ -414,7 +488,7 @@ function Workbench({
       } catch (caught) {
         if (requestId !== listRequestRef.current) return;
         if (caught instanceof ApiError && caught.status === 401) return;
-        if (workspace && caught instanceof ApiError && caught.code === "NOT_FOUND") {
+        if (scoped && caught instanceof ApiError && caught.code === "NOT_FOUND") {
           onWorkspaceUnavailable();
           return;
         }
@@ -427,7 +501,7 @@ function Workbench({
         setServiceError(errorMessage(caught));
       }
     },
-    [client, onWorkspaceUnavailable, workspace],
+    [client, onWorkspaceUnavailable, scoped],
   );
 
   const loadMoreTasks = useCallback(async (): Promise<void> => {
@@ -657,6 +731,56 @@ function Workbench({
           </div>
         </div>
         <div className="topbar-actions">
+          <nav className="surface-nav" aria-label="Workbench views">
+            <button
+              type="button"
+              className={`surface-tab ${surface === "tasks" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "tasks" ? "page" : undefined}
+              onClick={() => setSurface("tasks")}
+            >
+              Tasks
+            </button>
+            <button
+              type="button"
+              className={`surface-tab ${surface === "issues" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "issues" ? "page" : undefined}
+              onClick={() => setSurface("issues")}
+            >
+              Issues
+            </button>
+            <button
+              type="button"
+              className={`surface-tab ${surface === "memory" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "memory" ? "page" : undefined}
+              onClick={() => setSurface("memory")}
+            >
+              Memory
+            </button>
+            <button
+              type="button"
+              className={`surface-tab ${surface === "rsi" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "rsi" ? "page" : undefined}
+              onClick={() => setSurface("rsi")}
+            >
+              RSI
+            </button>
+            <button
+              type="button"
+              className={`surface-tab ${surface === "dashboard" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "dashboard" ? "page" : undefined}
+              onClick={() => setSurface("dashboard")}
+            >
+              Dashboard
+            </button>
+            <button
+              type="button"
+              className={`surface-tab ${surface === "security" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "security" ? "page" : undefined}
+              onClick={() => setSurface("security")}
+            >
+              Security
+            </button>
+          </nav>
           {auth.session && (
             <div className="account-chip">
               <span className="account-name" title={auth.session.user.display_name}>
@@ -674,11 +798,12 @@ function Workbench({
           <button
             className="button button-quiet button-small"
             onClick={() => {
+              setSurface("tasks");
               selectTask(undefined);
               setMobileView("detail");
             }}
             aria-label="Home"
-            aria-current={!selectedId ? "page" : undefined}
+            aria-current={surface === "tasks" && !selectedId ? "page" : undefined}
           >
             <svg
               width="16"
@@ -714,18 +839,44 @@ function Workbench({
             </svg>
             <span className="action-label">Settings</span>
           </button>
-          {!readOnly && (
+          {auth.session &&
+            (auth.session.memberships.length > 0 || auth.session.enterprise_roles.length > 0) && (
+              <button
+                className="button button-quiet button-small"
+                onClick={() => setShowWorkspaces(true)}
+                aria-label="Open workspace administration"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                  <circle cx="9" cy="7" r="4" />
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+                </svg>
+                <span className="action-label">Workspaces</span>
+              </button>
+            )}
+          {surface === "tasks" && !readOnly && (
             <button
               className="button button-primary button-small"
               onClick={() => setShowCreate(true)}
+              aria-label="New task"
             >
-              <span aria-hidden="true">＋</span> New task
+              <span aria-hidden="true">＋</span> <span className="action-label">New task</span>
             </button>
           )}
         </div>
       </header>
 
-      <div className="workspace" data-view={mobileView}>
+      <div className="workspace" data-view={mobileView} hidden={surface !== "tasks"}>
         <aside className="sidebar">
           <div className="sidebar-heading">
             <div className="sidebar-heading-main">
@@ -882,6 +1033,39 @@ function Workbench({
         </main>
       </div>
 
+      {surface === "issues" && (
+        <IssuesWorkbench
+          client={client}
+          currentUserId={auth.session?.user.id}
+          loadWorkspaces={loadWorkspaces}
+        />
+      )}
+
+      {surface === "memory" && (
+        <MemoryWorkbench
+          client={client}
+          session={auth.session}
+          loadTeams={loadMemoryTeams}
+          loadWorkspaces={loadWorkspaces}
+        />
+      )}
+
+      {surface === "rsi" && (
+        <RsiWorkbench
+          client={client}
+          currentUserId={auth.session?.user.id}
+          loadWorkspaces={loadWorkspaces}
+        />
+      )}
+
+      {surface === "dashboard" && (
+        <DashboardWorkbench client={client} loadWorkspaces={loadWorkspaces} />
+      )}
+
+      {surface === "security" && (
+        <SecurityWorkbench client={client} session={auth.session} loadWorkspaces={loadWorkspaces} />
+      )}
+
       {showCreate && (
         <CreateTaskDialog
           workspace={workspace}
@@ -913,6 +1097,16 @@ function Workbench({
             const { task, action } = confirmTaskAction;
             closeTaskConfirmation();
             void (action === "archive" ? handleQuickCancel(task) : handleQuickRecovery(task));
+          }}
+        />
+      )}
+      {showWorkspaces && auth.session && (
+        <WorkspaceAdminDialog
+          client={identityClient}
+          session={auth.session}
+          onClose={() => {
+            setShowWorkspaces(false);
+            void auth.retry();
           }}
         />
       )}

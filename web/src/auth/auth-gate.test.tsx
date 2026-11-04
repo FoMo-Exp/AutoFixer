@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import { ForgePilotClient } from "../api/client";
+import { IdentityClient } from "../api/identity";
 import type { DesktopAuthState } from "../../electron/auth";
 
 const providers = [
@@ -84,7 +85,7 @@ const workspace = {
 
 beforeEach(() => {
   window.localStorage.setItem("fp-workspace:usr_1", "ws_alpha");
-  vi.spyOn(ForgePilotClient.prototype, "listWorkspaces").mockResolvedValue([workspace]);
+  vi.spyOn(IdentityClient.prototype, "listAllWorkspaces").mockResolvedValue([workspace]);
   vi.spyOn(ForgePilotClient.prototype, "listTasks").mockResolvedValue({
     items: [],
     next_cursor: null,
@@ -121,7 +122,7 @@ describe("auth gate", () => {
     expect(await screen.findByText("Ada Lovelace")).toBeTruthy();
     await waitFor(() => expect(ForgePilotClient.prototype.listTasks).toHaveBeenCalled());
     expect(await screen.findByRole("combobox", { name: "Workspace" })).toBeTruthy();
-    expect(ForgePilotClient.prototype.listWorkspaces).toHaveBeenCalled();
+    expect(IdentityClient.prototype.listAllWorkspaces).toHaveBeenCalled();
   });
 
   it("turns a revoked desktop session into the recoverable expired gate", async () => {
@@ -142,7 +143,7 @@ describe("auth gate", () => {
 
   it("routes a 401 from the task surface to the expired gate", async () => {
     const handle = installDesktopAuth({ status: "signed_in", providers, session });
-    vi.mocked(ForgePilotClient.prototype.listWorkspaces).mockRestore();
+    vi.mocked(IdentityClient.prototype.listAllWorkspaces).mockRestore();
     vi.mocked(ForgePilotClient.prototype.listTasks).mockRestore();
     window.forgePilotApi = {
       request: vi.fn(async () => ({

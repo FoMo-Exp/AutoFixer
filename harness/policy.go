@@ -10,19 +10,21 @@ import (
 const (
 	AllowWithinGrant = "allow_within_grant"
 
-	DenyGrantMissing             = "deny_grant_missing"
-	DenyGrantRevoked             = "deny_grant_revoked"
-	DenyStateNotRunning          = "deny_state_not_running"
-	DenyGrantExpired             = "deny_grant_expired"
-	DenyRepositoryMismatch       = "deny_repository_mismatch"
-	DenyBaseSHAMismatch          = "deny_base_sha_mismatch"
-	DenyToolNotPermitted         = "deny_tool_not_permitted"
-	DenyToolArgumentNotPermitted = "deny_tool_argument_not_permitted"
-	DenyBranchForbidden          = "deny_branch_forbidden"
-	DenyPathNotPermitted         = "deny_path_not_permitted"
-	DenyNetworkNotPermitted      = "deny_network_not_permitted"
-	DenyPatchNotPermitted        = "deny_patch_not_permitted"
-	DenyPRNotPermitted           = "deny_pr_not_permitted"
+	DenyGrantMissing              = "deny_grant_missing"
+	DenyGrantRevoked              = "deny_grant_revoked"
+	DenyStateNotRunning           = "deny_state_not_running"
+	DenyGrantExpired              = "deny_grant_expired"
+	DenyRepositoryMismatch        = "deny_repository_mismatch"
+	DenyBaseSHAMismatch           = "deny_base_sha_mismatch"
+	DenyToolNotPermitted          = "deny_tool_not_permitted"
+	DenyToolArgumentNotPermitted  = "deny_tool_argument_not_permitted"
+	DenyBranchForbidden           = "deny_branch_forbidden"
+	DenyPathNotPermitted          = "deny_path_not_permitted"
+	DenyPathClassRequiresElevated = "deny_path_class_requires_elevated"
+	DenyPathClassForbidden        = "deny_path_class_forbidden"
+	DenyNetworkNotPermitted       = "deny_network_not_permitted"
+	DenyPatchNotPermitted         = "deny_patch_not_permitted"
+	DenyPRNotPermitted            = "deny_pr_not_permitted"
 
 	StopCodeOutOfGrant   = "stop_out_of_grant"
 	StopCodeGrantExpired = "stop_grant_expired"
@@ -37,12 +39,21 @@ type ActionContext struct {
 	Grant   *CapabilityGrant
 	Revoked bool
 	Now     time.Time
+	// RiskClass is the run's assessed risk class. Edit requests are matched
+	// against the FP-01 path classes with it, so a structured edit tool can
+	// never change dependency, workflow, or migration content beyond the
+	// assessment's class. Empty fails closed.
+	RiskClass RiskClass
 }
 
 // ActionRequest is one requested action the runner wants to dispatch.
 type ActionRequest struct {
-	Tool                string
-	Arguments           []string
+	Tool      string
+	Arguments []string
+	// EvidenceArguments are the redacted value forms recorded in the
+	// evidence chain for structured calls whose grant-checked Arguments are
+	// stable class tokens. Nil records Arguments unchanged.
+	EvidenceArguments   []string
 	RepositoryURL       string
 	BaseSHA             string
 	Branch              string
@@ -53,6 +64,16 @@ type ActionRequest struct {
 	// may_create_patch / may_create_or_update_pr scope bits.
 	WantsPatch       bool
 	WantsPROperation bool
+}
+
+// evidenceArgs picks the recorded argument form for one request: the
+// redacted values when the caller supplied them, otherwise the
+// grant-checked tokens.
+func (req ActionRequest) evidenceArgs() []string {
+	if req.EvidenceArguments != nil {
+		return append([]string{}, req.EvidenceArguments...)
+	}
+	return append([]string{}, req.Arguments...)
 }
 
 // Decision is the FP-04-facing policy output: whether an action may proceed,
@@ -109,8 +130,34 @@ func EvaluateAction(ctx ActionContext, req ActionRequest) Decision {
 		return deny(DenyPRNotPermitted, StopCodeOutOfGrant)
 	}
 	for _, path := range req.Paths {
-		if !pathWithinAny(ctx.Grant.PermittedPaths, path) {
+		if !PathWithinAny(ctx.Grant.PermittedPaths, path) {
 			return deny(DenyPathNotPermitted, StopCodeOutOfGrant)
+		}
+	}
+	// No request may touch prohibited paths at all: secret-looking content
+	// and version-control internals are unreadable and uneditable whatever
+	// the tool, the granted paths, or the assessed class.
+	for _, p := range req.Paths {
+		if !ReadableFor(ClassifyPath(p)) {
+			return deny(DenyPathClassForbidden, StopCodeOutOfGrant)
+		}
+	}
+	// Edit intents additionally keep each path's FP-01 class: dependency and
+	// migration changes need an elevated assessment, workflow and governance
+	// content is never editable, and an unknown class fails closed. This is
+	// the no-implicit-expansion gate in front of every structured edit.
+	if req.WantsPatch {
+		for _, p := range req.Paths {
+			class := ClassifyPath(p)
+			if EditAllowedFor(class, ctx.RiskClass) {
+				continue
+			}
+			code := DenyPathClassForbidden
+			if (class == ClassSource || class == ClassDependency || class == ClassMigration) &&
+				(ctx.RiskClass == RiskLow || ctx.RiskClass == RiskElevated) {
+				code = DenyPathClassRequiresElevated
+			}
+			return deny(code, StopCodeOutOfGrant)
 		}
 	}
 	for _, dest := range req.NetworkDestinations {
@@ -142,13 +189,13 @@ func containsString(list []string, s string) bool {
 	return false
 }
 
-// pathWithinAny reports whether path is the permitted root itself or lives
+// PathWithinAny reports whether path is the permitted root itself or lives
 // under it. Requested paths are untrusted input, so they are lexically
 // normalized first: an absolute path, or one whose cleaned form escapes
 // every permitted root via ".." (for example "harness/../../.github"), is
 // denied. Roots and paths are compared on path-segment boundaries so
 // "harness-evil" does not match a grant for "harness".
-func pathWithinAny(permitted []string, requested string) bool {
+func PathWithinAny(permitted []string, requested string) bool {
 	if requested == "" {
 		return false
 	}
@@ -171,6 +218,22 @@ func pathWithinAny(permitted []string, requested string) bool {
 			return true
 		}
 		if cleaned == trimmed || strings.HasPrefix(cleaned, trimmed+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// GrantCoversRoot reports whether the permitted path roots admit the whole
+// repository tree: a suite or dependency run touches everything, so only a
+// repository-wide grant can authorize it.
+func GrantCoversRoot(permitted []string) bool {
+	for _, root := range permitted {
+		if root == "" {
+			continue
+		}
+		trimmed := strings.TrimSuffix(path.Clean(root), "/")
+		if trimmed == "." || trimmed == "" {
 			return true
 		}
 	}

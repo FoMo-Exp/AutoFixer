@@ -21,6 +21,7 @@ import type {
   RetryDecisionInput,
 } from "../src/errors/index.js";
 import type { ModelGateway } from "../src/gateway/index.js";
+import { fixedScopeBinding, TEST_SCOPE } from "./helpers/test-gateway.js";
 import {
   createDshRequestActionTool,
   intentCaseId,
@@ -175,6 +176,7 @@ describe("sensitive diagnostics behind a trusted authorizer (DAT-226)", () => {
             throw new Error("workspace bindings are not used by this test");
           },
         },
+        runScope: () => fixedScopeBinding(TEST_SCOPE),
         ...(diagnosticsPolicy === undefined ? {} : { diagnosticsPolicy }),
       });
     // Fail closed by default: the policy runs before any lookup.

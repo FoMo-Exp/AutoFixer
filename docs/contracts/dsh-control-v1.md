@@ -77,8 +77,69 @@ TASK_STATE_CONFLICT|APPROVAL_ALREADY_RECORDED|DSH_APPROVAL_SCOPE_MISMATCH`,
 {"action_id":"act_01J...","agent":{"runtime":"pi","session_id":"pis_01J...","turn_id":"turn_17"},"intent":{"tool_id":"test.run","arguments":{"target":"web/src/export/export-button.test.ts","mode":"focused"},"path_scope":["web/src/export/export-button.test.ts"],"network_destinations":[],"rationale":"Verify the regression."}}
 ```
 
-Returns `202` with `action_id`, `state`, `accepted_tool_id`, and an audit event
-reference. Completion is observed through events, never inferred from `202`.
+The registered tool surface is the frozen `tools.json` fixture
+(`docs/fixtures/dsh-control-v1/tools.json`): the structured operations
+`repo.read`, `repo.search`, `workspace.patch`, `test.run`, and `dep.prepare`
+that replace raw shell and file access, plus the M0 enum fixtures. Test and
+dependency commands come only from registered sandbox profiles (`go.test`,
+`node.test`, `go.mod`, `node.package`); a request may pick a profile, mode,
+and target but can never name a command, and an over-privileged request
+(missing target, unknown mode, unregistered profile, escaping path) is
+refused with `403 DSH_TOOL_NOT_ALLOWLISTED` and a run-stopping evidence
+record. Paths are lexically and symlink contained; secret-looking paths and
+`.git` are prohibited for every tool; dependency and migration edits require
+an elevated run and workflow/governance edits are never allowed. A profile's
+real execution scope must fit the grant: a focused run is bounded to its
+target and package directory, while `suite`, dependency preparation, and
+root-level targets are repository-wide and need a repository-wide grant —
+otherwise `403 DSH_SCOPE_DENIED` (`grant_scope_exceeded`). Declared
+resource limits are enforced, never merely recorded: the whole process
+domain (group plus descendants) is killed on a memory or CPU breach, a
+kernel CPU cap is pinned where the platform has one, and an execution whose
+caps cannot be enforced is blocked instead of running uncapped. An
+execution's process lifecycle ends with the execution: supervision keeps
+enforcing the caps until nothing of the execution is alive, and every
+descendant it can attribute — background children and children that created
+their own session included — is terminated when the command ends. That
+lifecycle guarantee requires a platform-owned execution domain: on Linux the
+execution runs in its own PID namespace (bubblewrap), so the kernel removes
+every remaining process when the namespace dies, and the guarantee is
+absolute.
+
+macOS has no cgroup or PID namespace, and the non-privileged mechanisms do
+not close the gap. A child that forks, calls `setsid`, is reparented, and
+moves its working directory out of the run's workspace before an observation
+escapes both the process group and the descendant walk, so its memory and CPU
+stop being accounted. Seatbelt still confines what that child can reach — no
+descendant can drop the inherited rules, so control-plane secrets, host
+credentials, unapproved networks, and writes outside the workspace stay
+blocked — but confinement is not a complete execution domain. Measured
+alternatives were rejected: a transient `launchd` job does not terminate a
+`setsid` + reparented descendant when the job is removed (its control is the
+process group), and an EndpointSecurity fork listener requires root and a
+signed Apple entitlement, which a local desktop runtime cannot assume.
+Therefore **untrusted execution is refused on macOS**: test and dependency
+profiles are blocked with `503 DSH_SANDBOX_UNAVAILABLE` and
+`details.reason = "execution_domain_incomplete"` until a container or VM
+execution backend is configured; there is no best-effort downgrade. Structured
+`repo.read`, `repo.search`, and `workspace.patch` operations remain available
+because they run no untrusted process. Local development of the execution
+backend requires Linux with bubblewrap or a container/VM host. Supervision
+that cannot be established — no process accounting, a fork watcher that
+cannot be created or armed, or a backend that cannot guarantee the execution
+domain — blocks the execution with `503 DSH_SANDBOX_UNAVAILABLE` instead of
+running it unsupervised.
+
+Returns `202` with `action_id`, `state`, `accepted_tool_id`, an audit event
+reference, and — for structured operations — `result` and `output`.
+`result` binds the outcome to the exact revision (`revision`:
+repository/base SHA/tree digest) and, for test and dependency runs, the test
+environment (`environment`: OS isolation backend, applied-profile digest,
+network policy, and the enforced resource caps with the mechanism that
+enforces them — `enforced_limits`) under one tamper-evident `digest`.
+`output` is the
+redacted, bounded output (file content, search matches, tool output).
+Completion is observed through events, never inferred from `202`.
 Errors: `400 INVALID_ACTION_INTENT|INVALID_TOOL_ARGUMENTS`, `404
 RUN_NOT_FOUND|TOOL_NOT_REGISTERED`, `403
 DSH_SCOPE_DENIED|DSH_POLICY_DENIED|DSH_TOOL_NOT_ALLOWLISTED`, `409

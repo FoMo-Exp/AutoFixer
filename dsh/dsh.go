@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/Luthiel/AutoFixer/harness"
+	"github.com/Luthiel/AutoFixer/sandbox"
 )
 
 // Contract and protocol constants reported by /v1/health and required on
@@ -78,6 +79,21 @@ type Config struct {
 	// ApprovalWindow bounds how long an elevated run stays approvable
 	// after creation. Zero uses defaultApprovalWindow.
 	ApprovalWindow time.Duration
+	// RevisionSource is the approved read broker that materializes the
+	// pinned checkout structured operations run against. Nil blocks
+	// structured dispatch instead of running against nothing.
+	RevisionSource sandbox.RevisionSource
+	// DependencySource primes dependency caches from approved registries
+	// before the isolated install phase. Nil blocks dependency profiles.
+	DependencySource sandbox.DependencySource
+	// Profiles is the registered test/dependency profile vocabulary. Nil
+	// uses sandbox.DefaultExecProfiles.
+	Profiles []sandbox.ExecProfile
+	// Isolator overrides the host's OS-level isolation backend. Nil uses
+	// sandbox.NewIsolator. Tests inject a backend here; production always
+	// selects the host backend, whose execution-domain guarantee decides
+	// whether untrusted execution is allowed (DAT-253).
+	Isolator sandbox.Isolator
 }
 
 const defaultApprovalWindow = 15 * time.Minute
@@ -137,6 +153,8 @@ type Server struct {
 	tools  *toolRegistry
 	events *harness.EventStore
 
+	profiles []sandbox.ExecProfile
+
 	httpSrv *http.Server
 	ln      net.Listener
 
@@ -164,6 +182,10 @@ func New(cfg Config) (*Server, error) {
 		store:     newStore(),
 		tools:     newToolRegistry(defaultToolSpecs()),
 		events:    harness.NewEventStore(),
+		profiles:  cfg.Profiles,
+	}
+	if s.profiles == nil {
+		s.profiles = sandbox.DefaultExecProfiles()
 	}
 	mux := http.NewServeMux()
 	s.routes(mux)

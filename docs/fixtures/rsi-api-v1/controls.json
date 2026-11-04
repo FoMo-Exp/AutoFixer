@@ -1,0 +1,13 @@
+{
+  "controls": {
+    "kill_switch": true,
+    "kill_switch_reason": "security incident under review",
+    "kill_switch_changed_at": "2026-11-04T08:33:27.216Z",
+    "kill_switch_changed_by": "usr_c6f7183b6d3b4142b9a23421f05c59b6",
+    "auto_promote_low_risk": false,
+    "weekly_change_budget": 2,
+    "weekly_reflection_token_budget": 200000,
+    "updated_at": "2026-11-04T08:33:27.218Z",
+    "updated_by": "usr_c6f7183b6d3b4142b9a23421f05c59b6"
+  }
+}

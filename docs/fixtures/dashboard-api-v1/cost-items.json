@@ -1,0 +1,132 @@
+{
+  "period": {
+    "from": "2026-06-01T00:00:00.000Z",
+    "to": "2026-06-02T00:00:00.000Z",
+    "timezone": "UTC",
+    "boundary": "half_open",
+    "bucket": "hour"
+  },
+  "generated_at": "2099-01-01T00:00:00.000Z",
+  "access": {
+    "financial": "granted",
+    "content": "separate_authorization_required",
+    "quarantine": "separate_authorization_required"
+  },
+  "ledger_lookup": "ok",
+  "items": [
+    {
+      "posting_id": "cost-inv:inv-1:1",
+      "kind": "invocation",
+      "invocation_id": "inv-1",
+      "attempt": 1,
+      "endpoint_id": "ep-1",
+      "model_id": "gpt-4o",
+      "requested_model": "gpt-4o",
+      "returned_model": null,
+      "target": "provider",
+      "applicable_time": "2026-06-01T10:00:00.000Z",
+      "currency": "USD",
+      "completeness": "known",
+      "components": [
+        {
+          "category": "input",
+          "chargeable": true,
+          "included_in": null,
+          "chargeable_units": 1000,
+          "unit": "tokens",
+          "cost_class": "provider_tokens",
+          "currency": "USD",
+          "rate_revision_id": "rev-input",
+          "rate": "0.003000000000",
+          "divisor": 1000,
+          "cost": "0.003000000000",
+          "completeness": "known",
+          "unknown_reason": null
+        },
+        {
+          "category": "output",
+          "chargeable": true,
+          "included_in": null,
+          "chargeable_units": 500,
+          "unit": "tokens",
+          "cost_class": "provider_tokens",
+          "currency": "USD",
+          "rate_revision_id": "rev-output",
+          "rate": "0.015000000000",
+          "divisor": 1000,
+          "cost": "0.007500000000",
+          "completeness": "known",
+          "unknown_reason": null
+        },
+        {
+          "category": "cache_read",
+          "chargeable": true,
+          "included_in": null,
+          "chargeable_units": 0,
+          "unit": "tokens",
+          "cost_class": "provider_tokens",
+          "currency": "USD",
+          "rate_revision_id": "rev-cache_read",
+          "rate": "0.000001000000",
+          "divisor": 1000,
+          "cost": "0.000000000000",
+          "completeness": "known",
+          "unknown_reason": null
+        },
+        {
+          "category": "cache_write",
+          "chargeable": true,
+          "included_in": null,
+          "chargeable_units": 0,
+          "unit": "tokens",
+          "cost_class": "provider_tokens",
+          "currency": "USD",
+          "rate_revision_id": "rev-cache_write",
+          "rate": "0.000001000000",
+          "divisor": 1000,
+          "cost": "0.000000000000",
+          "completeness": "known",
+          "unknown_reason": null
+        },
+        {
+          "category": "reasoning",
+          "chargeable": true,
+          "included_in": null,
+          "chargeable_units": 0,
+          "unit": "tokens",
+          "cost_class": "provider_tokens",
+          "currency": "USD",
+          "rate_revision_id": "rev-reasoning",
+          "rate": "0.000001000000",
+          "divisor": 1000,
+          "cost": "0.000000000000",
+          "completeness": "known",
+          "unknown_reason": null
+        }
+      ],
+      "adjustments": [],
+      "ledger_entry": {
+        "invocation_id": "inv-1",
+        "attempt": 1,
+        "issue_id": "issue-1",
+        "run_id": "run-1",
+        "trace_id": "trace-1",
+        "provider": "openai",
+        "api": "openai-completions",
+        "requested_model": "gpt-4o",
+        "returned_model": null,
+        "provider_request_id": "req-1",
+        "started_at": "2026-06-01T10:00:00.000Z",
+        "ended_at": "2026-06-01T10:00:02.000Z",
+        "finish_status": "stop",
+        "usage_completeness": "known",
+        "usage_provenance": "transport_reported",
+        "issue_drilldown_url": "/api/v1/workspaces/ws_fixture/dashboard/issues/issue-1"
+      },
+      "ledger_lookup": "ok",
+      "recorded_at": "2026-06-01T10:30:00.000Z"
+    }
+  ],
+  "next_cursor": null,
+  "total": 1
+}

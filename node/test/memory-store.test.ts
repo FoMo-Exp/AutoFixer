@@ -121,6 +121,10 @@ describe("Memory migrations", () => {
     expect(tables).toContain("memory_events");
     expect(tables).toContain("memory_embeddings");
     expect(tables).toContain("memory_tombstones");
+    // DAT-234: admission decisions and the retirement candidates a
+    // contradiction produces.
+    expect(tables).toContain("memory_admission_decisions");
+    expect(tables).toContain("memory_retirement_candidates");
   });
 
   test("is re-runnable and preserves memory rows", () => {
@@ -134,10 +138,13 @@ describe("Memory migrations", () => {
       .prepare("SELECT version FROM schema_migrations ORDER BY version")
       .all()
       .map((row) => (row as { version: number }).version);
-    // Versions 1–3 predate DAT-203; version 4 adds the provider access
-    // tables; version 5 rebuilds provider_member_role for `effective_access`
-    // (DAT-247). A future migration bumps this list again.
-    expect(applied).toEqual([1, 2, 3, 4, 5]);
+    // Full migration lineage — extend on every new migration version:
+    // v1 control-plane base, v2 identity, v3 memory, v4 DAT-203 provider
+    // access, v5 DAT-247 effective_access, v6 DAT-204 invitation, v7 DAT-234
+    // admission decisions and retirement candidates, v8 DAT-235 promotion
+    // and consolidation lifecycle, v9 DAT-236 bounded retrieval, v10 DAT-237
+    // enterprise templates, v11 DAT-238 bounded RSI.
+    expect(applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
   });
 });
 
@@ -516,7 +523,10 @@ describe("Version review", () => {
 
 describe("Memory status machine", () => {
   test("walks the ADR-0009 lifecycle with evidence gating on active", () => {
-    const record = createItem();
+    // A `fact` walks the machine on evidence alone; procedural and policy
+    // kinds additionally require named human approval before activation
+    // (DAT-235 promotion rules, covered in memory-promotion.test.ts).
+    const record = createItem({ kind: "fact" });
     memory.items.setStatus(scope, record.item.id, "candidate", 1);
     expect(() => memory.items.setStatus(scope, record.item.id, "active", 1)).toThrow(
       ValidationError,

@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { isLoopbackHost } from "./api/auth.js";
+import { DEFAULT_MEMORY_CONSOLIDATION_INTERVAL_MS } from "./memory/lifecycle/runner.js";
 
 /** Runtime configuration for the orchestrator, sourced from the environment. */
 export interface OrchestratorConfig {
@@ -43,9 +44,12 @@ export interface OrchestratorConfig {
   /** Optional API origin override for a compatible provider endpoint. */
   piBaseUrl?: string;
   /**
-   * Enterprise/workspace scope whose policy governs model egress. The
-   * deployment names both explicitly; gateway policy resolution (ADR-0006
-   * seam) never accepts a caller-supplied scope as authority.
+   * The task surface's enterprise/workspace (ADR-0006): session access
+   * gating and the DAT-203 provider-authority boundary consult membership in
+   * this workspace. Since DAT-242 these values no longer govern model egress:
+   * gateway policy resolution and each run's binding scope come from the
+   * authenticated request's live membership (`resolveRequestScope`, DAT-241),
+   * never from deployment configuration.
    */
   enterpriseId: string;
   workspaceId: string;
@@ -57,12 +61,73 @@ export interface OrchestratorConfig {
   gatewayCredentialsFile?: string;
   /** Durable gateway audit/metering event sink (JSONL, 0600). */
   gatewayAuditFile?: string;
+  // --- Security disposal cases (DAT-210, ADR-0005) ------------------------
+  /**
+   * Durable state files for the security disposal machinery: append-only
+   * case history, the dependent-work hold ledger, and the encrypted
+   * quarantine index. Defaults keep holds and cases alive across restarts.
+   */
+  securityCaseStateFile?: string;
+  securityPauseStateFile?: string;
+  securityQuarantineStateFile?: string;
+  /**
+   * Protected file holding a base64 32-byte quarantine key. Unset (or an
+   * unreadable/invalid key) fails seals closed: nothing is ever stored in
+   * plaintext, and every seal raises an explicit incident.
+   */
+  quarantineKeyFile?: string;
+  /** Designated workspace security handlers and enterprise security admins. */
+  securityHandlerIds?: string[];
+  securityAdminIds?: string[];
+  /**
+   * Separated security duties (DAT-211): task owners and independent
+   * reviewers alongside handlers and admins. Duties are granted only by
+   * explicit listing; an empty reviewer list keeps cases blocked and
+   * escalated, never waived.
+   */
+  securityTaskOwnerIds?: string[];
+  securityReviewerIds?: string[];
+  /** Durable versioned rule-correction state (DAT-211). */
+  securityRuleStateFile?: string;
+  /** Durable notification record sink (JSONL, 0600; non-secret content). */
+  securityNotificationsFile?: string;
+  /**
+   * Unified tamper-evident security audit trail (DAT-213): hash-chained,
+   * owner-only JSONL. Every case, rule, recovery, and audit-access event is
+   * appended here; a chain that fails verification blocks the dependent action.
+   */
+  securityAuditFile?: string;
+  /**
+   * Protected file holding the audit chain key (base64 32 bytes). Generated
+   * 0600 on first use when absent; the key makes the chain unverifiable to
+   * anyone who can only edit the log.
+   */
+  securityAuditKeyFile?: string;
+  /**
+   * Secret for minting authenticated, non-transferable case references.
+   * Unset uses a per-process secret (references then only verify within the
+   * process that minted them); a deployment sets it for cross-restart use.
+   */
+  securityReferenceSecret?: string;
   /**
    * Durable invocation usage ledger (JSON, 0600) — one reconcilable usage
    * record per gateway invocation attempt (DAT-227). Separate from the audit
    * stream: financial records are queried and retained on their own terms.
    */
   usageLedgerFile?: string;
+  /**
+   * Budget policy JSON (DAT-229). Setting it enables enterprise/workspace/run
+   * budget enforcement at the gateway; unset leaves invocations unbudgeted.
+   */
+  budgetPolicyFile?: string;
+  /** Durable budget journal (JSONL, 0600); required alongside the policy. */
+  budgetStateFile?: string;
+  /**
+   * Durable dashboard read/export audit log (JSONL, 0600). Every dashboard
+   * read and export appends one metadata-only entry (DAT-230). Unset keeps the
+   * trail process-local.
+   */
+  dashboardAuditFile?: string;
   // --- Enterprise identity (ADR-0006) -------------------------------------
   /**
    * External origin for OAuth redirect URLs and desktop login links. Unset
@@ -77,6 +142,21 @@ export interface OrchestratorConfig {
   oauthClientsFile?: string;
   /** Durable control-plane database for identity/session state. */
   controlPlaneFile?: string;
+  /**
+   * Deployment-owned HMAC key file for the invitation token digest. Durable
+   * across restarts (invitations outlive processes); unset derives one next to
+   * the control-plane database. Losing the key fails closed — outstanding
+   * invitations become unredeemable.
+   */
+  invitationDigestKeyFile?: string;
+  /**
+   * Protected JSON file mapping service credential references to secrets
+   * (DAT-247 boundary). Invitation redemption point-refreshes the invitee's
+   * repository authority with the repository-scoped service credential; when
+   * unset the credential store is empty and every redemption fails closed
+   * (403) rather than falling back to any user credential.
+   */
+  providerServiceCredentialFile?: string;
   /** Deployment-owned bootstrap secret; unset disables admin bootstrap. */
   bootstrapToken?: string;
   /** Session lifetime in seconds (default 12 hours). */
@@ -85,6 +165,13 @@ export interface OrchestratorConfig {
   oauthFlowTtlSeconds?: number;
   /** Desktop system-browser flow lifetime in seconds (default 10 minutes). */
   desktopFlowTtlSeconds?: number;
+  /**
+   * Sleep-time memory consolidation interval in milliseconds (DAT-235).
+   * Applies whenever the identity control plane is enabled; defaults to six
+   * hours. The scheduled job never holds the process open and stops with the
+   * orchestrator.
+   */
+  memoryConsolidationIntervalMs?: number;
 }
 
 function csv(value: string | undefined, fallback: string[]): string[] {
@@ -131,9 +218,25 @@ function defaultGatewayAuditPath(): string {
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "gateway-audit.jsonl");
 }
 
+/** Default state-file path under the per-user forgepilot directory. */
+export function defaultSecurityStatePath(name: string): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, name);
+}
+
 function defaultUsageLedgerPath(): string {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "usage-ledger.json");
+}
+
+function defaultDashboardAuditPath(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "dashboard-audit.jsonl");
+}
+
+function defaultBudgetStatePath(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  return path.join(process.env["TMPDIR"] ?? "/tmp", `forgepilot-${uid}`, "budget-journal.jsonl");
 }
 
 function defaultControlPlanePath(): string {
@@ -184,8 +287,45 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     enterpriseId: env["FORGEPILOT_ENTERPRISE_ID"] ?? "ent_forgepilot_local",
     workspaceId: env["FORGEPILOT_WORKSPACE_ID"] ?? "ws_autofixer",
     gatewayAuditFile: env["FORGEPILOT_GATEWAY_AUDIT_FILE"] ?? defaultGatewayAuditPath(),
+    securityCaseStateFile:
+      env["FORGEPILOT_SECURITY_CASE_STATE_FILE"] ?? defaultSecurityStatePath("security-cases.json"),
+    securityPauseStateFile:
+      env["FORGEPILOT_SECURITY_PAUSE_STATE_FILE"] ??
+      defaultSecurityStatePath("security-pauses.json"),
+    securityQuarantineStateFile:
+      env["FORGEPILOT_SECURITY_QUARANTINE_STATE_FILE"] ??
+      defaultSecurityStatePath("security-quarantine.json"),
+    securityNotificationsFile:
+      env["FORGEPILOT_SECURITY_NOTIFICATIONS_FILE"] ??
+      defaultSecurityStatePath("security-notifications.jsonl"),
+    securityAuditFile:
+      env["FORGEPILOT_SECURITY_AUDIT_FILE"] ?? defaultSecurityStatePath("security-audit.jsonl"),
+    securityAuditKeyFile:
+      env["FORGEPILOT_SECURITY_AUDIT_KEY_FILE"] ?? defaultSecurityStatePath("security-audit.key"),
+    securityHandlerIds: csv(env["FORGEPILOT_SECURITY_HANDLER_IDS"], []),
+    securityAdminIds: csv(env["FORGEPILOT_SECURITY_ADMIN_IDS"], []),
     usageLedgerFile: env["FORGEPILOT_USAGE_LEDGER_FILE"] ?? defaultUsageLedgerPath(),
+    dashboardAuditFile: env["FORGEPILOT_DASHBOARD_AUDIT_FILE"] ?? defaultDashboardAuditPath(),
+    securityTaskOwnerIds: csv(env["FORGEPILOT_SECURITY_TASK_OWNER_IDS"], []),
+    securityReviewerIds: csv(env["FORGEPILOT_SECURITY_REVIEWER_IDS"], []),
+    securityRuleStateFile:
+      env["FORGEPILOT_SECURITY_RULE_STATE_FILE"] ?? defaultSecurityStatePath("security-rules.json"),
   };
+  // Security disposal options (DAT-210). Absent values keep fail-closed
+  // defaults: no quarantine key means nothing is ever retained in plaintext,
+  // and no designated handlers escalates every notification to an explicit
+  // undeliverable incident.
+  const quarantineKeyFile = env["FORGEPILOT_QUARANTINE_KEY_FILE"]?.trim();
+  if (quarantineKeyFile) {
+    config.quarantineKeyFile = quarantineKeyFile;
+  }
+  const securityReferenceSecret = env["FORGEPILOT_SECURITY_REFERENCE_SECRET"];
+  if (securityReferenceSecret !== undefined && securityReferenceSecret !== "") {
+    if (securityReferenceSecret.length < 32) {
+      throw new Error("FORGEPILOT_SECURITY_REFERENCE_SECRET must be at least 32 characters");
+    }
+    config.securityReferenceSecret = securityReferenceSecret;
+  }
   if (env["FORGEPILOT_DSH_TOKEN_FILE"]) {
     config.dshTokenFile = env["FORGEPILOT_DSH_TOKEN_FILE"];
   }
@@ -201,6 +341,15 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     throw new Error(
       "FORGEPILOT_GATEWAY_POLICY_FILE and FORGEPILOT_GATEWAY_CREDENTIALS_FILE must be configured together",
     );
+  }
+  // Budget enforcement is opt-in by configuration, not by accident: a
+  // deployment that sets the policy file gets the authority and a durable
+  // journal; leaving it unset keeps the historical unbudgeted behavior.
+  const budgetPolicyFile = env["FORGEPILOT_BUDGET_POLICY_FILE"]?.trim();
+  if (budgetPolicyFile) {
+    config.budgetPolicyFile = budgetPolicyFile;
+    config.budgetStateFile =
+      env["FORGEPILOT_BUDGET_STATE_FILE"]?.trim() || defaultBudgetStatePath();
   }
   if (env["FORGEPILOT_PI_PROVIDER"] && env["FORGEPILOT_PI_MODEL"]) {
     config.piModelProvider = env["FORGEPILOT_PI_PROVIDER"];
@@ -223,6 +372,24 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     throw new Error(
       "FORGEPILOT_CONTROL_PLANE_DB requires FORGEPILOT_OAUTH_CLIENTS_FILE to enable the identity surfaces",
     );
+  }
+  const invitationDigestKeyFile = env["FORGEPILOT_INVITATION_DIGEST_KEY_FILE"]?.trim();
+  if (invitationDigestKeyFile) {
+    if (config.oauthClientsFile === undefined) {
+      throw new Error(
+        "FORGEPILOT_INVITATION_DIGEST_KEY_FILE requires FORGEPILOT_OAUTH_CLIENTS_FILE to enable the identity surfaces",
+      );
+    }
+    config.invitationDigestKeyFile = invitationDigestKeyFile;
+  }
+  const providerServiceCredentialFile = env["FORGEPILOT_SERVICE_CREDENTIAL_FILE"]?.trim();
+  if (providerServiceCredentialFile) {
+    if (config.oauthClientsFile === undefined) {
+      throw new Error(
+        "FORGEPILOT_SERVICE_CREDENTIAL_FILE requires FORGEPILOT_OAUTH_CLIENTS_FILE to enable the identity surfaces",
+      );
+    }
+    config.providerServiceCredentialFile = providerServiceCredentialFile;
   }
   const bootstrapToken = env["FORGEPILOT_BOOTSTRAP_TOKEN"];
   if (bootstrapToken !== undefined && bootstrapToken !== "") {
@@ -253,6 +420,11 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     env["FORGEPILOT_DESKTOP_FLOW_TTL_SECONDS"],
     600,
     "FORGEPILOT_DESKTOP_FLOW_TTL_SECONDS",
+  );
+  config.memoryConsolidationIntervalMs = positiveInt(
+    env["FORGEPILOT_MEMORY_CONSOLIDATION_INTERVAL_MS"],
+    DEFAULT_MEMORY_CONSOLIDATION_INTERVAL_MS,
+    "FORGEPILOT_MEMORY_CONSOLIDATION_INTERVAL_MS",
   );
   return config;
 }

@@ -56,32 +56,32 @@ npm run build && npm start
 
 Configuration (environment):
 
-| Variable                                                                    | Default                                         | Meaning                                                                                                                                 |
-| --------------------------------------------------------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `FORGEPILOT_DSH_SOCKET`                                                     | `$TMPDIR/dsh-<uid>/dsh-control.sock`            | dsh control socket (or pipe name)                                                                                                       |
-| `FORGEPILOT_DSH_TOKEN_FILE`                                                 | `<socket>.token`                                | dsh boot-token file                                                                                                                     |
-| `FORGEPILOT_API_HOST` / `FORGEPILOT_API_PORT`                               | `127.0.0.1` / `0`                               | loopback bind                                                                                                                           |
-| `FORGEPILOT_REPOSITORY_ID`                                                  | `github:Luthiel/AutoFixer`                      | only the pilot repository is accepted                                                                                                   |
-| `FORGEPILOT_BASE_REF` / `FORGEPILOT_BASE_SHA`                               | `main` / required                               | pinned base revision                                                                                                                    |
-| `FORGEPILOT_ACTOR_ID` / `FORGEPILOT_ACTOR_DISPLAY_NAME`                     | local operator                                  | identity recorded on runs                                                                                                               |
-| `FORGEPILOT_APPROVER_IDENTITY`                                              | `github:local-operator`                         | must match a dsh `--approver`                                                                                                           |
-| `FORGEPILOT_PATH_HINTS`                                                     | `node`                                          | comma-separated granted path roots                                                                                                      |
-| `FORGEPILOT_TOOL_CAPABILITIES`                                              | `echo,sleep`                                    | dsh tools tasks may request                                                                                                             |
-| `FORGEPILOT_MAX_WALL_CLOCK_SECONDS`                                         | `120`                                           | per-run wall clock                                                                                                                      |
-| `FORGEPILOT_API_TOKEN_FILE`                                                 | `$TMPDIR/forgepilot-<uid>/api-token`            | per-process API bearer-token file (0600)                                                                                                |
-| `FORGEPILOT_TASK_STATE_FILE`                                                | `$TMPDIR/forgepilot-<uid>/task-state.json`      | durable task projection (0600); restart re-associates tasks with dsh runs                                                               |
-| `FORGEPILOT_PI_PROVIDER` / `FORGEPILOT_PI_MODEL`                            | unset                                           | Pi provider/model; unset means approvals report `PI_UNAVAILABLE`                                                                        |
-| `FORGEPILOT_PI_BASE_URL`                                                    | unset                                           | requested model endpoint; must match a registered gateway endpoint                                                                      |
-| `FORGEPILOT_ENTERPRISE_ID` / `FORGEPILOT_WORKSPACE_ID`                      | `ent_forgepilot_local` / `ws_autofixer`         | scope whose enterprise/workspace policy governs model egress                                                                            |
-| `FORGEPILOT_GATEWAY_POLICY_FILE`                                            | unset                                           | model gateway policy JSON (endpoint allow-list, retry, fallbacks)                                                                       |
-| `FORGEPILOT_GATEWAY_CREDENTIALS_FILE`                                       | unset                                           | provider credentials JSON (0600), `credentialRef -> secret`                                                                             |
-| `FORGEPILOT_GATEWAY_AUDIT_FILE`                                             | `$TMPDIR/forgepilot-<uid>/gateway-audit.jsonl`  | durable gateway attempt records (audit/metering seam)                                                                                   |
-| `FORGEPILOT_OAUTH_CLIENTS_FILE`                                             | unset                                           | OAuth app credentials JSON (0600), `provider origin -> {client_id, client_secret}`; setting it enables `/api/v1/auth` + `/api/v1/admin` |
-| `FORGEPILOT_CONTROL_PLANE_DB`                                               | `$TMPDIR/forgepilot-<uid>/control-plane.sqlite` | durable identity/session database (settable only together with the clients file)                                                        |
-| `FORGEPILOT_BOOTSTRAP_TOKEN`                                                | unset (required with the clients file)          | deployment-owned secret for first-admin bootstrap and first provider approval (min 32 chars)                                            |
-| `FORGEPILOT_PUBLIC_ORIGIN`                                                  | unset (loopback per request)                    | external origin for OAuth redirects and desktop login links                                                                             |
-| `FORGEPILOT_SESSION_TTL_SECONDS`                                            | `43200`                                         | server-side session lifetime                                                                                                            |
-| `FORGEPILOT_OAUTH_FLOW_TTL_SECONDS` / `FORGEPILOT_DESKTOP_FLOW_TTL_SECONDS` | `600` / `600`                                   | authorization-flow / desktop-binding lifetimes                                                                                          |
+| Variable                                                                    | Default                                         | Meaning                                                                                                                                                                |
+| --------------------------------------------------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FORGEPILOT_DSH_SOCKET`                                                     | `$TMPDIR/dsh-<uid>/dsh-control.sock`            | dsh control socket (or pipe name)                                                                                                                                      |
+| `FORGEPILOT_DSH_TOKEN_FILE`                                                 | `<socket>.token`                                | dsh boot-token file                                                                                                                                                    |
+| `FORGEPILOT_API_HOST` / `FORGEPILOT_API_PORT`                               | `127.0.0.1` / `0`                               | loopback bind                                                                                                                                                          |
+| `FORGEPILOT_REPOSITORY_ID`                                                  | `github:Luthiel/AutoFixer`                      | only the pilot repository is accepted                                                                                                                                  |
+| `FORGEPILOT_BASE_REF` / `FORGEPILOT_BASE_SHA`                               | `main` / required                               | pinned base revision                                                                                                                                                   |
+| `FORGEPILOT_ACTOR_ID` / `FORGEPILOT_ACTOR_DISPLAY_NAME`                     | local operator                                  | identity recorded on runs                                                                                                                                              |
+| `FORGEPILOT_APPROVER_IDENTITY`                                              | `github:local-operator`                         | must match a dsh `--approver`                                                                                                                                          |
+| `FORGEPILOT_PATH_HINTS`                                                     | `node`                                          | comma-separated granted path roots                                                                                                                                     |
+| `FORGEPILOT_TOOL_CAPABILITIES`                                              | `echo,sleep`                                    | dsh tools tasks may request                                                                                                                                            |
+| `FORGEPILOT_MAX_WALL_CLOCK_SECONDS`                                         | `120`                                           | per-run wall clock                                                                                                                                                     |
+| `FORGEPILOT_API_TOKEN_FILE`                                                 | `$TMPDIR/forgepilot-<uid>/api-token`            | per-process API bearer-token file (0600)                                                                                                                               |
+| `FORGEPILOT_TASK_STATE_FILE`                                                | `$TMPDIR/forgepilot-<uid>/task-state.json`      | durable task projection (0600); restart re-associates tasks with dsh runs                                                                                              |
+| `FORGEPILOT_PI_PROVIDER` / `FORGEPILOT_PI_MODEL`                            | unset                                           | Pi provider/model; unset means approvals report `PI_UNAVAILABLE`                                                                                                       |
+| `FORGEPILOT_PI_BASE_URL`                                                    | unset                                           | requested model endpoint; must match a registered gateway endpoint                                                                                                     |
+| `FORGEPILOT_ENTERPRISE_ID` / `FORGEPILOT_WORKSPACE_ID`                      | `ent_forgepilot_local` / `ws_autofixer`         | the task surface's workspace only (session gating, DAT-203 authority boundary); model-egress scope follows authenticated membership (DAT-242) — see the migration note |
+| `FORGEPILOT_GATEWAY_POLICY_FILE`                                            | unset                                           | scoped model gateway policy set JSON — one policy per enterprise/workspace pair (endpoint allow-list, retry, fallbacks); see the policy shape below                    |
+| `FORGEPILOT_GATEWAY_CREDENTIALS_FILE`                                       | unset                                           | provider credentials JSON (0600), `credentialRef -> secret`                                                                                                            |
+| `FORGEPILOT_GATEWAY_AUDIT_FILE`                                             | `$TMPDIR/forgepilot-<uid>/gateway-audit.jsonl`  | durable gateway attempt records (audit/metering seam)                                                                                                                  |
+| `FORGEPILOT_OAUTH_CLIENTS_FILE`                                             | unset                                           | OAuth app credentials JSON (0600), `provider origin -> {client_id, client_secret}`; setting it enables `/api/v1/auth` + `/api/v1/admin`                                |
+| `FORGEPILOT_CONTROL_PLANE_DB`                                               | `$TMPDIR/forgepilot-<uid>/control-plane.sqlite` | durable identity/session database (settable only together with the clients file)                                                                                       |
+| `FORGEPILOT_BOOTSTRAP_TOKEN`                                                | unset (required with the clients file)          | deployment-owned secret for first-admin bootstrap and first provider approval (min 32 chars)                                                                           |
+| `FORGEPILOT_PUBLIC_ORIGIN`                                                  | unset (loopback per request)                    | external origin for OAuth redirects and desktop login links                                                                                                            |
+| `FORGEPILOT_SESSION_TTL_SECONDS`                                            | `43200`                                         | server-side session lifetime                                                                                                                                           |
+| `FORGEPILOT_OAUTH_FLOW_TTL_SECONDS` / `FORGEPILOT_DESKTOP_FLOW_TTL_SECONDS` | `600` / `600`                                   | authorization-flow / desktop-binding lifetimes                                                                                                                         |
 
 ## Model gateway (ADR-0005)
 
@@ -108,38 +108,181 @@ egress path:
   Retries, fallbacks, and model switches are separate, fully re-checked
   invocations.
 
-Scope constraint (Architect ruling on DAT-208, 2026-11-03): the deployment is
-single-enterprise/single-workspace and policy resolution is served by the
-static `createStaticPolicyResolver` on the `GatewayPolicyResolver` seam. A
-binding's scope is not caller authority — non-configured scopes resolve no
-policy and are denied. Before multi-tenant enablement the authoritative
-authenticated scope pipeline must be wired in (DAT-241 builds the scope
-helper; DAT-242 switches gateway policy resolution to it). Until DAT-242
-merges, this deployment must not serve more than one enterprise or workspace.
+Scope and multi-tenancy (DAT-242): gateway policy resolution and every run's
+binding identity follow the authoritative authenticated scope.
+`resolveRequestScope` (`node/src/control-plane/request-scope.ts`, DAT-241)
+resolves the caller's enterprise/workspace from live membership state at run
+bind time and again on every dispatch and attempt — never from deployment
+configuration and never from caller-supplied IDs. A binding's scope claim is
+only ever compared against that resolution: a claim that disagrees is a
+cross-tenant binding and is denied before any policy, credential, or provider
+is touched. Missing, revoked, ambiguous, or cross-tenant memberships — and
+requests with no authenticated scope at all — deny `MODEL_EGRESS_DENIED`
+(fail closed: no default scope, no static single-scope path). Audit/metering
+events are attributed to the authenticated scope. Policies are served per
+enterprise/workspace pair: workspace A's identity can only resolve and
+execute workspace A's policy and credential references.
 
-Policy file shape (credentials are referenced, never inlined):
+Policy file shape (credentials are referenced, never inlined; one policy per
+enterprise/workspace pair):
+
+```json
+{
+  "policies": [
+    {
+      "scope": {
+        "enterpriseId": "ent_forgepilot",
+        "workspaceId": "ws_autofixer"
+      },
+      "revision": "2026-11-04.1",
+      "endpoints": [
+        {
+          "endpointId": "ep_xiaomi_main",
+          "provider": "xiaomi",
+          "api": "anthropic-messages",
+          "baseUrl": "https://api.xiaomimimo.com/anthropic",
+          "internal": false,
+          "credentialRef": "cred_xiaomi",
+          "models": ["mimo-v2.5"]
+        }
+      ],
+      "retry": { "maxAttempts": 2 },
+      "fallbacks": []
+    }
+  ]
+}
+```
+
+Deployment configuration migration (DAT-242):
+
+- `FORGEPILOT_GATEWAY_POLICY_FILE` now carries the scoped policy set above:
+  wrap the previous single-policy document in a `policies` entry and give it
+  the `scope` it governs. A policy entry without a `scope`, a `policies` list
+  without entries, or two entries for the same scope all fail startup; there
+  is no legacy single-policy shape and no default scope.
+- `FORGEPILOT_ENTERPRISE_ID` / `FORGEPILOT_WORKSPACE_ID` no longer govern
+  model egress in any path (policy resolution, binding identity, or audit
+  attribution). They remain only as the legacy `/api/v1/tasks` seam's
+  deployment workspace and the DAT-203 provider-authority boundary; the
+  workspace-scoped task family (`/api/v1/workspaces/{workspace_id}/tasks`,
+  DAT-245) resolves its workspace and run binding from the control plane and
+  never from these variables.
+- Runs started without an authenticated workspace membership — e.g. through
+  the legacy local-operator bearer — materialize but dispatch no model bytes:
+  every dispatch is denied `MODEL_EGRESS_DENIED` (scope `SCOPE_UNAVAILABLE`).
+  Model egress requires session-authenticated requests with a live workspace
+  membership.
+
+The `openai-compatible` provider uses `openai-completions` against the
+registered base URL and accepts any model ID approved for that endpoint.
+
+## Model cost accounting (ADR-0008)
+
+`src/cost` prices model usage against immutable, effective-dated rate-card
+revisions (`node/src/cost/types.ts` carries the record contract):
+
+- per-category cost = chargeable units × bound rate / divisor, computed in
+  fixed-precision scaled integers (12 fractional digits, half-up rounding —
+  no floats, and a per-token micro-rate can never round into a fake zero);
+- every posting snapshots the rate revision it bound per category. A new rate
+  revision prices new invocations only; recorded postings are never repriced
+  and a changed redelivery of the same attempt is refused;
+- provider corrections are linked adjustment entries that replay over the
+  untouched original — corrected units recompute under the posting's own rate
+  snapshot, explicit corrected amounts carry their currency, and a voided
+  figure becomes unknown again, never zero;
+- missing usage and missing rates stay `unknown` cost components (never 0);
+  unpriced models never default to a zero rate. Estimates are labeled
+  `estimated` and summarized apart from known amounts — nothing in this
+  domain produces an invoiced amount;
+- self-hosted tokens are priced only by administrator-assigned allocation
+  rates and summarized in their own cost class; measured infrastructure cost
+  is its own class and unit. Token cost is never total worker cost;
+- cross-currency totals stay separated per currency unless an explicit
+  versioned FX quote (source + source revision + quote time) is named for the
+  conversion; every converted amount records the quote that produced it.
+
+The `CostStore` is the durable seam: one append-only JSONL file (0600) of
+rate revisions, postings, adjustments and FX quotes, reads confined to the
+caller's authenticated enterprise/workspace scope, with the same torn-tail
+recovery contract as the usage ledger. Pricing consumes the invocation usage
+ledger's record shape structurally: token figures carry their inclusion
+relation and completeness, so included categories are never double-charged.
+
+## Budgets, reservations and cost bounds (ADR-0008, DAT-229)
+
+`node/src/budget/` is the single authority for enterprise/workspace/run model
+budgets. Setting `FORGEPILOT_BUDGET_POLICY_FILE` enables it; the gateway then
+reserves a conservative bound for **every attempt** (retries and fallbacks
+included) before any bytes leave the gateway and settles it against observed
+usage. `FORGEPILOT_BUDGET_STATE_FILE` is the durable append-only journal
+(defaults under the user-private temp directory); unset policy file leaves the
+deployment explicitly unbudgeted.
+
+Lifecycle:
+
+- **Reserve** — the bound is the whole input context plus the requested output
+  ceiling (tokens) and, for a monetary policy, the tokens priced at the
+  policy's conservative internal cost ceiling. The reservation is checked
+  against enterprise, workspace and optional run caps and written to the
+  journal before dispatch. Scope transitions are synchronous, so concurrent
+  dispatches cannot both spend the same remaining budget.
+- **Settle** — observed usage settles the token dimension; the monetary
+  dimension is settled at the snapshotted conservative ceiling and labelled
+  `estimated` (`source: bound_ceiling`). Missing usage settles as `unknown`
+  and keeps the whole bound committed — it is never recorded as zero or a free
+  call.
+- **Unknown provider outcome** — a transport reset/timeout, a stream that
+  ends without a terminal event, or a caller abort may have reached the
+  provider. The reservation is retained (`reconciling`), the gateway refuses
+  to retry that invocation, and the caller always receives the stable
+  `MODEL_USAGE_UNKNOWN` contract: the dispatch rejects with that code before
+  handoff, and a handed-off stream ends in an error event carrying it instead
+  of a normal completion. Only failures that prove nothing was sent
+  (`ENOTFOUND`, `EAI_AGAIN`, `ECONNREFUSED`, connect timeout) refund the
+  reservation.
+- **Reconcile** — exact provider cost can later correct the estimated monetary
+  settlement (`reconcileCost`) without rewriting the journal; every entry keeps
+  its identity, reason and sequence.
+
+Policy file shape (all amounts are canonical decimal strings; no floats):
 
 ```json
 {
   "revision": "2026-11-03.1",
-  "endpoints": [
+  "enterprise": { "monetary": [{ "currency": "USD", "amount": "500" }], "tokens": null },
+  "workspace": { "monetary": [{ "currency": "USD", "amount": "100" }], "tokens": null },
+  "run": { "monetary": [{ "currency": "USD", "amount": "5" }], "tokens": null },
+  "max_tokens_per_invocation": 300000,
+  "token_only": null,
+  "cost_ceilings": [
     {
-      "endpointId": "ep_xiaomi_main",
-      "provider": "xiaomi",
-      "api": "anthropic-messages",
-      "baseUrl": "https://api.xiaomimimo.com/anthropic",
-      "internal": false,
-      "credentialRef": "cred_xiaomi",
-      "models": ["mimo-v2.5"]
+      "endpoint_id": null,
+      "model_id": "mimo-v2.5",
+      "currency": "USD",
+      "amount_per_1000_tokens": "0.02"
     }
-  ],
-  "retry": { "maxAttempts": 2 },
-  "fallbacks": []
+  ]
 }
 ```
 
-The `openai-compatible` provider uses `openai-completions` against the
-registered base URL and accepts any model ID approved for that endpoint.
+- A monetary limit requires a finite conservative ceiling for every capped
+  currency; otherwise the dispatch is denied (`MODEL_BUDGET_UNAVAILABLE`)
+  rather than assumed to cost zero. An explicit
+  `token_only: { "enabled": true, "reason": "..." }` policy is the only way to
+  run a bounded token budget with no monetary limit, and it may not also
+  declare monetary caps or ceilings.
+- `max_tokens_per_invocation` is a hard ceiling on the conservative bound;
+  exceeding it is denied (`MODEL_TOKEN_CEILING_EXCEEDED`) rather than silently
+  truncating the request.
+- Internal ceilings bound what this service authorizes. They are **not** a
+  provider invoice cap: delayed or incorrect provider metering can still make
+  a provider bill exceed them. Monetary values in the budget journal are
+  provisional estimates, never invoiced amounts.
+- The exact-cost correction path is the seam to the rate-card/cost domain
+  (DAT-228) and the usage ledger (DAT-227): once those records price an
+  invocation, `BudgetAuthority.reconcileCost` replaces the estimate with the
+  exact amount in the same journal.
 
 ## Durability and restart recovery (M3)
 

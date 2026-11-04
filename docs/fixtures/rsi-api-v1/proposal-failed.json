@@ -1,0 +1,113 @@
+{
+  "proposal_id": "rsi_58719ed2b7e9442eadad979fff9c02a5",
+  "title": "Rejected retrieval bound change",
+  "summary": "Candidate reported a forbidden injection during the holdout replay",
+  "diff": "- max_items: 8\n+ max_items: 12",
+  "target": "retrieval_bounds",
+  "risk": "C",
+  "status": "proposed",
+  "status_reason": null,
+  "artifact": {
+    "kind": "retrieval_policy",
+    "baseline_policy_version": 1,
+    "candidate_policy_hash": "8dd1f42da87c6aacc0f9a4d4c2ce28f45b8772df3e0c19921eafe22307f6f5c2",
+    "item_id": null,
+    "item_version": null
+  },
+  "proposer": {
+    "id": "usr_c6f7183b6d3b4142b9a23421f05c59b6",
+    "kind": "human"
+  },
+  "baseline_policy_version": 1,
+  "baseline_memory_version": "m1.1273670021a3b621b9381f42102654d2",
+  "applied_policy_version": null,
+  "version": 1,
+  "created_at": "2026-11-04T08:33:27.213Z",
+  "created_by": "usr_c6f7183b6d3b4142b9a23421f05c59b6",
+  "evaluations": [
+    {
+      "evaluation_id": "rsieval_fa35bbc3ff5a46808136e35a4df45adb",
+      "proposal_id": "rsi_58719ed2b7e9442eadad979fff9c02a5",
+      "proposal_version": 1,
+      "dataset": "holdout",
+      "holdout_used": true,
+      "sample_size": 40,
+      "baseline_sample_size": 20,
+      "candidate_sample_size": 20,
+      "baseline_successes": 18,
+      "candidate_successes": 15,
+      "baseline_rework": 1,
+      "candidate_rework": 3,
+      "baseline_cost": 1100,
+      "candidate_cost": 1500,
+      "safety_events": 1,
+      "success_delta": -0.15,
+      "delta_ci_low": -0.3402,
+      "delta_ci_high": -0.0041,
+      "verdict": "fail",
+      "verifier": {
+        "kind": "test",
+        "id": "usr_8dc15b978b314d5b8496541a43c986fc",
+        "reference": "replay:rsi_58719ed2b7e9442eadad979fff9c02a5:holdout"
+      },
+      "policy_version": 1,
+      "policy_hash": "8dd1f42da87c6aacc0f9a4d4c2ce28f45b8772df3e0c19921eafe22307f6f5c2",
+      "memory_version": "m1.1273670021a3b621b9381f42102654d2",
+      "reflection_tokens": 800,
+      "created_at": "2026-11-04T08:33:27.213Z",
+      "created_by": "usr_8dc15b978b314d5b8496541a43c986fc"
+    },
+    {
+      "evaluation_id": "rsieval_6bde00a5e94d4572b2295a96f388b05d",
+      "proposal_id": "rsi_58719ed2b7e9442eadad979fff9c02a5",
+      "proposal_version": 1,
+      "dataset": "golden",
+      "holdout_used": false,
+      "sample_size": 40,
+      "baseline_sample_size": 20,
+      "candidate_sample_size": 20,
+      "baseline_successes": 18,
+      "candidate_successes": 15,
+      "baseline_rework": 1,
+      "candidate_rework": 3,
+      "baseline_cost": 1100,
+      "candidate_cost": 1500,
+      "safety_events": 1,
+      "success_delta": -0.15,
+      "delta_ci_low": -0.3402,
+      "delta_ci_high": -0.0041,
+      "verdict": "fail",
+      "verifier": {
+        "kind": "test",
+        "id": "usr_8dc15b978b314d5b8496541a43c986fc",
+        "reference": "replay:rsi_58719ed2b7e9442eadad979fff9c02a5:golden"
+      },
+      "policy_version": 1,
+      "policy_hash": "8dd1f42da87c6aacc0f9a4d4c2ce28f45b8772df3e0c19921eafe22307f6f5c2",
+      "memory_version": "m1.1273670021a3b621b9381f42102654d2",
+      "reflection_tokens": 800,
+      "created_at": "2026-11-04T08:33:27.213Z",
+      "created_by": "usr_8dc15b978b314d5b8496541a43c986fc"
+    }
+  ],
+  "approvals": [],
+  "rollout": null,
+  "observations": [],
+  "gate": {
+    "offline_evaluation": "fail",
+    "holdout_required": true,
+    "approvals_required": 2,
+    "approvals_satisfied": 0,
+    "approval_keys": [
+      "owner",
+      "reviewer"
+    ],
+    "budget_ok": true,
+    "kill_switch": false,
+    "canary_eligible": false,
+    "reasons": [
+      "offline replay did not pass",
+      "human approval is incomplete (0/2)"
+    ]
+  }
+}

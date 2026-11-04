@@ -13,6 +13,7 @@ import (
 
 	"github.com/Luthiel/AutoFixer/agent/loop"
 	"github.com/Luthiel/AutoFixer/dsh"
+	"github.com/Luthiel/AutoFixer/sandbox"
 )
 
 // dshCommand runs the local dsh-control/v1 server over a Unix socket (a
@@ -34,6 +35,7 @@ func dshCommand(args []string, stdout, stderr io.Writer) int {
 	socket := flags.String("socket", defaultSocketPath(), "unix socket path (or pipe name on Windows)")
 	network := flags.String("network", dsh.NetworkUnix, "local transport: unix or pipe")
 	workspace := flags.String("workspace-root", "", "directory sandboxes create their workspaces under")
+	revisionSource := flags.String("revision-source", "", "read broker for structured operations: \"git\" (fetch pinned revisions through git); empty blocks structured dispatch")
 	var approvers multiFlag
 	flags.Var(&approvers, "approver", "identity allowed to approve and cancel runs (repeatable)")
 	if err := flags.Parse(args[1:]); err != nil {
@@ -51,12 +53,24 @@ func dshCommand(args []string, stdout, stderr io.Writer) int {
 		return loop.ExitInvalidInput
 	}
 
-	server, err := dsh.New(dsh.Config{
+	cfg := dsh.Config{
 		SocketPath:    *socket,
 		Network:       *network,
 		Approvers:     approvers,
 		WorkspaceRoot: *workspace,
-	})
+	}
+	switch *revisionSource {
+	case "":
+		// Structured dispatch stays blocked until a read broker composes.
+	case "git":
+		cfg.RevisionSource = sandbox.NewGitRevisionSource()
+		cfg.DependencySource = sandbox.CommandDependencySource{}
+	default:
+		fmt.Fprintf(stderr, "unknown --revision-source %q (want \"git\" or empty)\n", *revisionSource)
+		return loop.ExitInvalidInput
+	}
+
+	server, err := dsh.New(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "dsh: %v\n", err)
 		return loop.ExitInvalidInput

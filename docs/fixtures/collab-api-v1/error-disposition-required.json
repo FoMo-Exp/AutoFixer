@@ -1,0 +1,17 @@
+{
+  "error": {
+    "envelope_version": 1,
+    "code": "DISPOSITION_REQUIRED",
+    "stage": "policy",
+    "category": "stop",
+    "message": "The issue is waiting for a human disposition; a retry or agent action cannot continue it.",
+    "retryable": false,
+    "retry_after_seconds": null,
+    "request_id": "req_6b2d9f4a1c7e3058",
+    "details": {
+      "product_state": "needs_human",
+      "run_state": "stopped"
+    },
+    "next_action": "request_review"
+  }
+}

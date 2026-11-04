@@ -70,9 +70,46 @@ export interface GatewayScope {
 }
 
 /**
+ * Authority for one caller's authenticated enterprise/workspace scope
+ * (DAT-241). The production implementation wraps `resolveRequestScope` over
+ * the request's session-derived principal; the gateway calls it on every
+ * dispatch and every attempt so revocation, suspension, and membership
+ * changes take effect in the same request path with no cached verdict, no
+ * default scope, and no per-call override.
+ */
+export interface GatewayScopeAuthority {
+  /**
+   * The caller's authenticated scope, re-resolved from live membership state
+   * on every call. Throws when no scope can be resolved — missing or revoked
+   * membership, a suspended account, an ambiguous or cross-tenant state — and
+   * never returns an empty or default scope (fail closed).
+   */
+  resolve(): GatewayScope;
+}
+
+/**
+ * The scope half of a run binding: the enterprise/workspace the run claims to
+ * act in — sourced from the authenticated request at bind time, never from
+ * deployment configuration — plus the authority that resolves the caller's
+ * authenticated scope live. The claim is only ever compared against the
+ * authority's resolution; a claim that disagrees is a cross-tenant binding
+ * and is denied before any policy or credential is touched.
+ */
+export interface GatewayScopeBinding extends GatewayScope {
+  scopeAuthority: GatewayScopeAuthority;
+}
+
+/**
  * Identity carried by every gateway request, for audit and metering reuse.
  * The gateway mints one `invocationId` per dispatch attempt; the calling run
  * supplies the rest when it binds to the gateway.
+ *
+ * The enterprise/workspace recorded on attempt events is always the
+ * authenticated scope resolved from {@link GatewayScopeAuthority} — never the
+ * binding's claim and never deployment configuration. Only a denial for which
+ * no scope could be resolved at all records the binding's claimed values
+ * (with `SCOPE_UNAVAILABLE`), because in that case no authenticated scope
+ * exists to attribute the attempt to.
  */
 export interface GatewayRequestIdentity extends GatewayScope {
   issueId: string;
@@ -82,7 +119,11 @@ export interface GatewayRequestIdentity extends GatewayScope {
 }
 
 /** Identity of the calling run; the gateway mints invocation ids per attempt. */
-export type GatewayBindingIdentity = Omit<GatewayRequestIdentity, "invocationId">;
+export interface GatewayBindingIdentity extends GatewayScopeBinding {
+  issueId: string;
+  runId: string;
+  traceId: string;
+}
 
 /**
  * One explicitly registered model endpoint. Registration is the only evidence
@@ -130,6 +171,10 @@ export interface GatewayPolicy {
 }
 
 export type GatewayDenyReason =
+  /** No authenticated scope could be resolved (missing, revoked, ambiguous, or not session-derived). */
+  | "SCOPE_UNAVAILABLE"
+  /** The binding's claimed scope is not the authenticated scope (cross-tenant). */
+  | "SCOPE_CROSS_TENANT"
   /** No policy resolved for the scope (missing or incomplete configuration). */
   | "POLICY_UNAVAILABLE"
   /** The requested model is not approved anywhere in the policy. */
@@ -151,7 +196,21 @@ export type GatewayDenyReason =
   /** A deterministic policy change was claimed without its authorization. */
   | "AUTHORIZATION_MISSING"
   /** The request carries a data class the destination is not authorized for. */
-  | "DATA_CLASS_NOT_AUTHORIZED";
+  | "DATA_CLASS_NOT_AUTHORIZED"
+  /**
+   * The run's dependent work is held pending security case disposition
+   * (DAT-210): the hold is checked at the admission boundary and the run
+   * cannot proceed until an authorized human releases it.
+   */
+  | "DEPENDENT_WORK_HELD"
+  /** No budget policy, or no finite safe reservation, admits this invocation. */
+  | "BUDGET_UNAVAILABLE"
+  /** An enterprise, workspace or run budget has no room for the bound. */
+  | "BUDGET_EXHAUSTED"
+  /** A monetary budget exists but no finite conservative bound could be computed. */
+  | "BUDGET_BOUND_UNKNOWN"
+  /** The conservative token bound exceeds the configured per-invocation ceiling. */
+  | "TOKEN_CEILING_EXCEEDED";
 
 /** Stable redacted error contract (ADR-0005): all gateway denials share it. */
 export const MODEL_EGRESS_DENIED = "MODEL_EGRESS_DENIED";
@@ -162,17 +221,63 @@ export const MODEL_EGRESS_DENIED = "MODEL_EGRESS_DENIED";
  */
 export const SENSITIVE_DATA_UNCERTAIN = "SENSITIVE_DATA_UNCERTAIN";
 
+/**
+ * Stable redacted error contract (ADR-0005): a security case is holding the
+ * run's dependent work. Not a retryable failure and never a bypass: only the
+ * case disposition releases the hold.
+ */
+export const SECURITY_REVIEW_REQUIRED = "SECURITY_REVIEW_REQUIRED";
+
+/**
+ * Stable error contract for a budget refusal (DAT-229): the invocation was
+ * not admitted, so nothing was dispatched and no provider spend occurred.
+ */
+export const MODEL_BUDGET_EXHAUSTED = "MODEL_BUDGET_EXHAUSTED";
+
+/** Stable error contract for a missing/unbounded budget configuration. */
+export const MODEL_BUDGET_UNAVAILABLE = "MODEL_BUDGET_UNAVAILABLE";
+
+/** Stable error contract for a token request above the enforced ceiling. */
+export const MODEL_TOKEN_CEILING_EXCEEDED = "MODEL_TOKEN_CEILING_EXCEEDED";
+
+/**
+ * Stable error contract for an attempt whose provider outcome is unknown: the
+ * conservative reservation is retained and the invocation must not be
+ * repeated before reconciliation (ADR-0008).
+ */
+export const MODEL_USAGE_UNKNOWN = "MODEL_USAGE_UNKNOWN";
+
 /** A policy, scan, or configuration denial. Never retried, never bypassable. */
 export class ModelEgressDeniedError extends Error {
   readonly code: string;
   readonly retryable = false;
   readonly reason: GatewayDenyReason;
+  /**
+   * Disposal-case correlation id opened for this block (DAT-210). An
+   * identifier like the trace id — never authority and never a credential.
+   */
+  readonly caseId?: string;
+  /**
+   * Audience-bound case reference minted for the blocked run (DAT-210).
+   * Non-transferable: it never verifies for another audience and never grants
+   * quarantine access.
+   */
+  readonly caseReference?: string;
 
-  constructor(reason: GatewayDenyReason, message: string, code: string = MODEL_EGRESS_DENIED) {
+  constructor(
+    reason: GatewayDenyReason,
+    message: string,
+    code: string = MODEL_EGRESS_DENIED,
+    caseRef?: { caseId: string; caseReference: string },
+  ) {
     super(message);
     this.name = "ModelEgressDeniedError";
     this.reason = reason;
     this.code = code;
+    if (caseRef) {
+      this.caseId = caseRef.caseId;
+      this.caseReference = caseRef.caseReference;
+    }
   }
 }
 
@@ -187,6 +292,24 @@ export class ModelDispatchError extends Error {
   ) {
     super(message, options);
     this.name = "ModelDispatchError";
+  }
+}
+
+/**
+ * The provider outcome of an attempt could not be established, so its budget
+ * reservation was retained for reconciliation. The invocation must not be
+ * re-sent: a duplicate could consume provider budget twice.
+ */
+export class ModelBudgetReconciliationError extends Error {
+  readonly code = MODEL_USAGE_UNKNOWN;
+  readonly retryable = false;
+
+  constructor(
+    message: string,
+    readonly reservationId: string | null,
+  ) {
+    super(message);
+    this.name = "ModelBudgetReconciliationError";
   }
 }
 
@@ -245,6 +368,36 @@ export type GatewayAttemptEvent =
  */
 export interface GatewayEventSink {
   record(event: GatewayAttemptEvent): void | Promise<void>;
+}
+
+/**
+ * Post-block disposal-case seam (DAT-210, ADR-0005 §2), structurally
+ * satisfied by the security module's `SecurityCaseService`. The gateway calls
+ * it for every secret-gate block — uncertain sensitive content always needs
+ * human handling — and only for those: policy and configuration denials
+ * involve no request content to dispose. A failing intake never unblocks the
+ * request; the denial stands and an operational incident is raised.
+ */
+export interface GatewayCaseIntake {
+  recordGatewayBlock(input: {
+    identity: GatewayRequestIdentity;
+    reason: string;
+    safeDetail: string;
+    /** Raw blocked request for encrypted quarantine; never for logs. */
+    rawContent?: string;
+  }): Promise<{ caseId: string; caseReference: string }>;
+}
+
+/**
+ * The dependent-work hold to consult at the work-admission boundary (DAT-210).
+ * Structurally satisfied by the security module's `SecurityCaseService`. A
+ * held run's dependent work — its later gateway invocations included — is
+ * rejected until an authorized disposition releases the hold; unrelated runs
+ * are never affected.
+ */
+export interface DependentWorkHold {
+  /** The open security case holding this run's dependent work, if any. */
+  heldCaseFor(runId: string): { caseId: string; caseReference: string } | undefined;
 }
 
 /**

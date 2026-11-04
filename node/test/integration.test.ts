@@ -22,7 +22,7 @@ import { startDshServer } from "./helpers/dsh-server.js";
 import { getJson, postJson, postRaw, readSse, setAuthToken, waitUntil } from "./helpers/http.js";
 import type { ScriptedTurn } from "./helpers/scripted-stream.js";
 import { makeGate, scriptedStream, TEST_MODEL } from "./helpers/scripted-stream.js";
-import { scriptedGateway, testPolicyFor } from "./helpers/test-gateway.js";
+import { scriptedGateway, testPolicyFor, testRunScope } from "./helpers/test-gateway.js";
 
 const APPROVER = "github:local-operator";
 const REPOSITORY_ID = "github:Luthiel/AutoFixer";
@@ -77,6 +77,7 @@ async function startApp(turns: ScriptedTurn[], overrides: Partial<OrchestratorCo
     config: testConfig(overrides),
     model: TEST_MODEL,
     gateway: scriptedGateway(TEST_MODEL, scripted.streamFn),
+    runScope: testRunScope(),
   });
   apps.push(orchestrator);
   setAuthToken(orchestrator.apiToken);
@@ -870,6 +871,7 @@ describe("PI_UNAVAILABLE at approval (QA round-1 blocker)", () => {
       config: testConfig(),
       // no model → PI_UNAVAILABLE
       gateway: scriptedGateway(TEST_MODEL, scripted.streamFn),
+      runScope: testRunScope(),
     });
     apps.push(orchestrator);
     setAuthToken(orchestrator.apiToken);
@@ -1529,6 +1531,7 @@ describe("model gateway integration (DAT-208)", () => {
           },
         },
       }),
+      runScope: testRunScope(),
     });
     apps.push(orchestrator);
     setAuthToken(orchestrator.apiToken);

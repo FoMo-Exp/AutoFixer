@@ -18,8 +18,8 @@ import {
   ModelEgressDeniedError,
   createModelGateway,
   createPatternSecretScanner,
+  createScopeBackedPolicyResolver,
   createStaticCredentialStore,
-  createStaticPolicyResolver,
   tagDerivedSummary,
 } from "../src/index.js";
 import { TEST_MODEL } from "./helpers/scripted-stream.js";
@@ -29,6 +29,7 @@ import {
   TEST_CREDENTIAL_REF,
   TEST_SCOPE,
   memorySink,
+  securityStubs,
   testPolicyFor,
 } from "./helpers/test-gateway.js";
 
@@ -106,10 +107,9 @@ function gatewayWith(
   } = {},
 ) {
   return createModelGateway({
-    policyResolver: createStaticPolicyResolver(
-      extras.policy ?? testPolicyFor(TEST_MODEL),
-      TEST_SCOPE,
-    ),
+    policyResolver: createScopeBackedPolicyResolver([
+      { scope: TEST_SCOPE, policy: extras.policy ?? testPolicyFor(TEST_MODEL) },
+    ]),
     credentials: createStaticCredentialStore({ [TEST_CREDENTIAL_REF]: TEST_CREDENTIAL }),
     adapter,
     scanner: extras.scanner ?? createPatternSecretScanner(),
@@ -119,6 +119,7 @@ function gatewayWith(
     // the test deliberately omits it.
     sink: extras.sink ?? memorySink().sink,
     ...(extras.onIncident ? { onIncident: extras.onIncident } : {}),
+    ...securityStubs(),
     newInvocationId: () => "inv_test",
     now: () => new Date("2026-11-03T00:00:00Z"),
   });
@@ -538,10 +539,13 @@ describe("scanner failure, unknown classification, missing audit sink block (acc
     // Deliberately constructed without a sink: required pre-dispatch evidence
     // has nowhere to go, so nothing may be sent.
     const gateway = createModelGateway({
-      policyResolver: createStaticPolicyResolver(testPolicyFor(TEST_MODEL), TEST_SCOPE),
+      policyResolver: createScopeBackedPolicyResolver([
+        { scope: TEST_SCOPE, policy: testPolicyFor(TEST_MODEL) },
+      ]),
       credentials: createStaticCredentialStore({ [TEST_CREDENTIAL_REF]: TEST_CREDENTIAL }),
       adapter,
       scanner: createPatternSecretScanner(),
+      ...securityStubs(),
     });
     await expectScanDenial(
       gateway.bind(TEST_BINDING)(TEST_MODEL, CLEAN_CONTEXT, undefined),

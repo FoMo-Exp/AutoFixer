@@ -1,12 +1,19 @@
 import type http from "node:http";
+import { randomBytes } from "node:crypto";
+import fs from "node:fs";
 
 import type { Api, Model } from "@mariozechner/pi-ai";
 
 import { buildOpenApiDocument } from "./api/openapi.js";
+import { BudgetAuthority, createBudgetStore, loadBudgetPolicyFile } from "./budget/index.js";
 import { readOrCreateApiToken } from "./api/auth.js";
 import { AuthService } from "./api/auth-service.js";
+import { createInvitationAuthority } from "./api/invitation-authority.js";
+import { InvitationService, readOrCreateInvitationDigestKey } from "./api/invitation-service.js";
+import type { InvitationRateLimits } from "./api/invitation-service.js";
 import { ProviderOAuth, readOAuthCredentialsFile } from "./api/oauth.js";
 import { createApiServer } from "./api/server.js";
+import { createTaskRunOutcomes } from "./api/run-outcomes.js";
 import { createRequestAuthority } from "./api/request-authority.js";
 import type { RequestAuthority } from "./api/request-authority.js";
 import { TaskService } from "./api/task-service.js";
@@ -16,14 +23,19 @@ import {
   createWorkspaceRunBindingResolver,
 } from "./api/workspace-bindings.js";
 import type { OrchestratorConfig } from "./config.js";
-import { configFromEnv } from "./config.js";
+import { configFromEnv, defaultSecurityStatePath } from "./config.js";
 import type { ControlPlaneDb } from "./control-plane/index.js";
 import {
   createIdentityRepositories,
+  createInvitationRepository,
   createProviderAccessRepositories,
   createRepositories,
   openControlPlaneDb,
 } from "./control-plane/index.js";
+import type { AuthenticatedPrincipal, RequestScopeDeps } from "./control-plane/request-scope.js";
+import { resolveRequestScope } from "./control-plane/request-scope.js";
+import { DashboardAuditLog, DashboardService } from "./dashboard/index.js";
+import type { DashboardSources } from "./dashboard/index.js";
 import { DshClient } from "./dsh/client.js";
 import {
   createFileEventSink,
@@ -36,9 +48,54 @@ import {
   providerCredentialEnvVars,
   readCredentialFile,
 } from "./gateway/index.js";
-import type { ModelGateway } from "./gateway/index.js";
+import type { GatewayScope, GatewayScopeBinding, ModelGateway } from "./gateway/index.js";
 import { createUsageLedgerStore } from "./ledger/index.js";
+import type { UsageLedgerStore } from "./ledger/index.js";
+import type { BudgetStore } from "./budget/index.js";
+import {
+  createMemoryConsolidationRunner,
+  createMemoryGovernanceService,
+  createMemoryLifecycleStore,
+  createMemoryRepositories,
+  createMemoryRetrievalService,
+  createRetrievalStore,
+  createRsiService,
+  createRsiStore,
+} from "./memory/index.js";
+import type {
+  MemoryConsolidationRunner,
+  MemoryGovernanceService,
+  MemoryRepositories,
+  MemoryRetrievalService,
+  RsiService,
+  RsiStore,
+} from "./memory/index.js";
 import { resolveConfiguredModel } from "./pi/model.js";
+import {
+  DependentWorkPauseLedger,
+  EncryptedQuarantine,
+  RuleCorrectionService,
+  SecurityCaseService,
+  SecurityCaseStore,
+  SecurityNotifier,
+  auditEventFromCaseEvent,
+  auditEventFromRuleEvent,
+  createFileNotificationSink,
+  createFileSecurityAuditTrail,
+  createSecurityAuditGatewaySink,
+  readOrCreateSecurityAuditKey,
+  staticDutyDirectory,
+} from "./security/index.js";
+import type {
+  QuarantineKeyProvider,
+  SecurityAuditTrail,
+  SecurityRoleDirectory,
+} from "./security/index.js";
+import {
+  createStaticServiceCredentialStore,
+  readServiceCredentialFile,
+} from "./provider-access/credentials.js";
+import type { ServiceCredentialStore } from "./provider-access/credentials.js";
 
 export interface OrchestratorOptions {
   config: OrchestratorConfig;
@@ -50,10 +107,29 @@ export interface OrchestratorOptions {
   gateway?: ModelGateway;
   /** Explicit Pi model; unset resolves from config, then PI_UNAVAILABLE. */
   model?: Model<Api>;
+  /**
+   * Explicit run scope binding (tests exercise runs behind the real gateway
+   * checks). Unset binds each run's scope from the authenticated request's
+   * live membership through the DAT-241 helper; requests without an
+   * authenticated scope dispatch nothing (fail closed).
+   */
+  runScope?: (principal: AuthenticatedPrincipal | null) => GatewayScopeBinding;
   /** Injectable provider HTTP for the OAuth login surface (tests). */
   authFetchImpl?: typeof fetch;
   /** Injectable DNS lookup for the provider-origin policy (tests). */
   authDnsLookup?: (hostname: string) => Promise<string[]>;
+  /** Rate-limit overrides for the invitation surface (tests). */
+  invitationRateLimits?: InvitationRateLimits;
+  /** DAT-247 service credentials for the redemption point refresh (tests). */
+  providerServiceCredentials?: ServiceCredentialStore;
+  /** Provider API base override for the point refresh (tests: fake provider). */
+  providerApiBaseUrl?: string;
+  /**
+   * Dashboard read-model sources (tests inject in-memory stores). Unset uses
+   * the deployment's ledger/budget stores; a source that is still absent is
+   * reported as `missing_source`, never as zero.
+   */
+  dashboardSources?: Partial<DashboardSources>;
 }
 
 export interface OrchestratorHandle {
@@ -65,6 +141,8 @@ export interface OrchestratorHandle {
   model: Model<Api> | undefined;
   /** Identity/session subsystem; set when OAuth clients are configured. */
   auth: AuthService | undefined;
+  /** Owner-created invitation surface (DAT-204); set with the identity subsystem. */
+  invitations: InvitationService | undefined;
   /** Control-plane database behind the identity subsystem. */
   controlPlane: ControlPlaneDb | undefined;
   /**
@@ -73,6 +151,21 @@ export interface OrchestratorHandle {
    * its authority-change signal.
    */
   providerAuthority: RequestAuthority | undefined;
+  /**
+   * Scheduled memory consolidation (DAT-235); set with the identity control
+   * plane. Registered on `start()` and stopped with the orchestrator.
+   */
+  memoryConsolidation: MemoryConsolidationRunner | undefined;
+  /** Workspace memory retrieval service; set when the control plane is on. */
+  memory: MemoryRetrievalService | undefined;
+  /** Scoped memory repositories, for memory lifecycle wiring and tests. */
+  memoryRepositories: MemoryRepositories | undefined;
+  /** Bounded RSI governance service; set when the control plane is on. */
+  rsi: RsiService | undefined;
+  /** Scoped RSI store, for dataset provisioning and tests. */
+  rsiStore: RsiStore | undefined;
+  /** Workspace dashboard read model (DAT-230); set with the identity surface. */
+  dashboard: DashboardService | undefined;
   /** Per-process bearer token callers must present on every API request. */
   apiToken: string;
   /** Start listening; resolves with the bound loopback address. */
@@ -82,8 +175,133 @@ export interface OrchestratorHandle {
 }
 
 /**
+ * Quarantine key seam backed by a protected key file. Missing, unreadable, or
+ * malformed key material returns nothing: seals fail closed and nothing is
+ * ever stored in plaintext (DAT-210).
+ */
+function fileQuarantineKeyProvider(keyFile: string | undefined): QuarantineKeyProvider {
+  return {
+    keyId: "quarantine-key-file",
+    currentKey(): Buffer | undefined {
+      if (!keyFile) return undefined;
+      try {
+        const key = Buffer.from(fs.readFileSync(keyFile, "utf8").trim(), "base64");
+        return key.length === 32 ? key : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+  };
+}
+
+/**
+ * Read the protected audit-chain key, creating it 0600 on first use. An
+ * existing key that is a symlink, non-regular file, group/world-accessible, or
+ * malformed fails startup instead of silently starting a new chain (which
+ * would orphan the anchored history and let a forged log verify).
+ */
+function readOrCreateAuditKey(keyFile: string): Buffer {
+  return readOrCreateSecurityAuditKey(keyFile);
+}
+
+/**
+ * The deployment security disposal machinery (DAT-210, DAT-211): durable
+ * case history, durable dependent-work holds, encrypted quarantine, handler
+ * notification with escalation, and the versioned rule-correction lifecycle
+ * behind the separated security duties. The production gateway receives the
+ * case service as both its disposal-case intake and its admission-boundary
+ * hold — the gateway cannot be deployed without either — and scans under the
+ * currently activated rule corrections.
+ *
+ * DAT-213 adds the unified audit trail: every case event and every rule event
+ * is chained into one tamper-evident, non-secret log before the operation
+ * reports success. A failed trail write fails the operation (fail closed).
+ */
+function deploymentSecurity(config: OrchestratorConfig): {
+  security: SecurityCaseService;
+  rules: RuleCorrectionService;
+  audit: SecurityAuditTrail;
+} {
+  const referenceSecret = config.securityReferenceSecret
+    ? Buffer.from(config.securityReferenceSecret, "utf8")
+    : randomBytes(32);
+  const auditFile = config.securityAuditFile ?? defaultSecurityStatePath("security-audit.jsonl");
+  const auditKeyFile =
+    config.securityAuditKeyFile ?? defaultSecurityStatePath("security-audit.key");
+  const audit = createFileSecurityAuditTrail(auditFile, {
+    key: readOrCreateAuditKey(auditKeyFile),
+  });
+  const directory: SecurityRoleDirectory = {
+    resolve: () => ({
+      workspaceHandlers: (config.securityHandlerIds ?? []).map((recipientId) => ({
+        recipientId,
+        role: "workspace_security_handler" as const,
+      })),
+      enterpriseAdmins: (config.securityAdminIds ?? []).map((recipientId) => ({
+        recipientId,
+        role: "enterprise_security_admin" as const,
+      })),
+    }),
+  };
+  // Duties (DAT-211) are granted only by explicit listing; missing handlers,
+  // reviewers, or admins leave their actions unavailable — never waived.
+  const duties = staticDutyDirectory({
+    taskOwners: config.securityTaskOwnerIds ?? [],
+    handlers: config.securityHandlerIds ?? [],
+    reviewers: config.securityReviewerIds ?? [],
+    admins: config.securityAdminIds ?? [],
+  });
+  return {
+    audit,
+    security: new SecurityCaseService({
+      caseStore: new SecurityCaseStore({
+        ...(config.securityCaseStateFile ? { persistencePath: config.securityCaseStateFile } : {}),
+        // DAT-213: every case event is chained into the unified non-secret
+        // audit trail. A throwing trail write fails the case operation.
+        onEvent: (event, record) => {
+          audit.record(auditEventFromCaseEvent(record, event));
+        },
+      }),
+      pauses: new DependentWorkPauseLedger(
+        config.securityPauseStateFile ? { persistencePath: config.securityPauseStateFile } : {},
+      ),
+      notifier: new SecurityNotifier({
+        directory,
+        sink: createFileNotificationSink(
+          config.securityNotificationsFile ??
+            defaultSecurityStatePath("security-notifications.jsonl"),
+        ),
+        referenceSecret,
+      }),
+      quarantine: new EncryptedQuarantine({
+        keyProvider: fileQuarantineKeyProvider(config.quarantineKeyFile),
+        // Bounded retention; the enterprise lifecycle governs longer terms.
+        retentionSeconds: 30 * 24 * 60 * 60,
+        ...(config.securityQuarantineStateFile
+          ? { persistencePath: config.securityQuarantineStateFile }
+          : {}),
+      }),
+      referenceSecret,
+      duties,
+    }),
+    rules: new RuleCorrectionService({
+      directory: duties,
+      ...(config.securityRuleStateFile ? { persistencePath: config.securityRuleStateFile } : {}),
+      // DAT-213: rule proposal/review/activation/rollback events join the one
+      // audit chain; the rule transaction rolls back if the write fails.
+      onEvent: (event) => {
+        audit.record(auditEventFromRuleEvent(event));
+      },
+    }),
+  };
+}
+
+/**
  * The deployment model gateway: policy and credentials come from the
- * protected gateway files only.
+ * protected gateway files only. Policies are scope-bound (DAT-242): the file
+ * carries one policy per enterprise/workspace pair and resolution is keyed by
+ * the caller's authenticated scope — there is no deployment-config scope and
+ * no single-scope default path.
  *
  * Deployment-layer direct-connection block: the orchestrator refuses to run
  * while provider credentials are present in the environment, because an
@@ -91,7 +309,15 @@ export interface OrchestratorHandle {
  * prevent. Model egress without both gateway files fails closed — every
  * dispatch is denied.
  */
-function deploymentGateway(config: OrchestratorConfig): ModelGateway {
+interface DeploymentStores {
+  usageLedger?: UsageLedgerStore;
+  budgetStore?: BudgetStore;
+}
+
+function deploymentGateway(
+  config: OrchestratorConfig,
+  stores: DeploymentStores = {},
+): ModelGateway {
   const ambient = providerCredentialEnvVars(process.env);
   if (ambient.length > 0) {
     throw new Error(
@@ -99,10 +325,38 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
         "configure FORGEPILOT_GATEWAY_CREDENTIALS_FILE and unset these variables",
     );
   }
+  // Secret-gate blocks always open a disposal case and hold the affected
+  // run's dependent work (DAT-210): the production gateway carries both.
+  const { security, rules, audit } = deploymentSecurity(config);
   const scope = { enterpriseId: config.enterpriseId, workspaceId: config.workspaceId };
+  // Budget authority (DAT-229): configured with a policy file, it enforces
+  // enterprise/workspace/run limits with a durable journal; without one the
+  // deployment is explicitly unbudgeted rather than silently zero-cost.
+  const budgetStore = config.budgetPolicyFile
+    ? createBudgetStore({ persistencePath: config.budgetStateFile })
+    : undefined;
+  const budget = budgetStore
+    ? new BudgetAuthority({
+        store: budgetStore,
+        policyResolver: loadBudgetPolicyFile(config.budgetPolicyFile as string, scope),
+      })
+    : undefined;
+  const gatewayFileSink = config.gatewayAuditFile
+    ? createFileEventSink(config.gatewayAuditFile)
+    : undefined;
+  const gatewaySecurityAuditSink = createSecurityAuditGatewaySink(audit);
+  const usageLedger = config.usageLedgerFile
+    ? createUsageLedgerStore({ persistencePath: config.usageLedgerFile })
+    : undefined;
+  if (usageLedger !== undefined) {
+    stores.usageLedger = usageLedger;
+  }
+  if (budgetStore !== undefined) {
+    stores.budgetStore = budgetStore;
+  }
   return createModelGateway({
     policyResolver: config.gatewayPolicyFile
-      ? loadGatewayPolicyFile(config.gatewayPolicyFile, scope)
+      ? loadGatewayPolicyFile(config.gatewayPolicyFile)
       : denyAllPolicyResolver,
     credentials: config.gatewayCredentialsFile
       ? readCredentialFile(config.gatewayCredentialsFile)
@@ -110,16 +364,74 @@ function deploymentGateway(config: OrchestratorConfig): ModelGateway {
     adapter: piAiProviderAdapter,
     // Complete-request secret scanning is part of the egress boundary: the
     // deployment always scans with the built-in deterministic detector set
-    // (DAT-209); a deployment may swap in another SecretScanner backend.
-    scanner: createPatternSecretScanner(),
-    ...(config.gatewayAuditFile ? { sink: createFileEventSink(config.gatewayAuditFile) } : {}),
+    // (DAT-209), narrowed only by the currently activated, independently
+    // reviewed rule corrections (DAT-211). A deployment may swap in another
+    // SecretScanner backend.
+    scanner: createPatternSecretScanner({ corrections: () => rules.activeCorrections() }),
+    // The gateway's attempt stream keeps its own file sink (the required
+    // pre-dispatch evidence) and additionally feeds the unified security
+    // trail (DAT-213). Without the file sink the gateway still fails closed.
+    ...(gatewayFileSink
+      ? {
+          sink: {
+            record: (event) => {
+              gatewayFileSink.record(event);
+              gatewaySecurityAuditSink.record(event);
+            },
+          },
+        }
+      : {}),
+    caseIntake: security,
+    dependentWorkHold: security,
     // Invocation usage ledger (DAT-227): every actual dispatch attempt is
     // metered here — failures, retries and fallbacks included — so cost
     // accounting reconciles against real attempts instead of guesses.
-    ...(config.usageLedgerFile
-      ? { usageLedger: createUsageLedgerStore({ persistencePath: config.usageLedgerFile }) }
-      : {}),
+    ...(usageLedger !== undefined ? { usageLedger } : {}),
+    ...(budget ? { budget } : {}),
   });
+}
+
+/**
+ * Run scope binding for the deployment (DAT-242): the binding's
+ * enterprise/workspace comes from the authenticated request's live membership
+ * resolution (DAT-241 `resolveRequestScope`) — never from deployment
+ * configuration — and every dispatch re-resolves the same way.
+ *
+ * A request without a session-derived scope (the local-operator bearer, or an
+ * identity-less deployment) binds the deny-everything scope: its model
+ * dispatches resolve no authenticated scope, deny `MODEL_EGRESS_DENIED`, and
+ * never fall back to a configured default (fail closed).
+ */
+function deploymentRunScope(
+  scopeDeps: RequestScopeDeps | undefined,
+): (principal: AuthenticatedPrincipal | null) => GatewayScopeBinding {
+  return (principal) => {
+    if (principal === null || scopeDeps === undefined) {
+      return {
+        enterpriseId: "",
+        workspaceId: "",
+        scopeAuthority: {
+          resolve(): GatewayScope {
+            throw new Error("this request carries no authenticated enterprise/workspace scope");
+          },
+        },
+      };
+    }
+    const bound = resolveRequestScope(scopeDeps, principal);
+    return {
+      enterpriseId: bound.enterprise_id,
+      workspaceId: bound.workspace_id,
+      scopeAuthority: {
+        resolve(): GatewayScope {
+          // Re-resolved from live membership state on every dispatch:
+          // revocation, suspension, and role changes deny the next attempt in
+          // the same request path (no cached verdict, no default scope).
+          const live = resolveRequestScope(scopeDeps, principal);
+          return { enterpriseId: live.enterprise_id, workspaceId: live.workspace_id };
+        },
+      },
+    };
+  };
 }
 
 /**
@@ -145,7 +457,8 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     ...(config.dshTokenFile ? { tokenFile: config.dshTokenFile } : {}),
   });
   const model = options.model ?? resolveConfiguredModel(config);
-  const gateway = options.gateway ?? deploymentGateway(config);
+  const deploymentStores: DeploymentStores = {};
+  const gateway = options.gateway ?? deploymentGateway(config, deploymentStores);
   // Fresh per-process token: possessing it is what authorizes API callers,
   // approvals included; the configured dsh identity alone is not proof of a
   // human decision.
@@ -153,13 +466,27 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   // Enterprise identity (ADR-0006) is enabled by the OAuth client file; its
   // absence keeps the local-operator surface exactly as before.
   let auth: AuthService | undefined;
+  let invitations: InvitationService | undefined;
   let controlPlane: ControlPlaneDb | undefined;
   let providerAuthority: RequestAuthority | undefined;
   let workspaceBindings = createConfiguredWorkspaceRunBindingResolver(config);
+  let requestScopeDeps: RequestScopeDeps | undefined;
+  let memoryConsolidation: MemoryConsolidationRunner | undefined;
+  let memory: MemoryRetrievalService | undefined;
+  let memoryRepositories: MemoryRepositories | undefined;
+  let memoryGovernance: MemoryGovernanceService | undefined;
+  let rsi: RsiService | undefined;
+  let rsiStore: RsiStore | undefined;
   if (config.oauthClientsFile !== undefined) {
     controlPlane = openControlPlaneDb({ path: config.controlPlaneFile ?? ":memory:" });
     const repos = createRepositories(controlPlane);
     const identity = createIdentityRepositories(controlPlane);
+    requestScopeDeps = {
+      sessions: identity.sessions,
+      users: identity.users,
+      memberships: repos.memberships,
+      workspaces: repos.workspaces,
+    };
     auth = new AuthService({
       repos,
       identity,
@@ -181,8 +508,41 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     // Provider authority (DAT-203) shares the control plane with identity:
     // the request boundary enforces effective access for session requests
     // whenever a service integration is installed for this workspace.
+    const providerAccess = createProviderAccessRepositories(controlPlane);
+    // Workspace memory retrieval (DAT-236) shares the control-plane store. The
+    // service is read-only over memory: it assembles bounded, cited bundles and
+    // records audit rows; it cannot promote, edit, or grant anything.
+    memoryRepositories = createMemoryRepositories(controlPlane);
+    const retrievalStore = createRetrievalStore(controlPlane);
+    memory = createMemoryRetrievalService({
+      memory: memoryRepositories,
+      store: retrievalStore,
+    });
+    // Memory governance (DAT-251) is the named-human half of the lifecycle:
+    // detail, per-version content, the audit timeline, and promote/deprecate/
+    // quarantine/restore. It reads the same scoped store as retrieval, and
+    // resolves team leadership from the workspace's team rows so authority is
+    // never a client claim.
+    memoryGovernance = createMemoryGovernanceService({
+      memory: memoryRepositories,
+      retrieval: memory,
+      lifecycle: createMemoryLifecycleStore(controlPlane),
+      teams: repos.teams,
+    });
+    // Bounded RSI (DAT-238) shares the same store. Offline replay uses the
+    // retrieval preview path, so an evaluated candidate policy is never
+    // stored or retrievable before promotion; promotion publishes a version.
+    rsiStore = createRsiStore(controlPlane);
+    rsi = createRsiService({
+      store: rsiStore,
+      memory: memoryRepositories,
+      retrieval: memory,
+      retrievalStore,
+      // Canary samples come only from the task projection for pinned runs.
+      outcomes: createTaskRunOutcomes(store),
+    });
     providerAuthority = createRequestAuthority({
-      access: createProviderAccessRepositories(controlPlane),
+      access: providerAccess,
       memberships: repos.memberships,
       workspaces: repos.workspaces,
       users: identity.users,
@@ -197,7 +557,74 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       workspaces: repos.workspaces,
       providerInstances: repos.providerInstances,
     });
+    // The invitation digest key is deployment-owned and durable: a file next
+    // to the control-plane database unless configured explicitly. An ephemeral
+    // (in-memory) control plane gets a per-process key, which fails closed —
+    // its invitations die with the process anyway.
+    const digestKey =
+      config.invitationDigestKeyFile !== undefined
+        ? readOrCreateInvitationDigestKey(config.invitationDigestKeyFile)
+        : config.controlPlaneFile !== undefined
+          ? readOrCreateInvitationDigestKey(`${config.controlPlaneFile}.invitation-key`)
+          : randomBytes(32);
+    // DAT-247's service credential boundary: secrets come from a protected
+    // file (or explicit injection), never from a user OAuth token. An empty
+    // store makes the point refresh fail closed.
+    const serviceCredentials =
+      options.providerServiceCredentials ??
+      (config.providerServiceCredentialFile !== undefined
+        ? readServiceCredentialFile(config.providerServiceCredentialFile)
+        : createStaticServiceCredentialStore({}));
+    const providerApiBaseUrl = options.providerApiBaseUrl;
+    invitations = new InvitationService({
+      repos,
+      identity,
+      invitations: createInvitationRepository(controlPlane, providerAccess),
+      authority: createInvitationAuthority({
+        access: providerAccess,
+        identities: identity.identities,
+        providerInstances: repos.providerInstances,
+        credentials: serviceCredentials,
+        epoch: providerAuthority.epoch,
+        ...(providerApiBaseUrl !== undefined ? { apiBaseUrl: () => providerApiBaseUrl } : {}),
+      }),
+      config: {
+        enterpriseId: config.enterpriseId,
+        digestKey,
+        ...(options.invitationRateLimits !== undefined
+          ? { rateLimits: options.invitationRateLimits }
+          : {}),
+      },
+    });
+    // Sleep-time memory consolidation (DAT-235): the control plane owns the
+    // memory store, so the deployment runs the bounded consolidation pass
+    // over every active workspace on the configured cadence. Started with the
+    // service and stopped with it; a failed workspace pass is logged and the
+    // schedule survives.
+    memoryConsolidation = createMemoryConsolidationRunner({
+      db: controlPlane,
+      enterpriseId: config.enterpriseId,
+      actorId: config.actorId,
+      ...(config.memoryConsolidationIntervalMs !== undefined
+        ? { intervalMs: config.memoryConsolidationIntervalMs }
+        : {}),
+      onReport: (workspaceId, report) => {
+        if (report.ops_applied > 0 || report.counts_recomputed > 0 || report.budget_exhausted) {
+          console.log(
+            `memory consolidation ${workspaceId}: run ${report.run_id} scanned=${report.items_scanned} ` +
+              `applied=${report.ops_applied} skipped=${report.ops_skipped} ` +
+              `budget_exhausted=${report.budget_exhausted}`,
+          );
+        }
+      },
+      onError: (error) => {
+        console.error("memory consolidation pass failed:", error);
+      },
+    });
   }
+  // The task service starts runs, so it receives the same memory/RSI pair:
+  // every run pins its versions here and the canary overlay is consumed by the
+  // retrieval call above the prompt.
   const service = new TaskService({
     config,
     dsh,
@@ -205,13 +632,53 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     gateway,
     workspaceBindings,
     ...(model ? { model } : {}),
+    runScope: options.runScope ?? deploymentRunScope(requestScopeDeps),
+    ...(memory !== undefined && rsi !== undefined ? { memory: { memory, rsi } } : {}),
   });
+  // Workspace dashboard (DAT-230): a read-only projection over the ledger,
+  // budget journal, trace and task event log. It is only served when the
+  // identity surface exists, because every route is session-scoped; an
+  // injected test source wins over the deployment store.
+  const dashboardSources: DashboardSources = {
+    ...(deploymentStores.usageLedger !== undefined ? { ledger: deploymentStores.usageLedger } : {}),
+    ...(deploymentStores.budgetStore !== undefined ? { budget: deploymentStores.budgetStore } : {}),
+    ...options.dashboardSources,
+    tasks: options.dashboardSources?.tasks ?? store,
+  };
+  const dashboard =
+    auth !== undefined && requestScopeDeps !== undefined
+      ? new DashboardService({
+          sources: dashboardSources,
+          audit: new DashboardAuditLog({
+            ...(config.dashboardAuditFile !== undefined
+              ? { persistencePath: config.dashboardAuditFile }
+              : {}),
+          }),
+        })
+      : undefined;
+
   const server = createApiServer({
     service,
     apiToken,
     legacyWorkspaceId: config.workspaceId,
     ...(auth !== undefined ? { auth } : {}),
     ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
+    ...(invitations !== undefined ? { invitations } : {}),
+    ...(memory !== undefined && auth !== undefined
+      ? {
+          memory: {
+            auth,
+            service: memory,
+            apiToken,
+            ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
+            ...(rsi !== undefined ? { rsi } : {}),
+            ...(memoryGovernance !== undefined ? { governance: memoryGovernance } : {}),
+          },
+        }
+      : {}),
+    ...(dashboard !== undefined && auth !== undefined && requestScopeDeps !== undefined
+      ? { dashboard: { auth, service: dashboard, scope: requestScopeDeps } }
+      : {}),
     ...(config.publicOrigin !== undefined ? { publicOrigin: config.publicOrigin } : {}),
   });
   return {
@@ -222,8 +689,15 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     gateway,
     model,
     auth,
+    invitations,
     controlPlane,
     providerAuthority,
+    memoryConsolidation,
+    memory,
+    memoryRepositories,
+    rsi,
+    rsiStore,
+    dashboard,
     apiToken,
     start: () => {
       const { promise, resolve, reject } = Promise.withResolvers<{ host: string; port: number }>();
@@ -244,10 +718,13 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
         await service.recoverFromDsh().catch((error: unknown) => {
           console.error("task recovery skipped:", error);
         });
+        // Sleep-time consolidation begins with the service, never before it.
+        memoryConsolidation?.start();
         return bound;
       });
     },
     stop: () => {
+      memoryConsolidation?.stop();
       service.disposeAll();
       // Durability boundary: a clean shutdown must not lose projected events.
       store.flushSync();
@@ -261,7 +738,9 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
 
 export { buildOpenApiDocument, configFromEnv };
 export * from "./gateway/index.js";
+export * from "./security/index.js";
 export * from "./ledger/index.js";
+export * from "./budget/index.js";
 
 async function main(): Promise<void> {
   const config = configFromEnv();

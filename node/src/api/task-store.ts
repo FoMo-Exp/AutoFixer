@@ -89,6 +89,23 @@ export interface TaskEvent {
 /** Timeline item shape returned by GET /api/v1/tasks/{id}/timeline. */
 export type TimelineItem = TaskEvent;
 
+/**
+ * The memory/policy versions a run was pinned to (DAT-238). Recorded at run
+ * start from the RSI resolver, so a run is reproducible after a rollback and a
+ * canary arm is visible without reading the memory store.
+ */
+export interface TaskMemoryRef {
+  run_id: string;
+  memory_version: string | null;
+  policy_version: number | null;
+  policy_hash: string | null;
+  canary: boolean;
+  rollout_id: string | null;
+  bundle_id: string | null;
+  degraded: boolean;
+  item_ids: string[];
+}
+
 export interface TaskResource {
   id: string;
   /** The workspace this task belongs to; always the scoped path's workspace. */
@@ -119,6 +136,8 @@ export interface TaskResource {
    * Null until a Pi session exists for the task (forgepilot-api/v1).
    */
   pi_summary: PiSummary | null;
+  /** Memory/policy versions this run was pinned to; null when memory is off. */
+  memory: TaskMemoryRef | null;
   governance: {
     current_head_sha: string | null;
     observations_valid: boolean;
@@ -144,6 +163,15 @@ export interface RunSummary {
   run_id: string;
   state: DshState;
   created_at: string;
+  /**
+   * Run-level evidence, populated only by observations made while this run was
+   * active. Undefined means "not attributed" and callers must fail closed:
+   * a multi-run task never lends its task-level aggregates to one run.
+   */
+  actions_completed?: number;
+  safety_events?: number;
+  /** Last time this run's own evidence changed; never another run's clock. */
+  updated_at?: string;
 }
 
 /**
@@ -246,6 +274,8 @@ export interface TaskRecord {
   actionsInFlight: number;
   /** Projected safe summary of the latest settled Pi turn; see pi-summary.ts. */
   piSummary: PiSummary | null;
+  /** Memory/policy pin taken at run start (DAT-238); null when memory is off. */
+  memory: TaskMemoryRef | null;
 }
 
 export function newTaskId(): string {
@@ -293,6 +323,7 @@ export function createTaskRecord(input: {
     agentSettled: false,
     actionsInFlight: 0,
     piSummary: null,
+    memory: null,
   };
 }
 
@@ -321,6 +352,8 @@ export function toTaskResource(record: TaskRecord): TaskResource {
     risk: record.risk,
     progress: record.progress,
     pi_summary: projectPiSummary(record.piSummary),
+    memory:
+      record.memory === null ? null : { ...record.memory, item_ids: [...record.memory.item_ids] },
     governance: {
       current_head_sha: record.headSha,
       observations_valid: record.governanceValid,
@@ -372,6 +405,41 @@ export class TaskStore {
 
   get(taskId: string): TaskRecord | undefined {
     return this.tasks.get(taskId);
+  }
+
+  /** Lookup by the dsh run id, current or historical (run pins use this). */
+  getByRunId(runId: string): TaskRecord | undefined {
+    for (const record of this.tasks.values()) {
+      if (record.runId === runId || record.runs.some((run) => run.run_id === runId)) {
+        return record;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Attribute one observed action or safety denial to the run that produced it.
+   * Evidence is written only to that run's summary; an update of another run
+   * can never overwrite it (DAT-238 run-level canary evidence).
+   */
+  recordRunEvidence(
+    record: TaskRecord,
+    runId: string,
+    evidence: { action?: boolean; safety_event?: boolean },
+  ): void {
+    let entry = record.runs.find((run) => run.run_id === runId);
+    if (entry === undefined) {
+      entry = { run_id: runId, state: "running", created_at: new Date().toISOString() };
+      record.runs.push(entry);
+    }
+    if (evidence.action) {
+      entry.actions_completed = (entry.actions_completed ?? 0) + 1;
+    }
+    if (evidence.safety_event) {
+      entry.safety_events = (entry.safety_events ?? 0) + 1;
+    }
+    entry.updated_at = new Date().toISOString();
+    this.schedulePersist();
   }
 
   put(record: TaskRecord): void {
@@ -600,5 +668,6 @@ function deserializeTask(
   record.actionsInFlight = 0;
   // Projections persisted before DAT-191 predate the summary field.
   record.piSummary ??= null;
+  record.memory ??= null;
   return record;
 }

@@ -22,8 +22,8 @@ import {
   PROVIDER_CREDENTIAL_ENV_VARS,
   buildAdapterOptions,
   createModelGateway,
+  createScopeBackedPolicyResolver,
   createStaticCredentialStore,
-  createStaticPolicyResolver,
   createOrchestrator,
   denyAllPolicyResolver,
   validateGatewayPolicy,
@@ -43,6 +43,7 @@ import {
   TEST_ENDPOINT_BASE_URL,
   TEST_SCOPE,
   memorySink,
+  securityStubs,
   testPolicyFor,
 } from "./helpers/test-gateway.js";
 
@@ -164,9 +165,9 @@ function gatewayWith(
   } = {},
 ) {
   return createModelGateway({
-    policyResolver: extras.policy
-      ? createStaticPolicyResolver(extras.policy, TEST_SCOPE)
-      : createStaticPolicyResolver(testPolicyFor(TEST_MODEL), TEST_SCOPE),
+    policyResolver: createScopeBackedPolicyResolver([
+      { scope: TEST_SCOPE, policy: extras.policy ?? testPolicyFor(TEST_MODEL) },
+    ]),
     credentials: createStaticCredentialStore(
       extras.credentials ?? { [TEST_CREDENTIAL_REF]: TEST_CREDENTIAL },
     ),
@@ -177,6 +178,7 @@ function gatewayWith(
     // Dispatch needs its required audit sink; default an in-memory one.
     sink: extras.sink ?? memorySink().sink,
     ...(extras.onIncident ? { onIncident: extras.onIncident } : {}),
+    ...securityStubs(),
     newInvocationId: counterIds(),
     now: () => new Date("2026-11-03T00:00:00Z"),
   });
@@ -212,8 +214,14 @@ describe("gateway dispatch", () => {
 
     expect(events.map((event) => event.phase)).toEqual(["pre_dispatch", "outcome"]);
     expect(events[0]).toMatchObject({ phase: "pre_dispatch", attempt: 1 });
+    // The attempt identity carries the run's ids and the authenticated
+    // scope — never the binding's scope authority.
     expect(events[0]?.identity).toEqual({
-      ...TEST_BINDING,
+      enterpriseId: TEST_SCOPE.enterpriseId,
+      workspaceId: TEST_SCOPE.workspaceId,
+      issueId: TEST_BINDING.issueId,
+      runId: TEST_BINDING.runId,
+      traceId: TEST_BINDING.traceId,
       invocationId: "inv_1",
     });
     expect(events[0]).toMatchObject({
@@ -276,6 +284,7 @@ describe("gateway denials", () => {
       policyResolver: denyAllPolicyResolver,
       credentials: createStaticCredentialStore({}),
       adapter,
+      ...securityStubs(),
       newInvocationId: counterIds(),
     });
     await expectDenial(
@@ -354,22 +363,31 @@ describe("gateway denials", () => {
     expect(calls).toHaveLength(0);
   });
 
-  test("a binding outside the configured scope is denied — caller scope is not authoritative", async () => {
-    // The static resolver serves exactly its configured scope (scope A); a
-    // binding claiming another scope (scope B) resolves no policy and is
-    // denied before any provider dispatch. This pins the DAT-208 Architect
-    // ruling property until DAT-242 wires the authoritative scope pipeline.
+  test("a binding whose claim is not the authenticated scope is denied — caller scope is not authoritative", async () => {
+    // The binding claims scope B while its scope authority resolves the
+    // authenticated scope A (DAT-241): a cross-tenant binding is denied
+    // MODEL_EGRESS_DENIED/SCOPE_CROSS_TENANT before any policy, credential,
+    // or provider dispatch — and the denial is attributed to the
+    // authenticated scope, never to the claim. This pins the DAT-208
+    // Architect ruling property under DAT-242's authoritative scope pipeline.
     const { adapter, calls } = spyAdapter(() => okStream());
-    const gateway = gatewayWith(adapter);
+    const { sink, events } = recordingSink();
+    const gateway = gatewayWith(adapter, { sink });
     await expectDenial(
       gateway.bind({ ...TEST_BINDING, enterpriseId: "ent_other", workspaceId: "ws_other" })(
         TEST_MODEL,
         CONTEXT,
         undefined,
       ),
-      "POLICY_UNAVAILABLE",
+      "SCOPE_CROSS_TENANT",
     );
     expect(calls).toHaveLength(0);
+    const outcome = events.find((event) => event.phase === "outcome");
+    expect(outcome).toMatchObject({
+      outcome: "denied",
+      denyReason: "SCOPE_CROSS_TENANT",
+      identity: { enterpriseId: TEST_SCOPE.enterpriseId, workspaceId: TEST_SCOPE.workspaceId },
+    });
   });
 
   test("a policy switch mid-retries cannot move the call to another endpoint", async () => {
@@ -406,6 +424,7 @@ describe("gateway denials", () => {
       adapter,
       scanner: createPatternSecretScanner(),
       sink: memorySink().sink,
+      ...securityStubs(),
       newInvocationId: counterIds(),
     });
     let reads = 0;

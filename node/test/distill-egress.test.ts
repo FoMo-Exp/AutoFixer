@@ -26,7 +26,7 @@ import {
 } from "../src/distill/index.js";
 import type { CapturedOutcome } from "../src/distill/index.js";
 import { TEST_MODEL, scriptedStream } from "./helpers/scripted-stream.js";
-import { TEST_BINDING, scriptedGateway } from "./helpers/test-gateway.js";
+import { TEST_BINDING, scriptedGateway, securityStubs } from "./helpers/test-gateway.js";
 
 let db: ControlPlaneDb;
 let memory: MemoryRepositories;
@@ -276,6 +276,7 @@ describe("distillation dispatch through the ADR-0005 gateway", () => {
       policyResolver: denyAllPolicyResolver,
       credentials: createStaticCredentialStore({}),
       adapter: { stream: scripted.streamFn },
+      ...securityStubs(),
     });
 
     await expect(

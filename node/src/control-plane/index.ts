@@ -100,6 +100,31 @@ export type {
 } from "./identity-types.js";
 
 export type {
+  CreateInvitationInput,
+  Invitation,
+  InvitationDenialReason,
+  InvitationEvaluationInput,
+  InvitationId,
+  InvitationRedemptionDenied,
+  InvitationRedemptionOutcome,
+  InvitationRedemptionSuccess,
+  InvitationRole,
+  InvitationStatus,
+} from "./invitation-types.js";
+
+export type {
+  InvitationRepository,
+  RedemptionDecision,
+  RedemptionFacts,
+  RepositoryAccessFact,
+} from "./invitation-repositories.js";
+export {
+  createInvitationRepository,
+  evaluateRedemption,
+  hasCurrentRepositoryAccess,
+} from "./invitation-repositories.js";
+
+export type {
   AuthAuditRepository,
   DesktopFlowRepository,
   EnterpriseRoleRepository,

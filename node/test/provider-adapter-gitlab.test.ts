@@ -31,6 +31,7 @@ const PARENT_GROUP_URL = "/api/v4/groups/acme";
 const PROJECT_MEMBERS_URL = "/api/v4/projects/414/members?per_page=100&page=1";
 const GROUP_MEMBERS_URL = "/api/v4/groups/57/members?per_page=100&page=1";
 const ANCESTOR_MEMBERS_URL = "/api/v4/groups/12/members?per_page=100&page=1";
+const INVITED_GROUPS_URL = "/api/v4/projects/414/invited_groups?per_page=100&page=1";
 
 const ctx: ProviderCallContext = {
   enterprise_id: "ent_1",
@@ -67,6 +68,8 @@ const PROJECT = {
   id: 414,
   path_with_namespace: "acme/platform/api",
   namespace: { id: 57, full_path: "acme/platform", kind: "group" },
+  // Only the project payload carries the granted share level (DAT-248).
+  shared_with_groups: [],
 };
 
 const PROJECT_MEMBER = { id: 900, username: "dev", access_level: 30, state: "active" };
@@ -77,6 +80,7 @@ function fullRoutes() {
   return exactRoutes({
     [PROJECT_URL]: { status: 200, body: PROJECT },
     [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+    [INVITED_GROUPS_URL]: { status: 200, body: [] },
     [PROJECT_MEMBERS_URL]: { status: 200, body: [PROJECT_MEMBER] },
     [GROUP_MEMBERS_URL]: { status: 200, body: [GROUP_MEMBER] },
     [ANCESTOR_MEMBERS_URL]: { status: 200, body: [ANCESTOR_MEMBER] },
@@ -94,6 +98,7 @@ describe("gitlab adapter paths and credentials", () => {
     expect(provider.urls()).toEqual([
       PROJECT_URL,
       PARENT_GROUP_URL,
+      INVITED_GROUPS_URL,
       PROJECT_MEMBERS_URL,
       GROUP_MEMBERS_URL,
       ANCESTOR_MEMBERS_URL,
@@ -161,6 +166,7 @@ describe("gitlab adapter paths and credentials", () => {
       exactRoutes({
         [PROJECT_URL]: { status: 200, body: PROJECT },
         [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_GROUPS_URL]: { status: 200, body: [] },
         [PROJECT_MEMBERS_URL]: {
           status: 200,
           headers: { "x-next-page": "2" },
@@ -186,6 +192,7 @@ describe("gitlab adapter paths and credentials", () => {
       exactRoutes({
         [PROJECT_URL]: { status: 200, body: PROJECT },
         [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_GROUPS_URL]: { status: 200, body: [] },
         [PROJECT_MEMBERS_URL]: {
           status: 200,
           body: [{ id: 905, username: "minimal", access_level: 5, state: "active" }],
@@ -204,6 +211,7 @@ describe("gitlab adapter paths and credentials", () => {
       exactRoutes({
         [PROJECT_URL]: { status: 200, body: PROJECT },
         [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_GROUPS_URL]: { status: 200, body: [] },
         [PROJECT_MEMBERS_URL]: {
           status: 200,
           body: [{ id: 906, username: "weird", access_level: 77 }],
@@ -313,6 +321,7 @@ describe("gitlab provider failure semantics", () => {
       exactRoutes({
         [PROJECT_URL]: { status: 200, body: PROJECT },
         [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_GROUPS_URL]: { status: 200, body: [] },
         [PROJECT_MEMBERS_URL]: {
           status: 200,
           headers: {
@@ -358,6 +367,7 @@ describe("gitlab effective permission", () => {
       exactRoutes({
         [PROJECT_URL]: { status: 200, body: PROJECT },
         [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_GROUPS_URL]: { status: 200, body: [] },
         "/api/v4/projects/414/members/900": { status: 200, body: PROJECT_MEMBER },
       }),
     );
@@ -383,6 +393,7 @@ describe("gitlab effective permission", () => {
       exactRoutes({
         [PROJECT_URL]: { status: 200, body: PROJECT },
         [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_GROUPS_URL]: { status: 200, body: [] },
         "/api/v4/projects/414/members/901": { status: 404, body: {} },
         "/api/v4/groups/57/members/901": { status: 200, body: GROUP_MEMBER },
         "/api/v4/groups/12/members/901": { status: 404, body: {} },
@@ -412,6 +423,7 @@ describe("gitlab effective permission", () => {
       exactRoutes({
         [PROJECT_URL]: { status: 200, body: PROJECT },
         [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_GROUPS_URL]: { status: 200, body: [] },
         "/api/v4/projects/414/members/902": { status: 404, body: {} },
         "/api/v4/groups/57/members/902": { status: 404, body: {} },
         "/api/v4/groups/12/members/902": { status: 200, body: ANCESTOR_MEMBER },
@@ -439,6 +451,7 @@ describe("gitlab effective permission", () => {
       exactRoutes({
         [PROJECT_URL]: { status: 200, body: PROJECT },
         [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_GROUPS_URL]: { status: 200, body: [] },
         "/api/v4/projects/414/members/999": { status: 404, body: {} },
         "/api/v4/groups/57/members/999": { status: 404, body: {} },
         "/api/v4/groups/12/members/999": { status: 404, body: {} },
@@ -451,15 +464,16 @@ describe("gitlab effective permission", () => {
     ).resolves.toBeNull();
   });
 
-  test("access that no level can be attributed to is a visibility gap, not a removal", async () => {
+  test("access that no level can be attributed to is recorded as effective access", async () => {
     provider = await startFakeProvider(
       exactRoutes({
         [PROJECT_URL]: { status: 200, body: PROJECT },
         [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_GROUPS_URL]: { status: 200, body: [] },
         "/api/v4/projects/414/members/904": { status: 404, body: {} },
         "/api/v4/groups/57/members/904": { status: 404, body: {} },
         "/api/v4/groups/12/members/904": { status: 404, body: {} },
-        // e.g. the project is shared with a group outside the ancestor chain.
+        // e.g. a group that is only shared with an invited group.
         "/api/v4/projects/414/members/all/904": {
           status: 200,
           body: { id: 904, username: "shared", access_level: 30, state: "active" },
@@ -467,13 +481,320 @@ describe("gitlab effective permission", () => {
       }),
     );
 
-    const error = await fetchEffectivePermission(
+    // The provider proved effective access; it did not prove where it comes
+    // from, so the row says exactly that and never claims a direct grant.
+    const role = await fetchEffectivePermission(
       adapterForSubjectChecks(provider.base_url),
       ctx,
       repository,
       "904",
+    );
+    expect(role).toEqual({
+      subject: "904",
+      login: "shared",
+      kind: "effective_access",
+      provider_role: "developer",
+      authority_ref: "project:414",
+      inherited_from: null,
+    });
+  });
+
+  test("a failed aggregate query is never read as removal", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        [PROJECT_URL]: { status: 200, body: PROJECT },
+        [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_GROUPS_URL]: { status: 200, body: [] },
+        "/api/v4/projects/414/members/907": { status: 404, body: {} },
+        "/api/v4/groups/57/members/907": { status: 404, body: {} },
+        "/api/v4/groups/12/members/907": { status: 404, body: {} },
+        "/api/v4/projects/414/members/all/907": { status: 500, body: {} },
+      }),
+    );
+
+    const error = await fetchEffectivePermission(
+      adapterForSubjectChecks(provider.base_url),
+      ctx,
+      repository,
+      "907",
     ).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(ProviderUnavailableError);
+  });
+});
+
+/**
+ * DAT-248: a project can be invited to a group ("shared with a group"). Only
+ * that group's members — direct plus the members it inherits from its own
+ * parents — reach the project through it, and each keeps the lower of their
+ * group role and the granted share level. The project payload is the only
+ * response that carries that level.
+ */
+describe("gitlab invited (shared) groups", () => {
+  function invitedProjects(
+    shared: { group_id: number; group_full_path: string; group_access_level: number }[],
+  ) {
+    return { ...PROJECT, shared_with_groups: shared };
+  }
+
+  const INVITED_GROUP = {
+    id: 77,
+    name: "Contractors",
+    full_path: "partner/contractors",
+  };
+  const CONTRACTOR = { id: 910, username: "contractor", access_level: 40, state: "active" };
+
+  test("declares partial visibility, because the invited-group endpoints cannot prove everything", () => {
+    expect(adapterFor("http://127.0.0.1:1").capabilities.effective_permission_visibility).toBe(
+      "partial",
+    );
+  });
+
+  test("records invited-group members as that group, capped by the granted level", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        [PROJECT_URL]: {
+          status: 200,
+          body: invitedProjects([
+            { group_id: 77, group_full_path: "partner/contractors", group_access_level: 20 },
+          ]),
+        },
+        [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_GROUPS_URL]: { status: 200, body: [INVITED_GROUP] },
+        [PROJECT_MEMBERS_URL]: { status: 200, body: [] },
+        [GROUP_MEMBERS_URL]: { status: 200, body: [] },
+        [ANCESTOR_MEMBERS_URL]: { status: 200, body: [] },
+        "/api/v4/groups/77/members/all?per_page=100&page=1": { status: 200, body: [CONTRACTOR] },
+      }),
+    );
+
+    const roster = await collectRoster(adapterFor(provider.base_url), ctx, repository);
+
+    expect(roster.entries).toEqual([
+      {
+        subject: "910",
+        login: "contractor",
+        kind: "group",
+        // Inherited members of an invited group keep the lower of the two
+        // levels: maintainer (40) in the group, reporter (20) granted.
+        provider_role: "reporter",
+        authority_ref: "group:77",
+        inherited_from: null,
+      },
+    ]);
+    expect(provider.urls()).toContain("/api/v4/groups/77/members/all?per_page=100&page=1");
+    // The ancestor-group listing (`/projects/:id/groups`) is a different
+    // endpoint and must never be used as the invited-group source.
+    expect(provider.urls().some((url) => url.includes("/projects/414/groups?"))).toBe(false);
+  });
+
+  test("Planner and Security Manager members are floored instead of aborting the roster", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        [PROJECT_URL]: {
+          status: 200,
+          body: invitedProjects([
+            { group_id: 77, group_full_path: "partner/contractors", group_access_level: 50 },
+            { group_id: 78, group_full_path: "partner/auditors", group_access_level: 25 },
+          ]),
+        },
+        [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_GROUPS_URL]: {
+          status: 200,
+          body: [
+            { id: 77, full_path: "partner/contractors" },
+            { id: 78, full_path: "partner/auditors" },
+          ],
+        },
+        [PROJECT_MEMBERS_URL]: { status: 200, body: [] },
+        [GROUP_MEMBERS_URL]: { status: 200, body: [] },
+        [ANCESTOR_MEMBERS_URL]: { status: 200, body: [] },
+        "/api/v4/groups/77/members/all?per_page=100&page=1": {
+          status: 200,
+          body: [
+            // Planner (15) and Security Manager (25) are real GitLab levels
+            // with no repository role of their own.
+            { id: 920, username: "planner", access_level: 15, state: "active" },
+            { id: 921, username: "security-manager", access_level: 25, state: "active" },
+          ],
+        },
+        "/api/v4/groups/78/members/all?per_page=100&page=1": {
+          status: 200,
+          body: [{ id: 922, username: "developer", access_level: 30, state: "active" }],
+        },
+      }),
+    );
+
+    const roster = await collectRoster(adapterFor(provider.base_url), ctx, repository);
+
+    expect(roster.entries.map((entry) => [entry.subject, entry.provider_role])).toEqual([
+      // Security Manager share level (25) floors to reporter (20).
+      ["922", "reporter"],
+      // Planner floors to guest, Security Manager floors to reporter.
+      ["920", "guest"],
+      ["921", "reporter"],
+    ]);
+  });
+
+  test("paginates the invited-group listing and each invited group's members", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        [PROJECT_URL]: {
+          status: 200,
+          body: invitedProjects([
+            { group_id: 77, group_full_path: "partner/contractors", group_access_level: 20 },
+            { group_id: 78, group_full_path: "partner/auditors", group_access_level: 30 },
+          ]),
+        },
+        [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_GROUPS_URL]: {
+          status: 200,
+          headers: { "x-next-page": "2" },
+          body: [INVITED_GROUP],
+        },
+        "/api/v4/projects/414/invited_groups?per_page=100&page=2": {
+          status: 200,
+          body: [{ id: 78, full_path: "partner/auditors" }],
+        },
+        [PROJECT_MEMBERS_URL]: { status: 200, body: [] },
+        [GROUP_MEMBERS_URL]: { status: 200, body: [] },
+        [ANCESTOR_MEMBERS_URL]: { status: 200, body: [] },
+        "/api/v4/groups/78/members/all?per_page=100&page=1": {
+          status: 200,
+          headers: { "x-next-page": "2" },
+          body: [{ id: 911, username: "auditor-a", access_level: 20, state: "active" }],
+        },
+        "/api/v4/groups/78/members/all?per_page=100&page=2": {
+          status: 200,
+          body: [{ id: 912, username: "auditor-b", access_level: 40, state: "active" }],
+        },
+        "/api/v4/groups/77/members/all?per_page=100&page=1": { status: 200, body: [] },
+      }),
+    );
+
+    const roster = await collectRoster(adapterFor(provider.base_url), ctx, repository);
+
+    // Ordered by group path: `partner/auditors` before `partner/contractors`.
+    expect(roster.entries.map((entry) => [entry.subject, entry.provider_role])).toEqual([
+      ["911", "reporter"],
+      ["912", "developer"],
+    ]);
+    expect(roster.entries.every((entry) => entry.authority_ref === "group:78")).toBe(true);
+    expect(provider.urls()).toContain("/api/v4/projects/414/invited_groups?per_page=100&page=2");
+    expect(provider.urls()).toContain("/api/v4/groups/78/members/all?per_page=100&page=2");
+  });
+
+  test("keeps direct, own-group, ancestor-group, and invited-group provenance apart", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        [PROJECT_URL]: {
+          status: 200,
+          body: invitedProjects([
+            { group_id: 77, group_full_path: "partner/contractors", group_access_level: 20 },
+          ]),
+        },
+        [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_GROUPS_URL]: { status: 200, body: [INVITED_GROUP] },
+        [PROJECT_MEMBERS_URL]: { status: 200, body: [PROJECT_MEMBER] },
+        [GROUP_MEMBERS_URL]: { status: 200, body: [GROUP_MEMBER] },
+        [ANCESTOR_MEMBERS_URL]: { status: 200, body: [ANCESTOR_MEMBER] },
+        "/api/v4/groups/77/members/all?per_page=100&page=1": { status: 200, body: [CONTRACTOR] },
+      }),
+    );
+
+    const roster = await collectRoster(adapterFor(provider.base_url), ctx, repository);
+
+    expect(
+      roster.entries.map((entry) => [
+        entry.kind,
+        entry.authority_ref,
+        entry.inherited_from,
+        entry.provider_role,
+      ]),
+    ).toEqual([
+      ["direct_collaborator", "project:414", null, "developer"],
+      ["group", "group:57", null, "maintainer"],
+      ["inherited_role", "group:12", "group:57", "reporter"],
+      ["group", "group:77", null, "reporter"],
+    ]);
+  });
+
+  test("an invited group without an observable granted level fails instead of guessing", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        // The listing knows group 79, the project payload does not carry its
+        // level: every member role would be an upper bound, so no row is safe.
+        [PROJECT_URL]: { status: 200, body: invitedProjects([]) },
+        [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_GROUPS_URL]: { status: 200, body: [{ id: 79, full_path: "partner/unknown" }] },
+      }),
+    );
+
+    const error = await collectRoster(adapterFor(provider.base_url), ctx, repository).catch(
+      (thrown: unknown) => thrown,
+    );
     expect(error).toBeInstanceOf(MissingPermissionError);
-    expect((error as MissingPermissionError).detail).toBe("permission_query");
+    expect((error as MissingPermissionError).detail).toBe("visibility");
+    expect((error as Error).message).toContain("79");
+  });
+
+  test("an instance without the invited-group endpoint falls back to the project payload", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        [PROJECT_URL]: {
+          status: 200,
+          body: invitedProjects([
+            { group_id: 77, group_full_path: "partner/contractors", group_access_level: 20 },
+          ]),
+        },
+        [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        // Older instances do not serve the listing at all.
+        [INVITED_GROUPS_URL]: { status: 404, body: { message: "404 Not Found" } },
+        [PROJECT_MEMBERS_URL]: { status: 200, body: [] },
+        [GROUP_MEMBERS_URL]: { status: 200, body: [] },
+        [ANCESTOR_MEMBERS_URL]: { status: 200, body: [] },
+        "/api/v4/groups/77/members/all?per_page=100&page=1": { status: 200, body: [CONTRACTOR] },
+      }),
+    );
+
+    const roster = await collectRoster(adapterFor(provider.base_url), ctx, repository);
+
+    expect(roster.entries.map((entry) => entry.subject)).toEqual(["910"]);
+  });
+
+  test("a subject refresh resolves invited-group access to that group", async () => {
+    provider = await startFakeProvider(
+      exactRoutes({
+        [PROJECT_URL]: {
+          status: 200,
+          body: invitedProjects([
+            { group_id: 77, group_full_path: "partner/contractors", group_access_level: 30 },
+          ]),
+        },
+        [PARENT_GROUP_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_GROUPS_URL]: { status: 200, body: [INVITED_GROUP] },
+        "/api/v4/projects/414/members/910": { status: 404, body: {} },
+        "/api/v4/groups/57/members/910": { status: 404, body: {} },
+        "/api/v4/groups/12/members/910": { status: 404, body: {} },
+        "/api/v4/groups/77/members/all/910": { status: 200, body: CONTRACTOR },
+      }),
+    );
+
+    const role = await fetchEffectivePermission(
+      adapterFor(provider.base_url),
+      ctx,
+      repository,
+      "910",
+    );
+    expect(role).toEqual({
+      subject: "910",
+      login: "contractor",
+      kind: "group",
+      provider_role: "developer",
+      authority_ref: "group:77",
+      inherited_from: null,
+    });
+    // The unfiltered aggregate endpoint is never consulted when a level answers.
+    expect(provider.urls().some((url) => url.includes("/members/all/910"))).toBe(true);
+    expect(provider.urls()).not.toContain("/api/v4/projects/414/members/all/910");
   });
 });

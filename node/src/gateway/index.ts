@@ -17,14 +17,15 @@ export {
 } from "./pattern-scanner.js";
 export type { SecretDetector } from "./pattern-scanner.js";
 export {
-  createStaticPolicyResolver,
+  createScopeBackedPolicyResolver,
   denyAllPolicyResolver,
   loadGatewayPolicyFile,
   matchEndpoint,
   matchFallback,
+  parseScopedPolicies,
   validateGatewayPolicy,
 } from "./policy.js";
-export type { EndpointMatch, GatewayPolicyResolver } from "./policy.js";
+export type { EndpointMatch, GatewayPolicyResolver, ScopedPolicyBinding } from "./policy.js";
 export { scrubSecrets } from "./redact.js";
 export {
   authorizeRequestDataClasses,
@@ -52,24 +53,34 @@ export type {
 } from "./scan.js";
 export {
   DATA_CLASSES,
+  MODEL_BUDGET_EXHAUSTED,
+  MODEL_BUDGET_UNAVAILABLE,
   MODEL_EGRESS_DENIED,
+  MODEL_TOKEN_CEILING_EXCEEDED,
+  MODEL_USAGE_UNKNOWN,
+  ModelBudgetReconciliationError,
   PROVIDER_USAGE_DIAGNOSTIC,
   ModelDispatchError,
   ModelEgressDeniedError,
+  SECURITY_REVIEW_REQUIRED,
   SENSITIVE_DATA_UNCERTAIN,
 } from "./types.js";
 export type {
   ApprovedEndpoint,
   DataClass,
+  DependentWorkHold,
   GatewayAttemptDestination,
   GatewayAttemptEvent,
   GatewayBindingIdentity,
+  GatewayCaseIntake,
   GatewayDenyReason,
   GatewayEventSink,
   GatewayFallback,
   GatewayPolicy,
   GatewayRequestIdentity,
   GatewayScope,
+  GatewayScopeAuthority,
+  GatewayScopeBinding,
   RequestScanEvidence,
   SecretClassification,
 } from "./types.js";

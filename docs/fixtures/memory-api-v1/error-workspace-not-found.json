@@ -1,0 +1,14 @@
+{
+  "error": {
+    "envelope_version": 1,
+    "code": "NOT_FOUND",
+    "stage": "validation",
+    "category": "stop",
+    "message": "no such workspace",
+    "retryable": false,
+    "retry_after_seconds": null,
+    "request_id": "req_aa9703759399499db236774e238206f6",
+    "details": {},
+    "next_action": null
+  }
+}

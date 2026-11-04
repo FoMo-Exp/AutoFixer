@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { ForgePilotClient } from "./api/client";
+import { IdentityClient } from "./api/identity";
 import type { Task } from "./api/client";
 
 function task(id: string, summary: string): Task {
@@ -30,6 +31,7 @@ function task(id: string, summary: string): Task {
     risk: null,
     progress: { phase: "Executing", actions_completed: 0, actions_total: null },
     pi_summary: null,
+    memory: null,
     governance: { current_head_sha: null, observations_valid: false, merge_queue_eligible: false },
     artifacts: { patch: null, report: null, evidence_bundle_available: false, index: [] },
   };
@@ -263,5 +265,60 @@ describe("workspace navigation", () => {
     render(<App />);
     await screen.findByRole("button", { name: "Repair alpha owner/repo" });
     expect(document.querySelector(".task-list")?.getAttribute("data-scroll")).toBe("stacked");
+  });
+});
+
+describe("invitation landing", () => {
+  const token = "inv_2ZxQ7mK9pR4tW8vY1uB6cD3eF5gH0jL";
+
+  afterEach(() => {
+    window.history.replaceState(null, "", "/");
+    window.sessionStorage.clear();
+    vi.unstubAllEnvs();
+  });
+
+  it("clears the fragment before every request and shows the join screen", async () => {
+    vi.stubEnv("VITE_FORGEPILOT_API_URL", "http://127.0.0.1:4599");
+    window.history.replaceState(null, "", `/#${token}`);
+    const hashAtRequest: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      hashAtRequest.push(window.location.hash);
+      return new Response(JSON.stringify({ items: [] }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Join a workspace" })).toBeTruthy();
+    expect(window.location.hash).toBe("");
+    expect(window.location.pathname).toBe("/");
+    expect(document.body.innerHTML).not.toContain(token);
+    // Auth and invitation requests both run only after the fragment is gone.
+    expect(hashAtRequest.length).toBeGreaterThan(0);
+    expect(hashAtRequest.every((hash) => hash === "")).toBe(true);
+  });
+});
+
+describe("surface navigation", () => {
+  it("switches to the workspace-scoped issue surface", async () => {
+    vi.spyOn(IdentityClient.prototype, "listAllWorkspaces").mockResolvedValue([]);
+    render(<App />);
+    await screen.findByRole("button", { name: "Repair alpha owner/repo" });
+
+    await userEvent.click(screen.getByRole("button", { name: "Issues" }));
+    expect(await screen.findByRole("heading", { name: "Issues" })).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "Workbench views" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /New task/ })).toBeNull();
+  });
+
+  it("switches to the workspace-scoped RSI surface", async () => {
+    vi.spyOn(IdentityClient.prototype, "listAllWorkspaces").mockResolvedValue([]);
+    render(<App />);
+    await screen.findByRole("button", { name: "Repair alpha owner/repo" });
+
+    await userEvent.click(screen.getByRole("button", { name: "RSI" }));
+    expect(await screen.findByRole("heading", { name: "Bounded self-improvement" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /New task/ })).toBeNull();
   });
 });

@@ -16,7 +16,12 @@
 import type { Context } from "@mariozechner/pi-ai";
 
 import { scrubSecrets } from "./redact.js";
-import type { DataClass, RequestScanEvidence, SecretClassification } from "./types.js";
+import type {
+  DataClass,
+  GatewayScope,
+  RequestScanEvidence,
+  SecretClassification,
+} from "./types.js";
 
 const REDACTED = "[redacted]";
 
@@ -183,6 +188,14 @@ export interface ScannableSegment {
 
 export interface SecretScanRequest {
   segments: ScannableSegment[];
+  /**
+   * The trusted enterprise/workspace scope this request belongs to, resolved
+   * by the gateway's policy resolver (ADR-0006 seam) — never caller-supplied
+   * request content. Scanners that apply scoped policy (e.g. reviewed rule
+   * corrections, DAT-211) match on it and must not apply scope-specific
+   * narrowing when it is absent.
+   */
+  scope?: GatewayScope;
 }
 
 export interface SecretFinding {
@@ -243,11 +256,29 @@ export interface ScanGateDeps {
   scanner?: SecretScanner;
   scanPolicy?: SecretScanPolicy;
   scanTimeoutMs?: number;
+  /**
+   * Trusted scope the gateway resolved for this request (ADR-0006 seam).
+   * Passed through to the scanner so scope-specific policy — reviewed rule
+   * corrections (DAT-211) — is applied only for its own scope; without it no
+   * scope-specific narrowing is applied at all (fail closed).
+   */
+  scope?: GatewayScope;
 }
 
 export type ScanGateResult =
   | { ok: true; context: Context; evidence: RequestScanEvidence }
-  | { ok: false; reason: ScanDenyReason; detail: string; evidence: RequestScanEvidence };
+  | {
+      ok: false;
+      reason: ScanDenyReason;
+      detail: string;
+      evidence: RequestScanEvidence;
+      /**
+       * The exact scanned request copy that was blocked (DAT-210): handed to
+       * encrypted quarantine as raw retained context, never to logs or errors.
+       * Absent only when the request could not be collected at all.
+       */
+      context?: Context;
+    };
 
 const DEFAULT_SCAN_TIMEOUT_MS = 10_000;
 
@@ -720,6 +751,7 @@ async function scanSegments(
   scanner: ResolvedScanner | undefined,
   segments: ScannableSegment[],
   timeoutMs: number,
+  scope: GatewayScope | undefined,
 ): Promise<{ report: SecretScanReport } | { unavailable: string }> {
   if (!scanner) {
     return { unavailable: "no usable secret scanner is configured" };
@@ -727,7 +759,9 @@ async function scanSegments(
   let raw: unknown;
   try {
     raw = await withTimeout(
-      Promise.resolve(scanner.scan.call(scanner.owner, { segments })),
+      Promise.resolve(
+        scanner.scan.call(scanner.owner, scope === undefined ? { segments } : { segments, scope }),
+      ),
       timeoutMs,
     );
   } catch {
@@ -985,12 +1019,13 @@ export async function runRequestScanGate(
     };
   }
 
-  const scan = await scanSegments(resolvedScanner, collected.segments, timeoutMs);
+  const scan = await scanSegments(resolvedScanner, collected.segments, timeoutMs, deps.scope);
   if ("unavailable" in scan) {
     return {
       ok: false,
       reason: "SCANNER_UNAVAILABLE",
       detail: scan.unavailable,
+      context: collected.context,
       evidence: evidenceOf(
         scannerId,
         scannerRuleVersion,
@@ -1018,6 +1053,7 @@ export async function runRequestScanGate(
       ok: false,
       reason: evaluation.blocked.reason,
       detail: evaluation.blocked.detail,
+      context: collected.context,
       evidence: firstEvidence(evaluation.overall),
     };
   }
@@ -1054,6 +1090,7 @@ export async function runRequestScanGate(
     reason: "SENSITIVE_DATA_UNCERTAIN",
     detail:
       "removal of suspected secret material could not be confirmed; the request stays blocked",
+    context: collected.context,
     evidence: evidenceOf(
       scan.report.scanner,
       scan.report.ruleVersion,
@@ -1085,12 +1122,13 @@ export async function runRequestScanGate(
   if (!applied) {
     return unconfirmed(minimized.segments);
   }
-  const rescan = await scanSegments(resolvedScanner, minimized.segments, timeoutMs);
+  const rescan = await scanSegments(resolvedScanner, minimized.segments, timeoutMs, deps.scope);
   if ("unavailable" in rescan) {
     return {
       ok: false,
       reason: "SCANNER_UNAVAILABLE",
       detail: rescan.unavailable,
+      context: collected.context,
       evidence: evidenceOf(
         scan.report.scanner,
         scan.report.ruleVersion,
@@ -1115,6 +1153,7 @@ export async function runRequestScanGate(
       detail:
         revaluation.blocked?.detail ??
         "removal of suspected secret material could not be confirmed; the request stays blocked",
+      context: collected.context,
       evidence: evidenceOf(
         rescan.report.scanner,
         rescan.report.ruleVersion,

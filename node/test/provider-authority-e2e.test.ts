@@ -371,6 +371,8 @@ describe("gitlab ancestor invisibility degrades to stale, never to removals", ()
     return exactRoutes({
       [GITLAB_PROJECT_URL]: { status: 200, body: GITLAB_PROJECT },
       [GITLAB_PARENT_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+      // No invited groups on this project (DAT-248 discovery).
+      "/api/v4/projects/414/invited_groups?per_page=100&page=1": { status: 200, body: [] },
       "/api/v4/projects/414/members?per_page=100&page=1": {
         status: 200,
         body: [{ id: 900, username: "dev", access_level: 30, state: "active" }],
@@ -702,5 +704,132 @@ describe("pagination-limit failures stay incomplete", () => {
     expect(
       fixture.access.roster.getAuthority(fixture.scope, fixture.integration.id, SUBJECT),
     ).toBeUndefined();
+  });
+});
+
+/**
+ * DAT-248: invited (shared) group access reaches the roster with the invited
+ * group as its provenance, and the GitLab adapter's `partial` visibility keeps
+ * a later roster that does not enumerate it from revoking the fact.
+ */
+describe("gitlab invited (shared) group access", () => {
+  const GITLAB_CANONICAL = "gitlab:acme/platform/api";
+  const PROJECT_URL = "/api/v4/projects/acme%2Fplatform%2Fapi";
+  const PARENT_URL = "/api/v4/groups/acme";
+  const INVITED_LISTING_URL = "/api/v4/projects/414/invited_groups?per_page=100&page=1";
+  const INVITED_MEMBERS_URL = "/api/v4/groups/77/members/all?per_page=100&page=1";
+  const SUBJECT = "910";
+
+  function project(
+    shared: { group_id: number; group_full_path: string; group_access_level: number }[],
+  ) {
+    return {
+      id: 414,
+      path_with_namespace: "acme/platform/api",
+      namespace: { id: 57, full_path: "acme/platform", kind: "group" },
+      shared_with_groups: shared,
+    };
+  }
+
+  function gitlabAdapter(fixture: Fixture, baseUrl: string) {
+    return createIntegrationAdapter({
+      integration: fixture.integration,
+      canonical_repository_id: GITLAB_CANONICAL,
+      credentials,
+      provider_origin: baseUrl,
+    });
+  }
+
+  function deps(fixture: Fixture) {
+    return {
+      access: fixture.access,
+      identities: fixture.identity.identities,
+      epoch: fixture.epoch,
+      clock: () => fixture.clock.now,
+      available_token_scope: ["read_api"],
+    };
+  }
+
+  const SHARE = [{ group_id: 77, group_full_path: "partner/contractors", group_access_level: 30 }];
+
+  function routesWithInvitedGroup() {
+    return exactRoutes({
+      [PROJECT_URL]: { status: 200, body: project(SHARE) },
+      [PARENT_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+      [INVITED_LISTING_URL]: {
+        status: 200,
+        body: [{ id: 77, full_path: "partner/contractors" }],
+      },
+      "/api/v4/projects/414/members?per_page=100&page=1": { status: 200, body: [] },
+      "/api/v4/groups/57/members?per_page=100&page=1": { status: 200, body: [] },
+      "/api/v4/groups/12/members?per_page=100&page=1": { status: 200, body: [] },
+      [INVITED_MEMBERS_URL]: {
+        status: 200,
+        body: [{ id: 910, username: "contractor", access_level: 40, state: "active" }],
+      },
+    });
+  }
+
+  test("an invited-group member is authoritative, and a later partial roster does not revoke it", async () => {
+    const fixture = setupFixture({ provider_type: "gitlab" });
+    const { userId } = addMember(fixture, {
+      subject: SUBJECT,
+      login: "contractor",
+      role: "member",
+    });
+
+    provider = await startFakeProvider(routesWithInvitedGroup());
+    const first = await reconcileIntegration(
+      deps(fixture),
+      fixture.scope,
+      fixture.integration,
+      gitlabAdapter(fixture, provider.base_url),
+    );
+
+    expect(first.status).toBe("completed");
+    expect(first.visibility).toBe("partial");
+    expect(first.roster_size).toBe(1);
+    expect(redemptionEligibility(fixture, SUBJECT)).toEqual({ status: 200, reason: "ok" });
+    expect(
+      fixture.access.roster
+        .listRoles(fixture.scope, fixture.integration.id)
+        .map((row) => [row.source_kind, row.authority_ref, row.provider_role, row.inherited_from]),
+    ).toEqual([["group", "group:77", "developer", null]]);
+
+    // The project is no longer shared with that group: the member disappears
+    // from the roster. `partial` visibility means this is not proof of a lost
+    // permission, so the fact is kept and only marked stale.
+    await provider.close();
+    provider = await startFakeProvider(
+      exactRoutes({
+        [PROJECT_URL]: { status: 200, body: project([]) },
+        [PARENT_URL]: { status: 200, body: { id: 12, full_path: "acme" } },
+        [INVITED_LISTING_URL]: { status: 200, body: [] },
+        "/api/v4/projects/414/members?per_page=100&page=1": { status: 200, body: [] },
+        "/api/v4/groups/57/members?per_page=100&page=1": { status: 200, body: [] },
+        "/api/v4/groups/12/members?per_page=100&page=1": { status: 200, body: [] },
+      }),
+    );
+    const second = await reconcileIntegration(
+      deps(fixture),
+      fixture.scope,
+      fixture.integration,
+      gitlabAdapter(fixture, provider.base_url),
+    );
+
+    expect(second.members_removed).toBe(0);
+    expect(second.authority_unobserved).toBe(1);
+    expect(second.revocations).toEqual([]);
+    const authority = fixture.access.roster.getAuthority(
+      fixture.scope,
+      fixture.integration.id,
+      SUBJECT,
+    );
+    expect(authority?.state).toBe("stale");
+    expect(authority?.user_id).toBe(userId);
+    expect(redemptionEligibility(fixture, SUBJECT)).toEqual({
+      status: 403,
+      reason: "authority_stale",
+    });
   });
 });

@@ -174,40 +174,26 @@ describe("ForgePilotClient", () => {
     expect(legacyFetch.mock.calls[0]?.[0]).toBe("http://127.0.0.1:4567/api/v1/tasks/tsk_1/stream");
   });
 
-  it("walks every workspace page and stops on a repeated cursor", async () => {
-    const workspace = (id: string) => ({
-      id,
-      enterprise_id: "ent_1",
-      name: `Workspace ${id}`,
-      status: "active",
-      repository: {
-        repository_id: `repo_${id}`,
-        provider_instance_id: "pi_1",
-        provider_type: "github",
-      },
-      role: "member",
-      version: 1,
-      created_at: "2026-11-01T00:00:00Z",
-      updated_at: "2026-11-01T00:00:00Z",
-    });
+  it("sends the session cookie and CSRF echo when the workbench and API differ in origin", async () => {
     const fetchImpl = vi
       .fn()
-      .mockResolvedValueOnce(response({ items: [workspace("wsp_a")], next_cursor: "wsp_a" }))
-      .mockResolvedValueOnce(response({ items: [workspace("wsp_b")], next_cursor: "wsp_a" }));
+      .mockImplementation(async () => response({ items: [], next_cursor: null }));
     const client = new ForgePilotClient({
-      baseUrl: "http://127.0.0.1:4567",
-      token: "token",
-      workspaceId: null,
+      baseUrl: "http://127.0.0.1:4599",
+      token: "",
+      csrfToken: () => "csrf_1",
       fetchImpl,
     });
 
-    const workspaces = await client.listWorkspaces();
+    // The Vite dev server runs on another loopback port, so the browser must
+    // opt into cross-origin credentials or `fp_session` is never attached.
+    await client.listTasks();
+    await client.cancelTask("tsk_1");
 
-    expect(workspaces.map((item) => item.id)).toEqual(["wsp_a", "wsp_b"]);
-    expect(fetchImpl.mock.calls[0]?.[0]).toBe("http://127.0.0.1:4567/api/v1/workspaces");
-    expect(fetchImpl.mock.calls[1]?.[0]).toBe(
-      "http://127.0.0.1:4567/api/v1/workspaces?cursor=wsp_a",
-    );
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ credentials: "include" });
+    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({
+      credentials: "include",
+      headers: expect.objectContaining({ "X-CSRF-Token": "csrf_1" }),
+    });
   });
 });

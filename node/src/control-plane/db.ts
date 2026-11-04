@@ -600,6 +600,665 @@ const MIGRATIONS: Migration[] = [
         ON provider_member_role(integration_id, subject)`,
     ],
   },
+  {
+    // Owner-created invitations (DAT-204): one opaque bearer per row. Only the
+    // HMAC-SHA-256 keyed digest of the bearer is stored, so a leaked database
+    // never yields a redeemable token. Single use: `redeemed_at`/`redeemed_by`
+    // record the one redemption (and the idempotent-replay subject);
+    // `revoked_at`/`revoked_by` record owner revocation. The bound subject, when
+    // set, restricts redemption to that verified provider subject. Rows die
+    // with their workspace; the audit of an invitation outlives it in auth_audit.
+    version: 6,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS invitation (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK (role IN ('member')),
+        token_digest TEXT NOT NULL UNIQUE,
+        bound_provider_subject TEXT,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        revoked_at TEXT,
+        revoked_by TEXT,
+        redeemed_at TEXT,
+        redeemed_by TEXT,
+        version INTEGER NOT NULL DEFAULT 1
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_invitation_workspace
+        ON invitation(workspace_id)`,
+    ],
+  },
+  {
+    // Candidate admission gate (DAT-234): the record of every validation
+    // decision and every retirement candidate a contradiction produced.
+    //
+    // Both tables are purely additive — no existing table is rebuilt, so the
+    // migration is safe to run against a populated database. Like
+    // `memory_events`, they carry plain scope IDs without foreign keys: the
+    // record of a decision must outlive the item it describes, and it must
+    // survive workspace erasure the same way the rest of the audit trail does.
+    //
+    // Every column here holds an opaque id, a fixed enum, a one-way content
+    // digest, or a count. Candidate statements, matched lint text, and
+    // free-text reasons are never persisted — the reason code is the reason.
+    //
+    // Numbering: DAT-247 took v5 and DAT-204 took v6 on main before this
+    // branch merged, so this block is v7 rather than colliding with them.
+    // Renumbering an unmerged block costs nothing; a merged one is never
+    // touched. It stays purely additive, so it is safe on a database that has
+    // already applied v6.
+    version: 7,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS memory_admission_decisions (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        candidate_hash TEXT NOT NULL,
+        item_id TEXT,
+        item_version INTEGER,
+        disposition TEXT NOT NULL CHECK (
+          disposition IN ('admitted', 'held', 'discarded', 'merged')
+        ),
+        reason_codes TEXT NOT NULL,
+        check_results TEXT NOT NULL,
+        duplicate_of_item_id TEXT,
+        contradicts_item_ids TEXT NOT NULL,
+        retrieval_eligible INTEGER NOT NULL CHECK (retrieval_eligible IN (0, 1)),
+        factual_injection_allowed INTEGER NOT NULL CHECK (factual_injection_allowed IN (0, 1)),
+        run_id TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_admission_decisions_scope
+        ON memory_admission_decisions(enterprise_id, workspace_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_admission_decisions_item
+        ON memory_admission_decisions(item_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_admission_decisions_hash
+        ON memory_admission_decisions(workspace_id, candidate_hash)`,
+      // A contradiction never silently overwrites anything. It produces a
+      // proposal to deprecate or supersede one exact item, which a human or
+      // the consolidation job accepts or rejects. `status` is that decision.
+      `CREATE TABLE IF NOT EXISTS memory_retirement_candidates (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        successor_item_id TEXT,
+        proposed_action TEXT NOT NULL CHECK (proposed_action IN ('deprecate', 'supersede')),
+        reason_code TEXT NOT NULL,
+        decision_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'accepted', 'rejected')),
+        resolved_at TEXT,
+        resolved_by TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      // Idempotency for re-evaluated candidates. `successor_item_id` is NULL
+      // for a plain deprecation, and SQLite treats NULLs as distinct in a
+      // table-level UNIQUE — so the uniqueness lives in an expression index
+      // that folds NULL to ''.
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_retirement_candidates_unique
+        ON memory_retirement_candidates(
+          workspace_id, item_id, proposed_action, decision_id,
+          COALESCE(successor_item_id, '')
+        )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_retirement_candidates_scope
+        ON memory_retirement_candidates(enterprise_id, workspace_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_retirement_candidates_item
+        ON memory_retirement_candidates(item_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_retirement_candidates_status
+        ON memory_retirement_candidates(workspace_id, status)`,
+    ],
+  },
+  {
+    // Promotion and consolidation lifecycle (DAT-235): per-workspace promotion
+    // policy, the record of every promotion assessment, and the auditable
+    // report of every scheduled consolidation run and the fixed-vocabulary
+    // operations it applied.
+    //
+    // Numbering: main already took v5 (DAT-247), v6 (DAT-204), and v7
+    // (DAT-234's admission gate, renumbered on merge), so this unmerged block
+    // is v8 — the next free version, immediately after the admission gate it
+    // builds on. Renumbering an unmerged block costs nothing and no merged
+    // migration is touched; a duplicate version would silently skip this
+    // schema.
+    //
+    // The policy row is workspace configuration and cascades with the
+    // workspace. Decisions and consolidation reports are audit records: like
+    // `memory_events` they carry plain scope IDs without foreign keys and
+    // outlive the items they describe. Every column here holds an opaque id,
+    // a fixed enum, a one-way digest, a count, or a timestamp — never memory
+    // statements, provenance payloads, or free-text reasons.
+    version: 8,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS memory_promotion_policy (
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        auto_promote_facts INTEGER NOT NULL CHECK (auto_promote_facts IN (0, 1)),
+        fact_min_independent_runs INTEGER NOT NULL CHECK (fact_min_independent_runs >= 2),
+        require_human_approval_all INTEGER NOT NULL CHECK (require_human_approval_all IN (0, 1)),
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        PRIMARY KEY (enterprise_id, workspace_id)
+      )`,
+      `CREATE TABLE IF NOT EXISTS memory_promotion_decisions (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        item_version INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (
+          kind IN ('fact', 'lesson', 'playbook', 'anti_pattern', 'episode', 'policy')
+        ),
+        outcome TEXT NOT NULL CHECK (outcome IN ('promoted', 'blocked')),
+        reasons TEXT NOT NULL,
+        independent_support_runs INTEGER NOT NULL,
+        evaluation_delta REAL,
+        policy_digest TEXT NOT NULL,
+        run_id TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_promotion_decisions_scope
+        ON memory_promotion_decisions(enterprise_id, workspace_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_promotion_decisions_item
+        ON memory_promotion_decisions(item_id)`,
+      `CREATE TABLE IF NOT EXISTS memory_consolidation_runs (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        items_scanned INTEGER NOT NULL DEFAULT 0,
+        counts_recomputed INTEGER NOT NULL DEFAULT 0,
+        ops_applied INTEGER NOT NULL DEFAULT 0,
+        ops_skipped INTEGER NOT NULL DEFAULT 0,
+        budget_exhausted INTEGER NOT NULL DEFAULT 0 CHECK (budget_exhausted IN (0, 1)),
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_consolidation_runs_scope
+        ON memory_consolidation_runs(enterprise_id, workspace_id, started_at)`,
+      `CREATE TABLE IF NOT EXISTS memory_consolidation_ops (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        op TEXT NOT NULL CHECK (
+          op IN ('merge', 'supersede', 'expire', 'deprecate', 'quarantine')
+        ),
+        item_id TEXT NOT NULL,
+        target_item_id TEXT,
+        item_version INTEGER,
+        reason_code TEXT NOT NULL CHECK (
+          reason_code IN (
+            'duplicate_content', 'past_valid_to', 'stale_fact', 'unused_decay',
+            'retirement_proposal', 'security_report',
+            'item_deleted', 'item_missing', 'status_not_applicable'
+          )
+        ),
+        applied INTEGER NOT NULL CHECK (applied IN (0, 1)),
+        detail TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_consolidation_ops_run
+        ON memory_consolidation_ops(run_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_consolidation_ops_scope
+        ON memory_consolidation_ops(enterprise_id, workspace_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_consolidation_ops_item
+        ON memory_consolidation_ops(item_id)`,
+    ],
+  },
+  {
+    // Bounded memory retrieval (DAT-236). The migration lineage is at v8
+    // (DAT-235 promotion and consolidation lifecycle), so this slice takes the
+    // next free number, v9.
+    //
+    // Retrieval policy is versioned and immutable: every run records the exact
+    // policy version it used, so a bundle can be reproduced. Retrieval runs,
+    // feedback, and evaluation records are append-only audit rows; none of them
+    // can mutate memory items, trust classes, or capability grants.
+    version: 9,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS memory_retrieval_policies (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL,
+        policy TEXT NOT NULL,
+        policy_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        UNIQUE (workspace_id, version)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_retrieval_policies_scope
+        ON memory_retrieval_policies(enterprise_id, workspace_id)`,
+      // One row per assembled bundle. `injected` is a bounded JSON array of
+      // {item_id, item_version, kind, tier, approved} so a run can be audited
+      // and replayed against the exact memory it consumed.
+      `CREATE TABLE IF NOT EXISTS memory_retrieval_runs (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        bundle_id TEXT NOT NULL,
+        run_id TEXT,
+        purpose TEXT NOT NULL,
+        query TEXT NOT NULL,
+        policy_version INTEGER NOT NULL,
+        memory_version TEXT NOT NULL,
+        degraded INTEGER NOT NULL CHECK (degraded IN (0, 1)),
+        degraded_reason TEXT,
+        injected TEXT NOT NULL,
+        omitted_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        UNIQUE (workspace_id, bundle_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_retrieval_runs_scope
+        ON memory_retrieval_runs(enterprise_id, workspace_id, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_retrieval_runs_run
+        ON memory_retrieval_runs(workspace_id, run_id)`,
+      // Run outcome and per-item usefulness feedback. Append-only and
+      // non-authoritative: it never promotes, demotes, or re-weights an item by
+      // itself; consolidation consumes it later.
+      `CREATE TABLE IF NOT EXISTS memory_feedback (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        bundle_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (
+          outcome IN ('accepted', 'merged', 'rejected', 'cancelled', 'failed', 'unknown')
+        ),
+        details TEXT NOT NULL,
+        note TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_feedback_scope
+        ON memory_feedback(enterprise_id, workspace_id, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_feedback_bundle
+        ON memory_feedback(workspace_id, bundle_id)`,
+      // Offline replay / canary evaluation results. Recording a result never
+      // promotes anything: the RSI approval flow (DAT-238) owns that decision.
+      // `holdout` records that the sample came from the hidden holdout; the
+      // learning loop can never write evaluation cases through this surface.
+      `CREATE TABLE IF NOT EXISTS memory_eval_runs (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('offline_replay', 'canary')),
+        dataset_name TEXT NOT NULL,
+        sample_size INTEGER NOT NULL CHECK (sample_size > 0),
+        holdout INTEGER NOT NULL CHECK (holdout IN (0, 1)),
+        policy_version INTEGER NOT NULL,
+        memory_version TEXT NOT NULL,
+        metrics TEXT NOT NULL,
+        verdict TEXT NOT NULL CHECK (verdict IN ('pass', 'fail', 'inconclusive')),
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_eval_runs_scope
+        ON memory_eval_runs(enterprise_id, workspace_id, created_at)`,
+    ],
+  },
+  {
+    // Enterprise templates (DAT-237). Templates are deliberately stored in
+    // their own tables, not in `memory_items`: the memory read path can then
+    // never return one, and a workspace sees a template only after it adopts
+    // it and a local candidate item is written. Publication records keep the
+    // source workspace/item for administrator audit and are never read by an
+    // adopting workspace. Template events carry metadata only and outlive the
+    // rows they describe, like `memory_events`.
+    //
+    // This slice takes v10, directly after DAT-236's v9; v1-v9 are merged
+    // and remain untouched.
+    version: 10,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS enterprise_templates (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        status TEXT NOT NULL CHECK (status IN ('published', 'revoked')),
+        current_version INTEGER NOT NULL,
+        revoked_at TEXT,
+        revoked_by TEXT,
+        revoke_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_templates_scope
+        ON enterprise_templates(enterprise_id, status)`,
+      `CREATE TABLE IF NOT EXISTS enterprise_template_versions (
+        template_id TEXT NOT NULL REFERENCES enterprise_templates(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        kind TEXT NOT NULL CHECK (kind IN ('fact', 'lesson', 'playbook', 'anti_pattern')),
+        scope TEXT NOT NULL,
+        statement TEXT NOT NULL,
+        preconditions TEXT NOT NULL,
+        sensitivity TEXT NOT NULL CHECK (
+          sensitivity IN ('internal', 'confidential', 'restricted')
+        ),
+        evidence_classes TEXT NOT NULL,
+        security_review TEXT,
+        content_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        PRIMARY KEY (template_id, version)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_template_versions_scope
+        ON enterprise_template_versions(enterprise_id)`,
+      // Administrator-only provenance. No workspace foreign key: the
+      // publication record must survive workspace deletion as audit history,
+      // and it never travels with a template version.
+      `CREATE TABLE IF NOT EXISTS enterprise_template_publications (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        template_id TEXT NOT NULL REFERENCES enterprise_templates(id) ON DELETE CASCADE,
+        template_version INTEGER NOT NULL,
+        source_workspace_id TEXT NOT NULL,
+        source_item_id TEXT NOT NULL,
+        source_item_version INTEGER NOT NULL,
+        source_evidence_count INTEGER NOT NULL,
+        scrub_report TEXT NOT NULL,
+        published_at TEXT NOT NULL,
+        published_by TEXT NOT NULL,
+        FOREIGN KEY (template_id, template_version)
+          REFERENCES enterprise_template_versions(template_id, version) ON DELETE CASCADE,
+        UNIQUE (enterprise_id, source_workspace_id, source_item_id, source_item_version)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_template_publications_template
+        ON enterprise_template_publications(enterprise_id, template_id)`,
+      // Adoption pins one exact template version and one local candidate item.
+      // The local memory item itself lives in `memory_items`; this row is the
+      // link that revocation follows, and it never stores template content.
+      `CREATE TABLE IF NOT EXISTS enterprise_template_adoptions (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        template_id TEXT NOT NULL REFERENCES enterprise_templates(id),
+        template_version INTEGER NOT NULL,
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        item_id TEXT NOT NULL,
+        item_version INTEGER NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('active', 'revoked')),
+        adopted_at TEXT NOT NULL,
+        adopted_by TEXT NOT NULL,
+        revoked_at TEXT,
+        revoked_by TEXT,
+        revoke_reason TEXT,
+        revocation_outcome TEXT CHECK (
+          revocation_outcome IN (
+            'deprecated', 'already_deprecated', 'quarantined_untouched',
+            'retired_untouched', 'item_missing', 'deprecation_failed'
+          )
+        ),
+        UNIQUE (workspace_id, template_id, template_version),
+        FOREIGN KEY (template_id, template_version)
+          REFERENCES enterprise_template_versions(template_id, version)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_template_adoptions_scope
+        ON enterprise_template_adoptions(enterprise_id, workspace_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_template_adoptions_template
+        ON enterprise_template_adoptions(enterprise_id, template_id)`,
+      `CREATE TABLE IF NOT EXISTS enterprise_template_events (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL,
+        workspace_id TEXT,
+        template_id TEXT NOT NULL,
+        template_version INTEGER NOT NULL,
+        event_type TEXT NOT NULL CHECK (
+          event_type IN (
+            'template_published', 'template_version_published', 'template_revoked',
+            'template_adopted', 'adoption_deprecated', 'adoption_revocation_skipped'
+          )
+        ),
+        actor_id TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_template_events_scope
+        ON enterprise_template_events(enterprise_id, workspace_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_template_events_template
+        ON enterprise_template_events(enterprise_id, template_id)`,
+    ],
+  },
+  {
+    // Bounded recursive self-improvement (DAT-238). This slice takes v11,
+    // directly after DAT-237's v10; v1-v10 are merged and remain untouched.
+    //
+    // Proposals are immutable records of a candidate artifact; evaluations,
+    // approvals, rollout observations, and run pins are append-only. The
+    // golden and holdout case tables are the *only* evaluation-case storage,
+    // and they are deliberately separate: nothing in the retrieval, feedback,
+    // or evaluation-record surface can read a holdout case. Every table is
+    // workspace-scoped with the same composite predicates as the memory store,
+    // so a foreign workspace's row is indistinguishable from a missing one.
+    version: 11,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS rsi_controls (
+        workspace_id TEXT PRIMARY KEY REFERENCES workspace(id) ON DELETE CASCADE,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        kill_switch INTEGER NOT NULL DEFAULT 0 CHECK (kill_switch IN (0, 1)),
+        kill_switch_reason TEXT,
+        kill_switch_changed_at TEXT,
+        kill_switch_changed_by TEXT,
+        auto_promote_low_risk INTEGER NOT NULL DEFAULT 0
+          CHECK (auto_promote_low_risk IN (0, 1)),
+        weekly_change_budget INTEGER NOT NULL DEFAULT 3
+          CHECK (weekly_change_budget >= 0),
+        weekly_reflection_token_budget INTEGER NOT NULL DEFAULT 200000
+          CHECK (weekly_reflection_token_budget >= 0),
+        updated_at TEXT NOT NULL,
+        updated_by TEXT NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS rsi_control_events (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        action TEXT NOT NULL CHECK (action IN ('kill_switch', 'controls_updated')),
+        enabled INTEGER,
+        reason TEXT,
+        detail TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_control_events_scope
+        ON rsi_control_events(workspace_id, created_at)`,
+      `CREATE TABLE IF NOT EXISTS rsi_budget_usage (
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        week_start TEXT NOT NULL,
+        changes_promoted INTEGER NOT NULL DEFAULT 0 CHECK (changes_promoted >= 0),
+        reflection_tokens INTEGER NOT NULL DEFAULT 0 CHECK (reflection_tokens >= 0),
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, week_start)
+      )`,
+      `CREATE TABLE IF NOT EXISTS rsi_proposals (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        diff TEXT NOT NULL,
+        target TEXT NOT NULL,
+        risk TEXT NOT NULL CHECK (risk IN ('A', 'B', 'C', 'D')),
+        artifact_kind TEXT NOT NULL CHECK (artifact_kind IN ('retrieval_policy', 'memory_item')),
+        baseline_policy_version INTEGER NOT NULL,
+        baseline_memory_version TEXT NOT NULL,
+        candidate_policy TEXT,
+        candidate_policy_hash TEXT,
+        candidate_item_id TEXT,
+        candidate_item_version INTEGER,
+        proposer_id TEXT NOT NULL,
+        proposer_kind TEXT NOT NULL CHECK (proposer_kind IN ('agent', 'human')),
+        proposer_model TEXT,
+        status TEXT NOT NULL CHECK (
+          status IN ('proposed', 'awaiting_approval', 'ready', 'canary', 'promoted', 'rolled_back', 'blocked')
+        ),
+        status_reason TEXT,
+        applied_policy_version INTEGER,
+        version INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_proposals_scope
+        ON rsi_proposals(enterprise_id, workspace_id, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_proposals_status
+        ON rsi_proposals(workspace_id, status)`,
+      `CREATE TABLE IF NOT EXISTS rsi_evaluations (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        proposal_id TEXT NOT NULL REFERENCES rsi_proposals(id) ON DELETE CASCADE,
+        proposal_version INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('offline_replay', 'canary')),
+        dataset TEXT NOT NULL CHECK (dataset IN ('golden', 'holdout')),
+        holdout_used INTEGER NOT NULL CHECK (holdout_used IN (0, 1)),
+        sample_size INTEGER NOT NULL CHECK (sample_size >= 0),
+        baseline_sample_size INTEGER NOT NULL CHECK (baseline_sample_size >= 0),
+        candidate_sample_size INTEGER NOT NULL CHECK (candidate_sample_size >= 0),
+        baseline_successes INTEGER NOT NULL CHECK (baseline_successes >= 0),
+        candidate_successes INTEGER NOT NULL CHECK (candidate_successes >= 0),
+        baseline_rework INTEGER NOT NULL CHECK (baseline_rework >= 0),
+        candidate_rework INTEGER NOT NULL CHECK (candidate_rework >= 0),
+        baseline_cost REAL NOT NULL CHECK (baseline_cost >= 0),
+        candidate_cost REAL NOT NULL CHECK (candidate_cost >= 0),
+        safety_events INTEGER NOT NULL CHECK (safety_events >= 0),
+        success_delta REAL NOT NULL,
+        delta_ci_low REAL NOT NULL,
+        delta_ci_high REAL NOT NULL,
+        verdict TEXT NOT NULL CHECK (verdict IN ('pass', 'fail', 'inconclusive')),
+        verifier_kind TEXT NOT NULL,
+        verifier_id TEXT NOT NULL,
+        verifier_reference TEXT NOT NULL,
+        policy_version INTEGER NOT NULL,
+        policy_hash TEXT NOT NULL,
+        memory_version TEXT NOT NULL,
+        reflection_tokens INTEGER NOT NULL CHECK (reflection_tokens >= 0),
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_evaluations_proposal
+        ON rsi_evaluations(workspace_id, proposal_id, created_at)`,
+      `CREATE TABLE IF NOT EXISTS rsi_approvals (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        proposal_id TEXT NOT NULL REFERENCES rsi_proposals(id) ON DELETE CASCADE,
+        proposal_version INTEGER NOT NULL,
+        approval_key TEXT NOT NULL CHECK (approval_key IN ('single', 'owner', 'reviewer')),
+        approver_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        note TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE (proposal_id, approver_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_approvals_proposal
+        ON rsi_approvals(workspace_id, proposal_id)`,
+      `CREATE TABLE IF NOT EXISTS rsi_rollouts (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        proposal_id TEXT NOT NULL UNIQUE REFERENCES rsi_proposals(id) ON DELETE CASCADE,
+        stage INTEGER NOT NULL CHECK (stage IN (10, 50, 100)),
+        status TEXT NOT NULL CHECK (status IN ('canary', 'promoted', 'rolled_back')),
+        baseline_policy_version INTEGER NOT NULL,
+        candidate_policy TEXT,
+        candidate_policy_hash TEXT NOT NULL,
+        reason TEXT,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_rollouts_scope
+        ON rsi_rollouts(enterprise_id, workspace_id, status)`,
+      // Rollouts are serialized per workspace: at most one canary may be
+      // active. Without this, a second canary would compete for the same run
+      // cohort and could promote a candidate against a changed baseline.
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_rsi_one_active_rollout
+        ON rsi_rollouts(workspace_id)
+        WHERE status = 'canary'`,
+      `CREATE TABLE IF NOT EXISTS rsi_canary_observations (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        rollout_id TEXT NOT NULL REFERENCES rsi_rollouts(id) ON DELETE CASCADE,
+        stage INTEGER NOT NULL,
+        sample_size INTEGER NOT NULL CHECK (sample_size >= 0),
+        baseline_sample_size INTEGER NOT NULL CHECK (baseline_sample_size >= 0),
+        candidate_sample_size INTEGER NOT NULL CHECK (candidate_sample_size >= 0),
+        baseline_successes INTEGER NOT NULL CHECK (baseline_successes >= 0),
+        candidate_successes INTEGER NOT NULL CHECK (candidate_successes >= 0),
+        baseline_rework INTEGER NOT NULL CHECK (baseline_rework >= 0),
+        candidate_rework INTEGER NOT NULL CHECK (candidate_rework >= 0),
+        baseline_cost REAL NOT NULL CHECK (baseline_cost >= 0),
+        candidate_cost REAL NOT NULL CHECK (candidate_cost >= 0),
+        safety_events INTEGER NOT NULL CHECK (safety_events >= 0),
+        success_delta REAL NOT NULL,
+        delta_ci_low REAL NOT NULL,
+        delta_ci_high REAL NOT NULL,
+        verdict TEXT NOT NULL CHECK (verdict IN ('pass', 'fail', 'inconclusive')),
+        evidence_reference TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_canary_observations_rollout
+        ON rsi_canary_observations(workspace_id, rollout_id, created_at)`,
+      `CREATE TABLE IF NOT EXISTS rsi_golden_cases (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        case_key TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        UNIQUE (workspace_id, case_key)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_golden_cases_scope
+        ON rsi_golden_cases(workspace_id)`,
+      `CREATE TABLE IF NOT EXISTS rsi_holdout_cases (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        case_key TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        UNIQUE (workspace_id, case_key)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_holdout_cases_scope
+        ON rsi_holdout_cases(workspace_id)`,
+      `CREATE TABLE IF NOT EXISTS rsi_run_pins (
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        run_id TEXT NOT NULL,
+        policy_version INTEGER NOT NULL,
+        policy_hash TEXT NOT NULL,
+        memory_version TEXT NOT NULL,
+        canary INTEGER NOT NULL CHECK (canary IN (0, 1)),
+        proposal_id TEXT,
+        rollout_id TEXT,
+        stage INTEGER,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, run_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_rsi_run_pins_scope
+        ON rsi_run_pins(enterprise_id, workspace_id, created_at)`,
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------

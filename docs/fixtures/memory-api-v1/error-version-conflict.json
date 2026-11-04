@@ -1,0 +1,14 @@
+{
+  "error": {
+    "envelope_version": 1,
+    "code": "VERSION_CONFLICT",
+    "stage": "policy",
+    "category": "stop",
+    "message": "the item version changed before this transition",
+    "retryable": false,
+    "retry_after_seconds": null,
+    "request_id": "req_c3f1a8d0e2b4475f9a6c1d2e3f4a5b6c",
+    "details": {},
+    "next_action": "refresh"
+  }
+}

@@ -3,8 +3,10 @@ package dsh
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 
 	"github.com/Luthiel/AutoFixer/agent/tools"
 	"github.com/Luthiel/AutoFixer/harness"
@@ -32,10 +34,15 @@ type actionRequest struct {
 }
 
 type actionResponse struct {
-	ActionID            string        `json:"action_id"`
-	State               harness.State `json:"state"`
-	AcceptedToolID      string        `json:"accepted_tool_id"`
-	AuditEventReference string        `json:"audit_event_reference"`
+	ActionID            string                   `json:"action_id"`
+	State               harness.State            `json:"state"`
+	AcceptedToolID      string                   `json:"accepted_tool_id"`
+	AuditEventReference string                   `json:"audit_event_reference"`
+	Result              *sandbox.ExecutionResult `json:"result,omitempty"`
+	// Output is the redacted, bounded output the execution produced (file
+	// content, search matches, or tool output). The binding record in
+	// Result covers its digest.
+	Output string `json:"output,omitempty"`
 }
 
 type invalidIntentError struct {
@@ -92,12 +99,12 @@ func (s *Server) handleSubmitAction(w http.ResponseWriter, r *http.Request) {
 
 	spec, registered := s.tools.get(req.Intent.ToolID)
 	if !registered {
-		s.recordRegistryDenial(rec, req, nil)
+		s.recordRegistryDenial(rec, req, validatedArguments{})
 		writeError(w, r, http.StatusNotFound, CodeToolNotRegistered,
 			fmt.Sprintf("Tool %q is not registered.", req.Intent.ToolID), nil)
 		return
 	}
-	argv, argErr := s.tools.validateArguments(spec.ID, arguments)
+	validated, argErr := s.tools.validateArguments(spec.ID, arguments)
 	if argErr != nil {
 		writeError(w, r, http.StatusBadRequest, CodeInvalidToolArguments, argErr.Error(), nil)
 		return
@@ -150,9 +157,9 @@ func (s *Server) handleSubmitAction(w http.ResponseWriter, r *http.Request) {
 	}
 	rec.actionIDs[req.ActionID] = true
 
-	registryDecision := rec.registryAuthorize(spec, req, argv)
+	registryDecision := rec.registryAuthorize(spec, req, validated.Tokens)
 	if !registryDecision.Allowed {
-		decision := rec.run.EvaluateAndRecordAction(s.actionRequest(rec, spec, req, argv))
+		decision := rec.run.EvaluateAndRecordAction(s.actionRequest(rec, spec, req, validated))
 		s.store.releaseTask(rec, harness.IsTerminal(rec.run.State))
 		_ = rec.closeRunnerLocked()
 		writeError(w, r, http.StatusForbidden, CodeToolNotAllowlisted,
@@ -164,23 +171,37 @@ func (s *Server) handleSubmitAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, execErr := executor.Execute(ctx, sandbox.Spec{
-		Tool:                spec.Exec,
-		Arguments:           argv,
-		Paths:               append([]string{}, req.Intent.PathScope...),
-		NetworkDestinations: append([]string{}, req.Intent.NetworkDestinations...),
-	})
+	// The dispatch spec maps the validated call onto the sandbox's dispatch
+	// surface; profile vocabulary checks happen inside the sandbox gate so
+	// an over-privileged request leaves a recorded refusal and stops the run.
+	dispatchSpec := s.dispatchSpec(spec, req, validated)
+
+	result, execErr := executor.Execute(ctx, dispatchSpec)
 	s.store.releaseTask(rec, harness.IsTerminal(rec.run.State))
 	closeErr := rec.closeRunnerLocked()
 
 	if execErr != nil {
-		writeError(w, r, http.StatusServiceUnavailable, CodeSandboxUnavailable,
-			"Tool dispatch failed before an outcome could be recorded.", nil)
+		message, details := sandboxDispatchFailure(execErr)
+		writeError(w, r, http.StatusServiceUnavailable, CodeSandboxUnavailable, message, details)
 		return
 	}
 	if closeErr != nil {
 		writeError(w, r, http.StatusServiceUnavailable, CodeSandboxUnavailable,
 			"Sandbox workspace could not be torn down.", nil)
+		return
+	}
+	// The operation gate refused an in-grant dispatch (path/symlink
+	// containment, prohibited path, edit scope, profile vocabulary): the
+	// run is already stopped and the evidence recorded, and the refusal is
+	// the answer.
+	if result.Gate != nil {
+		status, code := http.StatusForbidden, CodeScopeDenied
+		if result.Gate.Code == sandbox.CodeOverprivilegedRequest {
+			code = CodeToolNotAllowlisted
+		}
+		writeError(w, r, status, code,
+			result.Gate.Reason,
+			map[string]any{"gate_code": result.Gate.Code, "stop_code": harness.StopCodeOutOfGrant})
 		return
 	}
 	if !result.Decision.Allowed {
@@ -197,7 +218,22 @@ func (s *Server) handleSubmitAction(w http.ResponseWriter, r *http.Request) {
 		State:               rec.run.State,
 		AcceptedToolID:      spec.ID,
 		AuditEventReference: rec.latestAuditReferenceLocked(),
+		Result:              result.Record,
+		Output:              string(result.Output),
 	})
+}
+
+// sandboxDispatchFailure describes a dispatch that never produced an outcome.
+// A host whose isolation backend cannot guarantee a complete execution domain
+// is named explicitly: the operator must move the run to a host that can
+// (Linux bubblewrap, or a future container/VM backend), not retry here, where
+// the platform gate will refuse it again (DAT-253).
+func sandboxDispatchFailure(err error) (string, map[string]any) {
+	if errors.Is(err, sandbox.ErrExecutionDomainIncomplete) {
+		return "Untrusted execution is unavailable on this host: no isolation backend can guarantee a complete execution domain.",
+			map[string]any{"reason": "execution_domain_incomplete"}
+	}
+	return "Tool dispatch failed before an outcome could be recorded.", nil
 }
 
 // checkActionState applies the contract's state gate before any dispatch
@@ -276,42 +312,90 @@ func validateIntent(req actionRequest) (map[string]any, *invalidIntentError) {
 	return arguments, nil
 }
 
-func (s *Server) actionRequest(rec *runRecord, spec ToolSpec, req actionRequest, argv []string) harness.ActionRequest {
-	return harness.ActionRequest{
+func (s *Server) actionRequest(rec *runRecord, spec ToolSpec, req actionRequest, validated validatedArguments) harness.ActionRequest {
+	action := harness.ActionRequest{
 		Tool:                spec.ID,
-		Arguments:           append([]string{}, argv...),
+		Arguments:           append([]string{}, validated.Tokens...),
 		RepositoryURL:       rec.run.RepositoryURL,
 		BaseSHA:             rec.run.BaseSHA,
 		Paths:               append([]string{}, req.Intent.PathScope...),
 		NetworkDestinations: append([]string{}, req.Intent.NetworkDestinations...),
 	}
+	if validated.Evidence != nil {
+		action.EvidenceArguments = append([]string{}, validated.Evidence...)
+	}
+	return action
 }
 
 // recordRegistryDenial appends the harness-side refusal for a tool the
 // allow-list registry would reject, so an over-privileged attempt leaves the
 // same continuous evidence chain as a policy denial.
-func (s *Server) recordRegistryDenial(rec *runRecord, req actionRequest, argv []string) {
+func (s *Server) recordRegistryDenial(rec *runRecord, req actionRequest, validated validatedArguments) {
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	rec.run.EvaluateAndRecordAction(harness.ActionRequest{
+	action := harness.ActionRequest{
 		Tool:                req.Intent.ToolID,
-		Arguments:           append([]string{}, argv...),
+		Arguments:           append([]string{}, validated.Tokens...),
 		RepositoryURL:       rec.run.RepositoryURL,
 		BaseSHA:             rec.run.BaseSHA,
 		Paths:               append([]string{}, req.Intent.PathScope...),
 		NetworkDestinations: append([]string{}, req.Intent.NetworkDestinations...),
-	})
+	}
+	if validated.Evidence != nil {
+		action.EvidenceArguments = append([]string{}, validated.Evidence...)
+	}
+	rec.run.EvaluateAndRecordAction(action)
 	s.store.releaseTask(rec, harness.IsTerminal(rec.run.State))
 	_ = rec.closeRunnerLocked()
 }
 
+// dispatchSpec maps one validated call onto the sandbox's dispatch surface.
+// Structured operations carry their typed payloads; test and dependency
+// calls name a registered profile, and the sandbox's gate refuses anything
+// outside the profile vocabulary with a recorded, run-stopping rejection.
+func (s *Server) dispatchSpec(spec ToolSpec, req actionRequest, validated validatedArguments) sandbox.Spec {
+	out := sandbox.Spec{
+		Tool:                spec.ID,
+		Arguments:           append([]string{}, validated.Tokens...),
+		EvidenceArguments:   append([]string{}, validated.Evidence...),
+		Paths:               append([]string{}, req.Intent.PathScope...),
+		NetworkDestinations: append([]string{}, req.Intent.NetworkDestinations...),
+	}
+	switch spec.Kind {
+	case ToolRead:
+		out.Kind = sandbox.DispatchRead
+		out.Op = &sandbox.OpRequest{Path: validated.Values["path"]}
+	case ToolSearch:
+		out.Kind = sandbox.DispatchSearch
+		out.Op = &sandbox.OpRequest{Path: validated.Values["path"], Pattern: validated.Values["pattern"]}
+	case ToolEdit:
+		out.Kind = sandbox.DispatchEdit
+		out.WantsPatch = true
+		out.Op = &sandbox.OpRequest{Path: validated.Values["path"], Content: validated.Values["content"]}
+	case ToolTest:
+		out.Kind = sandbox.DispatchProfile
+		out.Process = &sandbox.ProcessRequest{
+			ProfileID: validated.Values["profile"],
+			Mode:      validated.Values["mode"],
+			Target:    validated.Values["target"],
+		}
+	case ToolDep:
+		out.Kind = sandbox.DispatchProfile
+		out.Process = &sandbox.ProcessRequest{ProfileID: validated.Values["profile"]}
+	default:
+		// Plain process tools keep the sandbox binary identity.
+		out.Tool = spec.Exec
+	}
+	return out
+}
+
 // registryAuthorize is the independent allow-list gate in front of the
-// harness grant. Its checks mirror the harness rules (same enum arguments,
+// harness grant. Its checks mirror the harness rules (same class tokens,
 // same relative-path containment, tools that never demand more risk than the
 // run was assessed), so a registry denial coincides with a harness denial
 // and the evidence chain agrees with the HTTP response. The caller holds
 // rec.mu.
-func (rec *runRecord) registryAuthorize(spec ToolSpec, req actionRequest, argv []string) tools.Decision {
+func (rec *runRecord) registryAuthorize(spec ToolSpec, req actionRequest, tokens []string) tools.Decision {
 	if rec.registry == nil {
 		return tools.Decision{Allowed: false, Code: tools.DenyNoDispatcher, Reason: "no tool registry is configured"}
 	}
@@ -321,7 +405,7 @@ func (rec *runRecord) registryAuthorize(spec ToolSpec, req actionRequest, argv [
 		RiskClass: rec.run.Assessment.RiskClass,
 		Call: tools.Call{
 			Tool:                spec.ID,
-			Arguments:           append([]string{}, argv...),
+			Arguments:           append([]string{}, tokens...),
 			Paths:               append([]string{}, req.Intent.PathScope...),
 			NetworkDestinations: append([]string{}, req.Intent.NetworkDestinations...),
 		},
@@ -336,7 +420,14 @@ func (s *Server) executorFor(rec *runRecord) (*sandbox.Runner, error) {
 	if rec.runner != nil {
 		return rec.runner, nil
 	}
-	runner, err := sandbox.New(rec.run, sandbox.Options{WorkspaceRoot: s.cfg.WorkspaceRoot})
+	runner, err := sandbox.New(rec.run, sandbox.Options{
+		WorkspaceRoot:    s.cfg.WorkspaceRoot,
+		RevisionSource:   s.cfg.RevisionSource,
+		DependencySource: s.cfg.DependencySource,
+		Profiles:         s.profiles,
+		Isolator:         s.cfg.Isolator,
+		DenyRead:         s.controlPlaneDenyRead(),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -351,6 +442,12 @@ func (s *Server) executorFor(rec *runRecord) (*sandbox.Runner, error) {
 	rec.runner = runner
 	rec.registry = registry
 	return runner, nil
+}
+
+// controlPlaneDenyRead lists the control-plane paths no untrusted execution
+// may read: the boot-token file and its private runtime directory.
+func (s *Server) controlPlaneDenyRead() []string {
+	return []string{s.tokenPath, filepath.Dir(s.tokenPath)}
 }
 
 // expireGrantIfDue turns an idle approved run whose grant has lapsed into
