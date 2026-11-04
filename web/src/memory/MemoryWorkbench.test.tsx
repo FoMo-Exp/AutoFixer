@@ -6,7 +6,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, ForgePilotClient } from "../api/client";
-import type { MemoryItemPage, Workspace } from "../api/client";
+import type { MemoryItem, MemoryItemPage, Workspace } from "../api/client";
 import { MemoryWorkbench } from "./MemoryWorkbench";
 
 const fixtureDir = path.resolve(
@@ -30,6 +30,11 @@ const workspaces = fixture<{ items: Workspace[]; next_cursor: string | null }>(
 ).items;
 const workspace = workspaces.find((entry) => entry.status === "active")!;
 
+function statementOf(item: MemoryItem): string {
+  if (!item.statement) throw new Error("fixture item has no statement");
+  return item.statement;
+}
+
 function makeClient(): ForgePilotClient {
   return new ForgePilotClient({
     baseUrl: "http://127.0.0.1:4567",
@@ -40,7 +45,7 @@ function makeClient(): ForgePilotClient {
 
 async function openFirstItem(): Promise<void> {
   const first = await screen.findByRole("button", {
-    name: new RegExp(firstPage.items[0].statement),
+    name: new RegExp(statementOf(firstPage.items[0])),
   });
   await userEvent.click(first);
 }
@@ -60,10 +65,10 @@ describe("memory workbench", () => {
     const client = makeClient();
     render(<MemoryWorkbench client={client} />);
 
-    expect(await screen.findByText(firstPage.items[0].statement)).toBeTruthy();
+    expect(await screen.findByText(statementOf(firstPage.items[0]))).toBeTruthy();
     expect(
       screen.getByRole("button", {
-        name: new RegExp(firstPage.items[2].statement.slice(0, 40)),
+        name: new RegExp(statementOf(firstPage.items[2]).slice(0, 40)),
       }),
     ).toBeTruthy();
     expect(screen.getAllByText("Active").length).toBeGreaterThan(0);
@@ -78,7 +83,7 @@ describe("memory workbench", () => {
     render(<MemoryWorkbench client={client} />);
     await openFirstItem();
 
-    const heading = await screen.findByRole("heading", { name: firstPage.items[0].statement });
+    const heading = await screen.findByRole("heading", { name: statementOf(firstPage.items[0]) });
     expect(heading).toBeTruthy();
     expect(screen.getByText("Path prefix")).toBeTruthy();
     expect(screen.getByText("web/src/memory")).toBeTruthy();
@@ -100,7 +105,7 @@ describe("memory workbench", () => {
 
     const item = firstPage.items.find((entry) => entry.preconditions.length > 1)!;
     await userEvent.click(
-      await screen.findByRole("button", { name: new RegExp(item.statement.slice(0, 40)) }),
+      await screen.findByRole("button", { name: new RegExp(statementOf(item).slice(0, 40)) }),
     );
 
     const section = (await screen.findByRole("heading", { name: "Preconditions" })).closest(
@@ -121,7 +126,7 @@ describe("memory workbench", () => {
 
     const item = firstPage.items.find((entry) => Object.keys(entry.applicability).length === 0)!;
     await userEvent.click(
-      await screen.findByRole("button", { name: new RegExp(item.statement.slice(0, 40)) }),
+      await screen.findByRole("button", { name: new RegExp(statementOf(item).slice(0, 40)) }),
     );
 
     expect(
@@ -145,18 +150,18 @@ describe("memory workbench", () => {
       .mockImplementationOnce(() => pending);
 
     render(<MemoryWorkbench client={client} />);
-    await screen.findByText(firstPage.items[0].statement);
+    await screen.findByText(statementOf(firstPage.items[0]));
 
     await userEvent.click(screen.getByRole("combobox", { name: "Workspace scope" }));
     await userEvent.click(screen.getByRole("option", { name: "Acme Infra · viewer" }));
 
     await waitFor(() => expect(listMemoryItems).toHaveBeenLastCalledWith(twoWorkspaces[1].id, {}));
-    expect(screen.queryByText(firstPage.items[0].statement)).toBeNull();
+    expect(screen.queryByText(statementOf(firstPage.items[0]))).toBeNull();
     expect(await screen.findByText("Reading workspace memory…")).toBeTruthy();
 
     resolveSecond?.(secondPage);
-    expect(await screen.findByText(secondPage.items[0].statement)).toBeTruthy();
-    expect(screen.queryByText(firstPage.items[0].statement)).toBeNull();
+    expect(await screen.findByText(statementOf(secondPage.items[0]))).toBeTruthy();
+    expect(screen.queryByText(statementOf(firstPage.items[0]))).toBeNull();
   });
 
   it("hides an open item when the workspace changes", async () => {
@@ -169,13 +174,15 @@ describe("memory workbench", () => {
 
     render(<MemoryWorkbench client={client} />);
     await openFirstItem();
-    expect(await screen.findByRole("heading", { name: firstPage.items[0].statement })).toBeTruthy();
+    expect(
+      await screen.findByRole("heading", { name: statementOf(firstPage.items[0]) }),
+    ).toBeTruthy();
 
     await userEvent.click(screen.getByRole("combobox", { name: "Workspace scope" }));
     await userEvent.click(screen.getByRole("option", { name: "Acme Infra · viewer" }));
 
     await waitFor(() =>
-      expect(screen.queryByRole("heading", { name: firstPage.items[0].statement })).toBeNull(),
+      expect(screen.queryByRole("heading", { name: statementOf(firstPage.items[0]) })).toBeNull(),
     );
     expect(
       await screen.findByText("This workspace has no memory item at your sensitivity ceiling yet."),
@@ -189,7 +196,7 @@ describe("memory workbench", () => {
       .mockResolvedValueOnce(firstPage)
       .mockResolvedValueOnce(lessonPage);
     render(<MemoryWorkbench client={client} />);
-    await screen.findByText(firstPage.items[0].statement);
+    await screen.findByText(statementOf(firstPage.items[0]));
 
     await userEvent.click(screen.getByRole("combobox", { name: "Kind" }));
     await userEvent.click(screen.getByRole("option", { name: "Lesson" }));
@@ -197,7 +204,7 @@ describe("memory workbench", () => {
     await waitFor(() =>
       expect(listMemoryItems).toHaveBeenLastCalledWith(workspace.id, { kind: "lesson" }),
     );
-    expect(await screen.findByText(lessonPage.items[0].statement)).toBeTruthy();
+    expect(await screen.findByText(statementOf(lessonPage.items[0]))).toBeTruthy();
 
     listMemoryItems.mockResolvedValue(lessonPage);
     await userEvent.click(screen.getByRole("button", { name: "Refresh memory list" }));
@@ -216,11 +223,11 @@ describe("memory workbench", () => {
       .mockResolvedValueOnce(firstPage)
       .mockResolvedValueOnce(secondPage);
     render(<MemoryWorkbench client={client} />);
-    await screen.findByText(firstPage.items[0].statement);
+    await screen.findByText(statementOf(firstPage.items[0]));
 
     await userEvent.click(screen.getByRole("button", { name: "Load more items" }));
 
-    expect(await screen.findByText(secondPage.items[0].statement)).toBeTruthy();
+    expect(await screen.findByText(statementOf(secondPage.items[0]))).toBeTruthy();
     expect(listMemoryItems).toHaveBeenLastCalledWith(workspace.id, {
       cursor: firstPage.next_cursor,
     });
@@ -283,7 +290,7 @@ describe("memory workbench", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Retry" }));
 
-    expect(await screen.findByText(firstPage.items[0].statement)).toBeTruthy();
+    expect(await screen.findByText(statementOf(firstPage.items[0]))).toBeTruthy();
     expect(screen.queryByText(/socket closed/)).toBeNull();
     expect(listMemoryItems).toHaveBeenCalledTimes(2);
   });
