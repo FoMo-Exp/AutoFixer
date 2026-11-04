@@ -6,7 +6,9 @@
  *
  * - **Effective permission visibility.** Whether the adapter can see who
  *   currently has repository access at all. `none` means authority cannot be
- *   verified — that is an error state, never an empty roster.
+ *   verified — that is an error state, never an empty roster. `partial` means
+ *   some access path is unenumerable, so absence from a successful roster is
+ *   never removal.
  * - **Pagination and rate limits.** Roster collection enforces them: a
  *   truncated or exhausted fetch is an {@link IncompleteRosterError}, never a
  *   silently shortened member list.
@@ -146,6 +148,11 @@ export interface RosterPage {
  * refuse to run with silent gaps instead of discovering them in production.
  */
 export interface ProviderAdapterCapabilities {
+  /**
+   * How much of the roster this adapter can prove. `partial` promises that
+   * absence from a successful fetch is *not* evidence of lost access; see
+   * `reconcile.ts` for the consequences.
+   */
   effective_permission_visibility: PermissionVisibility;
   pagination: {
     /** Largest page the provider accepts. */

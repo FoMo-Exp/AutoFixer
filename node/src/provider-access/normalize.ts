@@ -164,10 +164,11 @@ export function normalizeRole(provider: ProviderType, raw: RawProviderRole): Nor
           }
           break;
         case "effective_access":
-          // GitLab's aggregate membership views mix project, group, and
-          // ancestor-group grants the same way; the source is accepted as
-          // "effective access", never as a direct grant. This issue only
-          // produces it for GitHub.
+          // GitLab's aggregate membership views mix project, group, ancestor-
+          // group, and invited-group grants the same way; the source is
+          // accepted as "effective access", never as a direct grant. The
+          // adapter produces it only when no attributable source claims the
+          // subject.
           if (!raw.authority_ref) {
             throw new NormalizationError(
               "gitlab effective_access requires a project authority_ref",

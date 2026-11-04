@@ -23,9 +23,16 @@ export type ServiceIntegrationId = string;
 
 /**
  * Whether the installed integration can see effective permissions at all.
- * Declared by the provider adapter at install time; `none` means the service
- * cannot verify repository authority and must refuse to treat the roster as
- * known.
+ * Declared by the provider adapter at install time.
+ *
+ * - `full` — the adapter enumerates every subject that currently has access,
+ *   so absence from a successful roster means access was lost.
+ * - `partial` — the adapter enumerates the sources it can query, but at least
+ *   one access path is not observable. A successful roster is still applied;
+ *   absence from it is never treated as removal (the stored authority is kept
+ *   and marked stale, capability grants survive, provenance is not pruned).
+ * - `none` — the service cannot verify repository authority at all and must
+ *   refuse to treat the roster as known.
  */
 export type PermissionVisibility = "full" | "partial" | "none";
 
