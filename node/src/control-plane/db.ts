@@ -911,6 +911,128 @@ const MIGRATIONS: Migration[] = [
         ON memory_eval_runs(enterprise_id, workspace_id, created_at)`,
     ],
   },
+  {
+    // Enterprise templates (DAT-237). Templates are deliberately stored in
+    // their own tables, not in `memory_items`: the memory read path can then
+    // never return one, and a workspace sees a template only after it adopts
+    // it and a local candidate item is written. Publication records keep the
+    // source workspace/item for administrator audit and are never read by an
+    // adopting workspace. Template events carry metadata only and outlive the
+    // rows they describe, like `memory_events`.
+    //
+    // This slice takes v10, directly after DAT-236's v9; v1-v9 are merged
+    // and remain untouched.
+    version: 10,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS enterprise_templates (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        status TEXT NOT NULL CHECK (status IN ('published', 'revoked')),
+        current_version INTEGER NOT NULL,
+        revoked_at TEXT,
+        revoked_by TEXT,
+        revoke_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_templates_scope
+        ON enterprise_templates(enterprise_id, status)`,
+      `CREATE TABLE IF NOT EXISTS enterprise_template_versions (
+        template_id TEXT NOT NULL REFERENCES enterprise_templates(id) ON DELETE CASCADE,
+        version INTEGER NOT NULL,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        kind TEXT NOT NULL CHECK (kind IN ('fact', 'lesson', 'playbook', 'anti_pattern')),
+        scope TEXT NOT NULL,
+        statement TEXT NOT NULL,
+        preconditions TEXT NOT NULL,
+        sensitivity TEXT NOT NULL CHECK (
+          sensitivity IN ('internal', 'confidential', 'restricted')
+        ),
+        evidence_classes TEXT NOT NULL,
+        security_review TEXT,
+        content_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        PRIMARY KEY (template_id, version)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_template_versions_scope
+        ON enterprise_template_versions(enterprise_id)`,
+      // Administrator-only provenance. No workspace foreign key: the
+      // publication record must survive workspace deletion as audit history,
+      // and it never travels with a template version.
+      `CREATE TABLE IF NOT EXISTS enterprise_template_publications (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        template_id TEXT NOT NULL REFERENCES enterprise_templates(id) ON DELETE CASCADE,
+        template_version INTEGER NOT NULL,
+        source_workspace_id TEXT NOT NULL,
+        source_item_id TEXT NOT NULL,
+        source_item_version INTEGER NOT NULL,
+        source_evidence_count INTEGER NOT NULL,
+        scrub_report TEXT NOT NULL,
+        published_at TEXT NOT NULL,
+        published_by TEXT NOT NULL,
+        FOREIGN KEY (template_id, template_version)
+          REFERENCES enterprise_template_versions(template_id, version) ON DELETE CASCADE,
+        UNIQUE (enterprise_id, source_workspace_id, source_item_id, source_item_version)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_template_publications_template
+        ON enterprise_template_publications(enterprise_id, template_id)`,
+      // Adoption pins one exact template version and one local candidate item.
+      // The local memory item itself lives in `memory_items`; this row is the
+      // link that revocation follows, and it never stores template content.
+      `CREATE TABLE IF NOT EXISTS enterprise_template_adoptions (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        template_id TEXT NOT NULL REFERENCES enterprise_templates(id),
+        template_version INTEGER NOT NULL,
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        item_id TEXT NOT NULL,
+        item_version INTEGER NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('active', 'revoked')),
+        adopted_at TEXT NOT NULL,
+        adopted_by TEXT NOT NULL,
+        revoked_at TEXT,
+        revoked_by TEXT,
+        revoke_reason TEXT,
+        revocation_outcome TEXT CHECK (
+          revocation_outcome IN (
+            'deprecated', 'already_deprecated', 'quarantined_untouched',
+            'retired_untouched', 'item_missing', 'deprecation_failed'
+          )
+        ),
+        UNIQUE (workspace_id, template_id, template_version),
+        FOREIGN KEY (template_id, template_version)
+          REFERENCES enterprise_template_versions(template_id, version)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_template_adoptions_scope
+        ON enterprise_template_adoptions(enterprise_id, workspace_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_template_adoptions_template
+        ON enterprise_template_adoptions(enterprise_id, template_id)`,
+      `CREATE TABLE IF NOT EXISTS enterprise_template_events (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL,
+        workspace_id TEXT,
+        template_id TEXT NOT NULL,
+        template_version INTEGER NOT NULL,
+        event_type TEXT NOT NULL CHECK (
+          event_type IN (
+            'template_published', 'template_version_published', 'template_revoked',
+            'template_adopted', 'adoption_deprecated', 'adoption_revocation_skipped'
+          )
+        ),
+        actor_id TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_template_events_scope
+        ON enterprise_template_events(enterprise_id, workspace_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_template_events_template
+        ON enterprise_template_events(enterprise_id, template_id)`,
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
