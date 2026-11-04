@@ -152,6 +152,62 @@ Scope boundaries:
   empty issue list. Candidate review, approvals, and delivery remain DAT-223's
   surface and are not implemented here.
 
+## Bounded RSI surface (DAT-240)
+
+This surface targets `main` at `f6b0f15e97dbbaecd9d793321e7fae1c007644e7`
+(DAT-249; OpenAPI `0.9.0`). The RSI paths were merged by DAT-238 at
+`32e2afa`, and the fixtures are HTTP captures of that running surface under
+`docs/fixtures/rsi-api-v1/`. Every field rendered comes from those captures or
+from `src/api/contracts/openapi.json`; no field is invented by the UI.
+
+| Endpoint                                                    | Request fields                                                                             | Response type                       | Status |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ----------------------------------- | ------ |
+| `GET /api/v1/workspaces?cursor=`                            | optional `cursor` (every page is read)                                                     | `{items: Workspace[], next_cursor}` | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/memory/rsi/status`   | path `workspace_id`                                                                        | `RsiStatus`                         | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/memory/proposals`    | path id; optional `status`, `risk`, `limit`                                                | `RsiProposalList`                   | ✅     |
+| `GET …/memory/proposals/{proposal_id}`                      | path ids                                                                                   | `RsiProposal`                       | ✅     |
+| `POST …/memory/proposals/{proposal_id}/evaluations`         | optional `datasets[]` (`golden`, `holdout`); no metrics or verifier claim                  | `RsiProposal`                       | ✅     |
+| `POST …/memory/proposals/{proposal_id}/approvals`           | optional `note`                                                                            | `RsiProposal`                       | ✅     |
+| `POST …/memory/proposals/{proposal_id}/canary`              | path ids                                                                                   | `RsiProposal`                       | ✅     |
+| `POST …/memory/proposals/{proposal_id}/canary/observations` | no body; samples are derived server-side from pinned runs                                  | `RsiProposal`                       | ✅     |
+| `POST …/memory/proposals/{proposal_id}/rollback`            | required `reason`                                                                          | `RsiProposal`                       | ✅     |
+| `POST …/memory/rsi/kill-switch`                             | required `enabled`; required `reason` when engaging                                        | `{controls: RsiControls}`           | ✅     |
+| `PATCH …/memory/rsi/controls`                               | optional `auto_promote_low_risk`, `weekly_change_budget`, `weekly_reflection_token_budget` | `{controls: RsiControls}`           | ✅     |
+
+Proposal authoring (`POST …/memory/proposals`) and the memory browse/search
+surface are not rendered by this issue; only A/B/C-class targets may ever be
+proposed, and a class D target is rejected by the service.
+
+Surface boundaries:
+
+- **The holdout is aggregate-only.** `RsiStatus.holdout` exposes `cases` and
+  `last_evaluated_at`; `RsiEvaluation` exposes aggregate sample counts and a
+  `holdout_used` flag. No endpoint in this baseline returns holdout case
+  content, and the workbench never requests or reconstructs it.
+- **The gate is the server's.** Verdicts, per-arm samples, deltas, the Newcombe
+  interval, required approval keys, budget state, and `canary_eligible` are
+  read from `RsiProposal.gate` / `RsiEvaluation`. The UI cannot submit a score
+  or verifier claim; `inconclusive` is rendered as a refusal, never a soft pass.
+- **Risk ladder to approval gate.** Class A is automatic only when the
+  workspace enables it, otherwise one named human; class B needs one named
+  human; class C needs two distinct humans with the `owner` and `reviewer`
+  keys; class D is rejected by the loop. The detail view repeats the server's
+  `approval_keys` and satisfied count rather than inferring them.
+- **Roles.** Reads (status, proposals, detail) require the `member` role, so a
+  `viewer` receives an explicit role gate and the workbench issues no read.
+  An `owner` may evaluate, start/observe/roll back, and change controls or the
+  kill switch; an `admin` may approve; a proposer is never offered evaluation
+  or approval of its own proposal. The service remains authoritative.
+- **Controls only tighten.** The form refuses a change-budget or
+  reflection-token value above the stored budget before calling the service;
+  sample sizes, regression ceilings, and approval requirements are code
+  constants with no UI control. Engaging the kill switch records the reason and
+  takes effect in the same call.
+- **Rollback is explicit and audited.** A rollback requires a reason; the
+  resulting `RsiRollout.reason` / `Proposal.status_reason` is rendered, and a
+  partial `POST …/canary/observations` is refused by construction because the
+  client sends no body. Historical run pins are never rewritten.
+
 ### Pi summary
 
 `TaskEvent.data` is not a Pi display source. `pi.text_delta` carries raw

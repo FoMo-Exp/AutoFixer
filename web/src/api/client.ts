@@ -36,6 +36,22 @@ export type MemorySensitivity = MemoryItem["sensitivity"];
 export type MemoryApplicability = components["schemas"]["MemoryApplicability"];
 export type MemoryEvidence = components["schemas"]["MemoryEvidence"];
 
+export type RsiProposal = components["schemas"]["RsiProposal"];
+export type RsiProposalStatus = RsiProposal["status"];
+export type RsiRisk = RsiProposal["risk"];
+export type RsiTarget = RsiProposal["target"];
+export type RsiEvaluation = components["schemas"]["RsiEvaluation"];
+export type RsiApproval = components["schemas"]["RsiApproval"];
+export type RsiRollout = components["schemas"]["RsiRollout"];
+export type RsiCanaryObservation = components["schemas"]["RsiCanaryObservation"];
+export type RsiStatus = components["schemas"]["RsiStatus"];
+export type RsiProposalList = components["schemas"]["RsiProposalList"];
+export type RsiControls = components["schemas"]["RsiControls"];
+export type RsiControlsResponse = components["schemas"]["RsiControlsResponse"];
+export type RsiDataset = RsiEvaluation["dataset"];
+export type RsiControlsPatch =
+  operations["updateRsiControls"]["requestBody"]["content"]["application/json"];
+
 type ErrorPayload = components["schemas"]["Error"];
 export type JsonFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -260,6 +276,10 @@ function issuePath(workspaceId: string, issueId?: string, suffix?: string): stri
   if (issueId) path += `/${encodeURIComponent(issueId)}`;
   if (suffix) path += `/${suffix}`;
   return path;
+}
+
+function memoryPath(workspaceId: string, suffix: string): string {
+  return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/memory/${suffix}`;
 }
 
 export interface StreamResult {
@@ -489,6 +509,126 @@ export class ForgePilotClient extends ApiTransport {
     return this.request<MemoryItemPage>(
       `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/memory/items${query}`,
     );
+  }
+
+  async listRsiProposals(
+    workspaceId: string,
+    options: { status?: RsiProposalStatus; risk?: RsiRisk; limit?: number } = {},
+  ): Promise<RsiProposal[]> {
+    const params = new URLSearchParams();
+    if (options.status) params.set("status", options.status);
+    if (options.risk) params.set("risk", options.risk);
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    const page = await this.request<components["schemas"]["RsiProposalList"]>(
+      `${memoryPath(workspaceId, "proposals")}${query}`,
+    );
+    return page.proposals;
+  }
+
+  async getRsiProposal(workspaceId: string, proposalId: string): Promise<RsiProposal> {
+    return this.request<RsiProposal>(
+      memoryPath(workspaceId, `proposals/${encodeURIComponent(proposalId)}`),
+    );
+  }
+
+  /**
+   * The server runs the offline replay over the selected datasets. Metrics,
+   * a verifier claim, or evidence text are refused; only dataset selection
+   * travels.
+   */
+  async evaluateRsiProposal(
+    workspaceId: string,
+    proposalId: string,
+    datasets: RsiDataset[] = ["golden", "holdout"],
+  ): Promise<RsiProposal> {
+    return this.request<RsiProposal>(
+      memoryPath(workspaceId, `proposals/${encodeURIComponent(proposalId)}/evaluations`),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ datasets }),
+      },
+    );
+  }
+
+  async approveRsiProposal(
+    workspaceId: string,
+    proposalId: string,
+    note?: string,
+  ): Promise<RsiProposal> {
+    return this.request<RsiProposal>(
+      memoryPath(workspaceId, `proposals/${encodeURIComponent(proposalId)}/approvals`),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(note?.trim() ? { note: note.trim() } : {}),
+      },
+    );
+  }
+
+  async startRsiCanary(workspaceId: string, proposalId: string): Promise<RsiProposal> {
+    return this.request<RsiProposal>(
+      memoryPath(workspaceId, `proposals/${encodeURIComponent(proposalId)}/canary`),
+      { method: "POST" },
+    );
+  }
+
+  /** Samples are derived server-side from pinned runs; no body is accepted. */
+  async recordRsiCanaryObservation(workspaceId: string, proposalId: string): Promise<RsiProposal> {
+    return this.request<RsiProposal>(
+      memoryPath(workspaceId, `proposals/${encodeURIComponent(proposalId)}/canary/observations`),
+      { method: "POST" },
+    );
+  }
+
+  async rollbackRsiProposal(
+    workspaceId: string,
+    proposalId: string,
+    reason: string,
+  ): Promise<RsiProposal> {
+    return this.request<RsiProposal>(
+      memoryPath(workspaceId, `proposals/${encodeURIComponent(proposalId)}/rollback`),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+      },
+    );
+  }
+
+  async getRsiStatus(workspaceId: string): Promise<RsiStatus> {
+    return this.request<RsiStatus>(memoryPath(workspaceId, "rsi/status"));
+  }
+
+  async setRsiKillSwitch(
+    workspaceId: string,
+    enabled: boolean,
+    reason?: string,
+  ): Promise<RsiControls> {
+    const body: { enabled: boolean; reason?: string } = { enabled };
+    if (reason?.trim()) body.reason = reason.trim();
+    const result = await this.request<RsiControlsResponse>(
+      memoryPath(workspaceId, "rsi/kill-switch"),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    return result.controls;
+  }
+
+  async updateRsiControls(workspaceId: string, body: RsiControlsPatch): Promise<RsiControls> {
+    const result = await this.request<RsiControlsResponse>(
+      memoryPath(workspaceId, "rsi/controls"),
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    return result.controls;
   }
 
   async streamTaskEvents(taskId: string, options: StreamOptions): Promise<StreamResult> {

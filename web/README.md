@@ -91,6 +91,38 @@ mode) sees an explicit unavailable state instead of an empty list.
 state controls are hidden. The service still enforces every authorization
 check.
 
+## Bounded RSI surface
+
+The **RSI** surface reviews self-improvement proposals and the workspace
+controls that bound them. It is workspace-scoped and needs the `member` role:
+a viewer sees an explicit role gate instead of an empty list, and no read is
+issued. Proposal titles, targets, diffs, evaluations, approvals, rollouts, and
+observations come from the DAT-238 RSI contract (OpenAPI `0.9.0`).
+
+- The server runs the replay. A caller selects the golden set and hidden
+  holdout; metrics, a verifier claim, and evidence text are refused. The
+  verdict, per-arm samples, delta, confidence interval, approval keys, budget
+  state, and canary eligibility are rendered exactly as stored. `inconclusive`
+  reads as a refusal, never a pass.
+- The hidden holdout is aggregate-only. The status card shows its case count and
+  last evaluation time; an evaluation row shows aggregate samples and a
+  `holdout_used` flag. No holdout case content is returned by the contract, and
+  none is displayed or reconstructed.
+- The risk ladder maps the target class to its approval gate: A automatic only
+  when enabled, otherwise one named human; B one named human; C two humans with
+  the owner and reviewer keys; D rejected by the loop. A proposer is never
+  offered evaluation or approval of its own proposal.
+- Owners start the 10% canary, record a stage observation (samples are derived
+  from pinned runs), roll back, change controls, or engage and release the
+  kill switch. Admins approve. Engaging the kill switch requires a reason and
+  stops the loop in the same call; the form only lowers budgets and never
+  raises the fixed sample or regression ceilings.
+- Rollback requires a reason, which is rendered with the ended rollout.
+  Historical run pins and prior evaluations are never rewritten.
+- A regression, a failed dataset verdict, or a forbidden-item injection is
+  surfaced as a prominent warning above the gate; the raw evaluation table
+  stays available underneath.
+
 ## Provider account binding (settings)
 
 The workbench Settings dialog binds GitHub or GitLab accounts so the task

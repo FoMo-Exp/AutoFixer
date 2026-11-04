@@ -310,4 +310,14 @@ describe("surface navigation", () => {
     expect(screen.getByRole("navigation", { name: "Workbench views" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /New task/ })).toBeNull();
   });
+
+  it("switches to the workspace-scoped RSI surface", async () => {
+    vi.spyOn(ForgePilotClient.prototype, "listWorkspaces").mockResolvedValue([]);
+    render(<App />);
+    await screen.findByRole("button", { name: "Repair alpha owner/repo" });
+
+    await userEvent.click(screen.getByRole("button", { name: "RSI" }));
+    expect(await screen.findByRole("heading", { name: "Bounded self-improvement" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /New task/ })).toBeNull();
+  });
 });
