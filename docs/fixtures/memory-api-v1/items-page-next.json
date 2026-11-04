@@ -1,0 +1,100 @@
+{
+  "items": [
+    {
+      "item_id": "mem_4217414de15a4f53b431547dd243b2bd",
+      "status": "proposed",
+      "current_version": 1,
+      "versions_count": 1,
+      "kind": "playbook",
+      "tier": "L3",
+      "statement": "Promote a lesson only after a named reviewer approves the exact version",
+      "preconditions": [
+        "named reviewer available"
+      ],
+      "applicability": {
+        "team_id": "team_platform",
+        "language": "typescript"
+      },
+      "trust": "human",
+      "sensitivity": "confidential",
+      "approved": false,
+      "valid_from": "2026-10-20T00:00:00.000Z",
+      "valid_to": null,
+      "content_hash": "f59def4dd527547b30738d2d84ab15137bdee9ade68596b62727b61c941a2096",
+      "support_count": 0,
+      "contradiction_count": 0,
+      "evidence": [
+        {
+          "evidence_type": "pr",
+          "reference": "pr:memory-lifecycle"
+        }
+      ],
+      "updated_at": "2026-11-04T08:09:52.198Z"
+    },
+    {
+      "item_id": "mem_8291d2a19894477ba79dae396c163aa9",
+      "status": "active",
+      "current_version": 1,
+      "versions_count": 1,
+      "kind": "fact",
+      "tier": "L2",
+      "statement": "The memory browse surface is bounded to 100 items per page and scoped by membership",
+      "preconditions": [],
+      "applicability": {
+        "language": "typescript",
+        "task_family": "memory"
+      },
+      "trust": "agent",
+      "sensitivity": "internal",
+      "approved": true,
+      "valid_from": "2026-11-02T00:00:00.000Z",
+      "valid_to": null,
+      "content_hash": "a2e174df1e0a087adb6eed96938353bcf8220301ec98f35177e54189809c5fc3",
+      "support_count": 1,
+      "contradiction_count": 0,
+      "evidence": [
+        {
+          "evidence_type": "run",
+          "reference": "run:mem_01"
+        }
+      ],
+      "updated_at": "2026-11-04T08:09:52.198Z"
+    },
+    {
+      "item_id": "mem_3acf6a8a8a2146b898f6f6c5cfd19bdd",
+      "status": "active",
+      "current_version": 1,
+      "versions_count": 1,
+      "kind": "lesson",
+      "tier": "L3",
+      "statement": "Run the node memory tests before claiming a retrieval change is done",
+      "preconditions": [
+        "node workspace",
+        "retrieval policy v1"
+      ],
+      "applicability": {
+        "path_prefix": "node/src/memory"
+      },
+      "trust": "human",
+      "sensitivity": "internal",
+      "approved": true,
+      "valid_from": "2026-11-01T00:00:00.000Z",
+      "valid_to": null,
+      "content_hash": "6d0285a68304e6e2d307733e563f0ddbafcc1a37e037f80c0c9cd06b9818b302",
+      "support_count": 2,
+      "contradiction_count": 0,
+      "evidence": [
+        {
+          "evidence_type": "reviewer_decision",
+          "reference": "pr:memory-retrieval"
+        },
+        {
+          "evidence_type": "test",
+          "reference": "node/test/memory-retrieval-api.test.ts"
+        }
+      ],
+      "updated_at": "2026-11-04T08:09:52.197Z"
+    }
+  ],
+  "next_cursor": null
+}

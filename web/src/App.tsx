@@ -10,6 +10,7 @@ import type { AuthApi } from "./auth/useAuth";
 import { AuthLoadingScreen, LoginScreen, NoWorkspaceScreen } from "./auth/LoginScreen";
 import { useTaskStream } from "./api/hooks";
 import { IssuesWorkbench } from "./issues/IssuesWorkbench";
+import { MemoryWorkbench } from "./memory/MemoryWorkbench";
 import { CreateIdempotencyKeys } from "./api/idempotency";
 import { RepositoryPicker } from "./settings/RepositoryPicker";
 import { SettingsDialog } from "./settings/SettingsDialog";
@@ -177,7 +178,7 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
     [config],
   );
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [surface, setSurface] = useState<"tasks" | "issues">("tasks");
+  const [surface, setSurface] = useState<"tasks" | "issues" | "memory">("tasks");
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   /** 窄屏钻取视图：list ↔ detail（≤900px 生效，桌面始终双栏并存） */
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
@@ -523,6 +524,14 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
             >
               Issues
             </button>
+            <button
+              type="button"
+              className={`surface-tab ${surface === "memory" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "memory" ? "page" : undefined}
+              onClick={() => setSurface("memory")}
+            >
+              Memory
+            </button>
           </nav>
           {auth.session && (
             <div className="account-chip">
@@ -619,7 +628,7 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
         </div>
       </header>
 
-      <div className="workspace" data-view={mobileView} hidden={surface === "issues"}>
+      <div className="workspace" data-view={mobileView} hidden={surface !== "tasks"}>
         <aside className="sidebar">
           <div className="sidebar-heading">
             <div>
@@ -761,6 +770,8 @@ function Workbench({ config, auth, identityClient }: WorkbenchProps): ReactEleme
       </div>
 
       {surface === "issues" && <IssuesWorkbench client={client} />}
+
+      {surface === "memory" && <MemoryWorkbench client={client} />}
 
       {showCreate && (
         <CreateTaskDialog

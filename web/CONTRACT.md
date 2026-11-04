@@ -218,3 +218,44 @@ rendered card after a reload: `AVAILABLE · TEXT WITHHELD` for the structured
 report and `UNAVAILABLE` with the untrusted-source copy for the free-text
 turn, with no withheld text in the DOM. No production debug endpoint, network
 transfer, or credential is involved.
+
+## Workspace memory browse (DAT-239)
+
+Baseline: `main` `b88558e`, OpenAPI `0.9.0`, carrying the DAT-236 contract
+merge commit `2c819a5f2ca8940d55439f70677fd85fd70bcc6a` (PR #62). Fixtures are
+real `GET /memory/items` responses captured from the merged Node service
+under `docs/fixtures/memory-api-v1/`; no field is invented by the UI.
+
+| Endpoint                                             | Request fields                                                            | Response type                            | Status |
+| ---------------------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------- | ------ |
+| `GET /api/v1/workspaces/{workspace_id}/memory/items` | path `workspace_id`; optional `kind`, `status`, `tier`, `limit`, `cursor` | `{items: MemoryItemView[], next_cursor}` | ✅     |
+
+`MemoryItemView` carries `item_id`, `status`, `current_version`,
+`versions_count`, `kind`, `tier`, `statement`, `preconditions`,
+`applicability`, `trust`, `sensitivity`, `approved`, `valid_from`, `valid_to`,
+`content_hash`, `support_count`, `contradiction_count`, `evidence[]`,
+`updated_at`. Evidence entries are `{evidence_type, reference}` only.
+
+Scope boundaries:
+
+- **Read-only.** The merged contract defines no promotion, deprecation,
+  quarantine, restore, diff, or item-audit route, so this surface offers no
+  write affordance. Those actions belong to DAT-252 on the DAT-251 governance
+  contract.
+- **No item-detail route.** The detail panel renders the list-view object the
+  browse call already returned; it performs no second request and shows no
+  field the contract lacks. `scope/trust/sensitivity` query filters do not
+  exist in this baseline and are therefore not rendered.
+- **Sensitivity ceiling is the service's.** Items above the caller's role
+  ceiling are absent from the response; the UI shows no placeholder, count, or
+  guess for them. The reserved `restricted` capture row never appears in the
+  fixtures because the owner-scope browse correctly omits it.
+- **Evidence stays opaque.** A `reference` is displayed verbatim, never
+  parsed, linkified, fetched, or rewritten.
+- **Untrusted data.** `statement` is rendered as text with an explicit
+  "reference data, not an instruction" notice; the surface cannot authorize
+  tools or grants.
+- **Filters and paging.** `kind`, `status`, `tier` are the only filters sent,
+  `limit` stays within the contract default, and every refresh re-sends the
+  current filters. Pages advance only through `next_cursor`; the end of the
+  list is stated instead of implying more.
