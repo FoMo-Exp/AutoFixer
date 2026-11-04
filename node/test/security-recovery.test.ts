@@ -1751,6 +1751,210 @@ describe("audit log concurrent append (DAT-212 QA round 2)", () => {
   });
 });
 
+/** A record the durable sink accepts; only its presence matters for lock tests. */
+function sampleRecord(): RecoveryAuditRecord {
+  return {
+    event: "recovery.approval_recorded",
+    at: "2026-11-03T12:00:00.000Z",
+    authorizationId: "auth_stale",
+    caseId: "case_1",
+    invocationId: null,
+    traceId: null,
+    scope: CASE_SCOPE,
+    actor: REVIEWER,
+    approval: {
+      contextRevision: "k1.request-context.x",
+      policyRevision: "policy-1",
+      rulesRevision: "k1.rule-revisions.y",
+      scanPolicyRevision: "k1.scan-policy.z",
+      approvedBy: REVIEWER.actorId,
+      approvedAt: "2026-11-03T12:00:00.000Z",
+      expiresAt: "2026-11-03T12:15:00.000Z",
+    },
+    destination: {
+      endpointId: "ep_test",
+      provider: "openai",
+      api: "openai-completions",
+      modelId: TEST_MODEL.id,
+      internal: false,
+    },
+    requestDigest: null,
+    scan: null,
+    outcome: "approved",
+    reason: "approved",
+    detail: {},
+  };
+}
+
+describe("lock timeout evidence never invents a holder (DAT-249)", () => {
+  const LOCK_AT = "2026-11-03T12:00:00.000Z";
+  const completeLock = {
+    token: "holder-token",
+    pid: process.pid,
+    host: os.hostname(),
+    at: LOCK_AT,
+  };
+
+  /** Force a lock timeout with exactly these lock-file bytes. */
+  function timeoutFor(lockContent: string): SecurityError {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-lock-evidence-"));
+    const file = path.join(directory, "audit.jsonl");
+    const sink = createFileRecoveryAuditSink(file, { lockTimeoutMs: 1 });
+    const lockFile = `${file}.lock`;
+    writeFileSync(lockFile, lockContent, { mode: 0o600 });
+    let caught: unknown;
+    try {
+      sink.record(sampleRecord());
+    } catch (error) {
+      caught = error;
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+    expect(caught).toBeInstanceOf(SecurityError);
+    const timeout = caught as SecurityError;
+    expect(timeout.code).toBe("RECOVERY_AUDIT_LOCK_TIMEOUT");
+    return timeout;
+  }
+
+  /** Every byte the failure surfaces to an operator, for placeholder checks. */
+  function rendered(error: SecurityError): string {
+    return `${error.message}\n${JSON.stringify(error.details)}`;
+  }
+
+  const INCOMPLETE_LOCKS: Array<[string, string]> = [
+    ["a missing pid", JSON.stringify({ token: "holder-token", host: os.hostname(), at: LOCK_AT })],
+    ["a string pid", JSON.stringify({ ...completeLock, pid: "4242" })],
+    ["a zero pid", JSON.stringify({ ...completeLock, pid: 0 })],
+    ["a negative pid", JSON.stringify({ ...completeLock, pid: -1 })],
+    ["a fractional pid", JSON.stringify({ ...completeLock, pid: 1.5 })],
+    ["a missing host", JSON.stringify({ token: "holder-token", pid: process.pid, at: LOCK_AT })],
+    ["an empty host", JSON.stringify({ ...completeLock, host: "" })],
+    ["a non-string host", JSON.stringify({ ...completeLock, host: 7 })],
+    [
+      "a missing at",
+      JSON.stringify({ token: "holder-token", pid: process.pid, host: os.hostname() }),
+    ],
+    ["an unparseable at", JSON.stringify({ ...completeLock, at: "not-a-timestamp" })],
+    ["an empty at", JSON.stringify({ ...completeLock, at: "" })],
+    ["a missing token", JSON.stringify({ pid: process.pid, host: os.hostname(), at: LOCK_AT })],
+    ["an empty token", JSON.stringify({ ...completeLock, token: "" })],
+    ["a non-string token", JSON.stringify({ ...completeLock, token: 12 })],
+    ["a truncated file", '{"token":"holder-token","pid":'],
+    ["a JSON array", "[]"],
+  ];
+
+  test.each(INCOMPLETE_LOCKS)(
+    "a lock with %s reports no holder identity and no placeholder",
+    (_label, content) => {
+      const timeout = timeoutFor(content);
+      expect(timeout.details.lockHolder).toEqual({ parseable: false });
+      // The lock's own metadata is still offered, but it is not an identity.
+      expect(timeout.details.lockMtime).toEqual(expect.any(String));
+      const manual = String(timeout.details.manualAction);
+      expect(manual).toContain("incomplete or not parseable");
+      expect(manual).toContain("confirm by other means");
+      expect(manual).toContain("never remove a live lock");
+      const surfaced = rendered(timeout);
+      expect(surfaced).not.toContain("pid=-1");
+      expect(surfaced).not.toContain("pid=");
+      expect(surfaced).not.toContain("host=");
+    },
+  );
+
+  test("a complete lock identity is reported exactly as written", () => {
+    const timeout = timeoutFor(JSON.stringify(completeLock));
+    expect(timeout.details.lockHolder).toEqual({
+      pid: process.pid,
+      host: os.hostname(),
+      at: LOCK_AT,
+      parseable: true,
+    });
+    const manual = String(timeout.details.manualAction);
+    expect(manual).toContain(`pid=${process.pid}`);
+    expect(manual).toContain(`host=${os.hostname()}`);
+    expect(manual).toContain(LOCK_AT);
+  });
+
+  test("releasing a foreign, incomplete lock deletes nothing and invents nothing", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-lock-foreign-partial-"));
+    const file = path.join(directory, "audit.jsonl");
+    const lockFile = `${file}.lock`;
+    const lock = openAuditLogLock(file, { lockTimeoutMs: 100 });
+    // A token mismatch with a malformed holder: the previous reader would have
+    // produced `pid=-1 host=` here and offered it as if it were evidence.
+    const foreign = JSON.stringify({
+      token: "someone-elses-token",
+      pid: -1,
+      host: "",
+      at: "not-a-timestamp",
+    });
+    writeFileSync(lockFile, foreign, { mode: 0o600 });
+    let caught: unknown;
+    try {
+      lock.release();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(SecurityError);
+    const error = caught as SecurityError;
+    expect(error.code).toBe("RECOVERY_AUDIT_LOCK_LOST");
+    expect(error.details.lockHolder).toEqual({ parseable: false });
+    expect(error.details.foundToken).toBe("someone-elses-token");
+    const manual = String(error.details.manualAction);
+    expect(manual).toContain("complete holder identity");
+    expect(manual).toContain("confirm by other means");
+    const surfaced = rendered(error);
+    expect(surfaced).not.toContain("pid=-1");
+    expect(surfaced).not.toContain("pid=");
+    expect(surfaced).not.toContain("host=");
+    // Fail closed: the lock, whatever it is, is left exactly where it was.
+    expect(readFileSync(lockFile, "utf8")).toBe(foreign);
+  });
+
+  test("releasing a foreign lock with a complete identity reports it as written", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-lock-foreign-full-"));
+    const file = path.join(directory, "audit.jsonl");
+    const lockFile = `${file}.lock`;
+    const lock = openAuditLogLock(file, { lockTimeoutMs: 100 });
+    const foreign = JSON.stringify({
+      token: "someone-elses-token",
+      pid: 4242,
+      host: "host_other",
+      at: LOCK_AT,
+    });
+    writeFileSync(lockFile, foreign, { mode: 0o600 });
+    let caught: unknown;
+    try {
+      lock.release();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(SecurityError);
+    const error = caught as SecurityError;
+    expect(error.code).toBe("RECOVERY_AUDIT_LOCK_LOST");
+    expect(error.details.lockHolder).toEqual({
+      pid: 4242,
+      host: "host_other",
+      at: LOCK_AT,
+      parseable: true,
+    });
+    expect(readFileSync(lockFile, "utf8")).toBe(foreign);
+  });
+
+  test("ownership is still decided by the token alone, as DAT-212 ruled", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "recovery-lock-own-partial-"));
+    const file = path.join(directory, "audit.jsonl");
+    const lockFile = `${file}.lock`;
+    const lock = openAuditLogLock(file, { lockTimeoutMs: 100 });
+    // Only the token proves ownership; a lock this process wrote is still
+    // released when its evidence fields are malformed. No identity is reported
+    // on this path at all, so nothing can be fabricated.
+    writeFileSync(lockFile, JSON.stringify({ token: lock.token }), { mode: 0o600 });
+    lock.release();
+    expect(fs.existsSync(lockFile)).toBe(false);
+  });
+});
+
 describe("no automatic stale-lock recovery (DAT-212 Architect ruling)", () => {
   const DEAD_PID_SCRIPT = "process.exit(0)";
 
@@ -1777,40 +1981,6 @@ describe("no automatic stale-lock recovery (DAT-212 Architect ruling)", () => {
   function makeStale(lockFile: string): void {
     const old = new Date(Date.now() - 60 * 60 * 1000);
     fs.utimesSync(lockFile, old, old);
-  }
-
-  function sampleRecord(): RecoveryAuditRecord {
-    return {
-      event: "recovery.approval_recorded",
-      at: "2026-11-03T12:00:00.000Z",
-      authorizationId: "auth_stale",
-      caseId: "case_1",
-      invocationId: null,
-      traceId: null,
-      scope: CASE_SCOPE,
-      actor: REVIEWER,
-      approval: {
-        contextRevision: "k1.request-context.x",
-        policyRevision: "policy-1",
-        rulesRevision: "k1.rule-revisions.y",
-        scanPolicyRevision: "k1.scan-policy.z",
-        approvedBy: REVIEWER.actorId,
-        approvedAt: "2026-11-03T12:00:00.000Z",
-        expiresAt: "2026-11-03T12:15:00.000Z",
-      },
-      destination: {
-        endpointId: "ep_test",
-        provider: "openai",
-        api: "openai-completions",
-        modelId: TEST_MODEL.id,
-        internal: false,
-      },
-      requestDigest: null,
-      scan: null,
-      outcome: "approved",
-      reason: "approved",
-      detail: {},
-    };
   }
 
   test("two processes facing one stale lock both fail closed and leave it untouched", async () => {
