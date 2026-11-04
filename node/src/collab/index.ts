@@ -44,7 +44,20 @@ export {
   runTransitionIssueConflict,
 } from "./states.js";
 export type { ProductState, ProductRelation, RunView } from "./states.js";
-export { grantStateAt } from "./types.js";
+export { grantStateAt, GRANT_STATES, ROLES, TASK_STATES } from "./types.js";
+export {
+  APPROVAL_INVALIDATION_REASONS,
+  APPROVAL_STATES,
+  DELIVERY_STATES,
+  ISSUE_EVENT_TYPES,
+  TASK_EVIDENCE_CONTRACT_VERSION,
+} from "./contract.js";
+export type {
+  ApprovalInvalidationReason,
+  ApprovalState,
+  DeliveryState,
+  IssueEventType,
+} from "./contract.js";
 export type {
   ArtifactRef,
   CapabilityGrant,
