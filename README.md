@@ -69,27 +69,29 @@ enter renderer JavaScript.
 
 ## How it works
 
-```mermaid
-flowchart LR
-    W["Electron / React<br/>workbench"] -->|"forgepilot-api/v1"| N["Node + Pi<br/>orchestrator"]
-    N -->|"dsh-control/v1<br/>UDS / named pipe"| D["Go dsh<br/>execution authority"]
-    N -->|"model calls"| G["Fail-closed<br/>model gateway"]
-    G --> M["Approved model<br/>endpoints"]
-    D --> P["Risk + capability<br/>grant"]
-    D --> S["Sandboxed<br/>tool execution"]
-    D --> E["Append-only audit<br/>+ evidence bundle"]
-    D --> B["Controlled delivery<br/>autofixer/* PR"]
-```
+<p align="center">
+  <a href="docs/assets/autofixer-architecture-light.png">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/assets/autofixer-architecture-dark.png">
+      <img src="docs/assets/autofixer-architecture-light.png"
+           alt="AutoFixer architecture. A reviewer approves in the workbench, which calls Node + Pi over forgepilot-api/v1. Node calls dsh over dsh-control/v1; dsh dispatches validated intents to the sandbox and appends evidence. Node sends model calls through the gateway to approved endpoints, and an approval-bound delivery broker opens autofixer/* pull requests."
+           width="1000">
+    </picture>
+  </a>
+</p>
+
+<p align="center"><sub>The workbench and orchestrator never hold merge authority. dsh executes only within the run's grant; the broker can only propose a pull request.</sub></p>
 
 1. **Intake.** A task names the repository, a pinned base SHA, the issue, and
    the requested scope.
 2. **Risk and grant.** dsh classifies the risk and issues a capability grant:
    permitted paths, tools and arguments, network destinations, duration, and
    resource limits. Prohibited work is rejected, not downgraded.
-3. **Bounded execution.** Pi holds exactly one tool, `dsh_request_action`,
-   which forwards a structured intent. dsh re-checks every intent against the
-   grant and runs approved tools inside the OS sandbox. Pi has no shell,
-   file-edit, or network capability of its own.
+3. **Bounded execution.** Pi's only action tool is `dsh_request_action`, which
+   forwards a structured intent; its other tool only records a turn summary and
+   executes nothing. dsh re-checks every intent against the grant and runs
+   approved tools inside the OS sandbox. Pi has no shell, file-edit, or network
+   capability of its own.
 4. **Candidate freeze.** The proposed change is frozen with a summary, diff,
    and test evidence. The review card is bound to the exact head SHA.
 5. **Human approval and delivery.** A human approves the frozen candidate. The
