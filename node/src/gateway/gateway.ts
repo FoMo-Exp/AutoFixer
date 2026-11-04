@@ -742,8 +742,17 @@ export class ModelGateway {
     // budget settlement are written; record() settles only when all have.
     const record = async (close: AttemptClose): Promise<void> => {
       await this.recordOutcome(identity, attempt, policyRevision, endpoint, modelId, close.outcome);
-      await this.recordUsage(prepared, startedAt, close);
-      await this.closeBudget(prepared.budgetReservation, close.outcome);
+      try {
+        await this.recordUsage(prepared, startedAt, close);
+      } finally {
+        // Budget accounting is independent of ledger persistence. A ledger
+        // write failure must never skip the budget close: an unknown-outcome
+        // attempt would stay `held` and become releasable, refunding a call
+        // the provider may already have executed. closeBudget absorbs its own
+        // failures as incidents, so the ledger error still propagates with
+        // the reservation retained.
+        await this.closeBudget(prepared.budgetReservation, close.outcome);
+      }
     };
     try {
       const inner = await this.deps.adapter.stream(

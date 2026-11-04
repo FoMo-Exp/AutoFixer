@@ -4,12 +4,15 @@ import { createAssistantMessageEventStream } from "@mariozechner/pi-ai";
 import type { AssistantMessage, AssistantMessageEventStream, Context } from "@mariozechner/pi-ai";
 
 import {
+  BudgetConflictError,
   BudgetStore,
   createBudgetAuthority,
   createStaticBudgetPolicyResolver,
   type BudgetAuthority,
   type BudgetPolicy,
 } from "../src/budget/index.js";
+import { UsageLedgerWriteError } from "../src/ledger/index.js";
+import type { UsageLedgerSink } from "../src/ledger/index.js";
 import {
   ModelBudgetReconciliationError,
   ModelEgressDeniedError,
@@ -123,6 +126,15 @@ function abortedStream(text?: string): AssistantMessageEventStream {
   return stream;
 }
 
+/** A ledger whose durable write always fails, like a full/corrupt disk. */
+function failingLedger(): UsageLedgerSink {
+  return {
+    recordAttempt() {
+      throw new UsageLedgerWriteError("usage ledger unavailable");
+    },
+  };
+}
+
 function transportError(code: string): Error {
   return Object.assign(new Error(`socket ${code}`), { code });
 }
@@ -161,6 +173,7 @@ function buildGateway(options: {
   adapter: ProviderAdapter;
   budget?: BudgetAuthority | undefined;
   withoutBudget?: boolean;
+  usageLedger?: UsageLedgerSink;
   onIncident?: (message: string) => void;
 }) {
   const store = new BudgetStore();
@@ -186,6 +199,7 @@ function buildGateway(options: {
     now: () => new Date("2026-11-03T00:00:00Z"),
     ...securityStubs(),
     ...(budget ? { budget } : {}),
+    ...(options.usageLedger ? { usageLedger: options.usageLedger } : {}),
     ...(options.onIncident ? { onIncident: options.onIncident } : {}),
   });
   return { gateway, store, budget };
@@ -417,6 +431,73 @@ describe("gateway budget enforcement", () => {
       code: "MODEL_USAGE_UNKNOWN",
       retryable: false,
     });
+  });
+
+  test("a usage-ledger failure cannot leave a no-terminal reservation releasable", async () => {
+    const incidents: string[] = [];
+    const { adapter, calls } = spyAdapter(() => emptyStream());
+    const { gateway, store } = buildGateway({
+      adapter,
+      gatewayPolicy: testPolicyFor(TEST_MODEL, { retry: { maxAttempts: 3 } }),
+      usageLedger: failingLedger(),
+      onIncident: (message) => incidents.push(message),
+    });
+    await expect(dispatch(gateway)).rejects.toMatchObject({
+      name: "ModelBudgetReconciliationError",
+      code: "MODEL_USAGE_UNKNOWN",
+      retryable: false,
+    });
+    expect(calls()).toBe(1);
+    const reservation = store.list(BUDGET_ACCESS)[0];
+    expect(reservation?.status).toBe("reconciling");
+    expect(store.scopeUsage(BUDGET_ACCESS, "workspace").tokens).toBe(208_192);
+    expect(() =>
+      store.release(reservation?.reservation_id ?? "", "must not refund a dispatched attempt"),
+    ).toThrow(BudgetConflictError);
+    expect(incidents.join("\n")).toContain("usage ledger write failed");
+  });
+
+  test("a usage-ledger failure cannot leave an aborted reservation releasable", async () => {
+    const { adapter, calls } = spyAdapter(() => abortedStream());
+    const { gateway, store } = buildGateway({
+      adapter,
+      gatewayPolicy: testPolicyFor(TEST_MODEL, { retry: { maxAttempts: 3 } }),
+      usageLedger: failingLedger(),
+    });
+    await expect(dispatch(gateway)).rejects.toMatchObject({
+      name: "ModelBudgetReconciliationError",
+      code: "MODEL_USAGE_UNKNOWN",
+    });
+    expect(calls()).toBe(1);
+    const reservation = store.list(BUDGET_ACCESS)[0];
+    expect(reservation?.status).toBe("reconciling");
+    expect(() =>
+      store.release(reservation?.reservation_id ?? "", "must not refund an aborted attempt"),
+    ).toThrow(BudgetConflictError);
+  });
+
+  test("a usage-ledger failure still lets a handed-off unknown stream retain its bound", async () => {
+    const { adapter } = spyAdapter(() => contentThenEndStream("partial"));
+    const { gateway, store } = buildGateway({
+      adapter,
+      usageLedger: failingLedger(),
+    });
+    const stream = await dispatch(gateway);
+    const events = [];
+    for await (const event of stream) {
+      events.push(event);
+    }
+    const last = events.at(-1);
+    expect(last?.type).toBe("error");
+    if (last?.type === "error") {
+      expect(last.error.errorMessage).toContain("MODEL_USAGE_UNKNOWN");
+    }
+    const reservation = store.list(BUDGET_ACCESS)[0];
+    expect(reservation?.status).toBe("reconciling");
+    expect(store.scopeUsage(BUDGET_ACCESS, "workspace").tokens).toBe(208_192);
+    expect(() =>
+      store.release(reservation?.reservation_id ?? "", "must not refund a dispatched attempt"),
+    ).toThrow(BudgetConflictError);
   });
 
   test("denies an invalid policy as a budget configuration refusal", async () => {
