@@ -72,6 +72,8 @@ function bootstrap(): WorkspaceScope {
 function taskRecord(runId: string | null): TaskRecord {
   const record = createTaskRecord({
     id: "tsk_run_memory",
+    workspaceId: scope.workspace_id,
+    enterpriseId: scope.enterprise_id,
     repository: {
       id: "github:run/memory",
       display_name: "run/memory",
@@ -127,6 +129,7 @@ beforeEach(() => {
     evidence_type: "reviewer_decision",
     reference: "pr:run-memory",
   });
+  memory.items.reviewVersion(scope, lesson.item.id, 1, "usr_reviewer");
   memory.items.setStatus(scope, lesson.item.id, "candidate", 1);
   memory.items.setStatus(scope, lesson.item.id, "active", 1);
   lessonId = lesson.item.id;

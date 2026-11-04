@@ -30,6 +30,7 @@ function task(id: string, summary: string): Task {
     risk: null,
     progress: { phase: "Executing", actions_completed: 0, actions_total: null },
     pi_summary: null,
+    memory: null,
     governance: { current_head_sha: null, observations_valid: false, merge_queue_eligible: false },
     artifacts: { patch: null, report: null, evidence_bundle_available: false, index: [] },
   };

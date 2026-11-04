@@ -1031,7 +1031,8 @@ const MIGRATIONS: Migration[] = [
         ON enterprise_template_events(enterprise_id, workspace_id)`,
       `CREATE INDEX IF NOT EXISTS idx_enterprise_template_events_template
         ON enterprise_template_events(enterprise_id, template_id)`,
-
+    ],
+  },
   {
     // Bounded recursive self-improvement (DAT-238). This slice takes v11,
     // directly after DAT-237's v10; v1-v10 are merged and remain untouched.

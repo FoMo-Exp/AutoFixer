@@ -86,6 +86,7 @@ beforeAll(async () => {
     evidence_type: "reviewer_decision",
     reference: "pr:memory-run-pin",
   });
+  memory.items.reviewVersion(scope, lesson.item.id, 1, "usr_reviewer");
   memory.items.setStatus(scope, lesson.item.id, "candidate", 1);
   memory.items.setStatus(scope, lesson.item.id, "active", 1);
   lessonId = lesson.item.id;

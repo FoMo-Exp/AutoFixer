@@ -62,7 +62,6 @@ import type {
   RsiService,
   RsiStore,
 } from "./memory/index.js";
-} from "./memory/index.js";
 import { resolveConfiguredModel } from "./pi/model.js";
 import {
   DependentWorkPauseLedger,

@@ -13,6 +13,8 @@ function record(runId: string): { store: TaskStore; task: TaskRecord } {
   const store = new TaskStore();
   const task = createTaskRecord({
     id: `tsk_${runId}`,
+    workspaceId: "wsp_test",
+    enterpriseId: "ent_test",
     repository: {
       id: "github:test/repo",
       display_name: "test/repo",
