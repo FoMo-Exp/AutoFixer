@@ -41,6 +41,21 @@ const TIER_OPTIONS: Array<{ value: string; label: string }> = [
 ];
 
 /**
+ * Identity of one browse query: workspace plus the three contract filters.
+ * A page is only rendered while it belongs to the currently selected query, so
+ * switching workspace can never show the previous workspace's items, not even
+ * for the render before the new request settles.
+ */
+function memoryQueryKey(
+  workspaceId: string | undefined,
+  kind: KindFilter,
+  status: StatusFilter,
+  tier: TierFilter,
+): string {
+  return [workspaceId ?? "", kind, status, tier].join("\u0000");
+}
+
+/**
  * Read-only workspace memory browse. The panel is deliberately read-only: the
  * merged contract exposes no promotion, deprecation, quarantine, or diff route,
  * so this surface never offers one.
@@ -52,20 +67,34 @@ export function MemoryWorkbench({ client }: { client: ForgePilotClient }): React
   const [workspaceLoading, setWorkspaceLoading] = useState(true);
   const [workspaceToken, setWorkspaceToken] = useState(0);
 
-  const [items, setItems] = useState<MemoryItem[]>([]);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [page, setPage] = useState<{
+    key: string;
+    items: MemoryItem[];
+    nextCursor: string | null;
+  }>({ key: "", items: [], nextCursor: null });
   const [kind, setKind] = useState<KindFilter>("all");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [tier, setTier] = useState<TierFilter>("all");
   const [listLoading, setListLoading] = useState(false);
-  const [listError, setListError] = useState<MemoryError | undefined>(undefined);
+  const [listError, setListError] = useState<{ key: string; error: MemoryError } | undefined>(
+    undefined,
+  );
   const [listToken, setListToken] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const listRequestRef = useRef(0);
 
-  const [selectedItemId, setSelectedItemId] = useState<string | undefined>(undefined);
-  const [selectedItem, setSelectedItem] = useState<MemoryItem | undefined>(undefined);
+  const queryKey = memoryQueryKey(workspaceId, kind, status, tier);
+  const items = page.key === queryKey ? page.items : [];
+  const nextCursor = page.key === queryKey ? page.nextCursor : null;
+  const visibleListError = listError?.key === queryKey ? listError.error : undefined;
+
+  const [selection, setSelection] = useState<{ workspaceId: string; item: MemoryItem }>();
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
+  // A detail belongs to the workspace it was opened from: a workspace change
+  // hides it without needing a state reset after the next render.
+  const selectedItem =
+    selection !== undefined && selection.workspaceId === workspaceId ? selection.item : undefined;
+  const selectedItemId = selectedItem?.item_id;
 
   useEffect(() => {
     let active = true;
@@ -95,32 +124,26 @@ export function MemoryWorkbench({ client }: { client: ForgePilotClient }): React
     };
   }, [client, workspaceToken]);
 
-  const browseFilter = {
-    ...(kind === "all" ? {} : { kind }),
-    ...(status === "all" ? {} : { status }),
-    ...(tier === "all" ? {} : { tier }),
-  };
-
   useEffect(() => {
-    if (!workspaceId) {
-      setItems([]);
-      setNextCursor(null);
-      return;
-    }
+    if (!workspaceId) return;
     let active = true;
     const requestId = ++listRequestRef.current;
+    const key = memoryQueryKey(workspaceId, kind, status, tier);
     setListLoading(true);
     client
-      .listMemoryItems(workspaceId, browseFilter)
-      .then((page) => {
+      .listMemoryItems(workspaceId, {
+        ...(kind === "all" ? {} : { kind }),
+        ...(status === "all" ? {} : { status }),
+        ...(tier === "all" ? {} : { tier }),
+      })
+      .then((next) => {
         if (!active || requestId !== listRequestRef.current) return;
-        setItems(page.items);
-        setNextCursor(page.next_cursor);
+        setPage({ key, items: next.items, nextCursor: next.next_cursor });
         setListError(undefined);
       })
       .catch((caught: unknown) => {
         if (!active || requestId !== listRequestRef.current) return;
-        setListError(describeMemoryError(caught));
+        setListError({ key, error: describeMemoryError(caught) });
       })
       .finally(() => {
         if (active && requestId === listRequestRef.current) setListLoading(false);
@@ -128,28 +151,35 @@ export function MemoryWorkbench({ client }: { client: ForgePilotClient }): React
     return () => {
       active = false;
     };
-    // `browseFilter` is rebuilt from the kind/status/tier primitives below, so
-    // those primitives are the real dependency set.
   }, [client, workspaceId, kind, status, tier, listToken]);
 
   const loadMore = useCallback(async (): Promise<void> => {
     if (!workspaceId || !nextCursor || loadingMore) return;
     const requestId = listRequestRef.current;
+    const key = memoryQueryKey(workspaceId, kind, status, tier);
     setLoadingMore(true);
     try {
-      const page = await client.listMemoryItems(workspaceId, {
-        ...browseFilter,
+      const next = await client.listMemoryItems(workspaceId, {
+        ...(kind === "all" ? {} : { kind }),
+        ...(status === "all" ? {} : { status }),
+        ...(tier === "all" ? {} : { tier }),
         cursor: nextCursor,
       });
       if (requestId !== listRequestRef.current) return;
-      setItems((current) => {
-        const known = new Set(current.map((item) => item.item_id));
-        return [...current, ...page.items.filter((item) => !known.has(item.item_id))];
+      setPage((current) => {
+        if (current.key !== key) return current;
+        const known = new Set(current.items.map((item) => item.item_id));
+        return {
+          key,
+          items: [...current.items, ...next.items.filter((item) => !known.has(item.item_id))],
+          nextCursor: next.next_cursor,
+        };
       });
-      setNextCursor(page.next_cursor);
       setListError(undefined);
     } catch (caught) {
-      if (requestId === listRequestRef.current) setListError(describeMemoryError(caught));
+      if (requestId === listRequestRef.current) {
+        setListError({ key, error: describeMemoryError(caught) });
+      }
     } finally {
       setLoadingMore(false);
     }
@@ -160,20 +190,19 @@ export function MemoryWorkbench({ client }: { client: ForgePilotClient }): React
   const filtersActive = kind !== "all" || status !== "all" || tier !== "all";
 
   function selectItem(item: MemoryItem): void {
-    setSelectedItemId(item.item_id);
-    setSelectedItem(item);
+    if (!workspaceId) return;
+    setSelection({ workspaceId, item });
     setMobileView("detail");
   }
 
   function backToList(): void {
-    setSelectedItemId(undefined);
-    setSelectedItem(undefined);
+    setSelection(undefined);
     setMobileView("list");
   }
 
   function changeWorkspace(nextId: string): void {
     setWorkspaceId(nextId);
-    backToList();
+    setMobileView("list");
   }
 
   function resetFilters(): void {
@@ -319,13 +348,13 @@ export function MemoryWorkbench({ client }: { client: ForgePilotClient }): React
               <div className="empty-icon">⌁</div>
               <p>No active workspace is visible to this credential.</p>
             </div>
-          ) : listError ? (
+          ) : visibleListError ? (
             <div className="empty-sidebar">
               <div className="empty-icon">!</div>
               <p>
-                {listError.code}: {listError.message}
+                {visibleListError.code}: {visibleListError.message}
               </p>
-              {listError.retryable && (
+              {visibleListError.retryable && (
                 <button
                   type="button"
                   className="button button-quiet button-small"

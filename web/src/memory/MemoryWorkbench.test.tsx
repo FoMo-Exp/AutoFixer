@@ -131,6 +131,57 @@ describe("memory workbench", () => {
     ).toBeTruthy();
   });
 
+  it("never renders the previous workspace's items while a new one loads", async () => {
+    const client = makeClient();
+    const twoWorkspaces = workspaces.map((entry) => ({ ...entry, status: "active" as const }));
+    vi.spyOn(client, "listWorkspaces").mockResolvedValue(twoWorkspaces);
+    let resolveSecond: ((page: MemoryItemPage) => void) | undefined;
+    const pending = new Promise<MemoryItemPage>((resolve) => {
+      resolveSecond = resolve;
+    });
+    const listMemoryItems = vi
+      .spyOn(client, "listMemoryItems")
+      .mockResolvedValueOnce(firstPage)
+      .mockImplementationOnce(() => pending);
+
+    render(<MemoryWorkbench client={client} />);
+    await screen.findByText(firstPage.items[0].statement);
+
+    await userEvent.click(screen.getByRole("combobox", { name: "Workspace scope" }));
+    await userEvent.click(screen.getByRole("option", { name: "Acme Infra · viewer" }));
+
+    await waitFor(() => expect(listMemoryItems).toHaveBeenLastCalledWith(twoWorkspaces[1].id, {}));
+    expect(screen.queryByText(firstPage.items[0].statement)).toBeNull();
+    expect(await screen.findByText("Reading workspace memory…")).toBeTruthy();
+
+    resolveSecond?.(secondPage);
+    expect(await screen.findByText(secondPage.items[0].statement)).toBeTruthy();
+    expect(screen.queryByText(firstPage.items[0].statement)).toBeNull();
+  });
+
+  it("hides an open item when the workspace changes", async () => {
+    const client = makeClient();
+    const twoWorkspaces = workspaces.map((entry) => ({ ...entry, status: "active" as const }));
+    vi.spyOn(client, "listWorkspaces").mockResolvedValue(twoWorkspaces);
+    vi.spyOn(client, "listMemoryItems")
+      .mockResolvedValueOnce(firstPage)
+      .mockResolvedValueOnce(emptyPage);
+
+    render(<MemoryWorkbench client={client} />);
+    await openFirstItem();
+    expect(await screen.findByRole("heading", { name: firstPage.items[0].statement })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("combobox", { name: "Workspace scope" }));
+    await userEvent.click(screen.getByRole("option", { name: "Acme Infra · viewer" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: firstPage.items[0].statement })).toBeNull(),
+    );
+    expect(
+      await screen.findByText("This workspace has no memory item at your sensitivity ceiling yet."),
+    ).toBeTruthy();
+  });
+
   it("sends only contract filters and keeps them across a refresh", async () => {
     const client = makeClient();
     const listMemoryItems = vi
