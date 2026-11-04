@@ -135,8 +135,9 @@ describe("Memory migrations", () => {
       .all()
       .map((row) => (row as { version: number }).version);
     // Versions 1–3 predate DAT-203; version 4 adds the provider access
-    // tables. A future migration bumps this list again.
-    expect(applied).toEqual([1, 2, 3, 4]);
+    // tables; version 5 rebuilds provider_member_role for `effective_access`
+    // (DAT-247). A future migration bumps this list again.
+    expect(applied).toEqual([1, 2, 3, 4, 5]);
   });
 });
 

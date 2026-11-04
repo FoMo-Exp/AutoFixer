@@ -120,6 +120,25 @@ export interface ProviderRosterRepository {
   resetAuthority(scope: WorkspaceScope, integrationId: ServiceIntegrationId, at: string): number;
   /** Drop roster rows and authority of one subject (member removal). */
   removeSubject(scope: WorkspaceScope, integrationId: ServiceIntegrationId, subject: string): void;
+  /**
+   * Delete roster rows of one integration whose
+   * `(subject, source_kind, authority_ref)` key is not in `keep`, and return
+   * how many were removed.
+   *
+   * Rows are upserted per key, so a subject whose provenance changes leaves
+   * its previous row behind and keeps displaying stale provenance. Only a
+   * *complete* roster may prune — absence from a partial snapshot is not
+   * evidence of anything — so callers are limited to reconciliation.
+   */
+  pruneRoles(
+    scope: WorkspaceScope,
+    integrationId: ServiceIntegrationId,
+    keep: readonly {
+      subject: string;
+      source_kind: ProviderRoleSourceKind;
+      authority_ref: string;
+    }[],
+  ): number;
 }
 
 export interface CapabilityGrantRepository {
@@ -860,6 +879,43 @@ class SqliteProviderRosterRepository implements ProviderRosterRepository {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  pruneRoles(
+    scope: WorkspaceScope,
+    integrationId: ServiceIntegrationId,
+    keep: readonly {
+      subject: string;
+      source_kind: ProviderRoleSourceKind;
+      authority_ref: string;
+    }[],
+  ): number {
+    const keepKeys = new Set(
+      keep.map((row) => `${row.subject}\u0000${row.source_kind}\u0000${row.authority_ref}`),
+    );
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM provider_member_role
+         WHERE enterprise_id = ? AND workspace_id = ? AND integration_id = ?`,
+      )
+      .all(scope.enterprise_id, scope.workspace_id, integrationId) as unknown as RoleRow[];
+    let removed = 0;
+    this.db.exec("BEGIN");
+    try {
+      for (const row of rows) {
+        const key = `${row.subject}\u0000${row.source_kind}\u0000${row.authority_ref}`;
+        if (keepKeys.has(key)) {
+          continue;
+        }
+        this.db.prepare(`DELETE FROM provider_member_role WHERE id = ?`).run(row.id);
+        removed += 1;
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return removed;
   }
 }
 
