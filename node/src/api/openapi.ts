@@ -27,8 +27,8 @@ import {
   ERROR_NEXT_ACTIONS,
   ERROR_STAGES,
 } from "./errors.js";
-
-type JsonObject = Record<string, unknown>;
+import { MEMORY_OPENAPI_SCHEMAS, memoryOpenApiPaths } from "./openapi-memory.js";
+import type { JsonObject } from "./openapi-types.js";
 
 /** Loosely-typed OpenAPI 3.1 document; schemas stay plain JSON objects. */
 export interface OpenApiDocument {
@@ -4489,6 +4489,10 @@ export function buildOpenApiDocument(): OpenApiDocument {
     },
   };
 
+  // Workspace memory v1 surface (DAT-236): bounded retrieval, feedback,
+  // browse, versions, and evaluation records.
+  Object.assign(paths, memoryOpenApiPaths());
+
   // Stamp the security requirement and 401 response onto every operation so
   // auth coverage cannot silently miss an endpoint.
   stampAuth(paths);
@@ -4528,6 +4532,12 @@ export function buildOpenApiDocument(): OpenApiDocument {
         "`retry_after_seconds` on the shared envelope. Mutating collaboration " +
         "commands are replay-safe by `Idempotency-Key`, and the issue SSE " +
         "stream replays by `Last-Event-ID` with replay-stable event ids. " +
+        "client-supplied identifiers never grant access. Workspace memory " +
+        "(DAT-236) is bounded, cited, reproducible, and untrusted by construction: " +
+        "the bundle records the exact memory and retrieval-policy version it read, " +
+        "omits rather than dilutes, surfaces conflicts instead of overwriting, " +
+        "degrades to policy-only when the memory store is unavailable, and can " +
+        "never expand a capability grant — dsh remains the sole tool gate. " +
         "Generated from the " +
         "orchestrator implementation; shapes are defined by " +
         "docs/contracts/forgepilot-api-v1.md.",
@@ -4585,6 +4595,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
         ProviderInstance: providerInstanceSchema,
         DesktopFlow: desktopFlowSchema,
         AuthAuditRecord: authAuditRecordSchema,
+        ...MEMORY_OPENAPI_SCHEMAS,
         Error: errorSchema,
       },
       securitySchemes: {

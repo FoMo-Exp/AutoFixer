@@ -46,8 +46,17 @@ import {
 } from "./gateway/index.js";
 import type { GatewayScope, GatewayScopeBinding, ModelGateway } from "./gateway/index.js";
 import { createUsageLedgerStore } from "./ledger/index.js";
-import { createMemoryConsolidationRunner } from "./memory/index.js";
-import type { MemoryConsolidationRunner } from "./memory/index.js";
+import {
+  createMemoryConsolidationRunner,
+  createMemoryRepositories,
+  createMemoryRetrievalService,
+  createRetrievalStore,
+} from "./memory/index.js";
+import type {
+  MemoryConsolidationRunner,
+  MemoryRepositories,
+  MemoryRetrievalService,
+} from "./memory/index.js";
 import { resolveConfiguredModel } from "./pi/model.js";
 import {
   DependentWorkPauseLedger,
@@ -119,6 +128,10 @@ export interface OrchestratorHandle {
    * plane. Registered on `start()` and stopped with the orchestrator.
    */
   memoryConsolidation: MemoryConsolidationRunner | undefined;
+  /** Workspace memory retrieval service; set when the control plane is on. */
+  memory: MemoryRetrievalService | undefined;
+  /** Scoped memory repositories, for memory lifecycle wiring and tests. */
+  memoryRepositories: MemoryRepositories | undefined;
   /** Per-process bearer token callers must present on every API request. */
   apiToken: string;
   /** Start listening; resolves with the bound loopback address. */
@@ -347,6 +360,8 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let workspaceBindings = createConfiguredWorkspaceRunBindingResolver(config);
   let requestScopeDeps: RequestScopeDeps | undefined;
   let memoryConsolidation: MemoryConsolidationRunner | undefined;
+  let memory: MemoryRetrievalService | undefined;
+  let memoryRepositories: MemoryRepositories | undefined;
   if (config.oauthClientsFile !== undefined) {
     controlPlane = openControlPlaneDb({ path: config.controlPlaneFile ?? ":memory:" });
     const repos = createRepositories(controlPlane);
@@ -379,6 +394,14 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     // the request boundary enforces effective access for session requests
     // whenever a service integration is installed for this workspace.
     const providerAccess = createProviderAccessRepositories(controlPlane);
+    // Workspace memory retrieval (DAT-236) shares the control-plane store. The
+    // service is read-only over memory: it assembles bounded, cited bundles and
+    // records audit rows; it cannot promote, edit, or grant anything.
+    memoryRepositories = createMemoryRepositories(controlPlane);
+    memory = createMemoryRetrievalService({
+      memory: memoryRepositories,
+      store: createRetrievalStore(controlPlane),
+    });
     providerAuthority = createRequestAuthority({
       access: providerAccess,
       memberships: repos.memberships,
@@ -476,6 +499,15 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     ...(auth !== undefined ? { auth } : {}),
     ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
     ...(invitations !== undefined ? { invitations } : {}),
+    ...(memory !== undefined && auth !== undefined
+      ? {
+          memory: {
+            auth,
+            service: memory,
+            ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
+          },
+        }
+      : {}),
     ...(config.publicOrigin !== undefined ? { publicOrigin: config.publicOrigin } : {}),
   });
   return {
@@ -490,6 +522,8 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     controlPlane,
     providerAuthority,
     memoryConsolidation,
+    memory,
+    memoryRepositories,
     apiToken,
     start: () => {
       const { promise, resolve, reject } = Promise.withResolvers<{ host: string; port: number }>();

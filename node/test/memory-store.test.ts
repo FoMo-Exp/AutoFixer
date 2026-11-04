@@ -142,8 +142,8 @@ describe("Memory migrations", () => {
     // v1 control-plane base, v2 identity, v3 memory, v4 DAT-203 provider
     // access, v5 DAT-247 effective_access, v6 DAT-204 invitation, v7 DAT-234
     // admission decisions and retirement candidates, v8 DAT-235 promotion
-    // and consolidation lifecycle.
-    expect(applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    // and consolidation lifecycle, v9 DAT-236 bounded retrieval.
+    expect(applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 });
 
