@@ -159,7 +159,6 @@ export function IssuesWorkbench({
       <aside className="sidebar issues-sidebar">
         <div className="sidebar-heading">
           <div>
-            <span className="eyebrow">Workspace</span>
             <h1>Issues</h1>
           </div>
           <span className="task-count">{issues.length}</span>

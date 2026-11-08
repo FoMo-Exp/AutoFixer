@@ -66,6 +66,37 @@ describe("Electron main-process API proxy integration", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("forwards workspace API reads and writes without exposing renderer credentials", async () => {
+    const fetchImpl = vi.fn(async () => new globalThis.Response("{}", { status: 200 }));
+    const proxy = createApiProxy({
+      apiBaseUrl: "http://127.0.0.1:4321",
+      apiToken: "main-token",
+      fetchImpl,
+      publish: vi.fn(),
+    });
+    for (const [method, path] of [
+      ["GET", "/api/v1/workspaces/ws/issues"],
+      ["PATCH", "/api/v1/workspaces/ws/teams/team"],
+      ["DELETE", "/api/v1/workspaces/ws/members/member"],
+    ]) {
+      await proxy.request({
+        requestId: "2a5e79e0-5c42-4d91-a298-1f696f8274c1",
+        url: `http://127.0.0.1:4321${path}`,
+        method,
+        headers: { Authorization: "Bearer untrusted" },
+      });
+      expect(fetchImpl.mock.lastCall[1].headers.get("authorization")).toBe("Bearer main-token");
+    }
+    await expect(
+      proxy.request({
+        requestId: "2a5e79e0-5c42-4d91-a298-1f696f8274c1",
+        url: "http://127.0.0.1:4321/private",
+        method: "GET",
+        headers: {},
+      }),
+    ).rejects.toThrow();
+  });
+
   it("rejects IPC requests from an untrusted renderer frame", async () => {
     const handlers = new Map();
     const ipcMain = {

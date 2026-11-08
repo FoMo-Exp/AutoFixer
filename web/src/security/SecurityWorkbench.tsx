@@ -169,7 +169,7 @@ export function SecurityWorkbench({
   }
 
   return (
-    <div className="security-surface">
+    <div className={`security-surface ${workspaceId && section !== "audit" ? "has-sidebar" : ""}`}>
       <div className="security-section-bar">
         <nav className="surface-nav" aria-label="Security views">
           {(Object.keys(SECTION_LABELS) as SecuritySection[]).map((entry) => (
@@ -244,7 +244,6 @@ export function SecurityWorkbench({
           <aside className="sidebar security-sidebar">
             <div className="sidebar-heading">
               <div>
-                <span className="eyebrow">Redacted inbox</span>
                 <h1>Security cases</h1>
               </div>
               <div className="memory-heading-actions">

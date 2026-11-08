@@ -141,7 +141,7 @@ function validateRequest(
   input: ApiProxyRequest,
 ): {
   target: URL;
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "PATCH" | "DELETE";
   headers: Headers;
   body?: string;
   isStream: boolean;
@@ -156,13 +156,14 @@ function validateRequest(
   if (
     !isLoopbackApiUrl(target.href) ||
     target.origin !== base.origin ||
-    !/^\/api\/v1\/tasks(?:\/|$)/.test(target.pathname)
+    !/^\/api\/v1\/(?:tasks|workspaces|invitations|admin|auth)(?:\/|$)/.test(target.pathname)
   ) {
     throw new Error("API proxy accepts only this local ForgePilot task service.");
   }
 
   const method = input.method.toUpperCase();
-  if (method !== "GET" && method !== "POST") throw new Error("Unsupported API method.");
+  if (method !== "GET" && method !== "POST" && method !== "PATCH" && method !== "DELETE")
+    throw new Error("Unsupported API method.");
   if (input.body !== undefined && typeof input.body !== "string") {
     throw new Error("API request body must be text.");
   }

@@ -191,7 +191,6 @@ export function RsiWorkbench({
       <aside className="sidebar rsi-sidebar">
         <div className="sidebar-heading">
           <div>
-            <span className="eyebrow">Workspace</span>
             <h1>RSI</h1>
           </div>
           <span className="task-count">{proposals.length}</span>

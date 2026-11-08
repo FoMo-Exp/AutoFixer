@@ -265,7 +265,6 @@ export function DashboardWorkbench({
       <aside className="sidebar dashboard-sidebar">
         <div className="sidebar-heading">
           <div>
-            <span className="eyebrow">Workspace</span>
             <h1>Dashboard</h1>
           </div>
           <button

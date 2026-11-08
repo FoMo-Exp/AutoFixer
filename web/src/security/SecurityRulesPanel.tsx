@@ -325,7 +325,6 @@ export function SecurityRulesPanel({
       <aside className="sidebar security-sidebar">
         <div className="sidebar-heading">
           <div>
-            <span className="eyebrow">Policy corrections</span>
             <h1>Rules</h1>
           </div>
           <div className="memory-heading-actions">

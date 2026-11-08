@@ -3,7 +3,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import { ForgePilotClient } from "./api/client";
+import { ApiError, ForgePilotClient } from "./api/client";
 import { IdentityClient } from "./api/identity";
 import type { Task } from "./api/client";
 
@@ -78,6 +78,18 @@ async function select(summary: string) {
 }
 
 describe("workspace navigation", () => {
+  it("does not present a terminal task's closed event stream as live", async () => {
+    const cancelled = { ...tasks[0], status: "cancelled" as const, archived: false };
+    vi.mocked(ForgePilotClient.prototype.listTasks).mockResolvedValue({
+      items: [cancelled],
+      next_cursor: null,
+    });
+    vi.mocked(ForgePilotClient.prototype.getTask).mockResolvedValue(cancelled);
+    render(<App />);
+    await select("Repair alpha");
+    expect(await screen.findByText("Finished")).toBeTruthy();
+    expect(screen.queryByText("Live")).toBeNull();
+  });
   it("keeps Home visible after the initial task list arrives", async () => {
     const page = deferred<{ items: Task[]; next_cursor: null }>();
     vi.mocked(ForgePilotClient.prototype.listTasks).mockReturnValue(page.promise);
@@ -137,7 +149,10 @@ describe("workspace navigation", () => {
     );
     render(<App />);
     await select("Repair beta");
-    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Detail unavailable×");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveProperty("textContent", "Detail unavailable×");
+    // The action error is a toast inside the detail panel, not in the topbar.
+    expect(alert.closest(".main-panel")).not.toBeNull();
     expect(screen.getByRole("heading", { name: "Repair beta" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: welcome })).toBeNull();
   });
@@ -266,6 +281,57 @@ describe("workspace navigation", () => {
     await screen.findByRole("button", { name: "Repair alpha owner/repo" });
     expect(document.querySelector(".task-list")?.getAttribute("data-scroll")).toBe("stacked");
   });
+
+  it("opens task creation from the Tasks title in the sidebar", async () => {
+    render(<App />);
+    await screen.findByRole("button", { name: /Repair alpha/ });
+
+    const create = screen.getByRole("button", { name: "New task" });
+    expect(create.closest(".sidebar-title-row")).not.toBeNull();
+
+    await userEvent.click(create);
+    expect(await screen.findByRole("dialog", { name: "Create a controlled task" })).toBeTruthy();
+  });
+
+  it("shows a creation failure as a toast outside the create-task dialog", async () => {
+    vi.spyOn(ForgePilotClient.prototype, "createTask").mockRejectedValue(
+      new ApiError(
+        503,
+        {
+          error: {
+            envelope_version: 1,
+            code: "PI_UNAVAILABLE",
+            stage: "execution",
+            category: "stop",
+            message: "No Pi model is configured",
+            retryable: false,
+            retry_after_seconds: null,
+            request_id: "req_test",
+            details: {},
+            next_action: "contact_admin",
+          },
+        },
+        "Create task failed.",
+      ),
+    );
+    render(<App />);
+    await screen.findByRole("button", { name: /Repair alpha/ });
+
+    await userEvent.click(screen.getByRole("button", { name: "New task" }));
+    const dialog = await screen.findByRole("dialog", { name: "Create a controlled task" });
+    await userEvent.type(within(dialog).getByLabelText(/Task summary/), "Repair the grant flow");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create task" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("PI_UNAVAILABLE: No Pi model is configured");
+    expect(alert.classList.contains("create-error-toast")).toBe(true);
+    expect(dialog.contains(alert)).toBe(false);
+    expect(document.querySelector(".main-panel > .inline-error")).toBeNull();
+    // Same transient behavior as the task-action toast.
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull(), {
+      timeout: 2000,
+    });
+  });
 });
 
 describe("invitation landing", () => {
@@ -320,5 +386,52 @@ describe("surface navigation", () => {
     await userEvent.click(screen.getByRole("button", { name: "RSI" }));
     expect(await screen.findByRole("heading", { name: "Bounded self-improvement" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /New task/ })).toBeNull();
+  });
+
+  it("moves the shared tab indicator onto the adjacent surface", async () => {
+    vi.spyOn(IdentityClient.prototype, "listAllWorkspaces").mockResolvedValue([]);
+    render(<App />);
+    await screen.findByRole("button", { name: "Repair alpha owner/repo" });
+
+    const nav = screen.getByRole("navigation", { name: "Workbench views" });
+    const tasksTab = within(nav).getByRole("button", { name: "Tasks" });
+    const issuesTab = within(nav).getByRole("button", { name: "Issues" });
+    Object.defineProperty(tasksTab, "offsetLeft", { configurable: true, value: 8 });
+    Object.defineProperty(tasksTab, "offsetWidth", { configurable: true, value: 128 });
+    Object.defineProperty(issuesTab, "offsetLeft", { configurable: true, value: 138 });
+    Object.defineProperty(issuesTab, "offsetWidth", { configurable: true, value: 128 });
+
+    await userEvent.click(issuesTab);
+
+    const indicator = nav.querySelector<HTMLElement>(".surface-tab-indicator");
+    expect(indicator).toBeTruthy();
+    expect(indicator!.getAttribute("aria-hidden")).toBe("true");
+    expect(indicator!.style.transform).toBe("translateX(138px)");
+    expect(indicator!.style.width).toBe("128px");
+  });
+});
+
+describe("node connection status", () => {
+  it("marks the connected wordmark and exposes the status label", async () => {
+    vi.spyOn(IdentityClient.prototype, "listAllWorkspaces").mockResolvedValue([]);
+    render(<App />);
+    await screen.findByRole("button", { name: "Repair alpha owner/repo" });
+
+    const brand = document.querySelector(".brand-name");
+    expect(brand?.className).toContain("brand-connected");
+    expect(brand?.querySelectorAll(".brand-initial")).toHaveLength(2);
+    expect(screen.getByRole("status").textContent).toBe("Node connected");
+  });
+
+  it("keeps the connecting state while the first task load is pending", () => {
+    vi.spyOn(IdentityClient.prototype, "listAllWorkspaces").mockResolvedValue([]);
+    vi.spyOn(ForgePilotClient.prototype, "listTasks").mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    render(<App />);
+
+    const brand = document.querySelector(".brand-name");
+    expect(brand?.className).toContain("brand-connecting");
+    expect(screen.getByRole("status").textContent).toBe("Connecting");
   });
 });

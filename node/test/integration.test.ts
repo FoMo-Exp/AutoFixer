@@ -428,7 +428,7 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
   });
 
   test("cancel aborts the Pi run and projects dsh's cancelled state", async () => {
-    const { base } = await startApp([
+    const { base, orchestrator } = await startApp([
       {
         kind: "tool",
         toolId: "echo",
@@ -458,6 +458,21 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     });
     expect(cancelled.status).toBe(202);
     expect(cancelled.body.status).toBe("cancelled");
+    const record = orchestrator.store.get(created.id)!;
+    const summary = record.runs.find((item) => item.run_id === runId)!;
+    expect(summary.state).toBe("cancelled");
+
+    const history = await getJson<{ items: RunSummary[] }>(
+      `${base}/api/v1/tasks/${created.id}/runs`,
+    );
+    expect(history.body.items.find((item) => item.run_id === runId)?.state).toBe("cancelled");
+    // Old persisted projections may have missed the cancellation update.
+    summary.state = "requested";
+    const legacyHistory = await getJson<{ items: RunSummary[] }>(
+      `${base}/api/v1/tasks/${created.id}/runs`,
+    );
+    expect(legacyHistory.body.items.find((item) => item.run_id === runId)?.state).toBe("cancelled");
+    summary.state = "cancelled";
 
     const events = await timeline(base, created.id);
     expect(

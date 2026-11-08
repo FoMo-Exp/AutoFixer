@@ -13,6 +13,8 @@
   --sp-4: 16px;
   --sp-6: 24px;
   --sp-8: 32px;
+  --topbar-height: 56px;
+  --surface-tab-width: 128px;
   --r-xs: 4px;
   --r-sm: 6px;
   --r-md: 10px;
@@ -25,6 +27,7 @@
   --red-rgb: 244, 127, 131;
   --amber-rgb: 240, 182, 107;
   --panel-rgb: 18, 24, 36;
+  --chrome: #111722;
   color: #e7ebf3;
   background: #0c1018;
   font-family:
@@ -80,6 +83,7 @@
   --red-rgb: 195, 52, 57;
   --amber-rgb: 154, 101, 17;
   --panel-rgb: 255, 255, 255;
+  --chrome: #e9ebef;
   --shadow: 0 24px 70px rgba(16, 24, 40, 0.12);
 }
 
@@ -122,6 +126,19 @@ button:disabled {
   opacity: 0.5;
 }
 
+.visually-hidden {
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
@@ -137,15 +154,15 @@ select:focus-visible {
 
 .topbar {
   align-items: center;
-  border-bottom: 1px solid var(--line-soft);
-  display: flex;
-  height: 76px;
-  justify-content: space-between;
+  background: var(--chrome);
+  box-shadow: inset 0 -1px 0 var(--line-soft);
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  height: var(--topbar-height);
   padding: 0 var(--workspace-gutter);
   position: sticky;
   top: 0;
   z-index: 20;
-  background: var(--bg);
 }
 
 .brand-lockup,
@@ -175,30 +192,55 @@ select:focus-visible {
 }
 
 .brand-lockup {
-  gap: 12px;
-}
-
-.brand-mark {
-  align-items: center;
-  color: var(--text);
-  display: flex;
-  height: 34px;
-  justify-content: center;
-  width: 20px;
-}
-
-.brand-mark svg {
-  display: block;
-  flex-shrink: 0;
+  border-right: 1px solid var(--line-soft);
+  padding-right: var(--sp-4);
 }
 
 .brand-name {
+  display: inline-block;
   font-size: 15px;
   font-weight: 800;
   letter-spacing: -0.02em;
+  white-space: nowrap;
 }
 
-.brand-caption,
+.brand-connected .brand-initial {
+  color: var(--accent);
+}
+
+.brand-connecting {
+  animation: brand-shimmer 1.8s linear infinite;
+  background-image: linear-gradient(
+    100deg,
+    var(--text) 0%,
+    var(--text) 38%,
+    var(--accent) 50%,
+    var(--text) 62%,
+    var(--text) 100%
+  );
+  background-size: 200% 100%;
+  color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+@keyframes brand-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand-connecting {
+    animation: none;
+    background-image: none;
+    color: var(--text);
+  }
+}
+
 .task-list-time,
 .task-list-repo,
 .detail-subline,
@@ -217,34 +259,144 @@ select:focus-visible {
   font-size: 12px;
 }
 
-.brand-caption {
-  margin-top: 2px;
-}
-
 .topbar-actions {
-  gap: 18px;
+  gap: var(--sp-4);
+  justify-content: flex-end;
+  min-width: 0;
 }
 
-.service-badge,
+.topbar > .surface-nav {
+  align-items: center;
+  align-self: stretch;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 0 var(--sp-4);
+  position: relative;
+  scrollbar-color: var(--faint) transparent;
+  scrollbar-width: thin;
+}
+
+.topbar > .surface-nav .surface-tab {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom-color: transparent;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  color: var(--muted);
+  display: flex;
+  flex: none;
+  font-size: var(--fs-body);
+  font-weight: 500;
+  gap: var(--sp-2);
+  height: 40px;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 14px;
+  position: relative;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+  white-space: nowrap;
+  width: var(--surface-tab-width);
+  z-index: 1;
+}
+
+.topbar > .surface-nav .surface-tab::after {
+  content: "";
+  inset: -4px 0 0;
+  position: absolute;
+}
+
+.topbar > .surface-nav .surface-tab:hover:not(.surface-tab-active) {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.topbar > .surface-nav .surface-tab-active {
+  /* 覆盖 Security 子导航共用类的 inset 描边，避免激活 tab 底部出现分割线 */
+  box-shadow: none;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.topbar > .surface-nav .surface-tab-indicator {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  height: 40px;
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  top: calc(50% - 20px);
+  transition:
+    transform 120ms ease,
+    width 120ms ease;
+  z-index: 0;
+}
+
+/* 底部凹角：向左/右外侧翻出的 browser-tab 脚部。
+   圆环用 --line 描边，弧外填 --bg，弧内用 --chrome 盖掉 tab 背景与顶栏分隔线。 */
+.topbar > .surface-nav .surface-tab-indicator::before,
+.topbar > .surface-nav .surface-tab-indicator::after {
+  bottom: 0;
+  content: "";
+  height: var(--r-lg);
+  position: absolute;
+  width: calc(var(--r-lg) + 2px);
+}
+
+.topbar > .surface-nav .surface-tab-indicator::before {
+  background: radial-gradient(
+    circle at 0 0,
+    var(--chrome) calc(var(--r-lg) - 1px),
+    var(--line) calc(var(--r-lg) - 1px) var(--r-lg),
+    var(--bg) var(--r-lg)
+  );
+  left: calc(-1 * var(--r-lg));
+}
+
+.topbar > .surface-nav .surface-tab-indicator::after {
+  background: radial-gradient(
+    circle at 100% 0,
+    var(--chrome) calc(var(--r-lg) - 1px),
+    var(--line) calc(var(--r-lg) - 1px) var(--r-lg),
+    var(--bg) var(--r-lg)
+  );
+  right: calc(-1 * var(--r-lg));
+}
+
+.topbar > .surface-nav .surface-tab:focus-visible {
+  outline-offset: -2px;
+}
+
+.topbar > .surface-nav .surface-tab-icon {
+  flex: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .topbar > .surface-nav .surface-tab-indicator {
+    transition: none;
+  }
+}
+
+@media (max-width: 1280px) {
+  .topbar-actions .action-label,
+  .topbar-actions .account-name {
+    display: none;
+  }
+}
+
 .status-pill,
 .connection-label {
   font-size: 12px;
   font-weight: 700;
-}
-
-.service-badge {
-  align-items: center;
-  color: var(--muted);
-  display: flex;
-  gap: 8px;
-}
-
-.service-connected {
-  color: var(--green);
-}
-
-.service-offline {
-  color: var(--red);
 }
 
 .status-dot,
@@ -258,19 +410,16 @@ select:focus-visible {
   width: 7px;
 }
 
-.service-connected .status-dot,
 .stream-connected {
   background: var(--green);
   box-shadow: 0 0 0 3px rgba(var(--green-rgb), 0.11);
 }
 
-.service-connecting .status-dot,
 .stream-connecting,
 .stream-reconnecting {
   background: var(--amber);
 }
 
-.service-offline .status-dot,
 .stream-offline {
   background: var(--red);
 }
@@ -340,26 +489,27 @@ select:focus-visible {
 .workspace {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
-  min-height: calc(100vh - 76px);
+  min-height: calc(100vh - var(--topbar-height));
 }
 
 .sidebar {
   border-right: 1px solid var(--line-soft);
   display: flex;
-  height: calc(100vh - 76px);
+  height: calc(100vh - var(--topbar-height));
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  padding: 28px var(--workspace-gutter) 16px;
+  padding: var(--sp-6) var(--workspace-gutter) var(--sp-4);
   position: sticky;
-  top: 76px;
+  top: var(--topbar-height);
   align-self: start;
 }
 
 .sidebar-heading {
-  align-items: flex-end;
+  align-items: center;
   display: flex;
   justify-content: space-between;
+  min-height: 32px;
   padding: 0;
 }
 
@@ -382,7 +532,47 @@ p {
 .sidebar h1 {
   font-size: 22px;
   letter-spacing: -0.05em;
-  margin-top: 7px;
+  margin-top: 0;
+}
+
+.sidebar-title-row {
+  align-items: center;
+  display: flex;
+  gap: var(--sp-1);
+  margin-top: 0;
+}
+
+.sidebar-title-row h1 {
+  margin-top: 0;
+}
+
+.task-create {
+  align-items: center;
+  background: transparent;
+  border-radius: var(--r-xs);
+  color: var(--accent-text);
+  display: inline-flex;
+  height: 24px;
+  justify-content: center;
+  padding: 0;
+  position: relative;
+  transition: color 120ms ease;
+  width: 16px;
+}
+
+.task-create::after {
+  content: "";
+  inset: -10px -26px -10px -2px;
+  position: absolute;
+}
+
+.task-create:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.task-create:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .sidebar-heading-main {
@@ -396,6 +586,7 @@ p {
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
+  margin-top: var(--sp-4);
 }
 
 .workspace-switcher .custom-select-trigger {
@@ -480,8 +671,8 @@ p {
 .filter-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
-  margin: 25px 0 14px;
+  gap: var(--sp-1);
+  margin: var(--sp-4) 0 var(--sp-3);
 }
 
 .filter-chip {
@@ -736,6 +927,7 @@ p {
 .main-panel {
   min-width: 0;
   padding: 30px 42px 60px;
+  position: relative;
 }
 
 .connection-banner,
@@ -772,17 +964,30 @@ p {
   color: var(--red);
 }
 
+/* 任务操作错误：浮在详情区顶部中间、导航栏下方，上浮入场。
+   相对 main-panel 定位，顶部栏在 ≤430px 会换行增高，无需写死高度。 */
 .main-panel > .inline-error {
+  animation: toast-rise 120ms ease-out;
   box-shadow: var(--shadow);
+  justify-content: space-between;
   left: 50%;
   margin: 0;
-  max-width: min(560px, calc(100vw - 32px));
-  justify-content: space-between;
-  position: fixed;
-  right: auto;
-  top: 38px;
-  transform: translate(-50%, -50%);
-  z-index: 30;
+  max-width: min(560px, calc(100% - 32px));
+  position: absolute;
+  top: var(--sp-3);
+  transform: translateX(-50%);
+  z-index: 15;
+}
+
+@keyframes toast-rise {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 10px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
 }
 
 .inline-error > span {
@@ -1661,6 +1866,34 @@ p {
   margin: 13px 0 23px;
 }
 
+/* Creation failures are a global toast: outside the modal, top-center,
+   above the backdrop. Same rise-in / auto-dismiss behavior as the others. */
+.create-error-toast {
+  align-items: center;
+  animation: toast-rise 120ms ease-out;
+  background: rgba(var(--red-rgb), 0.1);
+  border: 1px solid rgba(var(--red-rgb), 0.24);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+  color: var(--red);
+  display: flex;
+  font-size: var(--fs-meta);
+  gap: var(--sp-3);
+  justify-content: space-between;
+  left: 50%;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 10px 13px;
+  position: fixed;
+  top: var(--sp-3);
+  transform: translateX(-50%);
+  z-index: 40;
+}
+
+.create-error-toast > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .modal form,
 .modal label {
   display: flex;
@@ -2115,22 +2348,55 @@ p {
 }
 
 @media (max-width: 900px) {
+  :root {
+    --topbar-height: 96px;
+  }
+
   body {
     min-width: 0;
   }
 
   .topbar {
-    height: 60px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: 48px 48px;
+    height: var(--topbar-height);
     padding: 0 var(--workspace-gutter);
   }
 
-  .brand-caption {
-    display: none;
+  .topbar > .surface-nav {
+    border-top: 1px solid var(--line-soft);
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: flex-start;
+    min-width: 0;
+    overflow-x: auto;
+    padding: 0 var(--sp-4);
+    scrollbar-color: var(--faint) transparent;
+    scrollbar-width: thin;
+  }
+
+  .topbar > .surface-nav .surface-tab {
+    flex-shrink: 0;
+    font-size: var(--fs-body);
+    height: 40px;
+    min-height: 40px;
+    padding: 0 12px;
+  }
+
+  .topbar-actions {
+    grid-column: 2;
+    grid-row: 1;
+    gap: var(--sp-2);
+  }
+
+  .brand-lockup {
+    border-right: 0;
+    padding-right: 0;
   }
 
   .workspace {
     display: block;
-    min-height: calc(100vh - 60px);
+    min-height: calc(100vh - var(--topbar-height));
   }
 
   .workspace[data-view="list"] .main-panel {
@@ -2151,6 +2417,11 @@ p {
 
   .main-panel {
     padding: 20px 16px 48px;
+  }
+
+  /* 详情钻取视图：提醒落在返回键下方，不遮挡返回操作。 */
+  .main-panel > .inline-error {
+    top: 76px;
   }
 
   .detail-grid {
@@ -2189,36 +2460,12 @@ p {
     font-size: 13px;
   }
 
-  .service-label {
-    display: none;
-  }
-
   .topbar-actions {
     gap: var(--sp-2);
   }
 
   .topbar-actions .action-label {
     display: none;
-  }
-
-  /* Phone width holds more controls than one row can carry (five surfaces,
-     account, service and four actions). Wrapping the bar keeps every control
-     reachable without horizontal page overflow. */
-  .topbar {
-    flex-wrap: wrap;
-    gap: 6px;
-    height: auto;
-    min-height: 60px;
-    padding: 8px var(--workspace-gutter);
-  }
-
-  .topbar-actions {
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
-  .surface-nav {
-    flex-wrap: wrap;
   }
 
   .account-name {
@@ -3771,8 +4018,8 @@ p {
    the layout, and opaque evidence references break rather than overflow. */
 .memory-filters {
   display: grid;
-  gap: 9px;
-  margin: 18px 0 14px;
+  gap: var(--sp-2);
+  margin: var(--sp-4) 0 var(--sp-3);
 }
 
 .memory-filter {
@@ -4966,7 +5213,34 @@ p {
    Quarantine content is shown only in the dedicated <pre> after an explicit,
    acknowledged, audited read; nothing else in this surface renders raw text. */
 .security-surface {
-  min-height: calc(100vh - 76px);
+  min-height: calc(100vh - var(--topbar-height));
+}
+
+@media (min-width: 901px) {
+  .security-surface.has-sidebar {
+    display: grid;
+    grid-template-columns: 280px minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+  }
+
+  .security-surface.has-sidebar .security-section-bar {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .security-surface.has-sidebar .security-workspace {
+    display: contents;
+  }
+
+  .security-surface.has-sidebar .security-sidebar {
+    grid-column: 1;
+    grid-row: 1 / 3;
+  }
+
+  .security-surface.has-sidebar .security-workspace .main-panel {
+    grid-column: 2;
+    grid-row: 2;
+  }
 }
 
 .security-section-bar {
@@ -4978,7 +5252,7 @@ p {
   justify-content: space-between;
   padding: 12px var(--workspace-gutter);
   position: sticky;
-  top: 76px;
+  top: var(--topbar-height);
   background: var(--bg);
   z-index: 15;
 }
@@ -4993,11 +5267,6 @@ p {
 .security-section-meta .workspace-picker {
   margin-top: 0;
   min-width: 220px;
-}
-
-.security-workspace .sidebar {
-  top: 134px;
-  height: calc(100vh - 134px);
 }
 
 .security-workspace-state {

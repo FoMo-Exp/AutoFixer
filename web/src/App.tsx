@@ -53,6 +53,7 @@ import { applyScrollMode, getScrollMode } from "./ui/scroll-mode";
 import type { ScrollMode } from "./ui/scroll-mode";
 import { useStackFold } from "./ui/use-stack-fold";
 import { useAmbientDrift } from "./ui/use-ambient-drift";
+import { useSurfaceTabIndicator } from "./ui/use-surface-tab-indicator";
 
 const STATUS_FILTERS: Array<"all" | TaskStatus> = [
   "all",
@@ -88,6 +89,119 @@ function initialForm(workspace: Workspace | undefined): CreateTaskForm {
 }
 
 type ServiceStatus = "connecting" | "connected" | "offline";
+
+type SurfaceView = "tasks" | "issues" | "memory" | "rsi" | "dashboard" | "security";
+
+/**
+ * Browser-tab glyphs for the top surface strip. They are decorative: the
+ * accessible name stays the tab's text label.
+ */
+const SURFACE_ICONS: Record<SurfaceView, ReactElement> = {
+  tasks: (
+    <svg
+      className="surface-tab-icon"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M9 6h11M9 12h11M9 18h7" />
+      <path d="m3 6 1.2 1.2L6.5 5" />
+      <path d="m3 12 1.2 1.2L6.5 11" />
+    </svg>
+  ),
+  issues: (
+    <svg
+      className="surface-tab-icon"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3 2.5 20h19L12 3Z" />
+      <path d="M12 9v5M12 17h.01" />
+    </svg>
+  ),
+  memory: (
+    <svg
+      className="surface-tab-icon"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <ellipse cx="12" cy="5" rx="8" ry="3" />
+      <path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" />
+    </svg>
+  ),
+  rsi: (
+    <svg
+      className="surface-tab-icon"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20 11a8 8 0 1 0-2.3 5.7" />
+      <path d="M20 5v6h-6" />
+    </svg>
+  ),
+  dashboard: (
+    <svg
+      className="surface-tab-icon"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      aria-hidden="true"
+    >
+      <rect x="3" y="3" width="7" height="7" rx="1" />
+      <rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" />
+      <rect x="14" y="14" width="7" height="7" rx="1" />
+    </svg>
+  ),
+  security: (
+    <svg
+      className="surface-tab-icon"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3 5 6v5c0 4.4 3 7.7 7 9 4-1.3 7-4.6 7-9V6l-7-3Z" />
+    </svg>
+  ),
+};
+
+function SurfaceIcon({ surface }: { surface: SurfaceView }): ReactElement {
+  return SURFACE_ICONS[surface];
+}
 
 function isTaskArchived(task: Task): boolean {
   return task.archived ?? task.status === "cancelled";
@@ -385,9 +499,9 @@ function Workbench({
   // selector reads it here instead of through the task client.
   const loadWorkspaces = useCallback(() => identityClient.listAllWorkspaces(), [identityClient]);
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [surface, setSurface] = useState<
-    "tasks" | "issues" | "memory" | "rsi" | "dashboard" | "security"
-  >("tasks");
+  const [surface, setSurface] = useState<SurfaceView>("tasks");
+  const surfaceNavRef = useRef<HTMLElement | null>(null);
+  const surfaceIndicator = useSurfaceTabIndicator(surfaceNavRef, surface);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   /** 窄屏钻取视图：list ↔ detail（≤900px 生效，桌面始终双栏并存） */
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
@@ -417,6 +531,9 @@ function Workbench({
   const [form, setForm] = useState<CreateTaskForm>(() => initialForm(workspace));
   const [isCreating, setIsCreating] = useState(false);
   const [actionError, setActionError] = useState<string>();
+  // Creation failures stay inside the create dialog; task-action failures
+  // surface as the detail toast.
+  const [createError, setCreateError] = useState<string>();
   const [cancellingTaskId, setCancellingTaskId] = useState<string>();
   const [confirmTaskAction, setConfirmTaskAction] = useState<{
     task: Task;
@@ -424,6 +541,7 @@ function Workbench({
   }>();
   const confirmationTriggerRef = useRef<HTMLElement | null>(null);
   const [isActionErrorHovered, setIsActionErrorHovered] = useState(false);
+  const [isCreateErrorHovered, setIsCreateErrorHovered] = useState(false);
   const [actionBusy, setActionBusy] = useState<string>();
   const createKeyRef = useRef(new CreateIdempotencyKeys());
   const listRequestRef = useRef(0);
@@ -440,6 +558,20 @@ function Workbench({
     }, 1000);
     return () => window.clearTimeout(timeoutId);
   }, [actionError, isActionErrorHovered]);
+
+  // Creation failures use the same transient behavior as task-action errors:
+  // slide in, auto-dismiss after 1s, and stay while hovered.
+  useEffect(() => {
+    if (!createError) {
+      setIsCreateErrorHovered(false);
+      return;
+    }
+    if (isCreateErrorHovered) return;
+    const timeoutId = window.setTimeout(() => {
+      setCreateError((current) => (current === createError ? undefined : current));
+    }, 1000);
+    return () => window.clearTimeout(timeoutId);
+  }, [createError, isCreateErrorHovered]);
 
   const selectTask = useCallback((task: Task | undefined): void => {
     const taskId = task?.id;
@@ -460,7 +592,7 @@ function Workbench({
   }, []);
 
   const reportRequestError = useCallback(
-    (caught: unknown): void => {
+    (caught: unknown, report: (message: string) => void = setActionError): void => {
       // 401 flips the auth gate; 403 is reported by the permission banner.
       if (caught instanceof ApiError && (caught.status === 401 || caught.status === 403)) return;
       // A scoped 404 means this locator is no longer the caller's workspace:
@@ -469,7 +601,7 @@ function Workbench({
         onWorkspaceUnavailable();
         return;
       }
-      setActionError(errorMessage(caught));
+      report(errorMessage(caught));
     },
     [onWorkspaceUnavailable, scoped],
   );
@@ -656,11 +788,21 @@ function Workbench({
     confirmationTriggerRef.current?.focus();
   }
 
+  function openCreateDialog(): void {
+    setCreateError(undefined);
+    setShowCreate(true);
+  }
+
+  function closeCreateDialog(): void {
+    setShowCreate(false);
+    setCreateError(undefined);
+  }
+
   async function handleCreate(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (readOnly || !form.summary.trim()) return;
     setIsCreating(true);
-    setActionError(undefined);
+    setCreateError(undefined);
     try {
       const input = {
         repository_id: form.repositoryId.trim(),
@@ -676,10 +818,11 @@ function Workbench({
       createKeyRef.current.complete(input);
       selectTask(task);
       setShowCreate(false);
+      setCreateError(undefined);
       setForm(initialForm(workspace));
       await loadTasks();
     } catch (caught) {
-      reportRequestError(caught);
+      reportRequestError(caught, setCreateError);
     } finally {
       setIsCreating(false);
     }
@@ -718,69 +861,80 @@ function Workbench({
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-lockup">
-          <div className="brand-mark" aria-hidden="true">
-            <svg width="26" height="26" viewBox="0 0 22 22" fill="none" aria-hidden="true">
-              <rect x="3" y="3.5" width="3.6" height="15" rx="1.2" fill="currentColor" />
-              <rect x="15.4" y="3.5" width="3.6" height="15" rx="1.2" fill="currentColor" />
-              <circle cx="11" cy="11" r="3" fill="var(--accent)" />
-            </svg>
-          </div>
-          <div>
-            <div className="brand-name">ForgePilot</div>
-            <div className="brand-caption">Remediation workbench</div>
-          </div>
+          <span className={`brand-name brand-${serviceStatus}`}>
+            <span className="brand-initial">F</span>orge<span className="brand-initial">P</span>ilot
+          </span>
+          <span className="visually-hidden" role="status">
+            {serviceStatusLabel(serviceStatus)}
+          </span>
         </div>
+        <nav className="surface-nav" aria-label="Workbench views" ref={surfaceNavRef}>
+          {surfaceIndicator && (
+            <span
+              className="surface-tab-indicator"
+              aria-hidden="true"
+              style={{
+                transform: `translateX(${surfaceIndicator.left}px)`,
+                width: `${surfaceIndicator.width}px`,
+              }}
+            />
+          )}
+          <button
+            type="button"
+            className={`surface-tab ${surface === "tasks" ? "surface-tab-active" : ""}`}
+            aria-current={surface === "tasks" ? "page" : undefined}
+            onClick={() => setSurface("tasks")}
+          >
+            <SurfaceIcon surface="tasks" />
+            Tasks
+          </button>
+          <button
+            type="button"
+            className={`surface-tab ${surface === "issues" ? "surface-tab-active" : ""}`}
+            aria-current={surface === "issues" ? "page" : undefined}
+            onClick={() => setSurface("issues")}
+          >
+            <SurfaceIcon surface="issues" />
+            Issues
+          </button>
+          <button
+            type="button"
+            className={`surface-tab ${surface === "memory" ? "surface-tab-active" : ""}`}
+            aria-current={surface === "memory" ? "page" : undefined}
+            onClick={() => setSurface("memory")}
+          >
+            <SurfaceIcon surface="memory" />
+            Memory
+          </button>
+          <button
+            type="button"
+            className={`surface-tab ${surface === "rsi" ? "surface-tab-active" : ""}`}
+            aria-current={surface === "rsi" ? "page" : undefined}
+            onClick={() => setSurface("rsi")}
+          >
+            <SurfaceIcon surface="rsi" />
+            RSI
+          </button>
+          <button
+            type="button"
+            className={`surface-tab ${surface === "dashboard" ? "surface-tab-active" : ""}`}
+            aria-current={surface === "dashboard" ? "page" : undefined}
+            onClick={() => setSurface("dashboard")}
+          >
+            <SurfaceIcon surface="dashboard" />
+            Dashboard
+          </button>
+          <button
+            type="button"
+            className={`surface-tab ${surface === "security" ? "surface-tab-active" : ""}`}
+            aria-current={surface === "security" ? "page" : undefined}
+            onClick={() => setSurface("security")}
+          >
+            <SurfaceIcon surface="security" />
+            Security
+          </button>
+        </nav>
         <div className="topbar-actions">
-          <nav className="surface-nav" aria-label="Workbench views">
-            <button
-              type="button"
-              className={`surface-tab ${surface === "tasks" ? "surface-tab-active" : ""}`}
-              aria-current={surface === "tasks" ? "page" : undefined}
-              onClick={() => setSurface("tasks")}
-            >
-              Tasks
-            </button>
-            <button
-              type="button"
-              className={`surface-tab ${surface === "issues" ? "surface-tab-active" : ""}`}
-              aria-current={surface === "issues" ? "page" : undefined}
-              onClick={() => setSurface("issues")}
-            >
-              Issues
-            </button>
-            <button
-              type="button"
-              className={`surface-tab ${surface === "memory" ? "surface-tab-active" : ""}`}
-              aria-current={surface === "memory" ? "page" : undefined}
-              onClick={() => setSurface("memory")}
-            >
-              Memory
-            </button>
-            <button
-              type="button"
-              className={`surface-tab ${surface === "rsi" ? "surface-tab-active" : ""}`}
-              aria-current={surface === "rsi" ? "page" : undefined}
-              onClick={() => setSurface("rsi")}
-            >
-              RSI
-            </button>
-            <button
-              type="button"
-              className={`surface-tab ${surface === "dashboard" ? "surface-tab-active" : ""}`}
-              aria-current={surface === "dashboard" ? "page" : undefined}
-              onClick={() => setSurface("dashboard")}
-            >
-              Dashboard
-            </button>
-            <button
-              type="button"
-              className={`surface-tab ${surface === "security" ? "surface-tab-active" : ""}`}
-              aria-current={surface === "security" ? "page" : undefined}
-              onClick={() => setSurface("security")}
-            >
-              Security
-            </button>
-          </nav>
           {auth.session && (
             <div className="account-chip">
               <span className="account-name" title={auth.session.user.display_name}>
@@ -794,7 +948,6 @@ function Workbench({
               </button>
             </div>
           )}
-          <ServiceBadge status={serviceStatus} />
           <button
             className="button button-quiet button-small"
             onClick={() => {
@@ -864,15 +1017,6 @@ function Workbench({
                 <span className="action-label">Workspaces</span>
               </button>
             )}
-          {surface === "tasks" && !readOnly && (
-            <button
-              className="button button-primary button-small"
-              onClick={() => setShowCreate(true)}
-              aria-label="New task"
-            >
-              <span aria-hidden="true">＋</span> <span className="action-label">New task</span>
-            </button>
-          )}
         </div>
       </header>
 
@@ -880,19 +1024,41 @@ function Workbench({
         <aside className="sidebar">
           <div className="sidebar-heading">
             <div className="sidebar-heading-main">
-              {workspace ? (
-                <WorkspaceSwitcher
-                  workspace={workspace}
-                  workspaces={workspaces}
-                  onSelect={onSelectWorkspace}
-                />
-              ) : (
-                <span className="eyebrow">Local operator</span>
-              )}
-              <h1>Tasks</h1>
+              <div className="sidebar-title-row">
+                <h1>Tasks</h1>
+                {!readOnly && (
+                  <button
+                    type="button"
+                    className="task-create"
+                    onClick={openCreateDialog}
+                    aria-label="New task"
+                    title="New task"
+                  >
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 14 14"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M7 1.5v11M1.5 7h11" />
+                    </svg>
+                  </button>
+                )}
+              </div>
             </div>
             <span className="task-count">{visibleTasks.length}</span>
           </div>
+          {workspace && (
+            <WorkspaceSwitcher
+              workspace={workspace}
+              workspaces={workspaces}
+              onSelect={onSelectWorkspace}
+            />
+          )}
           <div className="filter-row" role="group" aria-label="Task filters">
             {STATUS_FILTERS.map((status) => (
               <button
@@ -920,7 +1086,7 @@ function Workbench({
                       : "No tasks in this view."}
                 </p>
                 {!readOnly && (
-                  <button className="button button-quiet" onClick={() => setShowCreate(true)}>
+                  <button className="button button-quiet" onClick={openCreateDialog}>
                     Start a task
                   </button>
                 )}
@@ -1026,7 +1192,7 @@ function Workbench({
           ) : (
             <WelcomePanel
               readOnly={readOnly}
-              onCreate={() => setShowCreate(true)}
+              onCreate={openCreateDialog}
               onBack={() => setMobileView("list")}
             />
           )}
@@ -1066,13 +1232,31 @@ function Workbench({
         <SecurityWorkbench client={client} session={auth.session} loadWorkspaces={loadWorkspaces} />
       )}
 
+      {createError && (
+        <div
+          className="create-error-toast"
+          role="alert"
+          onMouseEnter={() => setIsCreateErrorHovered(true)}
+          onMouseLeave={() => setIsCreateErrorHovered(false)}
+        >
+          <span>{createError}</span>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Dismiss error"
+            onClick={() => setCreateError(undefined)}
+          >
+            ×
+          </button>
+        </div>
+      )}
       {showCreate && (
         <CreateTaskDialog
           workspace={workspace}
           form={form}
           isCreating={isCreating}
           onChange={setForm}
-          onClose={() => setShowCreate(false)}
+          onClose={closeCreateDialog}
           onOpenSettings={() => setShowSettings(true)}
           onSubmit={handleCreate}
           refreshToken={settingsEpoch}
@@ -1114,19 +1298,12 @@ function Workbench({
   );
 }
 
-function ServiceBadge({ status }: { status: ServiceStatus }): ReactElement {
-  const label =
-    status === "connected"
-      ? "Node connected"
-      : status === "connecting"
-        ? "Connecting"
-        : "Node offline";
-  return (
-    <div className={`service-badge service-${status}`}>
-      <span className="status-dot" />
-      <span className="service-label">{label}</span>
-    </div>
-  );
+function serviceStatusLabel(status: ServiceStatus): string {
+  return status === "connected"
+    ? "Node connected"
+    : status === "connecting"
+      ? "Connecting"
+      : "Node offline";
 }
 
 function TaskActionDialog({
@@ -1448,9 +1625,13 @@ function TaskDetail({
                 <h3>{task.current_run_id ? shortId(task.current_run_id, 18) : "Preparing run"}</h3>
               </div>
               <span className="connection-label">
-                <span className={`stream-dot stream-${streamConnection}`} />
+                <span
+                  className={`stream-dot stream-${TERMINAL_STATUSES.has(task.status) ? "offline" : streamConnection}`}
+                />
                 {streamConnection === "connected"
-                  ? "Live"
+                  ? TERMINAL_STATUSES.has(task.status)
+                    ? "Finished"
+                    : "Live"
                   : streamConnection === "reconnecting"
                     ? "Reconnecting"
                     : "Syncing"}

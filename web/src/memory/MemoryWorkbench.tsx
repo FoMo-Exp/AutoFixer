@@ -401,7 +401,6 @@ export function MemoryWorkbench({
       <aside className="sidebar memory-sidebar">
         <div className="sidebar-heading">
           <div>
-            <span className="eyebrow">Workspace</span>
             <h1>Memory</h1>
           </div>
           <div className="memory-heading-actions">
