@@ -83,7 +83,7 @@
   --nav-capsule-shadow:
     0 4px 14px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.2),
     inset 0 0 0 1px rgba(255, 255, 255, 0.14);
-  --panel-cast: 0 24px 60px rgba(0, 0, 0, 0.55), 0 4px 16px rgba(0, 0, 0, 0.35);
+  --panel-cast: 0 18px 44px rgba(0, 0, 0, 0.38), 0 2px 10px rgba(0, 0, 0, 0.22);
 
   /* Glass material · dark numbers are tuned for the blueprint scene.
      (Glasswork, MIT — see ui/liquid-glass.ts.) */
@@ -151,7 +151,7 @@
   --nav-capsule: #ffffff;
   --nav-capsule-shadow:
     0 4px 14px rgba(15, 23, 38, 0.14), inset 0 1px 0 #ffffff, inset 0 0 0 1px rgba(15, 23, 38, 0.05);
-  --panel-cast: 0 24px 60px rgba(16, 24, 40, 0.18), 0 4px 16px rgba(16, 24, 40, 0.1);
+  --panel-cast: 0 18px 44px rgba(16, 24, 40, 0.12), 0 2px 10px rgba(16, 24, 40, 0.06);
 }
 
 * {
@@ -423,6 +423,11 @@ select:focus-visible {
   gap: var(--sp-4);
   justify-content: flex-end;
   min-width: 0;
+}
+
+/* Right-side topbar actions are ghost buttons; their hover wash is a pill. */
+.topbar-actions .button {
+  border-radius: 999px;
 }
 
 /* The nav is a segmented well inside the floating glass slab. */
