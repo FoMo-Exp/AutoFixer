@@ -352,7 +352,7 @@ select:focus-visible {
 
 .brand-name {
   display: inline-block;
-  font-size: 15px;
+  font-size: var(--fs-card-title);
   font-weight: 800;
   letter-spacing: -0.02em;
   white-space: nowrap;
@@ -2942,7 +2942,7 @@ p {
 
 @media (max-width: 430px) {
   .brand-name {
-    font-size: 13px;
+    font-size: var(--fs-body);
   }
 
   .topbar-actions {
