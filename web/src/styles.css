@@ -72,6 +72,8 @@
   /* Floating chrome: the topbar and sidebar share one gutter rhythm. */
   --topbar-offset: 12px;
   --topbar-sticky: calc(var(--topbar-height) + var(--topbar-offset));
+  --sidebar-width: 280px;
+  --workspace-sidebar-column: calc(var(--sidebar-width) + var(--sp-4));
   --sidebar-top: calc(var(--topbar-sticky) + var(--sp-3));
   --sidebar-height: calc(100vh - var(--sidebar-top) - var(--sp-4));
   --tab-ink: #a6b1c4;
@@ -678,7 +680,7 @@ select:focus-visible {
 
 .workspace {
   display: grid;
-  grid-template-columns: 296px minmax(0, 1fr);
+  grid-template-columns: var(--workspace-sidebar-column) minmax(0, 1fr);
   min-height: calc(100vh - var(--topbar-sticky));
 }
 
@@ -693,6 +695,23 @@ select:focus-visible {
   padding: var(--sp-6) var(--sp-4) var(--sp-4);
   position: sticky;
   top: var(--sidebar-top);
+}
+
+/* The task sidebar is pinned to the viewport: only the main panel scrolls and
+   the first grid column stays as its reserved space. The fixed sidebar no
+   longer participates in auto-placement, so the main panel is pinned to col 2. */
+@media (min-width: 901px) {
+  .workspace > .sidebar {
+    left: var(--sp-4);
+    margin: 0;
+    position: fixed;
+    width: var(--sidebar-width);
+    z-index: 2;
+  }
+
+  .workspace > .main-panel {
+    grid-column: 2;
+  }
 }
 
 .sidebar-heading {
@@ -5684,7 +5703,7 @@ p {
 @media (min-width: 901px) {
   .security-surface.has-sidebar {
     display: grid;
-    grid-template-columns: 280px minmax(0, 1fr);
+    grid-template-columns: var(--workspace-sidebar-column) minmax(0, 1fr);
     grid-template-rows: auto 1fr;
   }
 

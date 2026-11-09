@@ -88,9 +88,12 @@
 ## 7. 玻璃材质与悬浮框架（Glasswork）
 
 - **悬浮框架**：topbar 与 sidebar 是同一套悬浮玻璃。几何全靠 token：
-  `--topbar-offset` / `--topbar-sticky` / `--sidebar-top` / `--sidebar-height`。
-  禁止另写 `top: 56px` 一类硬编码；topbar 用 `margin: 12px 16px 0` + `sticky top: 12px`，
-  sidebar 用 `margin: 12px 0 16px 16px`、`height: var(--sidebar-height)`。
+  `--topbar-offset` / `--topbar-sticky` / `--sidebar-top` / `--sidebar-height` /
+  `--sidebar-width` / `--workspace-sidebar-column`。禁止另写 `top: 56px` 一类硬编码。
+  topbar 用 `margin: 12px 16px 0` + `sticky top: 12px`；桌面 sidebar 用
+  `position: fixed; top: var(--sidebar-top); left: 16px; width: var(--sidebar-width)`，
+  **只有主面板滚动，侧栏钉在视口**（工作区第一列仍用 `--workspace-sidebar-column` 占位，
+  主面板显式放第 2 列）；≤900px 回到 `position: relative` 的静态悬浮板。
   投影走 `.topbar::before` / `.sidebar::before` 的 `--panel-cast`，不要加实体边框。
 - **材质单一事实源**：`.glass` 配方与 `@property --m-*` 只在 `styles.css` 定义一次；
   每个表面只覆盖 `--density` / `--floor` / `--radius` / `--corner-k`（见 `.topbar.glass`、
@@ -116,7 +119,8 @@
 - 逐帧动画（如 `ui/use-stack-fold.ts` 折叠堆叠）用 `requestAnimationFrame` 驱动，
   几何量取 `offsetTop/offsetHeight`（布局坐标）——**禁止**从 getBoundingClientRect 读被
   transform 过的值（会自我反馈、抖动）
-- 注意 `offsetParent`：`.sidebar` 是 sticky 定位，子元素 offsetTop 基准是 sidebar 不是列表，
+- 注意 `offsetParent`：`.sidebar` 是定位元素（桌面 fixed / ≤900 relative），子元素 offsetTop
+  基准是 sidebar 不是列表，
   计算列表内位置要减 `list.offsetTop`
 - 时长克制：hover/过渡 80–120ms；不做弹跳、不做长动画
 - 动画不得降低静止态对比度（`opacity` 的静止值必须是 1）
