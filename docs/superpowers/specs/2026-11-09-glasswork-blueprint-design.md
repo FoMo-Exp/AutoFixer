@@ -33,23 +33,23 @@ Glasswork 配方（MIT，见 `design-demos/glasswork/LICENSE.glasswork`）：
 - `backdrop-filter` 末尾追加 `var(--glass-lens,)`，liquid 下由 SVG 位移贴图提供边缘折射
 - `corner-shape: superellipse(1.4)`（不支持时回退圆角）
 
-| 表面 | density | floor | radius | lens |
-|---|---:|---:|---:|---|
-| 顶栏 | 0.50 | 0.04 | 18 | 是 |
-| 侧栏 | 0.55 | 0.05 | 18 | 是 |
-| 详情卡 | 0.45 | 0.06 | 10 | 否 |
-| approval 卡 | 0.40 | 0.07 | 10 | 是 |
-| 模态 | 0.55 | 0.72 | 14 | 否 |
+| 表面        | density | floor | radius | lens |
+| ----------- | ------: | ----: | -----: | ---- |
+| 顶栏        |    0.50 |  0.04 |     18 | 是   |
+| 侧栏        |    0.55 |  0.05 |     18 | 是   |
+| 详情卡      |    0.45 |  0.06 |     10 | 否   |
+| approval 卡 |    0.40 |  0.07 |     10 | 是   |
+| 模态        |    0.55 |  0.72 |     14 | 否   |
 
 ### 两种模式
 
-| | Liquid | Frosted |
-|---|---|---|
-| thin / dense | 0.02 / 0.12 | 0.34 / 0.72 |
-| blur | 2px | 24px |
-| saturation | 1.35 | 1 |
-| tint（深 / 浅） | 场景色透出 | `#222a37` / `#e6ebf2` |
-| lens | 开 | 关 |
+|                 | Liquid      | Frosted               |
+| --------------- | ----------- | --------------------- |
+| thin / dense    | 0.02 / 0.12 | 0.34 / 0.72           |
+| blur            | 2px         | 24px                  |
+| saturation      | 1.35        | 1                     |
+| tint（深 / 浅） | 场景色透出  | `#222a37` / `#e6ebf2` |
+| lens            | 开          | 关                    |
 
 模式写在 `<html data-glass="liquid|frosted">`，`localStorage["fp-glass"]` 持久化；
 顶栏按钮切换，图标与文案同步（Liquid / Frosted），按钮宽度固定，切换不推动导航。

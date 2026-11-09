@@ -123,7 +123,7 @@ export function WorkspaceAdminDialog({
     >
       <section
         ref={dialogRef}
-        className="modal modal-admin"
+        className="modal modal-admin glass"
         role="dialog"
         aria-modal="true"
         aria-labelledby="workspace-admin-title"

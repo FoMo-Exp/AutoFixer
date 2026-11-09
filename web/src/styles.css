@@ -57,6 +57,57 @@
   --green-rgb: 121, 215, 164;
   --cyan-rgb: 98, 213, 206;
   --shadow: 0 24px 70px rgba(0, 0, 0, 0.26);
+  --bg-deep: #090d14;
+
+  /* Blueprint scene: engineering grid + two soft glows behind the workbench. */
+  --scene-grid-major: rgba(231, 235, 243, 0.07);
+  --scene-grid-minor: rgba(231, 235, 243, 0.025);
+  --scene-glow-accent: rgba(242, 92, 5, 0.1);
+  --scene-glow-cool: rgba(116, 168, 255, 0.08);
+  --scene-grain: 0.035;
+  --scene-mask: rgba(0, 0, 0, 0.38);
+  --grid-size: 64px;
+  --grid-minor-size: 8px;
+
+  /* Floating chrome: the topbar and sidebar share one gutter rhythm. */
+  --topbar-offset: 12px;
+  --topbar-sticky: calc(var(--topbar-height) + var(--topbar-offset));
+  --sidebar-top: calc(var(--topbar-sticky) + var(--sp-3));
+  --sidebar-height: calc(100vh - var(--sidebar-top) - var(--sp-4));
+  --tab-ink: #a6b1c4;
+  --nav-well: rgba(255, 255, 255, 0.055);
+  --nav-well-border: rgba(255, 255, 255, 0.09);
+  --nav-capsule: rgba(255, 255, 255, 0.14);
+  --nav-capsule-shadow:
+    0 4px 14px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  --panel-cast: 0 24px 60px rgba(0, 0, 0, 0.55), 0 4px 16px rgba(0, 0, 0, 0.35);
+
+  /* Glass material · dark numbers are tuned for the blueprint scene.
+     (Glasswork, MIT — see ui/liquid-glass.ts.) */
+  --u: 1px;
+  --d-tint: #121824;
+  --d-k: 1;
+  --d-thin: 0.16;
+  --d-dense: 0.38;
+  --d-blur: 2;
+  --d-sat: 1.25;
+  --d-bri: 0.82;
+  --d-con: 1;
+  --d-catch: 0.7;
+  --d-bevel: 0.8;
+  --d-shadow: 0.8;
+  --l-tint: #ffffff;
+  --l-k: 1;
+  --l-thin: 0.08;
+  --l-dense: 0.3;
+  --l-blur: 2;
+  --l-sat: 1.15;
+  --l-bri: 1.02;
+  --l-con: 1;
+  --l-catch: 0.9;
+  --l-bevel: 0.9;
+  --l-shadow: 0.7;
 }
 
 /* ── 浅色皮肤：data-surface 切换；语义色加深保对比（均 ≥4.5:1，源：design-demos/dir-2 实测）── */
@@ -85,6 +136,20 @@
   --panel-rgb: 255, 255, 255;
   --chrome: #e9ebef;
   --shadow: 0 24px 70px rgba(16, 24, 40, 0.12);
+  --bg-deep: #eef0f3;
+  --scene-grid-major: rgba(22, 24, 28, 0.05);
+  --scene-grid-minor: rgba(22, 24, 28, 0.018);
+  --scene-glow-accent: rgba(242, 92, 5, 0.07);
+  --scene-glow-cool: rgba(46, 111, 208, 0.05);
+  --scene-grain: 0.025;
+  --scene-mask: rgba(0, 0, 0, 0.28);
+  --tab-ink: #4e545d;
+  --nav-well: rgba(15, 23, 38, 0.05);
+  --nav-well-border: rgba(15, 23, 38, 0.07);
+  --nav-capsule: #ffffff;
+  --nav-capsule-shadow:
+    0 4px 14px rgba(15, 23, 38, 0.14), inset 0 1px 0 #ffffff, inset 0 0 0 1px rgba(15, 23, 38, 0.05);
+  --panel-cast: 0 24px 60px rgba(16, 24, 40, 0.18), 0 4px 16px rgba(16, 24, 40, 0.1);
 }
 
 * {
@@ -104,8 +169,82 @@ body {
   min-width: 1060px;
   min-height: 100vh;
   margin: 0;
-  background:
-    radial-gradient(circle at 78% -12%, rgba(var(--accent-rgb), 0.07), transparent 31rem), var(--bg);
+  background: var(--bg);
+}
+
+/* ── Blueprint scene ────────────────────────────────────────────────
+   Fixed and inert: the grid and glows never scroll with the workbench. */
+.scene {
+  background: var(--bg);
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  position: fixed;
+  z-index: 0;
+}
+
+.scene-base {
+  background: linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+  inset: 0;
+  position: absolute;
+}
+
+.scene-glow {
+  inset: -12%;
+  position: absolute;
+}
+
+.scene-glow-accent {
+  background: radial-gradient(circle at 82% -8%, var(--scene-glow-accent), transparent 36rem);
+}
+
+.scene-glow-cool {
+  background: radial-gradient(circle at 4% 102%, var(--scene-glow-cool), transparent 34rem);
+}
+
+.scene-grid {
+  background-image:
+    repeating-linear-gradient(
+      0deg,
+      var(--scene-grid-major) 0 1px,
+      transparent 1px var(--grid-size)
+    ),
+    repeating-linear-gradient(
+      90deg,
+      var(--scene-grid-major) 0 1px,
+      transparent 1px var(--grid-size)
+    ),
+    repeating-linear-gradient(
+      0deg,
+      var(--scene-grid-minor) 0 1px,
+      transparent 1px var(--grid-minor-size)
+    ),
+    repeating-linear-gradient(
+      90deg,
+      var(--scene-grid-minor) 0 1px,
+      transparent 1px var(--grid-minor-size)
+    );
+  inset: 0;
+  mask-image: radial-gradient(ellipse 70% 62% at 50% 36%, var(--scene-mask) 0 16%, #000 76%);
+  position: absolute;
+}
+
+.scene-grain {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+  inset: 0;
+  mix-blend-mode: overlay;
+  opacity: var(--scene-grain);
+  position: absolute;
+}
+
+/* Fades content that scrolls into the 12px gap above the floating bar. */
+.top-scrim {
+  background: linear-gradient(180deg, var(--bg) 0%, transparent 100%);
+  height: var(--topbar-offset);
+  inset: 0 0 auto;
+  pointer-events: none;
+  position: fixed;
+  z-index: 19;
 }
 
 button,
@@ -150,19 +289,33 @@ select:focus-visible {
 .app-shell {
   --workspace-gutter: 16px;
   min-height: 100vh;
+  position: relative;
+  z-index: 1;
 }
 
 .topbar {
   align-items: center;
-  background: var(--chrome);
-  box-shadow: inset 0 -1px 0 var(--line-soft);
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr) max-content;
   height: var(--topbar-height);
+  margin: var(--topbar-offset) var(--workspace-gutter) 0;
   padding: 0 var(--workspace-gutter);
   position: sticky;
-  top: 0;
+  top: var(--topbar-offset);
   z-index: 20;
+}
+
+/* A wide cast shadow outside the glass; the material's own box-shadow is too
+   tight to read against the dark scene. */
+.topbar::before,
+.sidebar::before {
+  border-radius: inherit;
+  box-shadow: var(--panel-cast);
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: -1;
 }
 
 .brand-lockup,
@@ -192,8 +345,7 @@ select:focus-visible {
 }
 
 .brand-lockup {
-  border-right: 1px solid var(--line-soft);
-  padding-right: var(--sp-4);
+  padding-right: 0;
 }
 
 .brand-name {
@@ -206,6 +358,12 @@ select:focus-visible {
 
 .brand-connected .brand-initial {
   color: var(--accent);
+}
+
+/* Signal orange is a 3:1 text color on the light skin; the text-safe ramp
+   keeps the brand note while clearing 4.5:1. */
+[data-surface="light"] .brand-initial {
+  color: var(--accent-text);
 }
 
 .brand-connecting {
@@ -265,119 +423,121 @@ select:focus-visible {
   min-width: 0;
 }
 
+/* The nav is a segmented well inside the floating glass slab. */
 .topbar > .surface-nav {
   align-items: center;
-  align-self: stretch;
-  background: transparent;
+  align-self: center;
+  background: var(--nav-well);
   border: 0;
-  border-radius: 0;
+  border-radius: 999px;
+  box-shadow:
+    inset 0 0 0 1px var(--nav-well-border),
+    inset 0 1px 2px rgba(0, 0, 0, 0.12);
   display: flex;
   gap: 2px;
+  justify-self: center;
+  max-width: 100%;
   min-width: 0;
   overflow-x: auto;
-  padding: 0 var(--sp-4);
+  padding: 4px;
   position: relative;
-  scrollbar-color: var(--faint) transparent;
-  scrollbar-width: thin;
+  scrollbar-width: none;
+  width: max-content;
+}
+
+.topbar > .surface-nav::-webkit-scrollbar {
+  display: none;
+}
+
+/* Only when the tabs overflow; the fade is the scroll affordance. */
+.topbar > .surface-nav.is-scrollable {
+  mask-image: linear-gradient(
+    90deg,
+    transparent 0,
+    #000 48px,
+    #000 calc(100% - 48px),
+    transparent 100%
+  );
+}
+
+.topbar > .surface-nav.is-scrollable.at-start {
+  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 48px), transparent 100%);
+}
+
+.topbar > .surface-nav.is-scrollable.at-end {
+  mask-image: linear-gradient(90deg, transparent 0, #000 48px, #000 100%);
 }
 
 .topbar > .surface-nav .surface-tab {
   align-items: center;
   background: transparent;
-  border: 1px solid transparent;
-  border-bottom-color: transparent;
-  border-radius: var(--r-lg) var(--r-lg) 0 0;
-  color: var(--muted);
+  border: 0;
+  border-radius: 999px;
+  color: var(--tab-ink);
   display: flex;
   flex: none;
   font-size: var(--fs-body);
   font-weight: 500;
   gap: var(--sp-2);
-  height: 40px;
+  height: 36px;
   justify-content: center;
-  min-height: 40px;
-  padding: 0 14px;
+  min-height: 36px;
+  padding: 0 12px;
   position: relative;
   transition:
     background 120ms ease,
-    border-color 120ms ease,
     color 120ms ease;
   white-space: nowrap;
   width: var(--surface-tab-width);
   z-index: 1;
 }
 
+/* Keeps a 44px-tall hit target around the 36px tab. */
 .topbar > .surface-nav .surface-tab::after {
   content: "";
-  inset: -4px 0 0;
+  inset: -4px 0;
   position: absolute;
 }
 
 .topbar > .surface-nav .surface-tab:hover:not(.surface-tab-active) {
-  background: var(--panel);
+  background: rgba(255, 255, 255, 0.05);
   color: var(--text);
 }
 
+[data-surface="light"] .topbar > .surface-nav .surface-tab:hover:not(.surface-tab-active) {
+  background: rgba(15, 23, 38, 0.045);
+}
+
 .topbar > .surface-nav .surface-tab-active {
-  /* 覆盖 Security 子导航共用类的 inset 描边，避免激活 tab 底部出现分割线 */
+  /* The moving capsule is the active state; the tab itself stays clear. */
+  background: transparent;
   box-shadow: none;
   color: var(--text);
   font-weight: 600;
 }
 
-.topbar > .surface-nav .surface-tab-indicator {
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-bottom: 0;
-  border-radius: var(--r-lg) var(--r-lg) 0 0;
-  height: 40px;
-  left: 0;
-  pointer-events: none;
-  position: absolute;
-  top: calc(50% - 20px);
-  transition:
-    transform 120ms ease,
-    width 120ms ease;
-  z-index: 0;
-}
-
-/* 底部凹角：向左/右外侧翻出的 browser-tab 脚部。
-   圆环用 --line 描边，弧外填 --bg，弧内用 --chrome 盖掉 tab 背景与顶栏分隔线。 */
-.topbar > .surface-nav .surface-tab-indicator::before,
-.topbar > .surface-nav .surface-tab-indicator::after {
-  bottom: 0;
-  content: "";
-  height: var(--r-lg);
-  position: absolute;
-  width: calc(var(--r-lg) + 2px);
-}
-
-.topbar > .surface-nav .surface-tab-indicator::before {
-  background: radial-gradient(
-    circle at 0 0,
-    var(--chrome) calc(var(--r-lg) - 1px),
-    var(--line) calc(var(--r-lg) - 1px) var(--r-lg),
-    var(--bg) var(--r-lg)
-  );
-  left: calc(-1 * var(--r-lg));
-}
-
-.topbar > .surface-nav .surface-tab-indicator::after {
-  background: radial-gradient(
-    circle at 100% 0,
-    var(--chrome) calc(var(--r-lg) - 1px),
-    var(--line) calc(var(--r-lg) - 1px) var(--r-lg),
-    var(--bg) var(--r-lg)
-  );
-  right: calc(-1 * var(--r-lg));
-}
-
 .topbar > .surface-nav .surface-tab:focus-visible {
-  outline-offset: -2px;
+  outline-offset: 1px;
 }
 
 .topbar > .surface-nav .surface-tab-icon {
   flex: none;
+}
+
+.topbar > .surface-nav .surface-tab-indicator {
+  background: var(--nav-capsule);
+  border: 0;
+  border-radius: 999px;
+  box-shadow: var(--nav-capsule-shadow);
+  height: 36px;
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 4px;
+  transition:
+    transform 120ms ease,
+    width 120ms ease;
+  z-index: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -390,6 +550,12 @@ select:focus-visible {
   .topbar-actions .action-label,
   .topbar-actions .account-name {
     display: none;
+  }
+
+  /* Icon-only toggle keeps its 44px hit target. */
+  .button.glass-toggle {
+    padding: 0;
+    width: 44px;
   }
 }
 
@@ -482,27 +648,51 @@ select:focus-visible {
   padding: 0 11px;
 }
 
+/* Liquid ⇄ frosted preference; fixed width so the topbar never reflows. */
+.button.glass-toggle {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  gap: 6px;
+  min-width: 44px;
+  padding: 0 10px;
+  width: 96px;
+}
+
+.button.glass-toggle:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.glass-toggle svg {
+  flex: none;
+}
+
+/* The toggle rides the 32px small-button scale; extend the hit area to 44. */
+.button.glass-toggle::after {
+  inset: -6px 0;
+}
+
 .workspace[hidden] {
   display: none;
 }
 
 .workspace {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
-  min-height: calc(100vh - var(--topbar-height));
+  grid-template-columns: 296px minmax(0, 1fr);
+  min-height: calc(100vh - var(--topbar-sticky));
 }
 
 .sidebar {
-  border-right: 1px solid var(--line-soft);
-  display: flex;
-  height: calc(100vh - var(--topbar-height));
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
-  padding: var(--sp-6) var(--workspace-gutter) var(--sp-4);
-  position: sticky;
-  top: var(--topbar-height);
   align-self: start;
+  display: flex;
+  flex-direction: column;
+  height: var(--sidebar-height);
+  margin: var(--sp-3) 0 var(--sp-4) var(--sp-4);
+  min-height: 0;
+  overflow: visible;
+  padding: var(--sp-6) var(--sp-4) var(--sp-4);
+  position: sticky;
+  top: var(--sidebar-top);
 }
 
 .sidebar-heading {
@@ -1476,7 +1666,8 @@ p {
 .message-card textarea::placeholder,
 .modal textarea::placeholder,
 .modal input::placeholder {
-  color: var(--faint);
+  color: var(--muted);
+  opacity: 1;
 }
 
 .message-card textarea {
@@ -1808,6 +1999,12 @@ p {
   z-index: 20;
 }
 
+/* A lighter scrim keeps the light-skin glass modal readable instead of
+   compositing the frosting over near-black. */
+[data-surface="light"] .modal-backdrop {
+  background: rgba(20, 24, 32, 0.35);
+}
+
 .modal {
   background: var(--panel-raised);
   border: 1px solid var(--line);
@@ -1998,6 +2195,285 @@ p {
   border-radius: 50%;
   height: 6px;
   width: 6px;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Glasswork material (MIT — see ui/liquid-glass.ts).
+   Pure CSS tint/blur/rim. useLiquidGlass() attaches the rim lens in
+   liquid mode only; frosted keeps a soft, heavily blurred edge.
+   The --m-* numbers are registered so mode switches animate.
+   ══════════════════════════════════════════════════════════════ */
+
+@property --m-tint {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #ffffff;
+}
+
+@property --m-k {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+
+@property --m-thin {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0.06;
+}
+
+@property --m-dense {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0.22;
+}
+
+@property --m-blur {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 2;
+}
+
+@property --m-sat {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1.8;
+}
+
+@property --m-bri {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1.06;
+}
+
+@property --m-con {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+
+@property --m-catch {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+
+@property --m-bevel {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+
+@property --m-shadow {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+
+@property --density {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0.35;
+}
+
+@property --keep {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+
+@property --floor {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+.glass {
+  --m-tint: var(--l-tint);
+  --m-k: var(--l-k);
+  --m-thin: var(--l-thin);
+  --m-dense: var(--l-dense);
+  --m-blur: var(--l-blur);
+  --m-sat: var(--l-sat);
+  --m-bri: var(--l-bri);
+  --m-con: var(--l-con);
+  --m-catch: var(--l-catch);
+  --m-bevel: var(--l-bevel);
+  --m-shadow: var(--l-shadow);
+  --veil-k: min(1, var(--m-k));
+  --tint-a: min(
+    0.95,
+    max(
+      var(--floor),
+      calc((var(--m-thin) + (var(--m-dense) - var(--m-thin)) * var(--density)) * var(--m-k))
+    )
+  );
+  --filter: blur(calc(var(--m-blur) * var(--u))) saturate(var(--m-sat))
+    contrast(calc(1 + (var(--m-con) - 1) * var(--veil-k)))
+    brightness(calc(1 + (var(--m-bri) - 1) * var(--veil-k))) saturate(var(--keep));
+  background: color-mix(in srgb, var(--m-tint) calc(var(--tint-a) * 100%), transparent);
+  -webkit-backdrop-filter: var(--filter);
+  backdrop-filter: var(--filter) var(--glass-lens,);
+  border-radius: calc(var(--radius, 28) * var(--u));
+  color: var(--text);
+  corner-shape: superellipse(var(--corner-k, 1));
+  isolation: isolate;
+  transition:
+    --m-tint 180ms ease,
+    --m-k 180ms ease,
+    --m-thin 180ms ease,
+    --m-dense 180ms ease,
+    --m-blur 180ms ease,
+    --m-sat 180ms ease,
+    --m-bri 180ms ease,
+    --m-con 180ms ease,
+    --m-catch 180ms ease,
+    --m-bevel 180ms ease,
+    --m-shadow 180ms ease,
+    --density 160ms ease,
+    --keep 160ms ease,
+    --floor 160ms ease,
+    box-shadow 180ms ease,
+    background 180ms ease;
+  box-shadow:
+    inset calc(1.5 * var(--u)) calc(1.5 * var(--u)) var(--u) calc(-1 * var(--u))
+      rgb(255 255 255 / calc(1 * var(--m-catch))),
+    inset calc(-1.5 * var(--u)) calc(-1.5 * var(--u)) var(--u) calc(-1 * var(--u))
+      rgb(255 255 255 / calc(0.6 * var(--m-catch))),
+    inset 0 0 0 calc(0.5 * var(--u)) rgb(255 255 255 / calc(0.3 * var(--m-catch))),
+    0 0 0 calc(0.5 * var(--u)) rgb(0 0 0 / calc(0.12 * var(--m-shadow))),
+    0 calc(4 * var(--u)) calc(16 * var(--u)) rgb(0 0 0 / calc(0.1 * var(--m-shadow))),
+    inset 0 calc(6 * var(--u)) calc(8 * var(--u)) calc(-6 * var(--u))
+      rgb(255 255 255 / calc(0.5 * var(--veil-k) * var(--m-bevel))),
+    inset calc(4 * var(--u)) 0 calc(8 * var(--u)) calc(-6 * var(--u))
+      rgb(255 255 255 / calc(0.22 * var(--veil-k) * var(--m-bevel))),
+    inset calc(-4 * var(--u)) 0 calc(8 * var(--u)) calc(-6 * var(--u))
+      rgb(255 255 255 / calc(0.12 * var(--veil-k) * var(--m-bevel))),
+    inset 0 calc(-6 * var(--u)) calc(8 * var(--u)) calc(-6 * var(--u))
+      rgb(0 0 0 / calc(0.06 * var(--veil-k) * var(--m-bevel)));
+}
+
+[data-kind="dark"] .glass {
+  --m-tint: var(--d-tint);
+  --m-k: var(--d-k);
+  --m-thin: var(--d-thin);
+  --m-dense: var(--d-dense);
+  --m-blur: var(--d-blur);
+  --m-sat: var(--d-sat);
+  --m-bri: var(--d-bri);
+  --m-con: var(--d-con);
+  --m-catch: var(--d-catch);
+  --m-bevel: var(--d-bevel);
+  --m-shadow: var(--d-shadow);
+  box-shadow:
+    inset var(--u) var(--u) calc(0.5 * var(--u)) calc(-0.5 * var(--u))
+      rgb(255 255 255 / calc(0.46 * var(--m-catch))),
+    inset calc(-1 * var(--u)) calc(-1 * var(--u)) calc(0.5 * var(--u)) calc(-0.5 * var(--u))
+      rgb(255 255 255 / calc(0.18 * var(--m-catch))),
+    inset 0 0 0 calc(0.5 * var(--u)) rgb(255 255 255 / calc(0.06 * var(--m-catch))),
+    0 0 0 calc(0.5 * var(--u)) rgb(0 0 0 / calc(0.28 * var(--m-shadow))),
+    0 calc(4 * var(--u)) calc(14 * var(--u)) rgb(0 0 0 / calc(0.22 * var(--m-shadow))),
+    inset 0 calc(6 * var(--u)) calc(8 * var(--u)) calc(-6 * var(--u))
+      rgb(255 255 255 / calc(0.18 * var(--veil-k) * var(--m-bevel))),
+    inset calc(4 * var(--u)) 0 calc(8 * var(--u)) calc(-6 * var(--u))
+      rgb(255 255 255 / calc(0.07 * var(--veil-k) * var(--m-bevel))),
+    inset calc(-4 * var(--u)) 0 calc(8 * var(--u)) calc(-6 * var(--u))
+      rgb(255 255 255 / calc(0.04 * var(--veil-k) * var(--m-bevel))),
+    inset 0 calc(-6 * var(--u)) calc(8 * var(--u)) calc(-6 * var(--u))
+      rgb(0 0 0 / calc(0.08 * var(--veil-k) * var(--m-bevel)));
+}
+
+/* Liquid: barely-there tint so the blueprint grid reads through the
+   surface; the rim lens supplies the refraction. */
+[data-glass="liquid"] .glass {
+  --m-thin: 0.02;
+  --m-dense: 0.12;
+  --m-blur: 2;
+  --m-sat: 1.35;
+}
+
+/* Frosted: a dense, heavily blurred material. The lens is switched off
+   in JS, so the edge stays soft instead of refracting. */
+[data-glass="frosted"] .glass {
+  --m-tint: #ffffff;
+  --m-thin: 0.34;
+  --m-dense: 0.72;
+  --m-blur: 24;
+  --m-sat: 1;
+}
+
+/* Frost scatters light, so the dark material lifts toward slate and the
+   light one cools toward a gray-white instead of staying clear. */
+[data-kind="dark"][data-glass="frosted"] .glass {
+  --m-tint: #222a37;
+}
+
+[data-kind="light"][data-glass="frosted"] .glass {
+  --m-tint: #e6ebf2;
+}
+
+/* Per-surface material: chrome is thinner than reading surfaces; modals get
+   a high floor so form labels never sit on a busy backdrop. */
+.topbar.glass {
+  --density: 0.5;
+  --floor: 0.04;
+  --radius: 18;
+  --corner-k: 1.4;
+  --m-shadow: 1.7;
+}
+
+.sidebar.glass {
+  --density: 0.55;
+  --floor: 0.05;
+  --radius: 18;
+  --corner-k: 1.4;
+  --m-shadow: 1.5;
+}
+
+.card.glass {
+  --density: 0.45;
+  --floor: 0.06;
+  --radius: 10;
+}
+
+.approval-card.glass {
+  --density: 0.4;
+  --floor: 0.07;
+  --radius: 10;
+  border-color: rgba(var(--amber-rgb), 0.26);
+}
+
+.modal.glass {
+  --density: 0.55;
+  --floor: 0.72;
+  --radius: 14;
+}
+
+/* --faint is a 3:1 divider tone; once the scene shows through a glass card,
+   the 9–10px metadata inside it needs the muted ramp to clear 4.5:1. */
+.card.glass .metric-label,
+.card.glass .pi-summary-meta,
+.card.glass .pi-summary-note,
+.card.glass .pi-summary-unavailable,
+.card.glass .timeline-title time {
+  color: var(--muted);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass {
+    background: color-mix(in srgb, var(--m-tint) 96%, transparent);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .glass {
+    background: Canvas;
+    backdrop-filter: none;
+    border: 1px solid CanvasText;
+    color: CanvasText;
+  }
 }
 
 @media (max-width: 1160px) {
@@ -2360,27 +2836,16 @@ p {
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-rows: 48px 48px;
     height: var(--topbar-height);
-    padding: 0 var(--workspace-gutter);
+    margin: var(--topbar-offset) var(--sp-3) 0;
+    padding: 0 var(--sp-3);
   }
 
   .topbar > .surface-nav {
-    border-top: 1px solid var(--line-soft);
     grid-column: 1 / -1;
     grid-row: 2;
     justify-content: flex-start;
     min-width: 0;
     overflow-x: auto;
-    padding: 0 var(--sp-4);
-    scrollbar-color: var(--faint) transparent;
-    scrollbar-width: thin;
-  }
-
-  .topbar > .surface-nav .surface-tab {
-    flex-shrink: 0;
-    font-size: var(--fs-body);
-    height: 40px;
-    min-height: 40px;
-    padding: 0 12px;
   }
 
   .topbar-actions {
@@ -2396,7 +2861,7 @@ p {
 
   .workspace {
     display: block;
-    min-height: calc(100vh - var(--topbar-height));
+    min-height: calc(100vh - var(--topbar-sticky));
   }
 
   .workspace[data-view="list"] .main-panel {
@@ -2408,11 +2873,11 @@ p {
   }
 
   .sidebar {
-    border-right: 0;
     height: auto;
+    margin: var(--sp-3) var(--sp-3) 0;
     overflow: visible;
-    padding: 20px var(--workspace-gutter) 32px;
-    position: static;
+    position: relative;
+    top: auto;
   }
 
   .main-panel {
@@ -5213,7 +5678,7 @@ p {
    Quarantine content is shown only in the dedicated <pre> after an explicit,
    acknowledged, audited read; nothing else in this surface renders raw text. */
 .security-surface {
-  min-height: calc(100vh - var(--topbar-height));
+  min-height: calc(100vh - var(--topbar-sticky));
 }
 
 @media (min-width: 901px) {
@@ -5252,7 +5717,7 @@ p {
   justify-content: space-between;
   padding: 12px var(--workspace-gutter);
   position: sticky;
-  top: var(--topbar-height);
+  top: var(--topbar-sticky);
   background: var(--bg);
   z-index: 15;
 }

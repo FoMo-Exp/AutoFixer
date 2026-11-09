@@ -54,6 +54,10 @@ import type { ScrollMode } from "./ui/scroll-mode";
 import { useStackFold } from "./ui/use-stack-fold";
 import { useAmbientDrift } from "./ui/use-ambient-drift";
 import { useSurfaceTabIndicator } from "./ui/use-surface-tab-indicator";
+import { applyGlassMode, useGlassMode } from "./ui/glass";
+import type { GlassMode } from "./ui/glass";
+import { useLiquidGlass } from "./ui/use-liquid-glass";
+import { useScrollFade } from "./ui/use-scroll-fade";
 
 const STATUS_FILTERS: Array<"all" | TaskStatus> = [
   "all",
@@ -201,6 +205,41 @@ const SURFACE_ICONS: Record<SurfaceView, ReactElement> = {
 
 function SurfaceIcon({ surface }: { surface: SurfaceView }): ReactElement {
   return SURFACE_ICONS[surface];
+}
+
+/** Droplet = the near-clear liquid material; frosted square = the dense one. */
+function GlassModeIcon({ mode }: { mode: GlassMode }): ReactElement {
+  if (mode === "liquid") {
+    return (
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M12 3.2c3.4 4.1 5.8 7.2 5.8 10.1a5.8 5.8 0 1 1-11.6 0C6.2 10.4 8.6 7.3 12 3.2Z" />
+      </svg>
+    );
+  }
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <rect x="4" y="4" width="16" height="16" rx="5" />
+      <path d="M8 13.5c1.3-1.6 2.7-1.6 4 0s2.7 1.6 4 0" />
+    </svg>
+  );
 }
 
 function isTaskArchived(task: Task): boolean {
@@ -502,6 +541,10 @@ function Workbench({
   const [surface, setSurface] = useState<SurfaceView>("tasks");
   const surfaceNavRef = useRef<HTMLElement | null>(null);
   const surfaceIndicator = useSurfaceTabIndicator(surfaceNavRef, surface);
+  const glassMode = useGlassMode();
+  const topbarGlassRef = useLiquidGlass<HTMLElement>();
+  const sidebarGlassRef = useLiquidGlass<HTMLElement>();
+  useScrollFade(surfaceNavRef, surface);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   /** 窄屏钻取视图：list ↔ detail（≤900px 生效，桌面始终双栏并存） */
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
@@ -514,6 +557,9 @@ function Workbench({
     setScrollMode(mode);
     applyScrollMode(mode);
   }, []);
+  const toggleGlassMode = useCallback((): void => {
+    applyGlassMode(glassMode === "liquid" ? "frosted" : "liquid");
+  }, [glassMode]);
   const selectedIdRef = useRef<string | undefined>(undefined);
   const [selectedTask, setSelectedTask] = useState<Task>();
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -858,443 +904,472 @@ function Workbench({
   }
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div className="brand-lockup">
-          <span className={`brand-name brand-${serviceStatus}`}>
-            <span className="brand-initial">F</span>orge<span className="brand-initial">P</span>ilot
-          </span>
-          <span className="visually-hidden" role="status">
-            {serviceStatusLabel(serviceStatus)}
-          </span>
-        </div>
-        <nav className="surface-nav" aria-label="Workbench views" ref={surfaceNavRef}>
-          {surfaceIndicator && (
-            <span
-              className="surface-tab-indicator"
-              aria-hidden="true"
-              style={{
-                transform: `translateX(${surfaceIndicator.left}px)`,
-                width: `${surfaceIndicator.width}px`,
-              }}
-            />
-          )}
-          <button
-            type="button"
-            className={`surface-tab ${surface === "tasks" ? "surface-tab-active" : ""}`}
-            aria-current={surface === "tasks" ? "page" : undefined}
-            onClick={() => setSurface("tasks")}
-          >
-            <SurfaceIcon surface="tasks" />
-            Tasks
-          </button>
-          <button
-            type="button"
-            className={`surface-tab ${surface === "issues" ? "surface-tab-active" : ""}`}
-            aria-current={surface === "issues" ? "page" : undefined}
-            onClick={() => setSurface("issues")}
-          >
-            <SurfaceIcon surface="issues" />
-            Issues
-          </button>
-          <button
-            type="button"
-            className={`surface-tab ${surface === "memory" ? "surface-tab-active" : ""}`}
-            aria-current={surface === "memory" ? "page" : undefined}
-            onClick={() => setSurface("memory")}
-          >
-            <SurfaceIcon surface="memory" />
-            Memory
-          </button>
-          <button
-            type="button"
-            className={`surface-tab ${surface === "rsi" ? "surface-tab-active" : ""}`}
-            aria-current={surface === "rsi" ? "page" : undefined}
-            onClick={() => setSurface("rsi")}
-          >
-            <SurfaceIcon surface="rsi" />
-            RSI
-          </button>
-          <button
-            type="button"
-            className={`surface-tab ${surface === "dashboard" ? "surface-tab-active" : ""}`}
-            aria-current={surface === "dashboard" ? "page" : undefined}
-            onClick={() => setSurface("dashboard")}
-          >
-            <SurfaceIcon surface="dashboard" />
-            Dashboard
-          </button>
-          <button
-            type="button"
-            className={`surface-tab ${surface === "security" ? "surface-tab-active" : ""}`}
-            aria-current={surface === "security" ? "page" : undefined}
-            onClick={() => setSurface("security")}
-          >
-            <SurfaceIcon surface="security" />
-            Security
-          </button>
-        </nav>
-        <div className="topbar-actions">
-          {auth.session && (
-            <div className="account-chip">
-              <span className="account-name" title={auth.session.user.display_name}>
-                {auth.session.user.display_name}
-              </span>
-              <button
-                className="button button-quiet button-small"
-                onClick={() => void auth.signOut()}
-              >
-                Sign out
-              </button>
-            </div>
-          )}
-          <button
-            className="button button-quiet button-small"
-            onClick={() => {
-              setSurface("tasks");
-              selectTask(undefined);
-              setMobileView("detail");
-            }}
-            aria-label="Home"
-            aria-current={surface === "tasks" && !selectedId ? "page" : undefined}
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              aria-hidden="true"
-            >
-              <path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z" />
-            </svg>
-            <span className="action-label">Home</span>
-          </button>
-          <button
-            className="button button-quiet button-small"
-            onClick={() => setShowSettings(true)}
-            aria-label="Open settings"
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
-            </svg>
-            <span className="action-label">Settings</span>
-          </button>
-          {auth.session &&
-            (auth.session.memberships.length > 0 || auth.session.enterprise_roles.length > 0) && (
-              <button
-                className="button button-quiet button-small"
-                onClick={() => setShowWorkspaces(true)}
-                aria-label="Open workspace administration"
-              >
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                  <circle cx="9" cy="7" r="4" />
-                  <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
-                </svg>
-                <span className="action-label">Workspaces</span>
-              </button>
-            )}
-        </div>
-      </header>
-
-      <div className="workspace" data-view={mobileView} hidden={surface !== "tasks"}>
-        <aside className="sidebar">
-          <div className="sidebar-heading">
-            <div className="sidebar-heading-main">
-              <div className="sidebar-title-row">
-                <h1>Tasks</h1>
-                {!readOnly && (
-                  <button
-                    type="button"
-                    className="task-create"
-                    onClick={openCreateDialog}
-                    aria-label="New task"
-                    title="New task"
-                  >
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 14 14"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      aria-hidden="true"
-                    >
-                      <path d="M7 1.5v11M1.5 7h11" />
-                    </svg>
-                  </button>
-                )}
-              </div>
-            </div>
-            <span className="task-count">{visibleTasks.length}</span>
-          </div>
-          {workspace && (
-            <WorkspaceSwitcher
-              workspace={workspace}
-              workspaces={workspaces}
-              onSelect={onSelectWorkspace}
-            />
-          )}
-          <div className="filter-row" role="group" aria-label="Task filters">
-            {STATUS_FILTERS.map((status) => (
-              <button
-                className={`filter-chip ${filter === status ? "filter-chip-active" : ""}`}
-                key={status}
-                onClick={() => setFilter(status)}
-              >
-                {status === "all" ? "All" : formatStatus(status)}
-              </button>
-            ))}
-          </div>
-          <div
-            ref={taskListRef}
-            className="task-list"
-            data-scroll={stackedScroll ? "stacked" : "normal"}
-          >
-            {visibleTasks.length === 0 ? (
-              <div className="empty-sidebar">
-                <div className="empty-icon">⌁</div>
-                <p>
-                  {serviceStatus === "offline"
-                    ? "Node service is offline."
-                    : readOnly
-                      ? "Viewer access is read-only."
-                      : "No tasks in this view."}
-                </p>
-                {!readOnly && (
-                  <button className="button button-quiet" onClick={openCreateDialog}>
-                    Start a task
-                  </button>
-                )}
-              </div>
-            ) : (
-              visibleTasks.map((task) => (
-                <TaskListItem
-                  key={task.id}
-                  task={task}
-                  selected={task.id === selectedId}
-                  readOnly={readOnly}
-                  onClick={() => selectTask(task)}
-                  onArchive={() => requestTaskAction(task, "archive")}
-                  onRecovery={() => requestTaskAction(task, "recovery")}
-                  busy={cancellingTaskId === task.id}
-                />
-              ))
-            )}
-            {nextCursor && (
-              <button
-                className="button button-quiet button-small load-more"
-                onClick={() => void loadMoreTasks()}
-                disabled={isLoadingMore}
-              >
-                {isLoadingMore ? "Loading…" : "Load more tasks"}
-              </button>
-            )}
-          </div>
-          <div className="sidebar-footer">
-            <div className="security-note">
-              <span className="security-icon" aria-hidden="true">
-                ◈
-              </span>
-              <div>
-                <strong>Local-only control</strong>
-                <span>Redacted evidence · no shell access</span>
-              </div>
-            </div>
-          </div>
-        </aside>
-
-        <main className="main-panel">
-          {auth.notice && (
-            <div className="connection-banner permission-banner" role="alert">
-              <span className="banner-dot" />
-              <div>
-                <strong>Permission denied</strong>
-                <span>{auth.notice}</span>
-              </div>
-              <button className="button button-quiet button-small" onClick={auth.dismissNotice}>
-                Dismiss
-              </button>
-            </div>
-          )}
-          {serviceStatus === "offline" && (
-            <div className="connection-banner" role="alert">
-              <span className="banner-dot" />
-              <div>
-                <strong>Node service unavailable</strong>
-                <span>{serviceError ?? "Check the local service and try again."}</span>
-              </div>
-              <button
-                className="button button-quiet button-small"
-                onClick={() => void loadTasks(true)}
-              >
-                Retry connection
-              </button>
-            </div>
-          )}
-          {actionError && (
-            <div
-              className="inline-error"
-              role="alert"
-              onMouseEnter={() => setIsActionErrorHovered(true)}
-              onMouseLeave={() => setIsActionErrorHovered(false)}
-            >
-              <span>{actionError}</span>
-              <button aria-label="Dismiss error" onClick={() => setActionError(undefined)}>
-                ×
-              </button>
-            </div>
-          )}
-          {selectedTask ? (
-            <TaskDetail
-              key={selectedTask.id}
-              task={selectedTask}
-              workspaceName={workspace?.name}
-              readOnly={readOnly}
-              runs={runs}
-              events={stream.events.filter((event) => event.task_id === selectedTask.id)}
-              streamConnection={stream.connection}
-              streamError={stream.error}
-              client={client}
-              actionBusy={cancellingTaskId === selectedTask.id ? "cancel" : actionBusy}
-              onAction={handleTaskAction}
-              onCancel={() => requestTaskAction(selectedTask, "archive")}
-              onRefresh={() => void refreshSelectedTask()}
-              onBack={() => {
-                setMobileView("list");
-                selectTask(undefined);
-              }}
-            />
-          ) : (
-            <WelcomePanel
-              readOnly={readOnly}
-              onCreate={openCreateDialog}
-              onBack={() => setMobileView("list")}
-            />
-          )}
-        </main>
+    <>
+      <div className="scene" aria-hidden="true">
+        <div className="scene-base" />
+        <div className="scene-glow scene-glow-accent" />
+        <div className="scene-glow scene-glow-cool" />
+        <div className="scene-grid" />
+        <div className="scene-grain" />
       </div>
+      <div className="top-scrim" aria-hidden="true" />
+      <div className="app-shell">
+        <header className="topbar glass" ref={topbarGlassRef}>
+          <div className="brand-lockup">
+            <span className={`brand-name brand-${serviceStatus}`}>
+              <span className="brand-initial">F</span>orge<span className="brand-initial">P</span>
+              ilot
+            </span>
+            <span className="visually-hidden" role="status">
+              {serviceStatusLabel(serviceStatus)}
+            </span>
+          </div>
+          <nav className="surface-nav" aria-label="Workbench views" ref={surfaceNavRef}>
+            {surfaceIndicator && (
+              <span
+                className="surface-tab-indicator"
+                aria-hidden="true"
+                style={{
+                  transform: `translateX(${surfaceIndicator.left}px)`,
+                  width: `${surfaceIndicator.width}px`,
+                }}
+              />
+            )}
+            <button
+              type="button"
+              className={`surface-tab ${surface === "tasks" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "tasks" ? "page" : undefined}
+              onClick={() => setSurface("tasks")}
+            >
+              <SurfaceIcon surface="tasks" />
+              Tasks
+            </button>
+            <button
+              type="button"
+              className={`surface-tab ${surface === "issues" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "issues" ? "page" : undefined}
+              onClick={() => setSurface("issues")}
+            >
+              <SurfaceIcon surface="issues" />
+              Issues
+            </button>
+            <button
+              type="button"
+              className={`surface-tab ${surface === "memory" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "memory" ? "page" : undefined}
+              onClick={() => setSurface("memory")}
+            >
+              <SurfaceIcon surface="memory" />
+              Memory
+            </button>
+            <button
+              type="button"
+              className={`surface-tab ${surface === "rsi" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "rsi" ? "page" : undefined}
+              onClick={() => setSurface("rsi")}
+            >
+              <SurfaceIcon surface="rsi" />
+              RSI
+            </button>
+            <button
+              type="button"
+              className={`surface-tab ${surface === "dashboard" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "dashboard" ? "page" : undefined}
+              onClick={() => setSurface("dashboard")}
+            >
+              <SurfaceIcon surface="dashboard" />
+              Dashboard
+            </button>
+            <button
+              type="button"
+              className={`surface-tab ${surface === "security" ? "surface-tab-active" : ""}`}
+              aria-current={surface === "security" ? "page" : undefined}
+              onClick={() => setSurface("security")}
+            >
+              <SurfaceIcon surface="security" />
+              Security
+            </button>
+          </nav>
+          <div className="topbar-actions">
+            {auth.session && (
+              <div className="account-chip">
+                <span className="account-name" title={auth.session.user.display_name}>
+                  {auth.session.user.display_name}
+                </span>
+                <button
+                  className="button button-quiet button-small"
+                  onClick={() => void auth.signOut()}
+                >
+                  Sign out
+                </button>
+              </div>
+            )}
+            <button
+              className="button button-quiet button-small"
+              onClick={() => {
+                setSurface("tasks");
+                selectTask(undefined);
+                setMobileView("detail");
+              }}
+              aria-label="Home"
+              aria-current={surface === "tasks" && !selectedId ? "page" : undefined}
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                aria-hidden="true"
+              >
+                <path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z" />
+              </svg>
+              <span className="action-label">Home</span>
+            </button>
+            <button
+              className="button button-quiet button-small"
+              onClick={() => setShowSettings(true)}
+              aria-label="Open settings"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+              </svg>
+              <span className="action-label">Settings</span>
+            </button>
+            {auth.session &&
+              (auth.session.memberships.length > 0 || auth.session.enterprise_roles.length > 0) && (
+                <button
+                  className="button button-quiet button-small"
+                  onClick={() => setShowWorkspaces(true)}
+                  aria-label="Open workspace administration"
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                    <circle cx="9" cy="7" r="4" />
+                    <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+                  </svg>
+                  <span className="action-label">Workspaces</span>
+                </button>
+              )}
+            <button
+              type="button"
+              className="button button-quiet button-small glass-toggle"
+              onClick={toggleGlassMode}
+              aria-label={
+                glassMode === "liquid" ? "Switch to frosted glass" : "Switch to liquid glass"
+              }
+              title={glassMode === "liquid" ? "Switch to frosted glass" : "Switch to liquid glass"}
+            >
+              <GlassModeIcon mode={glassMode} />
+              <span className="action-label glass-toggle-label">
+                {glassMode === "liquid" ? "Liquid" : "Frosted"}
+              </span>
+            </button>
+          </div>
+        </header>
 
-      {surface === "issues" && (
-        <IssuesWorkbench
-          client={client}
-          currentUserId={auth.session?.user.id}
-          loadWorkspaces={loadWorkspaces}
-        />
-      )}
+        <div className="workspace" data-view={mobileView} hidden={surface !== "tasks"}>
+          <aside className="sidebar glass" ref={sidebarGlassRef}>
+            <div className="sidebar-heading">
+              <div className="sidebar-heading-main">
+                <div className="sidebar-title-row">
+                  <h1>Tasks</h1>
+                  {!readOnly && (
+                    <button
+                      type="button"
+                      className="task-create"
+                      onClick={openCreateDialog}
+                      aria-label="New task"
+                      title="New task"
+                    >
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 14 14"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M7 1.5v11M1.5 7h11" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+              <span className="task-count">{visibleTasks.length}</span>
+            </div>
+            {workspace && (
+              <WorkspaceSwitcher
+                workspace={workspace}
+                workspaces={workspaces}
+                onSelect={onSelectWorkspace}
+              />
+            )}
+            <div className="filter-row" role="group" aria-label="Task filters">
+              {STATUS_FILTERS.map((status) => (
+                <button
+                  className={`filter-chip ${filter === status ? "filter-chip-active" : ""}`}
+                  key={status}
+                  onClick={() => setFilter(status)}
+                >
+                  {status === "all" ? "All" : formatStatus(status)}
+                </button>
+              ))}
+            </div>
+            <div
+              ref={taskListRef}
+              className="task-list"
+              data-scroll={stackedScroll ? "stacked" : "normal"}
+            >
+              {visibleTasks.length === 0 ? (
+                <div className="empty-sidebar">
+                  <div className="empty-icon">⌁</div>
+                  <p>
+                    {serviceStatus === "offline"
+                      ? "Node service is offline."
+                      : readOnly
+                        ? "Viewer access is read-only."
+                        : "No tasks in this view."}
+                  </p>
+                  {!readOnly && (
+                    <button className="button button-quiet" onClick={openCreateDialog}>
+                      Start a task
+                    </button>
+                  )}
+                </div>
+              ) : (
+                visibleTasks.map((task) => (
+                  <TaskListItem
+                    key={task.id}
+                    task={task}
+                    selected={task.id === selectedId}
+                    readOnly={readOnly}
+                    onClick={() => selectTask(task)}
+                    onArchive={() => requestTaskAction(task, "archive")}
+                    onRecovery={() => requestTaskAction(task, "recovery")}
+                    busy={cancellingTaskId === task.id}
+                  />
+                ))
+              )}
+              {nextCursor && (
+                <button
+                  className="button button-quiet button-small load-more"
+                  onClick={() => void loadMoreTasks()}
+                  disabled={isLoadingMore}
+                >
+                  {isLoadingMore ? "Loading…" : "Load more tasks"}
+                </button>
+              )}
+            </div>
+            <div className="sidebar-footer">
+              <div className="security-note">
+                <span className="security-icon" aria-hidden="true">
+                  ◈
+                </span>
+                <div>
+                  <strong>Local-only control</strong>
+                  <span>Redacted evidence · no shell access</span>
+                </div>
+              </div>
+            </div>
+          </aside>
 
-      {surface === "memory" && (
-        <MemoryWorkbench
-          client={client}
-          session={auth.session}
-          loadTeams={loadMemoryTeams}
-          loadWorkspaces={loadWorkspaces}
-        />
-      )}
-
-      {surface === "rsi" && (
-        <RsiWorkbench
-          client={client}
-          currentUserId={auth.session?.user.id}
-          loadWorkspaces={loadWorkspaces}
-        />
-      )}
-
-      {surface === "dashboard" && (
-        <DashboardWorkbench client={client} loadWorkspaces={loadWorkspaces} />
-      )}
-
-      {surface === "security" && (
-        <SecurityWorkbench client={client} session={auth.session} loadWorkspaces={loadWorkspaces} />
-      )}
-
-      {createError && (
-        <div
-          className="create-error-toast"
-          role="alert"
-          onMouseEnter={() => setIsCreateErrorHovered(true)}
-          onMouseLeave={() => setIsCreateErrorHovered(false)}
-        >
-          <span>{createError}</span>
-          <button
-            type="button"
-            className="icon-button"
-            aria-label="Dismiss error"
-            onClick={() => setCreateError(undefined)}
-          >
-            ×
-          </button>
+          <main className="main-panel">
+            {auth.notice && (
+              <div className="connection-banner permission-banner" role="alert">
+                <span className="banner-dot" />
+                <div>
+                  <strong>Permission denied</strong>
+                  <span>{auth.notice}</span>
+                </div>
+                <button className="button button-quiet button-small" onClick={auth.dismissNotice}>
+                  Dismiss
+                </button>
+              </div>
+            )}
+            {serviceStatus === "offline" && (
+              <div className="connection-banner" role="alert">
+                <span className="banner-dot" />
+                <div>
+                  <strong>Node service unavailable</strong>
+                  <span>{serviceError ?? "Check the local service and try again."}</span>
+                </div>
+                <button
+                  className="button button-quiet button-small"
+                  onClick={() => void loadTasks(true)}
+                >
+                  Retry connection
+                </button>
+              </div>
+            )}
+            {actionError && (
+              <div
+                className="inline-error"
+                role="alert"
+                onMouseEnter={() => setIsActionErrorHovered(true)}
+                onMouseLeave={() => setIsActionErrorHovered(false)}
+              >
+                <span>{actionError}</span>
+                <button aria-label="Dismiss error" onClick={() => setActionError(undefined)}>
+                  ×
+                </button>
+              </div>
+            )}
+            {selectedTask ? (
+              <TaskDetail
+                key={selectedTask.id}
+                task={selectedTask}
+                workspaceName={workspace?.name}
+                readOnly={readOnly}
+                runs={runs}
+                events={stream.events.filter((event) => event.task_id === selectedTask.id)}
+                streamConnection={stream.connection}
+                streamError={stream.error}
+                client={client}
+                actionBusy={cancellingTaskId === selectedTask.id ? "cancel" : actionBusy}
+                onAction={handleTaskAction}
+                onCancel={() => requestTaskAction(selectedTask, "archive")}
+                onRefresh={() => void refreshSelectedTask()}
+                onBack={() => {
+                  setMobileView("list");
+                  selectTask(undefined);
+                }}
+              />
+            ) : (
+              <WelcomePanel
+                readOnly={readOnly}
+                onCreate={openCreateDialog}
+                onBack={() => setMobileView("list")}
+              />
+            )}
+          </main>
         </div>
-      )}
-      {showCreate && (
-        <CreateTaskDialog
-          workspace={workspace}
-          form={form}
-          isCreating={isCreating}
-          onChange={setForm}
-          onClose={closeCreateDialog}
-          onOpenSettings={() => setShowSettings(true)}
-          onSubmit={handleCreate}
-          refreshToken={settingsEpoch}
-        />
-      )}
-      {showSettings && (
-        <SettingsDialog
-          onClose={() => {
-            setShowSettings(false);
-            setSettingsEpoch((value) => value + 1);
-          }}
-          scrollMode={scrollMode}
-          onScrollModeChange={changeScrollMode}
-        />
-      )}
-      {confirmTaskAction && (
-        <TaskActionDialog
-          action={confirmTaskAction.action}
-          task={confirmTaskAction.task}
-          onClose={closeTaskConfirmation}
-          onConfirm={() => {
-            const { task, action } = confirmTaskAction;
-            closeTaskConfirmation();
-            void (action === "archive" ? handleQuickCancel(task) : handleQuickRecovery(task));
-          }}
-        />
-      )}
-      {showWorkspaces && auth.session && (
-        <WorkspaceAdminDialog
-          client={identityClient}
-          session={auth.session}
-          onClose={() => {
-            setShowWorkspaces(false);
-            void auth.retry();
-          }}
-        />
-      )}
-    </div>
+
+        {surface === "issues" && (
+          <IssuesWorkbench
+            client={client}
+            currentUserId={auth.session?.user.id}
+            loadWorkspaces={loadWorkspaces}
+          />
+        )}
+
+        {surface === "memory" && (
+          <MemoryWorkbench
+            client={client}
+            session={auth.session}
+            loadTeams={loadMemoryTeams}
+            loadWorkspaces={loadWorkspaces}
+          />
+        )}
+
+        {surface === "rsi" && (
+          <RsiWorkbench
+            client={client}
+            currentUserId={auth.session?.user.id}
+            loadWorkspaces={loadWorkspaces}
+          />
+        )}
+
+        {surface === "dashboard" && (
+          <DashboardWorkbench client={client} loadWorkspaces={loadWorkspaces} />
+        )}
+
+        {surface === "security" && (
+          <SecurityWorkbench
+            client={client}
+            session={auth.session}
+            loadWorkspaces={loadWorkspaces}
+          />
+        )}
+
+        {createError && (
+          <div
+            className="create-error-toast"
+            role="alert"
+            onMouseEnter={() => setIsCreateErrorHovered(true)}
+            onMouseLeave={() => setIsCreateErrorHovered(false)}
+          >
+            <span>{createError}</span>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Dismiss error"
+              onClick={() => setCreateError(undefined)}
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {showCreate && (
+          <CreateTaskDialog
+            workspace={workspace}
+            form={form}
+            isCreating={isCreating}
+            onChange={setForm}
+            onClose={closeCreateDialog}
+            onOpenSettings={() => setShowSettings(true)}
+            onSubmit={handleCreate}
+            refreshToken={settingsEpoch}
+          />
+        )}
+        {showSettings && (
+          <SettingsDialog
+            onClose={() => {
+              setShowSettings(false);
+              setSettingsEpoch((value) => value + 1);
+            }}
+            scrollMode={scrollMode}
+            onScrollModeChange={changeScrollMode}
+          />
+        )}
+        {confirmTaskAction && (
+          <TaskActionDialog
+            action={confirmTaskAction.action}
+            task={confirmTaskAction.task}
+            onClose={closeTaskConfirmation}
+            onConfirm={() => {
+              const { task, action } = confirmTaskAction;
+              closeTaskConfirmation();
+              void (action === "archive" ? handleQuickCancel(task) : handleQuickRecovery(task));
+            }}
+          />
+        )}
+        {showWorkspaces && auth.session && (
+          <WorkspaceAdminDialog
+            client={identityClient}
+            session={auth.session}
+            onClose={() => {
+              setShowWorkspaces(false);
+              void auth.retry();
+            }}
+          />
+        )}
+      </div>
+    </>
   );
 }
 
@@ -1332,7 +1407,7 @@ function TaskActionDialog({
       }}
     >
       <section
-        className="modal task-confirm-dialog"
+        className="modal glass task-confirm-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="task-confirm-title"
@@ -1618,7 +1693,7 @@ function TaskDetail({
               </div>
             </div>
           )}
-          <section className="card progress-card">
+          <section className="card glass progress-card">
             <div className="card-heading">
               <div>
                 <span className="eyebrow">Current run</span>
@@ -1674,7 +1749,7 @@ function TaskDetail({
             </div>
           </section>
 
-          <section className="card pi-summary-card">
+          <section className="card glass pi-summary-card">
             <div className="card-heading">
               <div>
                 <span className="eyebrow">Pi</span>
@@ -1695,7 +1770,7 @@ function TaskDetail({
             </span>
           </section>
 
-          <section className="card timeline-card">
+          <section className="card glass timeline-card">
             <div className="card-heading">
               <div>
                 <span className="eyebrow">Trace</span>
@@ -1719,7 +1794,10 @@ function TaskDetail({
           </section>
 
           {!TERMINAL_STATUSES.has(task.status) && !readOnly && (
-            <form className="card message-card" onSubmit={(event) => void submitMessage(event)}>
+            <form
+              className="card glass message-card"
+              onSubmit={(event) => void submitMessage(event)}
+            >
               <div className="card-heading">
                 <div>
                   <span className="eyebrow">Operator input</span>
@@ -1760,7 +1838,7 @@ function TaskDetail({
         </div>
 
         <aside className="detail-side-column">
-          <section className="card identity-card">
+          <section className="card glass identity-card">
             <div className="card-heading">
               <div>
                 <span className="eyebrow">Task binding</span>
@@ -1776,7 +1854,7 @@ function TaskDetail({
             )}
           </section>
 
-          <section className="card artifacts-card">
+          <section className="card glass artifacts-card">
             <div className="card-heading">
               <div>
                 <span className="eyebrow">Evidence</span>
@@ -1812,7 +1890,7 @@ function TaskDetail({
             )}
           </section>
 
-          <section className="card runs-card">
+          <section className="card glass runs-card">
             <div className="card-heading">
               <div>
                 <span className="eyebrow">History</span>
@@ -1857,9 +1935,10 @@ function ApprovalCard({
 }): ReactElement {
   const glowRef = useRef<HTMLDivElement>(null);
   useAmbientDrift(glowRef);
+  const approvalGlassRef = useLiquidGlass<HTMLElement>();
 
   return (
-    <section className="approval-card">
+    <section className="approval-card glass" ref={approvalGlassRef}>
       <div ref={glowRef} className="approval-glow" aria-hidden="true" />
       <div className="approval-icon">⌁</div>
       <div className="approval-copy">
@@ -2009,7 +2088,12 @@ function CreateTaskDialog({
       role="presentation"
       onMouseDown={(event) => event.target === event.currentTarget && onClose()}
     >
-      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="new-task-title">
+      <section
+        className="modal glass"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-task-title"
+      >
         <div className="modal-heading">
           <div>
             <span className="eyebrow">New remediation</span>
