@@ -2468,13 +2468,14 @@ p {
   --radius: 14;
 }
 
-/* --faint is a 3:1 divider tone; once the scene shows through a glass card,
+/* --faint is a 3:1 divider tone; once the scene shows through a glass surface,
    the 9–10px metadata inside it needs the muted ramp to clear 4.5:1. */
 .card.glass .metric-label,
 .card.glass .pi-summary-meta,
 .card.glass .pi-summary-note,
 .card.glass .pi-summary-unavailable,
-.card.glass .timeline-title time {
+.card.glass .timeline-title time,
+.sidebar.glass .field-label {
   color: var(--muted);
 }
 
@@ -4701,6 +4702,24 @@ p {
   border-top: 1px solid var(--line-soft);
   margin-top: 6px;
   padding-top: 10px;
+}
+
+/* The sidebar is a fixed-height flex column: let the open disclosure shrink
+   and scroll its own content instead of pushing the footer past the glass edge. */
+.memory-scope-filters[open] {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-color: var(--faint) transparent;
+  scrollbar-width: thin;
+}
+
+.memory-scope-filters[open]::-webkit-scrollbar {
+  width: 6px;
+}
+
+.memory-scope-filters[open]::-webkit-scrollbar-thumb {
+  background: var(--faint);
+  border-radius: 3px;
 }
 
 .memory-scope-filters summary {

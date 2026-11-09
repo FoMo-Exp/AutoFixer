@@ -12,6 +12,7 @@ import type {
 import { formatDate, progressPercent, shortId } from "../ui/format";
 import { redactText } from "../ui/redaction";
 import { Select } from "../ui/Select";
+import { useLiquidGlass } from "../ui/use-liquid-glass";
 import {
   describeRsiError,
   HOLDOUT_NOTE,
@@ -41,6 +42,7 @@ export function RsiWorkbench({
   /** The caller's live workspace directory, owned by the identity surface. */
   loadWorkspaces: () => Promise<Workspace[]>;
 }): ReactElement {
+  const sidebarGlassRef = useLiquidGlass<HTMLElement>();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string | undefined>(undefined);
   const [workspaceError, setWorkspaceError] = useState<RsiError | undefined>(undefined);
@@ -188,7 +190,7 @@ export function RsiWorkbench({
 
   return (
     <div className="workspace rsi-workspace" data-view={mobileView}>
-      <aside className="sidebar rsi-sidebar">
+      <aside className="sidebar glass rsi-sidebar" ref={sidebarGlassRef}>
         <div className="sidebar-heading">
           <div>
             <h1>RSI</h1>

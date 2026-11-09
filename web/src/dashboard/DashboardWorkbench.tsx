@@ -11,6 +11,7 @@ import type {
 import { formatDate } from "../ui/format";
 import { redactText } from "../ui/redaction";
 import { Select } from "../ui/Select";
+import { useLiquidGlass } from "../ui/use-liquid-glass";
 import { CostLedgerPanel } from "./CostLedgerPanel";
 import { TraceViewer } from "./TraceViewer";
 import {
@@ -70,6 +71,7 @@ export function DashboardWorkbench({
   /** The caller's live workspace directory, owned by the identity surface. */
   loadWorkspaces: () => Promise<Workspace[]>;
 }): ReactElement {
+  const sidebarGlassRef = useLiquidGlass<HTMLElement>();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string | undefined>(undefined);
   const [workspaceError, setWorkspaceError] = useState<DashboardError | undefined>(undefined);
@@ -262,7 +264,7 @@ export function DashboardWorkbench({
 
   return (
     <div className="workspace dashboard-workspace" data-view={mobileView}>
-      <aside className="sidebar dashboard-sidebar">
+      <aside className="sidebar glass dashboard-sidebar" ref={sidebarGlassRef}>
         <div className="sidebar-heading">
           <div>
             <h1>Dashboard</h1>

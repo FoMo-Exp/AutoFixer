@@ -5,6 +5,7 @@ import { formatDate } from "../ui/format";
 import { productStageTone, productStateLabel } from "../ui/issues";
 import { redactText } from "../ui/redaction";
 import { Select } from "../ui/Select";
+import { useLiquidGlass } from "../ui/use-liquid-glass";
 import { IssueDetail } from "./IssueDetail";
 import { describeIssueError } from "./errors";
 import type { IssueError } from "./errors";
@@ -35,6 +36,7 @@ export function IssuesWorkbench({
   /** The caller's live workspace directory, owned by the identity surface. */
   loadWorkspaces: () => Promise<Workspace[]>;
 }): ReactElement {
+  const sidebarGlassRef = useLiquidGlass<HTMLElement>();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string | undefined>(undefined);
   const [workspaceError, setWorkspaceError] = useState<IssueError | undefined>(undefined);
@@ -156,7 +158,7 @@ export function IssuesWorkbench({
 
   return (
     <div className="workspace issues-workspace" data-view={mobileView}>
-      <aside className="sidebar issues-sidebar">
+      <aside className="sidebar glass issues-sidebar" ref={sidebarGlassRef}>
         <div className="sidebar-heading">
           <div>
             <h1>Issues</h1>

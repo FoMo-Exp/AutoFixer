@@ -4,6 +4,7 @@ import type { ForgePilotClient, SecurityCase, SecurityCaseState, Workspace } fro
 import type { WorkspaceSession } from "../api/identity";
 import { isEnterpriseAdmin } from "../workspaces/identity-format";
 import { Select } from "../ui/Select";
+import { useLiquidGlass } from "../ui/use-liquid-glass";
 import { SecurityCaseDetail } from "./SecurityCaseDetail";
 import { SecurityRulesPanel } from "./SecurityRulesPanel";
 import { SecurityAuditPanel } from "./SecurityAuditPanel";
@@ -48,6 +49,7 @@ export function SecurityWorkbench({
   /** The caller's live workspace directory, owned by the identity surface. */
   loadWorkspaces: () => Promise<Workspace[]>;
 }): ReactElement {
+  const sidebarGlassRef = useLiquidGlass<HTMLElement>();
   const [section, setSection] = useState<SecuritySection>("cases");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string | undefined>(undefined);
@@ -241,7 +243,7 @@ export function SecurityWorkbench({
 
       {workspaceId && section === "cases" && (
         <div className="workspace security-workspace" data-view={selectedCase ? "detail" : "list"}>
-          <aside className="sidebar security-sidebar">
+          <aside className="sidebar glass security-sidebar" ref={sidebarGlassRef}>
             <div className="sidebar-heading">
               <div>
                 <h1>Security cases</h1>
