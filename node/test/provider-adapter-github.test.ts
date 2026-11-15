@@ -23,7 +23,7 @@ import { exactRoutes, startFakeProvider, type FakeProvider } from "./helpers/fak
 
 const SECRET = "ghs_installation_token_should_never_leak_4f2a";
 const CREDENTIAL_REF = "svc-source-github";
-const CANONICAL = "github:Luthiel/AutoFixer";
+const CANONICAL = "github:FoMo-Exp/AutoFixer";
 
 const ctx: ProviderCallContext = {
   enterprise_id: "ent_1",
@@ -33,15 +33,15 @@ const ctx: ProviderCallContext = {
 
 const repository: RepositoryRef = {
   repository_id: "github:9001",
-  repository_name: "Luthiel/AutoFixer",
+  repository_name: "FoMo-Exp/AutoFixer",
   provider_type: "github",
 };
 
 const credentials = createStaticServiceCredentialStore({ [CREDENTIAL_REF]: SECRET });
 
-const REPO_URL = "/repos/Luthiel/AutoFixer";
-const COLLABORATORS_URL = "/repos/Luthiel/AutoFixer/collaborators?per_page=100&page=1";
-const OWNERS_URL = "/orgs/Luthiel/members?role=admin&per_page=100&page=1";
+const REPO_URL = "/repos/FoMo-Exp/AutoFixer";
+const COLLABORATORS_URL = "/repos/FoMo-Exp/AutoFixer/collaborators?per_page=100&page=1";
+const OWNERS_URL = "/orgs/FoMo-Exp/members?role=admin&per_page=100&page=1";
 
 let provider: FakeProvider | null = null;
 
@@ -73,7 +73,7 @@ const COLLABORATOR = {
 
 const ORG_OWNER = { id: 4242, login: "octocat" };
 
-const ORG_REPO = { id: 9001, owner: { id: 7, login: "Luthiel", type: "Organization" } };
+const ORG_REPO = { id: 9001, owner: { id: 7, login: "FoMo-Exp", type: "Organization" } };
 const PERSONAL_REPO = { id: 9002, owner: { id: 8, login: "Luthiel", type: "User" } };
 
 describe("github adapter paths and credentials", () => {
@@ -84,8 +84,8 @@ describe("github adapter paths and credentials", () => {
           status: 200,
           body: {
             id: 9001,
-            full_name: "Luthiel/AutoFixer",
-            owner: { id: 7, login: "Luthiel", type: "Organization" },
+            full_name: "FoMo-Exp/AutoFixer",
+            owner: { id: 7, login: "FoMo-Exp", type: "Organization" },
           },
         },
         [COLLABORATORS_URL]: { status: 200, body: [COLLABORATOR] },
@@ -117,7 +117,7 @@ describe("github adapter paths and credentials", () => {
         // so the row claims effective access only.
         kind: "effective_access",
         provider_role: "admin",
-        authority_ref: "repository:Luthiel/AutoFixer",
+        authority_ref: "repository:FoMo-Exp/AutoFixer",
         inherited_from: null,
       },
       {
@@ -125,7 +125,7 @@ describe("github adapter paths and credentials", () => {
         login: "octocat",
         kind: "org_owner",
         provider_role: "owner",
-        authority_ref: "organization:Luthiel",
+        authority_ref: "organization:FoMo-Exp",
         inherited_from: null,
       },
     ]);
@@ -184,7 +184,7 @@ describe("github adapter paths and credentials", () => {
     // a direct grant here.
     expect(roster.entries.map((entry) => entry.kind)).toEqual(["direct_collaborator"]);
     expect(roster.entries.map((entry) => entry.authority_ref)).toEqual([
-      "repository:Luthiel/AutoFixer",
+      "repository:FoMo-Exp/AutoFixer",
     ]);
   });
 
@@ -192,7 +192,7 @@ describe("github adapter paths and credentials", () => {
     provider = await startFakeProvider(
       exactRoutes({
         [REPO_URL]: { status: 200, body: PERSONAL_REPO },
-        "/repos/Luthiel/AutoFixer/collaborators/octocat/permission": {
+        "/repos/FoMo-Exp/AutoFixer/collaborators/octocat/permission": {
           status: 200,
           body: { permission: "write", role_name: "write", user: { id: 4242, login: "octocat" } },
         },
@@ -206,10 +206,10 @@ describe("github adapter paths and credentials", () => {
       "4242",
     );
     expect(role?.kind).toBe("direct_collaborator");
-    expect(role?.authority_ref).toBe("repository:Luthiel/AutoFixer");
+    expect(role?.authority_ref).toBe("repository:FoMo-Exp/AutoFixer");
     expect(provider.urls()).toEqual([
       REPO_URL,
-      "/repos/Luthiel/AutoFixer/collaborators/octocat/permission",
+      "/repos/FoMo-Exp/AutoFixer/collaborators/octocat/permission",
     ]);
   });
 
@@ -406,7 +406,7 @@ describe("github effective permission", () => {
     provider = await startFakeProvider(
       exactRoutes({
         [REPO_URL]: { status: 200, body: ORG_REPO },
-        "/repos/Luthiel/AutoFixer/collaborators/octocat/permission": {
+        "/repos/FoMo-Exp/AutoFixer/collaborators/octocat/permission": {
           status: 200,
           body: {
             permission: "admin",
@@ -426,14 +426,14 @@ describe("github effective permission", () => {
     // The permission endpoint, not the 204-only "check a collaborator" one.
     expect(provider.urls()).toEqual([
       REPO_URL,
-      "/repos/Luthiel/AutoFixer/collaborators/octocat/permission",
+      "/repos/FoMo-Exp/AutoFixer/collaborators/octocat/permission",
     ]);
     expect(role).toEqual({
       subject: "4242",
       login: "octocat",
       kind: "effective_access",
       provider_role: "admin",
-      authority_ref: "repository:Luthiel/AutoFixer",
+      authority_ref: "repository:FoMo-Exp/AutoFixer",
       inherited_from: null,
     });
   });
@@ -442,7 +442,7 @@ describe("github effective permission", () => {
     provider = await startFakeProvider(
       exactRoutes({
         [REPO_URL]: { status: 200, body: ORG_REPO },
-        "/repos/Luthiel/AutoFixer/collaborators/octocat/permission": {
+        "/repos/FoMo-Exp/AutoFixer/collaborators/octocat/permission": {
           status: 404,
           body: { message: "Not Found" },
         },
@@ -458,7 +458,7 @@ describe("github effective permission", () => {
     provider = await startFakeProvider(
       exactRoutes({
         [REPO_URL]: { status: 200, body: ORG_REPO },
-        "/repos/Luthiel/AutoFixer/collaborators/octocat/permission": {
+        "/repos/FoMo-Exp/AutoFixer/collaborators/octocat/permission": {
           status: 200,
           body: { permission: "write", role_name: "write", user: { id: 4242, login: "octocat" } },
         },
@@ -478,7 +478,7 @@ describe("github effective permission", () => {
     provider = await startFakeProvider(
       exactRoutes({
         [REPO_URL]: { status: 200, body: ORG_REPO },
-        "/repos/Luthiel/AutoFixer/collaborators/octocat/permission": { status: 204, body: "" },
+        "/repos/FoMo-Exp/AutoFixer/collaborators/octocat/permission": { status: 204, body: "" },
       }),
     );
 

@@ -15,7 +15,7 @@ func testGrant() *CapabilityGrant {
 		ExpiresAt:              issued.Add(time.Hour),
 		PolicyVersion:          DefaultPolicyVersion,
 		CapabilityGrantVersion: "grant-1",
-		RepositoryURL:          "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL:          "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:                "abc123",
 		PermittedPaths:         []string{"harness"},
 		PermittedTools: []PermittedTool{
@@ -35,7 +35,7 @@ func withinGrantRequest() ActionRequest {
 	return ActionRequest{
 		Tool:          "go-test",
 		Arguments:     []string{"./harness/"},
-		RepositoryURL: "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL: "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:       "abc123",
 		Branch:        "autofixer/dat-171-fix",
 		Paths:         []string{"harness/state.go"},

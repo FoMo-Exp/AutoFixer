@@ -117,7 +117,7 @@ class FakeProvider implements DeliveryProvider {
     }
     const pr: ProviderPullRequestEvidence = {
       pr_id: "pr_1",
-      pr_url: "https://github.com/Luthiel/AutoFixer/pull/1",
+      pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
       branch: input.branch,
       head_sha: this.prMode === "wrong_head" ? OTHER_HEAD : input.head_sha,
       state: "open",
@@ -584,7 +584,7 @@ describe("broker-controlled push and PR", () => {
     f.provider.branchHead = f.candidate.head_sha;
     f.provider.pr = {
       pr_id: "pr_1",
-      pr_url: "https://github.com/Luthiel/AutoFixer/pull/1",
+      pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
       branch,
       head_sha: f.candidate.head_sha,
       state: "open",
@@ -602,7 +602,7 @@ describe("broker-controlled push and PR", () => {
     f.provider.branchHead = null;
     f.provider.pr = {
       pr_id: "pr_1",
-      pr_url: "https://github.com/Luthiel/AutoFixer/pull/1",
+      pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
       branch,
       head_sha: f.candidate.head_sha,
       state: "open",
@@ -642,7 +642,7 @@ describe("broker-controlled push and PR", () => {
     f.provider.branchHead = null;
     f.provider.pr = {
       pr_id: "pr_1",
-      pr_url: "https://github.com/Luthiel/AutoFixer/pull/1",
+      pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
       branch,
       head_sha: f.candidate.head_sha,
       state: "open",
@@ -664,7 +664,7 @@ describe("broker-controlled push and PR", () => {
     f.provider.branchHead = OTHER_HEAD;
     f.provider.pr = {
       pr_id: "pr_1",
-      pr_url: "https://github.com/Luthiel/AutoFixer/pull/1",
+      pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
       branch,
       head_sha: f.candidate.head_sha,
       state: "open",
@@ -692,7 +692,7 @@ describe("broker-controlled push and PR", () => {
           to: "delivered",
           branch,
           pr_id: "pr_1",
-          pr_url: "https://github.com/Luthiel/AutoFixer/pull/1",
+          pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
           error_code: null,
           evidence: {
             branch_head_sha: null,

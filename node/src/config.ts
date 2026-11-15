@@ -245,7 +245,7 @@ function defaultControlPlanePath(): string {
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): OrchestratorConfig {
-  const repositoryId = env["FORGEPILOT_REPOSITORY_ID"] ?? "github:Luthiel/AutoFixer";
+  const repositoryId = env["FORGEPILOT_REPOSITORY_ID"] ?? "github:FoMo-Exp/AutoFixer";
   const idMatch = /^github:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(repositoryId);
   if (!idMatch) {
     throw new Error(

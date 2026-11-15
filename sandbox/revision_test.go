@@ -9,12 +9,12 @@ import (
 
 func TestStaticRevisionSourceBindsTreeToBaseSHA(t *testing.T) {
 	source := NewStaticRevisionSource(StaticRevision{
-		RepositoryURL: "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL: "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:       "abc123",
 		Files:         map[string]string{"go.mod": "module x\n", "web/src/a.ts": "export const a = 1;\n"},
 	})
 	dir := t.TempDir()
-	identity, err := source.Materialize(context.Background(), dir, "https://github.com/Luthiel/AutoFixer.git", "abc123")
+	identity, err := source.Materialize(context.Background(), dir, "https://github.com/FoMo-Exp/AutoFixer.git", "abc123")
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
@@ -28,14 +28,14 @@ func TestStaticRevisionSourceBindsTreeToBaseSHA(t *testing.T) {
 	// Materializing a revision the source does not hold is refused, so a
 	// result can never describe a tree other than the exact revision asked
 	// for.
-	if _, err := source.Materialize(context.Background(), t.TempDir(), "https://github.com/Luthiel/AutoFixer.git", "other"); err == nil {
+	if _, err := source.Materialize(context.Background(), t.TempDir(), "https://github.com/FoMo-Exp/AutoFixer.git", "other"); err == nil {
 		t.Error("Materialize of an unheld base SHA succeeded, want refusal")
 	}
 }
 
 func TestExecutionResultDigestBindsRevisionAndEnvironment(t *testing.T) {
 	status := 0
-	revision := &RevisionIdentity{RepositoryURL: "https://github.com/Luthiel/AutoFixer.git", BaseSHA: "abc123", TreeDigest: "sha256:tree-a"}
+	revision := &RevisionIdentity{RepositoryURL: "https://github.com/FoMo-Exp/AutoFixer.git", BaseSHA: "abc123", TreeDigest: "sha256:tree-a"}
 	environment := &EnvironmentIdentity{Platform: "test/os", Backend: "seatbelt", ProfileDigest: "sha256:profile-a", Network: "denied"}
 
 	result, err := NewExecutionResult(ExecutionResultInput{

@@ -399,7 +399,11 @@ export function MemoryWorkbench({
     workspaceError !== undefined && (workspaceError.status === 404 || workspaceError.status === 0);
 
   return (
-    <div className="workspace memory-workspace" data-view={mobileView}>
+    <div
+      className="workspace memory-workspace"
+      data-view={mobileView}
+      data-scroll-lock={!selectedItemId ? "true" : undefined}
+    >
       <aside className="sidebar glass memory-sidebar" ref={sidebarGlassRef}>
         <div className="sidebar-heading">
           <div>

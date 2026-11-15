@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	testRepoURL = "https://github.com/Luthiel/AutoFixer.git"
+	testRepoURL = "https://github.com/FoMo-Exp/AutoFixer.git"
 	testBaseSHA = "abc123"
 )
 

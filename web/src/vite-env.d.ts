@@ -31,6 +31,7 @@ declare global {
       startupError?: string;
     };
     forgePilotAuth?: {
+      setMode?: (mode: "enterprise" | "personal") => Promise<void>;
       getState: () => Promise<DesktopAuthState>;
       signIn: (input: { provider_instance_id?: string }) => Promise<DesktopAuthState>;
       cancelSignIn: () => Promise<DesktopAuthState>;

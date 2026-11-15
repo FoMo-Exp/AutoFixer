@@ -123,7 +123,7 @@ describe("workspace-scoped task creation (DAT-245)", () => {
       authApp,
       workspaceA,
       {
-        repository_id: "github:Luthiel/AutoFixer",
+        repository_id: "github:FoMo-Exp/AutoFixer",
         base_ref: "main",
         summary: "workspace-scoped create",
       },
@@ -131,7 +131,7 @@ describe("workspace-scoped task creation (DAT-245)", () => {
     );
     expect(created.status).toBe(201);
     expect(created.body.workspace_id).toBe(workspaceA);
-    expect(created.body.repository?.id).toBe("github:Luthiel/AutoFixer");
+    expect(created.body.repository?.id).toBe("github:FoMo-Exp/AutoFixer");
     expect(created.body.run_history_url).toBe(
       `/api/v1/workspaces/${workspaceA}/tasks/${created.body.id}/runs`,
     );
@@ -165,7 +165,7 @@ describe("workspace-scoped task creation (DAT-245)", () => {
     const wrongRef = await createTask(
       authApp,
       workspaceA,
-      { repository_id: "github:Luthiel/AutoFixer", base_ref: "dev", summary: "cross ref" },
+      { repository_id: "github:FoMo-Exp/AutoFixer", base_ref: "dev", summary: "cross ref" },
       cookieSessionHeaders(member),
     );
     expect(wrongRef.status).toBe(400);
@@ -202,7 +202,7 @@ describe("workspace-scoped task creation (DAT-245)", () => {
     const notMember = await createTask(
       authApp,
       workspaceA,
-      { repository_id: "github:Luthiel/AutoFixer", base_ref: "main", summary: "outsider" },
+      { repository_id: "github:FoMo-Exp/AutoFixer", base_ref: "main", summary: "outsider" },
       cookieSessionHeaders(outsider),
     );
     expect(notMember.status).toBe(404);
@@ -214,7 +214,7 @@ describe("workspace-scoped task creation (DAT-245)", () => {
     const afterRevoke = await createTask(
       authApp,
       workspaceA,
-      { repository_id: "github:Luthiel/AutoFixer", base_ref: "main", summary: "revoked" },
+      { repository_id: "github:FoMo-Exp/AutoFixer", base_ref: "main", summary: "revoked" },
       cookieSessionHeaders(revoked),
     );
     expect(afterRevoke.status).toBe(404);
@@ -224,7 +224,7 @@ describe("workspace-scoped task creation (DAT-245)", () => {
     const viewerWrite = await createTask(
       authApp,
       workspaceA,
-      { repository_id: "github:Luthiel/AutoFixer", base_ref: "main", summary: "viewer" },
+      { repository_id: "github:FoMo-Exp/AutoFixer", base_ref: "main", summary: "viewer" },
       cookieSessionHeaders(viewer),
     );
     expect(viewerWrite.status).toBe(403);
@@ -250,7 +250,7 @@ describe("workspace-scoped task creation (DAT-245)", () => {
     const created = await createTask(
       authApp,
       workspaceA,
-      { repository_id: "github:Luthiel/AutoFixer", base_ref: "main", summary: "operator create" },
+      { repository_id: "github:FoMo-Exp/AutoFixer", base_ref: "main", summary: "operator create" },
       operatorHeaders(authApp),
     );
     expect(created.status).toBe(201);
@@ -278,14 +278,14 @@ describe("workspace-scoped task creation (DAT-245)", () => {
     const first = await createTask(
       authApp,
       workspaceA,
-      { repository_id: "github:Luthiel/AutoFixer", base_ref: "main", summary: "idempotent" },
+      { repository_id: "github:FoMo-Exp/AutoFixer", base_ref: "main", summary: "idempotent" },
       headers,
     );
     expect(first.status).toBe(201);
     const replay = await createTask(
       authApp,
       workspaceA,
-      { repository_id: "github:Luthiel/AutoFixer", base_ref: "main", summary: "idempotent" },
+      { repository_id: "github:FoMo-Exp/AutoFixer", base_ref: "main", summary: "idempotent" },
       headers,
     );
     expect(replay.status).toBe(201);

@@ -19,6 +19,7 @@ interface WorkspaceAdminDialogProps {
   client: IdentityClient;
   session: WorkspaceSession;
   onClose: () => void;
+  initialTab?: AdminTab;
 }
 
 type AdminTab = "members" | "teams" | "invitations" | "audit";
@@ -27,12 +28,13 @@ export function WorkspaceAdminDialog({
   client,
   session,
   onClose,
+  initialTab = "members",
 }: WorkspaceAdminDialogProps): ReactElement {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ErrorDescription>();
-  const [activeTab, setActiveTab] = useState<AdminTab>("members");
+  const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
   const dialogRef = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;

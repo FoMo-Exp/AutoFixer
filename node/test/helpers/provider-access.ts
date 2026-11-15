@@ -51,7 +51,7 @@ import type {
 export const ACTOR = "usr_operator";
 export const NOW = "2026-11-03T12:00:00.000Z";
 export const REPO_ID = "github:repo:9001";
-export const REPO_NAME = "Luthiel/AutoFixer";
+export const REPO_NAME = "FoMo-Exp/AutoFixer";
 
 export interface Fixture {
   db: ControlPlaneDb;

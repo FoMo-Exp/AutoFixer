@@ -73,6 +73,11 @@ afterEach(() => {
   window.localStorage.removeItem("fp-scroll");
 });
 
+async function renderPersonalApp(): Promise<void> {
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: /个人登录/ }));
+}
+
 async function select(summary: string) {
   await userEvent.click(await screen.findByRole("button", { name: new RegExp(summary) }));
 }
@@ -85,7 +90,7 @@ describe("workspace navigation", () => {
       next_cursor: null,
     });
     vi.mocked(ForgePilotClient.prototype.getTask).mockResolvedValue(cancelled);
-    render(<App />);
+    await renderPersonalApp();
     await select("Repair alpha");
     expect(await screen.findByText("Finished")).toBeTruthy();
     expect(screen.queryByText("Live")).toBeNull();
@@ -93,7 +98,7 @@ describe("workspace navigation", () => {
   it("keeps Home visible after the initial task list arrives", async () => {
     const page = deferred<{ items: Task[]; next_cursor: null }>();
     vi.mocked(ForgePilotClient.prototype.listTasks).mockReturnValue(page.promise);
-    render(<App />);
+    await renderPersonalApp();
     await userEvent.click(screen.getByRole("button", { name: "Home" }));
     await act(async () => page.resolve({ items: tasks, next_cursor: null }));
     expect(screen.getByRole("heading", { name: welcome })).toBeTruthy();
@@ -107,7 +112,7 @@ describe("workspace navigation", () => {
     vi.mocked(ForgePilotClient.prototype.getTask).mockImplementation(async (id) =>
       id === "task-b" ? beta.promise : tasks[0],
     );
-    render(<App />);
+    await renderPersonalApp();
     await select("Repair alpha");
     await screen.findByRole("heading", { name: "Repair alpha" });
     await select("Repair beta");
@@ -125,7 +130,7 @@ describe("workspace navigation", () => {
     vi.mocked(ForgePilotClient.prototype.getTask).mockImplementation(async (id) =>
       id === "task-b" ? beta.promise : id === "task-c" ? gamma.promise : tasks[0],
     );
-    render(<App />);
+    await renderPersonalApp();
     await select("Repair beta");
     await select("Repair gamma");
     await act(async () =>
@@ -147,7 +152,7 @@ describe("workspace navigation", () => {
     vi.mocked(ForgePilotClient.prototype.getTask).mockRejectedValue(
       new Error("Detail unavailable"),
     );
-    render(<App />);
+    await renderPersonalApp();
     await select("Repair beta");
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveProperty("textContent", "Detail unavailable×");
@@ -158,7 +163,7 @@ describe("workspace navigation", () => {
   });
 
   it("preserves a draft on reselect but clears it when switching to another task", async () => {
-    render(<App />);
+    await renderPersonalApp();
     await select("Repair alpha");
     const draft = screen.getByPlaceholderText("Add a bounded instruction for Pi…");
     await userEvent.type(draft, "Alpha instruction");
@@ -174,7 +179,7 @@ describe("workspace navigation", () => {
   });
 
   it("shows the animated hero logo inside the welcome panel", async () => {
-    render(<App />);
+    await renderPersonalApp();
     await screen.findByRole("heading", { name: welcome });
     const logo = document.querySelector(".welcome-panel .hero-logo");
     expect(logo).not.toBeNull();
@@ -191,7 +196,7 @@ describe("workspace navigation", () => {
       items: [...tasks, cancelled],
       next_cursor: null,
     });
-    render(<App />);
+    await renderPersonalApp();
 
     expect(await screen.findByRole("button", { name: "Cancelled" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Repair cancelled owner/repo" })).toBeNull();
@@ -218,7 +223,7 @@ describe("workspace navigation", () => {
       .spyOn(ForgePilotClient.prototype, "archiveTask")
       .mockResolvedValue(cancelled);
     const create = vi.spyOn(ForgePilotClient.prototype, "createTask");
-    render(<App />);
+    await renderPersonalApp();
     await screen.findByRole("button", { name: "Cancelled" });
     await userEvent.click(screen.getByRole("button", { name: "Cancelled" }));
     await userEvent.click(screen.getByRole("button", { name: "Recover task" }));
@@ -252,7 +257,7 @@ describe("workspace navigation", () => {
       ...tasks[0],
       status: "cancelled",
     });
-    render(<App />);
+    await renderPersonalApp();
     await screen.findByRole("button", { name: "Repair alpha owner/repo" });
 
     await userEvent.click(screen.getAllByRole("button", { name: "Archive task" })[0]);
@@ -267,7 +272,7 @@ describe("workspace navigation", () => {
 
   it("dismisses the archive confirmation with Escape without cancelling", async () => {
     const cancel = vi.spyOn(ForgePilotClient.prototype, "cancelTask");
-    render(<App />);
+    await renderPersonalApp();
     await screen.findByRole("button", { name: "Repair alpha owner/repo" });
     await userEvent.click(screen.getAllByRole("button", { name: "Archive task" })[0]);
     await userEvent.keyboard("{Escape}");
@@ -277,13 +282,13 @@ describe("workspace navigation", () => {
 
   it("keeps stacked mode selected when fewer than eleven tasks are visible", async () => {
     window.localStorage.setItem("fp-scroll", "stacked");
-    render(<App />);
+    await renderPersonalApp();
     await screen.findByRole("button", { name: "Repair alpha owner/repo" });
     expect(document.querySelector(".task-list")?.getAttribute("data-scroll")).toBe("stacked");
   });
 
   it("opens task creation from the Tasks title in the sidebar", async () => {
-    render(<App />);
+    await renderPersonalApp();
     await screen.findByRole("button", { name: /Repair alpha/ });
 
     const create = screen.getByRole("button", { name: "New task" });
@@ -314,7 +319,7 @@ describe("workspace navigation", () => {
         "Create task failed.",
       ),
     );
-    render(<App />);
+    await renderPersonalApp();
     await screen.findByRole("button", { name: /Repair alpha/ });
 
     await userEvent.click(screen.getByRole("button", { name: "New task" }));
@@ -369,7 +374,7 @@ describe("invitation landing", () => {
 describe("surface navigation", () => {
   it("switches to the workspace-scoped issue surface", async () => {
     vi.spyOn(IdentityClient.prototype, "listAllWorkspaces").mockResolvedValue([]);
-    render(<App />);
+    await renderPersonalApp();
     await screen.findByRole("button", { name: "Repair alpha owner/repo" });
 
     await userEvent.click(screen.getByRole("button", { name: "Issues" }));
@@ -380,7 +385,7 @@ describe("surface navigation", () => {
 
   it("switches to the workspace-scoped RSI surface", async () => {
     vi.spyOn(IdentityClient.prototype, "listAllWorkspaces").mockResolvedValue([]);
-    render(<App />);
+    await renderPersonalApp();
     await screen.findByRole("button", { name: "Repair alpha owner/repo" });
 
     await userEvent.click(screen.getByRole("button", { name: "RSI" }));
@@ -390,7 +395,7 @@ describe("surface navigation", () => {
 
   it("moves the shared tab indicator onto the adjacent surface", async () => {
     vi.spyOn(IdentityClient.prototype, "listAllWorkspaces").mockResolvedValue([]);
-    render(<App />);
+    await renderPersonalApp();
     await screen.findByRole("button", { name: "Repair alpha owner/repo" });
 
     const nav = screen.getByRole("navigation", { name: "Workbench views" });
@@ -414,7 +419,7 @@ describe("surface navigation", () => {
 describe("node connection status", () => {
   it("marks the connected wordmark and exposes the status label", async () => {
     vi.spyOn(IdentityClient.prototype, "listAllWorkspaces").mockResolvedValue([]);
-    render(<App />);
+    await renderPersonalApp();
     await screen.findByRole("button", { name: "Repair alpha owner/repo" });
 
     const brand = document.querySelector(".brand-name");
@@ -423,12 +428,12 @@ describe("node connection status", () => {
     expect(screen.getByRole("status").textContent).toBe("Node connected");
   });
 
-  it("keeps the connecting state while the first task load is pending", () => {
+  it("keeps the connecting state while the first task load is pending", async () => {
     vi.spyOn(IdentityClient.prototype, "listAllWorkspaces").mockResolvedValue([]);
     vi.spyOn(ForgePilotClient.prototype, "listTasks").mockImplementation(
       () => new Promise(() => undefined),
     );
-    render(<App />);
+    await renderPersonalApp();
 
     const brand = document.querySelector(".brand-name");
     expect(brand?.className).toContain("brand-connecting");

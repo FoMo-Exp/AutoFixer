@@ -33,7 +33,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const fixtureDir = path.join(repoRoot, "docs", "fixtures", "forgepilot-api-v1");
 
 const APPROVER = "github:local-operator";
-const REPOSITORY_ID = "github:Luthiel/AutoFixer";
+const REPOSITORY_ID = "github:FoMo-Exp/AutoFixer";
 const BASE_SHA = "52081eaddca099967fd8be13b3060337fde50d3f";
 
 let dsh: DshServerHandle;
@@ -64,7 +64,7 @@ function testConfig(): OrchestratorConfig {
     apiPort: 0,
     apiTokenFile: path.join(tokenDir, "api-token"),
     repositoryId: REPOSITORY_ID,
-    repositoryUrl: "https://github.com/Luthiel/AutoFixer.git",
+    repositoryUrl: "https://github.com/FoMo-Exp/AutoFixer.git",
     baseRef: "main",
     baseSha: BASE_SHA,
     actorId: "usr_test_operator",
@@ -97,7 +97,7 @@ async function createApprovedTask(base: string): Promise<TaskResource> {
     repository_id: REPOSITORY_ID,
     base_ref: "main",
     summary: "Verify the echo tool works",
-    source_reference: "https://github.com/Luthiel/AutoFixer/issues/42",
+    source_reference: "https://github.com/FoMo-Exp/AutoFixer/issues/42",
     acceptance_criteria: ["echo prints hello"],
   });
   expect(created.status).toBe(201);

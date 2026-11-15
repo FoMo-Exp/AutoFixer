@@ -215,10 +215,10 @@ describe("provenance and effective folding", () => {
       login: "team-via-org-default",
       kind: "effective_access",
       provider_role: "write",
-      authority_ref: "repository:Luthiel/AutoFixer",
+      authority_ref: "repository:FoMo-Exp/AutoFixer",
     });
     expect(entry.source_kind).toBe("effective_access");
-    expect(entry.authority_ref).toBe("repository:Luthiel/AutoFixer");
+    expect(entry.authority_ref).toBe("repository:FoMo-Exp/AutoFixer");
     expect(entry.provenance.provider_role).toBe("write");
   });
 
@@ -241,7 +241,7 @@ describe("provenance and effective folding", () => {
         login: "owner-claim",
         kind: "effective_access",
         provider_role: "owner",
-        authority_ref: "repository:Luthiel/AutoFixer",
+        authority_ref: "repository:FoMo-Exp/AutoFixer",
       }),
     ).toThrow(NormalizationError);
   });

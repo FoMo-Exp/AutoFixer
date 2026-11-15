@@ -30,7 +30,7 @@ import type { RawResponse } from "./http.js";
 
 export const BOOTSTRAP_TOKEN = "test-bootstrap-token-0123456789abcdef0123456789abcdef";
 export const GITHUB_ORIGIN = "https://github.com";
-export const REPOSITORY_ID = "github:Luthiel/AutoFixer";
+export const REPOSITORY_ID = "github:FoMo-Exp/AutoFixer";
 /** Service credential the seeded repository integration references (DAT-247). */
 export const SERVICE_CREDENTIAL_REF = "svc-source-1";
 export const SERVICE_CREDENTIAL = "ghs_test_service_credential_0123456789";
@@ -174,7 +174,7 @@ export async function startAuthApp(options: AuthAppOptions): Promise<AuthApp> {
         {
           provider_instance_id: instance.id,
           repository_id: REPOSITORY_ID,
-          repository_name: "Luthiel/AutoFixer",
+          repository_name: "FoMo-Exp/AutoFixer",
           source_credential_ref: SERVICE_CREDENTIAL_REF,
           permission_visibility: "full",
           actor_id: "usr_seed",
@@ -189,7 +189,7 @@ export async function startAuthApp(options: AuthAppOptions): Promise<AuthApp> {
     apiPort: 0,
     apiTokenFile: path.join(dir, "api-token"),
     repositoryId: REPOSITORY_ID,
-    repositoryUrl: "https://github.com/Luthiel/AutoFixer.git",
+    repositoryUrl: "https://github.com/FoMo-Exp/AutoFixer.git",
     baseRef: "main",
     baseSha: "52081eaddca099967fd8be13b3060337fde50d3f",
     actorId: "usr_test_operator",

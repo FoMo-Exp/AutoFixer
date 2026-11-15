@@ -38,7 +38,7 @@ export {
 
 export interface IntegrationAdapterOptions {
   integration: ServiceIntegration;
-  /** Canonical locator of the repository, e.g. `github:Luthiel/AutoFixer`. */
+  /** Canonical locator of the repository, e.g. `github:FoMo-Exp/AutoFixer`. */
   canonical_repository_id: string;
   credentials: ServiceCredentialStore;
   /** Approved provider-instance origin (self-hosted GitHub/GitLab). */

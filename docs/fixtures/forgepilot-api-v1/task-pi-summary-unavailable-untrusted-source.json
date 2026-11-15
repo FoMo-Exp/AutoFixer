@@ -7,19 +7,19 @@
   "current_run_id": "run_00000000000000000000000000000001",
   "run_history_url": "/api/v1/tasks/tsk_00000000000000000000000000000001/runs",
   "repository": {
-    "id": "github:Luthiel/AutoFixer",
-    "display_name": "Luthiel/AutoFixer",
+    "id": "github:FoMo-Exp/AutoFixer",
+    "display_name": "FoMo-Exp/AutoFixer",
     "base_ref": "main",
     "base_sha": "52081eaddca099967fd8be13b3060337fde50d3f"
   },
   "request": {
     "summary": "Verify the echo tool works",
-    "source_reference": "https://github.com/Luthiel/AutoFixer/issues/42"
+    "source_reference": "https://github.com/FoMo-Exp/AutoFixer/issues/42"
   },
   "association": {
     "task_id": "tsk_00000000000000000000000000000001",
     "run_id": "run_00000000000000000000000000000001",
-    "repository_id": "github:Luthiel/AutoFixer",
+    "repository_id": "github:FoMo-Exp/AutoFixer",
     "base_sha": "52081eaddca099967fd8be13b3060337fde50d3f",
     "head_sha": null
   },

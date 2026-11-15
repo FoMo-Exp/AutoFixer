@@ -15,7 +15,7 @@ import (
 
 const (
 	// AllowedRepositoryURL is the only repository this pilot may mutate.
-	AllowedRepositoryURL = "https://github.com/Luthiel/AutoFixer.git"
+	AllowedRepositoryURL = "https://github.com/FoMo-Exp/AutoFixer.git"
 	// AllowedBaseBranch is the protected base branch for proposed changes.
 	AllowedBaseBranch = "main"
 	// BranchPrefix is the only namespace writable by the adapter.
@@ -38,7 +38,7 @@ func ValidateRepositoryURL(repositoryURL string) error {
 		return ErrRepositoryNotAllowed
 	}
 	repoPath := strings.TrimSuffix(path.Clean(u.Path), "/")
-	if repoPath != "/Luthiel/AutoFixer" && repoPath != "/Luthiel/AutoFixer.git" {
+	if repoPath != "/FoMo-Exp/AutoFixer" && repoPath != "/FoMo-Exp/AutoFixer.git" {
 		return ErrRepositoryNotAllowed
 	}
 	return nil

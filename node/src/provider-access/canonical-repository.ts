@@ -8,8 +8,8 @@
  * - `gitlab:<namespace>/<project>` (namespaces may be nested)
  *
  * The provider prefix is **addressing metadata only**. It never appears in a
- * provider API path: the GitHub adapter turns `github:Luthiel/AutoFixer` into
- * `/repos/Luthiel/AutoFixer`, and the GitLab adapter turns
+ * provider API path: the GitHub adapter turns `github:FoMo-Exp/AutoFixer` into
+ * `/repos/FoMo-Exp/AutoFixer`, and the GitLab adapter turns
  * `gitlab:acme/platform/api` into `/projects/acme%2Fplatform%2Fapi`. Passing
  * the raw canonical id through would request `/repositories/github:...`,
  * which no provider serves — the exact defect DAT-204's login-time probe

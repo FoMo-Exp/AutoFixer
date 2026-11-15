@@ -14,7 +14,7 @@ func sessionInput(taskID string) TaskInput {
 		IssueID:         "DAT-181",
 		RunID:           "run-" + taskID,
 		RequestedAt:     time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC),
-		RepositoryURL:   "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL:   "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:         "base-sha",
 		Summary:         "capture the Agent task",
 		SourceReference: "issue://DAT-181",

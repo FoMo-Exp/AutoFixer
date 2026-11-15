@@ -8,7 +8,12 @@ import { resolveApiConfig } from "./api/config";
 import type { ApiConfig } from "./api/config";
 import { useAuth } from "./auth/useAuth";
 import type { AuthApi } from "./auth/useAuth";
-import { AuthLoadingScreen, LoginScreen, NoWorkspaceScreen } from "./auth/LoginScreen";
+import {
+  AuthLoadingScreen,
+  LoginModeScreen,
+  LoginScreen,
+  NoWorkspaceScreen,
+} from "./auth/LoginScreen";
 import { useTaskStream } from "./api/hooks";
 import { IssuesWorkbench } from "./issues/IssuesWorkbench";
 import { MemoryWorkbench } from "./memory/MemoryWorkbench";
@@ -79,7 +84,7 @@ interface CreateTaskForm {
 }
 
 const INITIAL_FORM: CreateTaskForm = {
-  repositoryId: "github:Luthiel/AutoFixer",
+  repositoryId: "github:FoMo-Exp/AutoFixer",
   baseRef: "main",
   summary: "",
   sourceReference: "",
@@ -94,13 +99,27 @@ function initialForm(workspace: Workspace | undefined): CreateTaskForm {
 
 type ServiceStatus = "connecting" | "connected" | "offline";
 
-type SurfaceView = "tasks" | "issues" | "memory" | "rsi" | "dashboard" | "security";
+type SurfaceView = "home" | "tasks" | "issues" | "memory" | "rsi" | "dashboard" | "security";
 
 /**
  * Browser-tab glyphs for the top surface strip. They are decorative: the
  * accessible name stays the tab's text label.
  */
 const SURFACE_ICONS: Record<SurfaceView, ReactElement> = {
+  home: (
+    <svg
+      className="surface-tab-icon"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      aria-hidden="true"
+    >
+      <path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z" />
+    </svg>
+  ),
   tasks: (
     <svg
       className="surface-tab-icon"
@@ -255,6 +274,8 @@ interface WorkbenchProps {
   workspaces: Workspace[];
   onSelectWorkspace: (workspaceId: string) => void;
   onWorkspaceUnavailable: () => void;
+  initialSurface?: SurfaceView;
+  onSurfaceChange?: (surface: SurfaceView) => void;
 }
 
 const NOOP = (): void => undefined;
@@ -282,6 +303,7 @@ function useApiClient(
 
 export default function App(): ReactElement {
   const config = useMemo(resolveApiConfig, []);
+  const [loginMode, setLoginMode] = useState<"choose" | "enterprise" | "personal">("choose");
   const [inviteToken, setInviteToken] = useState<string>();
   const inviteTokenRef = useRef<string | undefined>(undefined);
 
@@ -329,6 +351,38 @@ export default function App(): ReactElement {
       />
     );
   }
+  if (auth.status === "checking") return <AuthLoadingScreen />;
+  if (loginMode === "choose") {
+    return (
+      <LoginModeScreen
+        onEnterprise={() => {
+          void window.forgePilotAuth?.setMode?.("enterprise").then(() => {
+            setLoginMode("enterprise");
+          });
+          if (!window.forgePilotAuth?.setMode) setLoginMode("enterprise");
+        }}
+        onPersonal={() => {
+          void window.forgePilotAuth?.setMode?.("personal").then(() => {
+            setLoginMode("personal");
+          });
+          if (!window.forgePilotAuth?.setMode) setLoginMode("personal");
+        }}
+      />
+    );
+  }
+  if (loginMode === "personal") {
+    const personalAuth = { ...auth, status: "legacy" as const, session: undefined };
+    return (
+      <Workbench
+        config={config}
+        auth={personalAuth}
+        identityClient={identityClient}
+        workspaces={[]}
+        onSelectWorkspace={NOOP}
+        onWorkspaceUnavailable={NOOP}
+      />
+    );
+  }
   if (config.startupError && auth.status !== "signed_in" && auth.status !== "legacy") {
     return (
       <Workbench
@@ -341,13 +395,16 @@ export default function App(): ReactElement {
       />
     );
   }
-  if (auth.status === "checking") return <AuthLoadingScreen />;
   if (auth.status === "no_workspace") {
     return (
       <NoWorkspaceScreen
         displayName={auth.session?.user.display_name}
+        session={auth.session}
+        client={identityClient}
         onRetry={auth.retry}
         onSignOut={auth.signOut}
+        onJoinToken={setInviteToken}
+        onBack={() => setLoginMode("choose")}
       />
     );
   }
@@ -366,24 +423,34 @@ export default function App(): ReactElement {
         onSignIn={auth.signIn}
         onCancel={auth.cancelSignIn}
         onRetry={auth.retry}
+        onBack={() => setLoginMode("choose")}
       />
     );
   }
   if (auth.status === "legacy") {
-    // No identity subsystem: the Node service serves the legacy task family
-    // for its deployment-configured workspace, so there is nothing to switch.
     return (
-      <Workbench
-        config={config}
-        auth={auth}
-        identityClient={identityClient}
-        workspaces={[]}
-        onSelectWorkspace={NOOP}
-        onWorkspaceUnavailable={NOOP}
+      <LoginScreen
+        status="signed_out"
+        providers={[]}
+        desktop={auth.desktop}
+        onSignIn={auth.signIn}
+        onCancel={auth.cancelSignIn}
+        onRetry={auth.retry}
+        onBack={() => setLoginMode("choose")}
       />
     );
   }
-  return <WorkspaceGate config={config} auth={auth} identityClient={identityClient} />;
+  return (
+    <WorkspaceGate
+      config={config}
+      auth={auth}
+      identityClient={identityClient}
+      onJoinToken={(token) => {
+        inviteTokenRef.current = token;
+        setInviteToken(token);
+      }}
+    />
+  );
 }
 
 type WorkspaceLoadStatus = "loading" | "ready" | "error";
@@ -397,10 +464,12 @@ function WorkspaceGate({
   config,
   auth,
   identityClient,
+  onJoinToken,
 }: {
   config: ApiConfig;
   auth: AuthApi;
   identityClient: IdentityClient;
+  onJoinToken: (token: string) => void;
 }): ReactElement {
   const userId = auth.session?.user.id ?? "";
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -409,6 +478,8 @@ function WorkspaceGate({
   const [selectedId, setSelectedId] = useState<string | undefined>(() =>
     typeof window === "undefined" ? undefined : readStoredWorkspaceId(window.localStorage, userId),
   );
+  const [surface, setSurface] = useState<SurfaceView>("home");
+  const changeSurface = useCallback((next: SurfaceView): void => setSurface(next), []);
   const requestRef = useRef(0);
 
   const load = useCallback(
@@ -483,8 +554,11 @@ function WorkspaceGate({
     return (
       <NoWorkspaceScreen
         displayName={auth.session?.user.display_name}
+        session={auth.session}
+        client={identityClient}
         onRetry={reload}
         onSignOut={auth.signOut}
+        onJoinToken={onJoinToken}
       />
     );
   }
@@ -508,6 +582,8 @@ function WorkspaceGate({
       workspaces={workspaces}
       onSelectWorkspace={selectWorkspace}
       onWorkspaceUnavailable={refreshWorkspaces}
+      initialSurface={surface}
+      onSurfaceChange={changeSurface}
     />
   );
 }
@@ -520,6 +596,8 @@ function Workbench({
   workspaces,
   onSelectWorkspace,
   onWorkspaceUnavailable,
+  initialSurface,
+  onSurfaceChange,
 }: WorkbenchProps): ReactElement {
   const authRef = useRef(auth);
   authRef.current = auth;
@@ -538,13 +616,16 @@ function Workbench({
   // selector reads it here instead of through the task client.
   const loadWorkspaces = useCallback(() => identityClient.listAllWorkspaces(), [identityClient]);
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [surface, setSurface] = useState<SurfaceView>("tasks");
+  const [surface, setSurface] = useState<SurfaceView>(
+    initialSurface ?? (workspace ? "home" : "tasks"),
+  );
   const surfaceNavRef = useRef<HTMLElement | null>(null);
   const surfaceIndicator = useSurfaceTabIndicator(surfaceNavRef, surface);
   const glassMode = useGlassMode();
   const topbarGlassRef = useLiquidGlass<HTMLElement>();
   const sidebarGlassRef = useLiquidGlass<HTMLElement>();
   useScrollFade(surfaceNavRef, surface);
+  useEffect(() => onSurfaceChange?.(surface), [onSurfaceChange, surface]);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   /** 窄屏钻取视图：list ↔ detail（≤900px 生效，桌面始终双栏并存） */
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
@@ -571,6 +652,9 @@ function Workbench({
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showWorkspaces, setShowWorkspaces] = useState(false);
+  const [adminInitialTab, setAdminInitialTab] = useState<
+    "members" | "teams" | "invitations" | "audit"
+  >("members");
   // Bumped whenever the settings dialog closes so open pickers re-run
   // discovery against the (possibly changed) account set.
   const [settingsEpoch, setSettingsEpoch] = useState(0);
@@ -1007,12 +1091,14 @@ function Workbench({
             <button
               className="button button-quiet button-small"
               onClick={() => {
-                setSurface("tasks");
+                setSurface(workspace ? "home" : "tasks");
                 selectTask(undefined);
                 setMobileView("detail");
               }}
               aria-label="Home"
-              aria-current={surface === "tasks" && !selectedId ? "page" : undefined}
+              aria-current={
+                surface === "home" || (surface === "tasks" && !selectedId) ? "page" : undefined
+              }
             >
               <svg
                 width="16"
@@ -1090,7 +1176,69 @@ function Workbench({
           </div>
         </header>
 
-        <div className="workspace" data-view={mobileView} hidden={surface !== "tasks"}>
+        {surface === "home" && workspace && (
+          <main className="workspace-home" aria-labelledby="workspace-home-title">
+            <section className="workspace-home-card">
+              <span className="eyebrow">Workspace</span>
+              <h1 id="workspace-home-title">{workspace.name}</h1>
+              <WorkspaceSwitcher
+                workspace={workspace}
+                workspaces={workspaces}
+                onSelect={onSelectWorkspace}
+              />
+              <div className="workspace-home-actions">
+                <button className="button button-primary" onClick={() => setSurface("tasks")}>
+                  Open Tasks
+                </button>
+                <button className="button button-secondary" onClick={() => setSurface("issues")}>
+                  Open Issues
+                </button>
+              </div>
+            </section>
+            {(workspace.role === "owner" || workspace.role === "admin") && (
+              <section className="workspace-home-card" aria-labelledby="workspace-setup-title">
+                <span className="eyebrow">Get started</span>
+                <h2 id="workspace-setup-title">Set up your team</h2>
+                <div className="workspace-home-actions">
+                  <button
+                    className="button button-secondary"
+                    onClick={() => {
+                      setAdminInitialTab("invitations");
+                      setShowWorkspaces(true);
+                    }}
+                  >
+                    Invite members
+                  </button>
+                  <button
+                    className="button button-secondary"
+                    onClick={() => {
+                      setAdminInitialTab("teams");
+                      setShowWorkspaces(true);
+                    }}
+                  >
+                    Create a team
+                  </button>
+                  <button
+                    className="button button-quiet"
+                    onClick={() => {
+                      setAdminInitialTab("members");
+                      setShowWorkspaces(true);
+                    }}
+                  >
+                    Manage workspace
+                  </button>
+                </div>
+              </section>
+            )}
+          </main>
+        )}
+
+        <div
+          className="workspace"
+          data-view={mobileView}
+          data-scroll-lock={surface === "tasks" && !selectedId ? "true" : undefined}
+          hidden={surface !== "tasks"}
+        >
           <aside className="sidebar glass" ref={sidebarGlassRef}>
             <div className="sidebar-heading">
               <div className="sidebar-heading-main">
@@ -1122,7 +1270,7 @@ function Workbench({
               </div>
               <span className="task-count">{visibleTasks.length}</span>
             </div>
-            {workspace && (
+            {workspace && surface === "tasks" && (
               <WorkspaceSwitcher
                 workspace={workspace}
                 workspaces={workspaces}
@@ -1362,6 +1510,7 @@ function Workbench({
           <WorkspaceAdminDialog
             client={identityClient}
             session={auth.session}
+            initialTab={adminInitialTab}
             onClose={() => {
               setShowWorkspaces(false);
               void auth.retry();

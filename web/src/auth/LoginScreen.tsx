@@ -1,6 +1,12 @@
-import type { ReactElement } from "react";
-import type { LoginProvider } from "../api/auth";
+import { useEffect, useMemo, useState } from "react";
+import type { FormEvent, ReactElement } from "react";
+import type { IdentityClient, LoginProvider, WorkspaceSession } from "../api/identity";
 import type { AuthStatus } from "./controller";
+import { Select } from "../ui/Select";
+import { describeError } from "../workspaces/identity-format";
+import blackHoleImage from "../assets/startup-blackhole-realistic.png";
+import { BlackHoleMotion } from "./BlackHoleMotion";
+import { CodeAccretionStreams } from "./CodeAccretionStreams";
 
 interface LoginScreenProps {
   status: AuthStatus;
@@ -10,6 +16,50 @@ interface LoginScreenProps {
   onSignIn: (providerInstanceId: string) => Promise<void>;
   onCancel: () => Promise<void>;
   onRetry: () => Promise<void>;
+  onBack?: () => void;
+}
+
+export function LoginModeScreen({
+  onEnterprise,
+  onPersonal,
+}: {
+  onEnterprise: () => void;
+  onPersonal: () => void;
+}): ReactElement {
+  return (
+    <div className="auth-shell auth-mode-shell">
+      <div className="auth-mode-backdrop" aria-hidden="true" />
+      <div className="auth-mode-visual" aria-hidden="true">
+        <img className="auth-mode-black-hole" src={blackHoleImage} alt="" />
+        <BlackHoleMotion />
+        <CodeAccretionStreams />
+      </div>
+      <header className="auth-mode-header">
+        <BrandMark caption="受控修复工作台" />
+        <span>双闸门 · 人工把关</span>
+      </header>
+      <main className="auth-mode-main">
+        <section className="auth-mode-headline" aria-labelledby="auth-mode-title">
+          <h1 id="auth-mode-title">让信号穿过双闸门</h1>
+          <p>先选择工作区入口，再开始一条可审查的修复路径。</p>
+        </section>
+        <div className="auth-mode-visual-space" aria-hidden="true" />
+        <section className="auth-mode-choices" aria-label="选择登录方式">
+          <div className="auth-mode-choice-list">
+            <button className="button button-provider auth-mode-option" onClick={onEnterprise}>
+              <span className="provider-name">企业登录</span>
+              <span className="provider-host">组织 GitHub / GitLab</span>
+            </button>
+            <button className="button button-provider auth-mode-option" onClick={onPersonal}>
+              <span className="provider-name">个人登录</span>
+              <span className="provider-host">本机个人工作区</span>
+            </button>
+          </div>
+        </section>
+      </main>
+      <footer className="auth-mode-footer">信号进入后，每一步修复都会等待人工把关。</footer>
+    </div>
+  );
 }
 
 function providerLabel(provider: LoginProvider): string {
@@ -24,7 +74,7 @@ function providerHost(provider: LoginProvider): string {
   }
 }
 
-function BrandMark(): ReactElement {
+function BrandMark({ caption = "Remediation workbench" }: { caption?: string } = {}): ReactElement {
   return (
     <div className="auth-brand">
       <div className="brand-mark" aria-hidden="true">
@@ -36,7 +86,7 @@ function BrandMark(): ReactElement {
       </div>
       <div>
         <div className="brand-name">ForgePilot</div>
-        <div className="brand-caption">Remediation workbench</div>
+        <div className="brand-caption">{caption}</div>
       </div>
     </div>
   );
@@ -62,6 +112,7 @@ export function LoginScreen({
   onSignIn,
   onCancel,
   onRetry,
+  onBack,
 }: LoginScreenProps): ReactElement {
   const signingIn = status === "signing_in";
   const expired = status === "expired";
@@ -127,6 +178,11 @@ export function LoginScreen({
                 exposing the credential to page code.
               </p>
             )}
+            {onBack && (
+              <button className="button button-quiet" onClick={onBack}>
+                返回登录方式
+              </button>
+            )}
           </>
         )}
       </main>
@@ -136,27 +192,158 @@ export function LoginScreen({
 
 interface NoWorkspaceScreenProps {
   displayName?: string;
+  session?: WorkspaceSession;
+  client: IdentityClient;
   onRetry: () => Promise<void>;
   onSignOut: () => Promise<void>;
+  onJoinToken: (token: string) => void;
+  onBack?: () => void;
 }
 
 export function NoWorkspaceScreen({
   displayName,
+  session,
+  client,
   onRetry,
   onSignOut,
+  onJoinToken,
+  onBack,
 }: NoWorkspaceScreenProps): ReactElement {
+  const isEnterpriseAdmin =
+    session?.enterprise_roles.some((item) => item.role === "admin") ?? false;
+  const [providers, setProviders] = useState<LoginProvider[]>([]);
+  const [providerId, setProviderId] = useState("");
+  const [name, setName] = useState("");
+  const [repositoryId, setRepositoryId] = useState("");
+  const [inviteToken, setInviteToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    if (!isEnterpriseAdmin) return;
+    void client
+      .listLoginProviders()
+      .then((items) => {
+        setProviders(items);
+        setProviderId((current) => current || items[0]?.provider_instance_id || "");
+      })
+      .catch((caught: unknown) => setError(describeError(caught).message));
+  }, [client, isEnterpriseAdmin]);
+
+  const providerOptions = useMemo(
+    () =>
+      providers.map((provider) => ({
+        value: provider.provider_instance_id,
+        label: `${provider.provider_type === "github" ? "GitHub" : "GitLab"} · ${providerHost(provider)}`,
+      })),
+    [providers],
+  );
+
+  async function createWorkspace(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setBusy(true);
+    setError(undefined);
+    try {
+      await client.createWorkspace({
+        name: name.trim(),
+        repository_id: repositoryId.trim(),
+        provider_instance_id: providerId,
+      });
+      await onRetry();
+    } catch (caught) {
+      setError(describeError(caught).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function joinWorkspace(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    const token = inviteToken.trim();
+    if (!token) return;
+    setInviteToken("");
+    onJoinToken(token);
+  }
+
   return (
     <div className="auth-shell">
       <main className="auth-card">
         <BrandMark />
         <span className="eyebrow">No workspace access</span>
-        <h1>Your account is not in a workspace yet</h1>
-        <p className="auth-lede">
-          {displayName ? `${displayName}, ` : ""}you are signed in, but this account has no
-          workspace membership. Ask an administrator to add you to a workspace, then check again.
-        </p>
+        <h1>{isEnterpriseAdmin ? "Set up your first workspace" : "Join a workspace"}</h1>
+        <p className="auth-lede">{displayName ? `${displayName} · ` : ""}Workspace access</p>
+        {error && (
+          <div className="auth-message" role="alert">
+            {error}
+          </div>
+        )}
+        {isEnterpriseAdmin && (
+          <form
+            className="identity-form onboarding-form"
+            onSubmit={(event) => void createWorkspace(event)}
+          >
+            <label className="field-block">
+              <span className="field-label">
+                Workspace name <span className="required-dot">*</span>
+              </span>
+              <input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                required
+                maxLength={120}
+              />
+            </label>
+            <label className="field-block">
+              <span className="field-label">
+                Provider instance <span className="required-dot">*</span>
+              </span>
+              <Select
+                value={providerId}
+                options={providerOptions}
+                onChange={setProviderId}
+                disabled={!providers.length}
+                ariaLabel="Provider instance"
+              />
+            </label>
+            <label className="field-block">
+              <span className="field-label">
+                Repository ID <span className="required-dot">*</span>
+              </span>
+              <input
+                value={repositoryId}
+                onChange={(event) => setRepositoryId(event.target.value)}
+                placeholder="github:org/repository"
+                required
+              />
+            </label>
+            <button className="button button-primary" disabled={busy || !providerId}>
+              {busy ? "Creating…" : "Create workspace"}
+            </button>
+          </form>
+        )}
+        <form className="identity-form onboarding-form" onSubmit={joinWorkspace}>
+          <label className="field-block">
+            <span className="field-label">
+              Invitation code <span className="required-dot">*</span>
+            </span>
+            <input
+              value={inviteToken}
+              onChange={(event) => setInviteToken(event.target.value)}
+              required
+              autoComplete="off"
+            />
+          </label>
+          <button className="button button-secondary" disabled={!inviteToken.trim()}>
+            Preview invitation
+          </button>
+        </form>
         <div className="auth-actions">
-          <button className="button button-primary" onClick={() => void onRetry()}>
+          {onBack && (
+            <button className="button button-quiet" onClick={onBack}>
+              返回登录方式
+            </button>
+          )}
+          <button className="button button-quiet" onClick={() => void onRetry()}>
             Check again
           </button>
           <button className="button button-quiet" onClick={() => void onSignOut()}>

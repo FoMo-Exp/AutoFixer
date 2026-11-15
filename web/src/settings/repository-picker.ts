@@ -84,8 +84,9 @@ function nameOfRepositoryId(id: string): string | undefined {
  * Pick the option to auto-select when the current repository id resolves to
  * no discovered option (e.g. the form default points at another owner than
  * the bound account sees). Prefers an option whose repository name matches
- * the current id's name — so a default of `github:Luthiel/AutoFixer` resolves
- * to `github:FoMo-Exp/AutoFixer` — then falls back to the first option so
+ * the current id's name — so the pre-transfer
+ * `github:Luthiel/AutoFixer` resolves to `github:FoMo-Exp/AutoFixer` — then
+ * falls back to the first option so
  * the pickers are immediately usable. Returns undefined when there is
  * nothing to pick.
  */

@@ -219,6 +219,8 @@ interface IntegrationRow {
   source_credential_ref: string;
   checkout_credential_ref: string | null;
   delivery_credential_ref: string | null;
+  issue_sync_credential_ref?: string | null;
+  issue_sync_connected_at?: string | null;
   permission_visibility: string;
   created_at: string;
   updated_at: string;
@@ -239,6 +241,8 @@ function toIntegration(row: IntegrationRow): ServiceIntegration {
     source_credential_ref: row.source_credential_ref,
     checkout_credential_ref: row.checkout_credential_ref,
     delivery_credential_ref: row.delivery_credential_ref,
+    issue_sync_credential_ref: row.issue_sync_credential_ref ?? null,
+    issue_sync_connected_at: row.issue_sync_connected_at ?? null,
     permission_visibility: row.permission_visibility as ServiceIntegration["permission_visibility"],
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -448,16 +452,34 @@ class SqliteServiceIntegrationRepository implements ServiceIntegrationRepository
     const id = newId("sint");
     const now = nowIso();
     try {
-      this.db
-        .prepare(
-          `INSERT INTO service_integration (
+      const columns = this.db
+        .prepare("PRAGMA table_info(service_integration)")
+        .all() as Array<{ name: string }>;
+      const hasIssueSyncCredential = columns.some((column) => column.name === "issue_sync_credential_ref");
+      const hasIssueSyncConnectedAt = columns.some((column) => column.name === "issue_sync_connected_at");
+      const insertSql = hasIssueSyncCredential && hasIssueSyncConnectedAt
+        ? `INSERT INTO service_integration (
+             id, enterprise_id, workspace_id, provider_instance_id, repository_id,
+             repository_name, install_status, source_credential_ref,
+             checkout_credential_ref, delivery_credential_ref, issue_sync_credential_ref,
+             issue_sync_connected_at, permission_visibility,
+             created_at, updated_at, created_by, updated_by, version
+           ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+        : hasIssueSyncCredential
+        ? `INSERT INTO service_integration (
+             id, enterprise_id, workspace_id, provider_instance_id, repository_id,
+             repository_name, install_status, source_credential_ref,
+             checkout_credential_ref, delivery_credential_ref, issue_sync_credential_ref,
+             permission_visibility,
+             created_at, updated_at, created_by, updated_by, version
+           ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+        : `INSERT INTO service_integration (
              id, enterprise_id, workspace_id, provider_instance_id, repository_id,
              repository_name, install_status, source_credential_ref,
              checkout_credential_ref, delivery_credential_ref, permission_visibility,
              created_at, updated_at, created_by, updated_by, version
-           ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-        )
-        .run(
+           ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, 1)`;
+      const values = [
           id,
           scope.enterprise_id,
           scope.workspace_id,
@@ -472,7 +494,12 @@ class SqliteServiceIntegrationRepository implements ServiceIntegrationRepository
           now,
           input.actor_id,
           input.actor_id,
-        );
+        ];
+      if (hasIssueSyncCredential) values.splice(9, 0, input.issue_sync_credential_ref ?? null);
+      if (hasIssueSyncCredential && hasIssueSyncConnectedAt) {
+        values.splice(10, 0, input.issue_sync_credential_ref ? now : null);
+      }
+      this.db.prepare(insertSql).run(...values);
     } catch (error) {
       if (String(error).includes("UNIQUE")) {
         throw new ConflictError(

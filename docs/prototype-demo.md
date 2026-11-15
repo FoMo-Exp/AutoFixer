@@ -118,7 +118,7 @@ only: `52081eaddca099967fd8be13b3060337fde50d3f`.
   "issue_id": "DEMO-1",
   "requested_at": "2026-10-23T14:00:00Z",
   "repository": {
-    "url": "https://github.com/Luthiel/AutoFixer.git",
+    "url": "https://github.com/FoMo-Exp/AutoFixer.git",
     "base_sha": "52081eaddca099967fd8be13b3060337fde50d3f"
   },
   "requested_work": {

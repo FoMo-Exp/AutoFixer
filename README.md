@@ -264,7 +264,7 @@ AutoFixer is an active prototype, not a turnkey hosted service.
 - **Stable core.** The Go dsh authority, sandbox, evidence contract, and
   Node-to-dsh protocol are exercised by unit and integration tests.
 - **Pilot scope.** The default deployment targets one repository
-  (`github:Luthiel/AutoFixer`). Enterprise, workspace, team, and invitation
+  (`github:FoMo-Exp/AutoFixer`). Enterprise, workspace, team, and invitation
   surfaces exist in the Node service and workbench, but multi-tenant
   operations are still evolving.
 - **Platform limits.** Complete execution isolation is currently available on

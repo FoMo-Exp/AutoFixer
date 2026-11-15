@@ -263,7 +263,11 @@ export function DashboardWorkbench({
         : selectedWorkspace.role === "owner" || selectedWorkspace.role === "admin";
 
   return (
-    <div className="workspace dashboard-workspace" data-view={mobileView}>
+    <div
+      className="workspace dashboard-workspace"
+      data-view={mobileView}
+      data-scroll-lock={pane === "overview" && mobileView === "list" ? "true" : undefined}
+    >
       <aside className="sidebar glass dashboard-sidebar" ref={sidebarGlassRef}>
         <div className="sidebar-heading">
           <div>

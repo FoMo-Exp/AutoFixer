@@ -919,8 +919,13 @@ direct main write, merge, self-review, or check waiver.
 | Request | Request body | Response |
 |---|---|---|
 | `GET /api/v1/workspaces/{workspace_id}/issues?cursor=&product_state=` | none | `200 {items: Issue[], next_cursor}` |
-| `POST /api/v1/workspaces/{workspace_id}/issues` | `repository_id`, `base_ref`, `summary`, `source_reference?`; optional `Idempotency-Key` | `201 Issue` |
+| `POST /api/v1/workspaces/{workspace_id}/issues` | `summary`, `description?`, `labels?`; `Idempotency-Key` | `201 Issue` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}` | none | `200 Issue` |
+| `PATCH /api/v1/workspaces/{workspace_id}/issues/{issue_id}` | synchronized fields; `Idempotency-Key` | `200 Issue` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/versions` | none | `200 {items: IssueContentVersion[]}` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/comments` | none | `200 {items: IssueSyncComment[]}` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/comments` | `{body}`; `Idempotency-Key` | `201 Issue` |
+| `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/rollback` | `{version_id}`; `Idempotency-Key` | `200 Issue` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stage` | none | `200 IssueStage` |
 | `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stage` | `{to, reason?, disposition?}` | `200 IssueStage` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/tasks?cursor=` | none | `200 {items: IssueTask[], next_cursor}` |

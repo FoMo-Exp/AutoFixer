@@ -25,7 +25,7 @@ import { scriptedStream, TEST_MODEL } from "./helpers/scripted-stream.js";
 import { scriptedGateway, testRunScope } from "./helpers/test-gateway.js";
 
 const APPROVER = "github:local-operator";
-const REPOSITORY_ID = "github:Luthiel/AutoFixer";
+const REPOSITORY_ID = "github:FoMo-Exp/AutoFixer";
 const BASE_SHA = "52081eaddca099967fd8be13b3060337fde50d3f";
 
 let dsh: DshServerHandle;
@@ -57,7 +57,7 @@ function baseConfig(stateFile: string): OrchestratorConfig {
     apiTokenFile: path.join(tokenDir, "api-token"),
     taskStateFile: stateFile,
     repositoryId: REPOSITORY_ID,
-    repositoryUrl: "https://github.com/Luthiel/AutoFixer.git",
+    repositoryUrl: "https://github.com/FoMo-Exp/AutoFixer.git",
     baseRef: "main",
     baseSha: BASE_SHA,
     actorId: "usr_test_operator",
@@ -102,7 +102,7 @@ async function createAndApprove(base: string): Promise<TaskResource> {
     repository_id: REPOSITORY_ID,
     base_ref: "main",
     summary: "Verify restart recovery",
-    source_reference: "https://github.com/Luthiel/AutoFixer/issues/77",
+    source_reference: "https://github.com/FoMo-Exp/AutoFixer/issues/77",
     acceptance_criteria: ["recovery works"],
   });
   expect(created.status).toBe(201);

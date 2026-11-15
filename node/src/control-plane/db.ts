@@ -1259,6 +1259,116 @@ const MIGRATIONS: Migration[] = [
         ON rsi_run_pins(enterprise_id, workspace_id, created_at)`,
     ],
   },
+  {
+    // Provider issue synchronization (ADR-0010) has a distinct credential
+    // reference. It is never inferred from source, checkout, or delivery
+    // credentials and remains nullable for existing installations.
+    version: 12,
+    statements: [
+      `ALTER TABLE service_integration ADD COLUMN issue_sync_credential_ref TEXT`,
+    ],
+  },
+  {
+    // Durable provider issue links, immutable synchronized-content versions,
+    // and idempotent inbox/outbox records. Issue content remains separate
+    // from ForgePilot product lifecycle and execution evidence.
+    version: 13,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS issue_provider_link (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id) ON DELETE CASCADE,
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        issue_id TEXT NOT NULL,
+        provider_instance_id TEXT NOT NULL REFERENCES provider_instance(id),
+        provider_type TEXT NOT NULL CHECK (provider_type IN ('github', 'gitlab')),
+        repository_id TEXT NOT NULL,
+        provider_issue_id TEXT NOT NULL,
+        provider_issue_number TEXT NOT NULL,
+        provider_url TEXT NOT NULL,
+        provider_state TEXT NOT NULL CHECK (provider_state IN ('open', 'closed')),
+        provider_updated_at TEXT NOT NULL,
+        last_synced_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (workspace_id, issue_id),
+        UNIQUE (provider_instance_id, repository_id, provider_issue_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_issue_provider_link_scope
+        ON issue_provider_link(enterprise_id, workspace_id, issue_id)`,
+      `CREATE TABLE IF NOT EXISTS issue_content_version (
+        issue_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        sequence INTEGER NOT NULL CHECK (sequence > 0),
+        version_id TEXT NOT NULL UNIQUE,
+        source TEXT NOT NULL CHECK (source IN ('forgepilot', 'github', 'gitlab')),
+        source_modified_at TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        changed_fields TEXT NOT NULL,
+        content_snapshot TEXT NOT NULL,
+        rollback_of TEXT,
+        PRIMARY KEY (workspace_id, issue_id, sequence)
+      )`,
+      `CREATE TABLE IF NOT EXISTS issue_sync_comment (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        issue_id TEXT NOT NULL,
+        source TEXT NOT NULL CHECK (source IN ('forgepilot', 'github', 'gitlab')),
+        source_comment_id TEXT NOT NULL,
+        author TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (workspace_id, issue_id, source, source_comment_id)
+      )`,
+      `CREATE TABLE IF NOT EXISTS issue_sync_outbox (
+        operation_id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id) ON DELETE CASCADE,
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        issue_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        operation_type TEXT NOT NULL CHECK (operation_type IN ('create', 'update', 'comment', 'rollback')),
+        payload TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'processing', 'synced', 'failed')),
+        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+        retry_after TEXT,
+        error_code TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_issue_sync_outbox_pending
+        ON issue_sync_outbox(state, retry_after, created_at)`,
+      `CREATE TABLE IF NOT EXISTS issue_sync_inbox (
+        provider_instance_id TEXT NOT NULL REFERENCES provider_instance(id) ON DELETE CASCADE,
+        delivery_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        received_at TEXT NOT NULL,
+        processed_at TEXT,
+        outcome TEXT NOT NULL CHECK (outcome IN ('received', 'processed', 'ignored', 'failed')),
+        PRIMARY KEY (provider_instance_id, delivery_id)
+      )`,
+    ],
+  },
+  {
+    // Poll cursor is scoped to one repository integration. It starts at the
+    // integration connection time so an initial sync never backfills history.
+    version: 14,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS issue_sync_cursor (
+        integration_id TEXT PRIMARY KEY REFERENCES service_integration(id) ON DELETE CASCADE,
+        connected_at TEXT NOT NULL,
+        updated_after TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+    ],
+  },
+  {
+    // The issue-sync connection has its own start time, separate from the
+    // repository service integration's original installation date.
+    version: 15,
+    statements: [
+      `ALTER TABLE service_integration ADD COLUMN issue_sync_connected_at TEXT`,
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------

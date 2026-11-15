@@ -49,7 +49,7 @@ func structuredFixtureFull(t *testing.T, permittedPaths []string, limits harness
 
 func fixtureRevisionSource() RevisionSource {
 	return NewStaticRevisionSource(StaticRevision{
-		RepositoryURL: "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL: "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:       "abc123",
 		Files: map[string]string{
 			"web/src/export.ts": "export const button = 1;\n",
@@ -84,7 +84,7 @@ func mustApprovedRunWithLimits(t *testing.T, permittedPaths []string, limits har
 	run, err := harness.NewRun(harness.RunConfig{
 		TaskID: "task-1", RunID: "run-1", IssueID: "issue-1",
 		ActorIdentity: "human:owner-1", ExecutionIdentity: "dsh-control/v1",
-		RepositoryURL: "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL: "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:       "abc123",
 	}, assessment, store)
 	if err != nil {
@@ -95,7 +95,7 @@ func mustApprovedRunWithLimits(t *testing.T, permittedPaths []string, limits har
 		IssuedAt:               time.Now().Add(-time.Minute),
 		ExpiresAt:              time.Now().Add(time.Hour),
 		CapabilityGrantVersion: "grant-1",
-		RepositoryURL:          "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL:          "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:                "abc123",
 		PermittedPaths:         append([]string{}, permittedPaths...),
 		PermittedTools: []harness.PermittedTool{

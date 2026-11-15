@@ -56,6 +56,7 @@ import { ApiError } from "./errors.js";
 export const HTTP_ACTION_POLICY: Readonly<Record<ActionKind, ActionPolicy>> = Object.freeze({
   ...DEFAULT_ACTION_POLICY,
   write: { min_role: "member", sensitivity: "sensitive" },
+  issue_sync: { min_role: "member", sensitivity: "sensitive" },
 });
 
 export interface RequestAuthorityDeps {
@@ -107,6 +108,31 @@ export function actionForRequest(method: string, segments: string[]): ActionKind
     tail = segments.slice(3);
   } else if (segments[2] === "workspaces" && segments[3] !== undefined && segments[4] === "tasks") {
     tail = segments.slice(5);
+  } else if (
+    segments[2] === "workspaces" &&
+    segments[3] !== undefined &&
+    segments[4] === "issues"
+  ) {
+    tail = segments.slice(5);
+    if (tail.length === 0) {
+      if (method === "GET" || method === "HEAD") return "read";
+      if (method === "POST") return "issue_sync";
+      return null;
+    }
+    if (tail.length === 1) return method === "GET" || method === "HEAD" ? "read" : null;
+    if (tail.length === 2 && (method === "GET" || method === "HEAD")) {
+      if (tail[1] === "stream") return "stream";
+      return "read";
+    }
+    if (
+      tail.length === 2 &&
+      method === "POST" &&
+      (tail[1] === "rollback" || tail[1] === "comments")
+    ) {
+      return "issue_sync";
+    }
+    if (tail.length === 1 && method === "PATCH") return "issue_sync";
+    return null;
   } else {
     return null;
   }

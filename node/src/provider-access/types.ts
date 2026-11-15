@@ -201,7 +201,13 @@ export interface ProviderAdapter {
  * The action classes revocation must stop. One gate decision covers each of
  * them; a revoked subject loses all five at once.
  */
-export type ActionKind = "read" | "stream" | "artifact_read" | "approval" | "write";
+export type ActionKind =
+  | "read"
+  | "stream"
+  | "artifact_read"
+  | "approval"
+  | "write"
+  | "issue_sync";
 
 /** All action kinds, in request-path order (used by revocation effects). */
 export const ACTION_KINDS: readonly ActionKind[] = [
@@ -242,6 +248,7 @@ export const DEFAULT_ACTION_POLICY: Readonly<Record<ActionKind, ActionPolicy>> =
   artifact_read: { min_role: "viewer", sensitivity: "ordinary" },
   approval: { min_role: "admin", sensitivity: "sensitive" },
   write: { min_role: "member", sensitivity: "sensitive", requires_capability: "delivery_write" },
+  issue_sync: { min_role: "member", sensitivity: "sensitive" },
 });
 
 export type DenyReason =

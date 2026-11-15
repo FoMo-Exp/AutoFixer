@@ -16,7 +16,7 @@ const CTX: ProviderCallContext = {
 };
 const REPO: RepositoryRef = {
   repository_id: "github:repo:9001",
-  repository_name: "Luthiel/AutoFixer",
+  repository_name: "FoMo-Exp/AutoFixer",
   provider_type: "github",
 };
 

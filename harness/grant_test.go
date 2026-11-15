@@ -41,7 +41,7 @@ func validGrantParams(issuedAt, expiresAt time.Time) GrantParams {
 		TaskID: "task-1", RunID: "run-1",
 		IssuedAt: issuedAt, ExpiresAt: expiresAt,
 		CapabilityGrantVersion: "grant-1",
-		RepositoryURL:          "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL:          "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:                "abc123",
 		PermittedPaths:         []string{"harness/"},
 		PermittedTools:         []PermittedTool{{Identity: "go-test", AllowedArguments: []string{"./..."}}},

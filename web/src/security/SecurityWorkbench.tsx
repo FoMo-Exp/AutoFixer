@@ -171,7 +171,10 @@ export function SecurityWorkbench({
   }
 
   return (
-    <div className={`security-surface ${workspaceId && section !== "audit" ? "has-sidebar" : ""}`}>
+    <div
+      className={`security-surface ${workspaceId && section !== "audit" ? "has-sidebar" : ""}`}
+      data-scroll-lock={section === "cases" && !selectedCase ? "true" : undefined}
+    >
       <div className="security-section-bar">
         <nav className="surface-nav" aria-label="Security views">
           {(Object.keys(SECTION_LABELS) as SecuritySection[]).map((entry) => (

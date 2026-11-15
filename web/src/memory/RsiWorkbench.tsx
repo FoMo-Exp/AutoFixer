@@ -189,7 +189,11 @@ export function RsiWorkbench({
     workspaceError !== undefined && (workspaceError.missing || workspaceError.code === "NOT_FOUND");
 
   return (
-    <div className="workspace rsi-workspace" data-view={mobileView}>
+    <div
+      className="workspace rsi-workspace"
+      data-view={mobileView}
+      data-scroll-lock={!selectedProposalId ? "true" : undefined}
+    >
       <aside className="sidebar glass rsi-sidebar" ref={sidebarGlassRef}>
         <div className="sidebar-heading">
           <div>

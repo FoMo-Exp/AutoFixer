@@ -350,11 +350,11 @@ describe("provider event sync", () => {
       DEPS(),
       fixture.scope,
       fixture.integration,
-      event("repository_renamed", { repository_name: "Luthiel/AutoFixer-2" }, "delivery-3"),
+      event("repository_renamed", { repository_name: "FoMo-Exp/AutoFixer-2" }, "delivery-3"),
     );
 
     const integration = fixture.access.integrations.getById(fixture.scope, fixture.integration.id);
-    expect(integration?.repository_name).toBe("Luthiel/AutoFixer-2");
+    expect(integration?.repository_name).toBe("FoMo-Exp/AutoFixer-2");
     expect(integration?.repository_id).toBe(fixture.integration.repository_id);
     // Credential references unchanged.
     expect(integration?.source_credential_ref).toBe(fixture.integration.source_credential_ref);

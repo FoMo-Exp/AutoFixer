@@ -20,8 +20,8 @@ function makeRecord(id = "tsk_unit"): TaskRecord {
     workspaceId: "wsp_test",
     enterpriseId: "ent_test",
     repository: {
-      id: "github:Luthiel/AutoFixer",
-      display_name: "Luthiel/AutoFixer",
+      id: "github:FoMo-Exp/AutoFixer",
+      display_name: "FoMo-Exp/AutoFixer",
       base_ref: "main",
       base_sha: "52081ea",
     },

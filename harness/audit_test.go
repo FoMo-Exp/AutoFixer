@@ -20,7 +20,7 @@ func testEvent(runID string) ExecutionEvent {
 		ResultingState:      StateRequested,
 		RiskClass:           RiskLow,
 		PolicyVersion:       DefaultPolicyVersion,
-		RepositoryURL:       "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL:       "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:             "abc123",
 		PathScope:           []string{},
 		NetworkScope:        []string{},
