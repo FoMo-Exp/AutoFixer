@@ -11,7 +11,7 @@ import type { EnterpriseId } from "../control-plane/types.js";
 import type { WorkspaceRunBindingResolver } from "../api/task-service.js";
 import type { ServiceCredentialStore } from "../provider-access/credentials.js";
 import { createProviderIssueApi } from "./provider-api.js";
-import { IssueSyncStore } from "./store.js";
+import type { IssueSyncStore } from "./store.js";
 import {
   applyIssueChange,
   createIssueVersionHistory,
@@ -89,14 +89,22 @@ export class IssueSyncService {
       if (this.pollInFlight) return;
       this.pollInFlight = true;
       try {
-        const scope = { enterprise_id: this.options.enterprise_id, actor_id: this.options.actor_id };
+        const scope = {
+          enterprise_id: this.options.enterprise_id,
+          actor_id: this.options.actor_id,
+        };
         for (const workspace of this.options.workspaces.list(scope, "active")) {
           const integrations = this.options.integrations.listByWorkspace({
             enterprise_id: this.options.enterprise_id,
             workspace_id: workspace.id,
             actor_id: this.options.actor_id,
           });
-          if (!integrations.some((item) => item.install_status === "active" && item.issue_sync_credential_ref)) continue;
+          if (
+            !integrations.some(
+              (item) => item.install_status === "active" && item.issue_sync_credential_ref,
+            )
+          )
+            continue;
           await this.processOutbox(workspace.id);
           await this.syncWorkspace(workspace.id).catch(() => undefined);
         }
@@ -119,21 +127,41 @@ export class IssueSyncService {
     for (const operation of this.options.store.claimPending(20, this.now().toISOString())) {
       try {
         const { integration, binding, providerOrigin } = this.context(workspaceId);
-        const api = createProviderIssueApi({ repository_id: binding.repositoryId,
-          issue_sync_credential_ref: requireIssueCredential(integration), credentials: this.options.credentials, provider_origin: providerOrigin });
+        const api = createProviderIssueApi({
+          repository_id: binding.repositoryId,
+          issue_sync_credential_ref: requireIssueCredential(integration),
+          credentials: this.options.credentials,
+          provider_origin: providerOrigin,
+        });
         const history = this.options.store.loadHistory(workspaceId, operation.issue_id);
         if (!history) throw new Error("issue version history is unavailable for retry");
         if (operation.operation_type === "create") {
           const marker = `${OWN_MARKER}${operation.issue_id} -->`;
-          const existing = await api.listIssues(integration.issue_sync_connected_at ?? integration.created_at);
-          const remote = existing.find((item) => item.description.includes(marker)) ?? await api.createIssue({
-            title: history.content.title, description: appendMarker(history.content.description, marker), labels: history.content.labels,
-          });
+          const existing = await api.listIssues(
+            integration.issue_sync_connected_at ?? integration.created_at,
+          );
+          const remote =
+            existing.find((item) => item.description.includes(marker)) ??
+            (await api.createIssue({
+              title: history.content.title,
+              description: appendMarker(history.content.description, marker),
+              labels: history.content.labels,
+            }));
           if (!this.options.store.getLinkByIssue(workspaceId, operation.issue_id)) {
-            this.options.store.linkIssue({ enterprise_id: this.options.enterprise_id, workspace_id: workspaceId,
-              issue_id: operation.issue_id, provider_instance_id: integration.provider_instance_id, provider_type: api.provider,
-              repository_id: binding.repositoryId, provider_issue_id: remote.id, provider_issue_number: remote.number,
-              provider_url: remote.url, provider_state: remote.state, provider_updated_at: remote.updated_at, last_synced_at: this.now().toISOString() });
+            this.options.store.linkIssue({
+              enterprise_id: this.options.enterprise_id,
+              workspace_id: workspaceId,
+              issue_id: operation.issue_id,
+              provider_instance_id: integration.provider_instance_id,
+              provider_type: api.provider,
+              repository_id: binding.repositoryId,
+              provider_issue_id: remote.id,
+              provider_issue_number: remote.number,
+              provider_url: remote.url,
+              provider_state: remote.state,
+              provider_updated_at: remote.updated_at,
+              last_synced_at: this.now().toISOString(),
+            });
           }
         } else {
           const link = this.options.store.getLinkByIssue(workspaceId, operation.issue_id);
@@ -143,13 +171,22 @@ export class IssueSyncService {
             const comments = await api.listComments(link.provider_issue_id);
             if (!comments.some((comment) => comment.body.includes(commentMarker))) {
               const body = (operation.payload["body"] as string) ?? "";
-              await api.createComment(link.provider_issue_id, `${body}${body ? "\n\n" : ""}${commentMarker}`);
+              await api.createComment(
+                link.provider_issue_id,
+                `${body}${body ? "\n\n" : ""}${commentMarker}`,
+              );
             }
           } else {
             const fields = operation.payload["fields"] as Partial<SyncedIssueContent> | undefined;
             if (fields) {
               const remote = await api.updateIssue(link.provider_issue_id, fields);
-              this.options.store.updateLinkState(workspaceId, operation.issue_id, remote.state, remote.updated_at, this.now().toISOString());
+              this.options.store.updateLinkState(
+                workspaceId,
+                operation.issue_id,
+                remote.state,
+                remote.updated_at,
+                this.now().toISOString(),
+              );
             }
           }
         }
@@ -157,7 +194,9 @@ export class IssueSyncService {
       } catch (error) {
         const delay = Math.min(60 * 60_000, 30_000 * 2 ** Math.min(operation.attempt_count, 7));
         this.options.store.finishOperation(operation.operation_id, {
-          state: "failed", retry_after: new Date(this.now().getTime() + delay).toISOString(), error_code: safeErrorCode(error),
+          state: "failed",
+          retry_after: new Date(this.now().getTime() + delay).toISOString(),
+          error_code: safeErrorCode(error),
         });
       }
     }
@@ -234,7 +273,9 @@ export class IssueSyncService {
         provider_origin: providerOrigin,
       });
       const marker = `${OWN_MARKER}${issue.issue_id} -->`;
-      const issueList = await api.listIssues(integration.issue_sync_connected_at ?? integration.created_at);
+      const issueList = await api.listIssues(
+        integration.issue_sync_connected_at ?? integration.created_at,
+      );
       const existing = issueList.find((item) => item.description.includes(marker));
       const remote =
         existing ??
@@ -332,14 +373,16 @@ export class IssueSyncService {
           source_modified_at: remote.updated_at,
           recorded_at: this.now().toISOString(),
           fields: {},
-          comments: remoteComments.filter((comment) => !comment.body.includes("<!-- forgepilot-sync-comment:")).map((comment) => ({
-            id: `${api.provider}:${comment.id}`,
-            source: api.provider,
-            source_comment_id: comment.id,
-            author: comment.author,
-            body: stripCommentMarker(comment.body),
-            created_at: comment.created_at,
-          })),
+          comments: remoteComments
+            .filter((comment) => !comment.body.includes("<!-- forgepilot-sync-comment:"))
+            .map((comment) => ({
+              id: `${api.provider}:${comment.id}`,
+              source: api.provider,
+              source_comment_id: comment.id,
+              author: comment.author,
+              body: stripCommentMarker(comment.body),
+              created_at: comment.created_at,
+            })),
         });
         this.options.store.saveHistory(withComments, workspaceId, 0);
         this.options.store.linkIssue({
@@ -367,20 +410,25 @@ export class IssueSyncService {
           labels: normalizeLabels(remote.labels),
         };
         const fields: Partial<SyncedIssueContent> = {};
-        if (!same(history.content.title, incomingContent.title)) fields.title = incomingContent.title;
+        if (!same(history.content.title, incomingContent.title))
+          fields.title = incomingContent.title;
         if (!same(history.content.description, incomingContent.description))
           fields.description = incomingContent.description;
-        if (!same(history.content.state, incomingContent.state)) fields.state = incomingContent.state;
-        if (!same(history.content.labels, incomingContent.labels)) fields.labels = incomingContent.labels;
+        if (!same(history.content.state, incomingContent.state))
+          fields.state = incomingContent.state;
+        if (!same(history.content.labels, incomingContent.labels))
+          fields.labels = incomingContent.labels;
         const remoteComments = await api.listComments(remote.number);
-        const comments: SyncedIssueComment[] = remoteComments.filter((comment) => !comment.body.includes("<!-- forgepilot-sync-comment:")).map((comment) => ({
-          id: `${api.provider}:${comment.id}`,
-          source: api.provider as IssueSyncSource,
-          source_comment_id: comment.id,
-          author: comment.author,
+        const comments: SyncedIssueComment[] = remoteComments
+          .filter((comment) => !comment.body.includes("<!-- forgepilot-sync-comment:"))
+          .map((comment) => ({
+            id: `${api.provider}:${comment.id}`,
+            source: api.provider as IssueSyncSource,
+            source_comment_id: comment.id,
+            author: comment.author,
             body: stripCommentMarker(comment.body),
-          created_at: comment.created_at,
-        }));
+            created_at: comment.created_at,
+          }));
         const updatedHistory = applyIssueChange(history, {
           source: api.provider as IssueSyncSource,
           source_modified_at: remote.updated_at,
@@ -389,22 +437,27 @@ export class IssueSyncService {
           comments,
         });
         if (updatedHistory !== history) {
-          this.options.store.saveHistory(
-            updatedHistory,
-            workspaceId,
-            history.versions.length,
-          );
+          this.options.store.saveHistory(updatedHistory, workspaceId, history.versions.length);
           importedOrUpdated += 1;
         }
         const winningFields: Partial<SyncedIssueContent> = {};
-        if (updatedHistory.content.title !== incomingContent.title) winningFields.title = updatedHistory.content.title;
+        if (updatedHistory.content.title !== incomingContent.title)
+          winningFields.title = updatedHistory.content.title;
         if (updatedHistory.content.description !== incomingContent.description)
           winningFields.description = updatedHistory.content.description;
-        if (updatedHistory.content.state !== incomingContent.state) winningFields.state = updatedHistory.content.state;
-        if (!same(updatedHistory.content.labels, incomingContent.labels)) winningFields.labels = updatedHistory.content.labels;
+        if (updatedHistory.content.state !== incomingContent.state)
+          winningFields.state = updatedHistory.content.state;
+        if (!same(updatedHistory.content.labels, incomingContent.labels))
+          winningFields.labels = updatedHistory.content.labels;
         if (Object.keys(winningFields).length > 0) {
           const winner = await api.updateIssue(remote.id, winningFields);
-          this.options.store.updateLinkState(workspaceId, existingLink.issue_id, winner.state, winner.updated_at, this.now().toISOString());
+          this.options.store.updateLinkState(
+            workspaceId,
+            existingLink.issue_id,
+            winner.state,
+            winner.updated_at,
+            this.now().toISOString(),
+          );
           if (winner.updated_at > newest) newest = winner.updated_at;
           continue;
         }
@@ -442,19 +495,27 @@ export class IssueSyncService {
     if (fields.title !== undefined && !fields.title) throw new Error("issue title is required");
     const at = this.now().toISOString();
     const next = applyIssueChange(history, {
-      source: "forgepilot", source_modified_at: at, recorded_at: at, fields,
+      source: "forgepilot",
+      source_modified_at: at,
+      recorded_at: at,
+      fields,
     });
     if (next === history) return this.get(workspaceId, issueId)!;
     const outbox = this.options.store.enqueue({
-      enterprise_id: this.options.enterprise_id, workspace_id: workspaceId, issue_id: issueId,
-      idempotency_key: `${workspaceId}:${idempotencyKey}`, operation_type: "update", payload: { fields },
+      enterprise_id: this.options.enterprise_id,
+      workspace_id: workspaceId,
+      issue_id: issueId,
+      idempotency_key: `${workspaceId}:${idempotencyKey}`,
+      operation_type: "update",
+      payload: { fields },
     });
     this.options.store.saveHistory(next, workspaceId, history.versions.length);
     try {
       const api = createProviderIssueApi({
         repository_id: binding.repositoryId,
         issue_sync_credential_ref: requireIssueCredential(integration),
-        credentials: this.options.credentials, provider_origin: providerOrigin,
+        credentials: this.options.credentials,
+        provider_origin: providerOrigin,
       });
       const remote = await api.updateIssue(link.provider_issue_id, {
         ...(fields.title !== undefined ? { title: fields.title } : {}),
@@ -466,14 +527,22 @@ export class IssueSyncService {
       this.options.store.finishOperation(outbox.operation_id, { state: "synced" });
     } catch (error) {
       this.options.store.finishOperation(outbox.operation_id, {
-        state: "failed", retry_after: new Date(this.now().getTime() + 30_000).toISOString(), error_code: safeErrorCode(error),
+        state: "failed",
+        retry_after: new Date(this.now().getTime() + 30_000).toISOString(),
+        error_code: safeErrorCode(error),
       });
       throw error;
     }
     return this.get(workspaceId, issueId)!;
   }
 
-  async addComment(workspaceId: string, issueId: string, body: string, idempotencyKey: string, actorId = this.options.actor_id): Promise<SyncedIssueView> {
+  async addComment(
+    workspaceId: string,
+    issueId: string,
+    body: string,
+    idempotencyKey: string,
+    actorId = this.options.actor_id,
+  ): Promise<SyncedIssueView> {
     const { integration, binding, providerOrigin } = this.context(workspaceId, actorId);
     const link = this.options.store.getLinkByIssue(workspaceId, issueId);
     const history = this.options.store.loadHistory(workspaceId, issueId);
@@ -481,16 +550,36 @@ export class IssueSyncService {
     if (!body.trim()) throw new Error("comment body is required");
     const at = this.now().toISOString();
     const localComment: SyncedIssueComment = {
-      id: `forgepilot:${idempotencyKey}`, source: "forgepilot", source_comment_id: idempotencyKey,
-      author: actorId, body: body.trim(), created_at: at,
+      id: `forgepilot:${idempotencyKey}`,
+      source: "forgepilot",
+      source_comment_id: idempotencyKey,
+      author: actorId,
+      body: body.trim(),
+      created_at: at,
     };
-    const next = applyIssueChange(history, { source: "forgepilot", source_modified_at: at, recorded_at: at, fields: {}, comments: [localComment] });
-    const outbox = this.options.store.enqueue({ enterprise_id: this.options.enterprise_id, workspace_id: workspaceId,
-      issue_id: issueId, idempotency_key: `${workspaceId}:${idempotencyKey}`, operation_type: "comment", payload: { body: body.trim() } });
+    const next = applyIssueChange(history, {
+      source: "forgepilot",
+      source_modified_at: at,
+      recorded_at: at,
+      fields: {},
+      comments: [localComment],
+    });
+    const outbox = this.options.store.enqueue({
+      enterprise_id: this.options.enterprise_id,
+      workspace_id: workspaceId,
+      issue_id: issueId,
+      idempotency_key: `${workspaceId}:${idempotencyKey}`,
+      operation_type: "comment",
+      payload: { body: body.trim() },
+    });
     this.options.store.saveHistory(next, workspaceId, history.versions.length);
     try {
-      const api = createProviderIssueApi({ repository_id: binding.repositoryId,
-        issue_sync_credential_ref: requireIssueCredential(integration), credentials: this.options.credentials, provider_origin: providerOrigin });
+      const api = createProviderIssueApi({
+        repository_id: binding.repositoryId,
+        issue_sync_credential_ref: requireIssueCredential(integration),
+        credentials: this.options.credentials,
+        provider_origin: providerOrigin,
+      });
       const commentMarker = `<!-- forgepilot-sync-comment:${digest(outbox.operation_id)} -->`;
       const existing = await api.listComments(link.provider_issue_id);
       if (!existing.some((item) => item.body.includes(commentMarker))) {
@@ -498,43 +587,81 @@ export class IssueSyncService {
       }
       this.options.store.finishOperation(outbox.operation_id, { state: "synced" });
     } catch (error) {
-      this.options.store.finishOperation(outbox.operation_id, { state: "failed", retry_after: new Date(this.now().getTime() + 30_000).toISOString(), error_code: safeErrorCode(error) });
+      this.options.store.finishOperation(outbox.operation_id, {
+        state: "failed",
+        retry_after: new Date(this.now().getTime() + 30_000).toISOString(),
+        error_code: safeErrorCode(error),
+      });
       throw error;
     }
     return this.get(workspaceId, issueId)!;
   }
 
-  async rollback(workspaceId: string, issueId: string, versionId: string, idempotencyKey: string, actorId = this.options.actor_id): Promise<SyncedIssueView> {
+  async rollback(
+    workspaceId: string,
+    issueId: string,
+    versionId: string,
+    idempotencyKey: string,
+    actorId = this.options.actor_id,
+  ): Promise<SyncedIssueView> {
     const { integration, binding, providerOrigin } = this.context(workspaceId, actorId);
     const link = this.options.store.getLinkByIssue(workspaceId, issueId);
     const history = this.options.store.loadHistory(workspaceId, issueId);
     if (!link || !history) throw new Error("issue is not connected to a provider issue");
     const next = rollbackIssueContent(history, versionId, this.now().toISOString());
     if (next === history) return this.get(workspaceId, issueId)!;
-    const fields = Object.fromEntries(next.versions.at(-1)!.changed_fields.map((field) => [field, next.content[field]]));
-    const outbox = this.options.store.enqueue({ enterprise_id: this.options.enterprise_id, workspace_id: workspaceId,
-      issue_id: issueId, idempotency_key: `${workspaceId}:${idempotencyKey}`, operation_type: "rollback", payload: { fields, rollback_of: versionId } });
+    const fields = Object.fromEntries(
+      next.versions.at(-1)!.changed_fields.map((field) => [field, next.content[field]]),
+    );
+    const outbox = this.options.store.enqueue({
+      enterprise_id: this.options.enterprise_id,
+      workspace_id: workspaceId,
+      issue_id: issueId,
+      idempotency_key: `${workspaceId}:${idempotencyKey}`,
+      operation_type: "rollback",
+      payload: { fields, rollback_of: versionId },
+    });
     this.options.store.saveHistory(next, workspaceId, history.versions.length);
     try {
-      const api = createProviderIssueApi({ repository_id: binding.repositoryId,
-        issue_sync_credential_ref: requireIssueCredential(integration), credentials: this.options.credentials, provider_origin: providerOrigin });
+      const api = createProviderIssueApi({
+        repository_id: binding.repositoryId,
+        issue_sync_credential_ref: requireIssueCredential(integration),
+        credentials: this.options.credentials,
+        provider_origin: providerOrigin,
+      });
       const remote = await api.updateIssue(link.provider_issue_id, fields);
-      this.options.store.updateLinkState(workspaceId, issueId, remote.state, remote.updated_at, this.now().toISOString());
+      this.options.store.updateLinkState(
+        workspaceId,
+        issueId,
+        remote.state,
+        remote.updated_at,
+        this.now().toISOString(),
+      );
       this.options.store.finishOperation(outbox.operation_id, { state: "synced" });
     } catch (error) {
-      this.options.store.finishOperation(outbox.operation_id, { state: "failed", retry_after: new Date(this.now().getTime() + 30_000).toISOString(), error_code: safeErrorCode(error) });
+      this.options.store.finishOperation(outbox.operation_id, {
+        state: "failed",
+        retry_after: new Date(this.now().getTime() + 30_000).toISOString(),
+        error_code: safeErrorCode(error),
+      });
       throw error;
     }
     return this.get(workspaceId, issueId)!;
   }
 
   versions(workspaceId: string, issueId: string) {
-    this.options.workspaces.getById({ enterprise_id: this.options.enterprise_id, actor_id: this.options.actor_id }, workspaceId);
+    this.options.workspaces.getById(
+      { enterprise_id: this.options.enterprise_id, actor_id: this.options.actor_id },
+      workspaceId,
+    );
     return this.options.store.loadHistory(workspaceId, issueId)?.versions ?? [];
   }
 
   comments(workspaceId: string, issueId: string): SyncedIssueComment[] {
-    this.options.workspaces.getById({ enterprise_id: this.options.enterprise_id, actor_id: this.options.actor_id }, workspaceId);
+    this.options.workspaces.getById(
+      { enterprise_id: this.options.enterprise_id, actor_id: this.options.actor_id },
+      workspaceId,
+    );
     return this.options.store.listComments(workspaceId, issueId);
   }
 
@@ -556,12 +683,16 @@ export class IssueSyncService {
             last_synced_at: link.last_synced_at,
           }
         : null,
-      sync_state: this.options.store.latestOperation(issue.workspace.workspace_id, issue.issue_id)?.state ??
+      sync_state:
+        this.options.store.latestOperation(issue.workspace.workspace_id, issue.issue_id)?.state ??
         (link ? "synced" : "pending"),
     };
   }
 
-  private context(workspaceId: string, actorId = this.options.actor_id): {
+  private context(
+    workspaceId: string,
+    actorId = this.options.actor_id,
+  ): {
     binding: ReturnType<WorkspaceRunBindingResolver["resolve"]>;
     integration: ServiceIntegration;
     providerOrigin: string;
@@ -581,7 +712,10 @@ export class IssueSyncService {
     if (integration.repository_id !== binding.repositoryId) {
       throw new Error("provider integration does not match the workspace repository");
     }
-    const provider = this.options.providerInstances.getById(scope, integration.provider_instance_id);
+    const provider = this.options.providerInstances.getById(
+      scope,
+      integration.provider_instance_id,
+    );
     if (!provider) throw new Error("provider instance is unavailable");
     return { binding, integration, providerOrigin: provider.origin_url };
   }
@@ -595,7 +729,9 @@ function requireIssueCredential(integration: ServiceIntegration): string {
 }
 
 function normalizeLabels(labels: readonly string[]): string[] {
-  return [...new Set(labels.map((label) => label.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  return [...new Set(labels.map((label) => label.trim()).filter(Boolean))].sort((a, b) =>
+    a.localeCompare(b),
+  );
 }
 
 function appendMarker(description: string, marker: string): string {

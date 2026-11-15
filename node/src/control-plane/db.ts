@@ -1264,9 +1264,7 @@ const MIGRATIONS: Migration[] = [
     // reference. It is never inferred from source, checkout, or delivery
     // credentials and remains nullable for existing installations.
     version: 12,
-    statements: [
-      `ALTER TABLE service_integration ADD COLUMN issue_sync_credential_ref TEXT`,
-    ],
+    statements: [`ALTER TABLE service_integration ADD COLUMN issue_sync_credential_ref TEXT`],
   },
   {
     // Durable provider issue links, immutable synchronized-content versions,
@@ -1365,9 +1363,7 @@ const MIGRATIONS: Migration[] = [
     // The issue-sync connection has its own start time, separate from the
     // repository service integration's original installation date.
     version: 15,
-    statements: [
-      `ALTER TABLE service_integration ADD COLUMN issue_sync_connected_at TEXT`,
-    ],
+    statements: [`ALTER TABLE service_integration ADD COLUMN issue_sync_connected_at TEXT`],
   },
 ];
 
