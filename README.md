@@ -165,12 +165,26 @@ go run ./cmd/autofixer dsh serve \
 (cd node && npm install && npm run build)
 (cd web && npm install && npm run build)
 
-# 3. Launch the desktop workbench; it starts the local Node service
+# 3. Diagnose the runtime configuration before launch
+(cd node && \
+  FORGEPILOT_BASE_SHA=$(git rev-parse HEAD) \
+  FORGEPILOT_DSH_SOCKET=/tmp/autofixer-dsh.sock \
+  npm run doctor)
+
+# 4. Launch the desktop workbench; it starts the local Node service
 cd web
 FORGEPILOT_BASE_SHA=$(git rev-parse HEAD) \
 FORGEPILOT_DSH_SOCKET=/tmp/autofixer-dsh.sock \
 npm start
 ```
+
+`npm run doctor` is read-only and redacted: it reports separate startup, task,
+and model readiness, names the next action for every blocker, and exits `2`
+when startup would be refused. One orchestrator owns one state directory; the
+task projection, budget journal, control-plane database, and audit streams are
+single-writer, so two instances must not share those files. While the service
+runs, the operator bearer can read the same report at
+`GET /api/v1/runtime/diagnostics`.
 
 Model calls additionally require a scoped gateway policy and credentials file
 (`FORGEPILOT_GATEWAY_POLICY_FILE`, `FORGEPILOT_GATEWAY_CREDENTIALS_FILE`).

@@ -83,6 +83,50 @@ Configuration (environment):
 | `FORGEPILOT_SESSION_TTL_SECONDS`                                            | `43200`                                         | server-side session lifetime                                                                                                                                           |
 | `FORGEPILOT_OAUTH_FLOW_TTL_SECONDS` / `FORGEPILOT_DESKTOP_FLOW_TTL_SECONDS` | `600` / `600`                                   | authorization-flow / desktop-binding lifetimes                                                                                                                         |
 
+## Runtime diagnostics (DAT-257)
+
+Configuration failures should name the fix, not produce a stack trace. The
+same read-only report is available before startup and while the service runs:
+
+```sh
+npm run build
+npm run doctor        # human-readable, absolute state paths
+npm run doctor:json   # machine-readable RuntimeDiagnostics document
+```
+
+Exit codes: `0` ready or degraded only, `1` a readiness boundary is blocked
+(dsh unavailable, model egress denied, corrupt state), `2` startup is blocked
+(invalid configuration or an ambient provider credential). The report never
+creates, truncates, or repairs a state file, and it never prints a token,
+credential, client secret, bootstrap secret, or key value.
+
+While the service runs, the operator bearer can read
+`GET /api/v1/runtime/diagnostics` (same schema; state paths are reduced to
+basenames). Session credentials are refused: deployment readiness is not
+enterprise-user data.
+
+Readiness is reported at three boundaries, not one:
+
+| Boundary  | Means                       | Blocked when                                                                                                                    |
+| --------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `startup` | the process can serve       | configuration is invalid, a startup-critical state file is corrupt/unwritable, or an ambient provider credential is set         |
+| `task`    | a remediation run can start | dsh is unreachable or its boot token is missing, the pinned base revision is invalid, or the task projection cannot be restored |
+| `model`   | model bytes may leave       | no Pi model, no gateway policy/credential pair, invalid gateway configuration, or no authenticated workspace scope              |
+
+`degraded` is a warning that does not stop the boundary (for example an
+owner-writable audit log or a boot token readable by group/world); `blocked`
+refuses the named work and carries the next operator action. Optional
+subsystems report `not_configured` explicitly (`identity`, `budget`) instead of
+looking healthy.
+
+**Single-instance limitation.** One orchestrator process owns one state
+directory. The task projection, budget journal, control-plane SQLite database,
+and JSONL audit streams are single-writer; a second instance pointed at the
+same files can interleave or lose writes and is unsupported. Use a distinct
+`FORGEPILOT_*_FILE` set (and control-plane database) per instance. A corrupt
+task projection is reported as a blocked startup: move it aside to start with
+an empty projection, because persisted tasks are not recovered.
+
 ## Model gateway (ADR-0005)
 
 Every Pi model call goes through `node/src/gateway/`, the single fail-closed

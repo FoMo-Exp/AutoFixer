@@ -116,6 +116,39 @@ Endpoints (details in the OpenAPI document):
 | `POST /api/v1/admin/users/{user_id}/suspend` | optional `enterprise_id` | `200 User` |
 | `POST /api/v1/admin/users/{user_id}/activate` | optional `enterprise_id` | `200 User` |
 
+## Runtime diagnostics (DAT-257)
+
+`GET /api/v1/runtime/diagnostics` returns a redacted `RuntimeDiagnostics`
+report of the deployment's own configuration and durable state. It is
+**operator-only**: the per-process bearer is the only accepted credential, and
+a session credential is `403 FORBIDDEN` — readiness and state-file basenames are
+deployment data, not enterprise-user data.
+
+The report never creates, truncates, or repairs a state file, and it never
+contains a dsh boot token, provider credential, OAuth client secret, bootstrap
+token, invitation key, or quarantine key. A blocked readiness boundary is still
+`200`: readiness is data, and each check carries the next operator action.
+
+| Request | Response |
+|---|---|
+| `GET /api/v1/runtime/diagnostics` | `200 RuntimeDiagnostics` (readiness may be `degraded`/`blocked`); `403 FORBIDDEN` for a session credential |
+
+| Field | Meaning |
+|---|---|
+| `readiness.startup` | configuration and startup-critical state are valid; `blocked` means the process must not serve |
+| `readiness.task` | dsh reachability, the pinned repository/base SHA, and the task projection are usable; `blocked` means no run can start (`DSH_UNAVAILABLE`-class failure) |
+| `readiness.model` | Pi model, gateway policy/credential pair, and session-scoped egress are usable; `blocked` means every dispatch is denied (fail closed) |
+| `readiness.*` values | `ready` \| `degraded` \| `blocked`; `degraded` warns without stopping that boundary |
+| `checks[]` | one entry per subsystem (`config`, `dsh`, `repository`, `model`, `gateway`, `identity`, `persistence`, `budget`), each with a closed `status` (`ready` \| `degraded` \| `blocked` \| `not_configured`), the boundaries it gates, redacted `detail`, and a `next_action` |
+| `blockers` | component ids whose status blocks at least one readiness boundary |
+| `service.single_instance` | always `true`: one orchestrator per state directory; the task projection, budget journal, control-plane database, and JSONL audit streams are single-writer |
+| `notes` | safe operational notes, including the single-instance limitation |
+
+The same report is available offline as `npm run doctor` (human) /
+`npm run doctor:json`, with absolute state paths; the API reduces state paths
+to basenames. The CLI exit codes are `0` (ready/degraded), `1` (a boundary is
+blocked), and `2` (startup blocked).
+
 ## Task resource
 
 ```json

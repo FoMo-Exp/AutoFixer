@@ -99,6 +99,9 @@ import {
 import type { ServiceCredentialStore } from "./provider-access/credentials.js";
 import { IssueSyncService } from "./issue-sync/service.js";
 import { IssueSyncStore } from "./issue-sync/store.js";
+import { collectRuntimeDiagnostics } from "./diagnostics/runtime.js";
+import type { RuntimeDiagnostics } from "./diagnostics/runtime.js";
+import { redactSensitiveText } from "./errors/redact.js";
 
 export interface OrchestratorOptions {
   config: OrchestratorConfig;
@@ -171,6 +174,8 @@ export interface OrchestratorHandle {
   dashboard: DashboardService | undefined;
   /** Per-process bearer token callers must present on every API request. */
   apiToken: string;
+  /** Redacted configuration/readiness report (DAT-257). */
+  diagnostics: () => Promise<RuntimeDiagnostics>;
   /** Start listening; resolves with the bound loopback address. */
   start(): Promise<{ host: string; port: number }>;
   /** Stop listening and release Pi sessions. */
@@ -446,6 +451,7 @@ function deploymentRunScope(
  */
 export function createOrchestrator(options: OrchestratorOptions): OrchestratorHandle {
   const { config } = options;
+  const startedAt = new Date();
   const store = new TaskStore({
     ...(config.taskStateFile ? { persistencePath: config.taskStateFile } : {}),
     // Pre-DAT-244 projections had no workspace ownership; one deployment
@@ -676,10 +682,23 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
         })
       : undefined;
 
+  // Runtime diagnostics (DAT-257) reuse the exact objects this process runs
+  // with: the resolved model and live dsh client, never a second configuration
+  // read. Paths stay basenames on the API; the CLI reports full paths.
+  const diagnostics = (): Promise<RuntimeDiagnostics> =>
+    collectRuntimeDiagnostics({
+      config,
+      dsh,
+      model,
+      resolveModel: false,
+      startedAt,
+    });
+
   const server = createApiServer({
     service,
     apiToken,
     legacyWorkspaceId: config.workspaceId,
+    runtimeDiagnostics: diagnostics,
     ...(auth !== undefined ? { auth } : {}),
     ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
     ...(invitations !== undefined ? { invitations } : {}),
@@ -719,6 +738,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     rsiStore,
     dashboard,
     apiToken,
+    diagnostics,
     start: () => {
       const { promise, resolve, reject } = Promise.withResolvers<{ host: string; port: number }>();
       server.once("error", reject);
@@ -765,8 +785,20 @@ export * from "./ledger/index.js";
 export * from "./budget/index.js";
 
 async function main(): Promise<void> {
-  const config = configFromEnv();
-  const orchestrator = createOrchestrator({ config });
+  let config: OrchestratorConfig;
+  let orchestrator: OrchestratorHandle;
+  try {
+    config = configFromEnv();
+    orchestrator = createOrchestrator({ config });
+  } catch (error) {
+    // A refused configuration is a blocked startup, not a stack trace: name
+    // the problem and the next command, and never echo a secret value.
+    const detail = redactSensitiveText(error instanceof Error ? error.message : String(error));
+    console.error(`runtime blocked: ${detail}`);
+    console.error("Run `npm run doctor` for a redacted configuration report, then restart.");
+    process.exitCode = 2;
+    return;
+  }
   const { host, port } = await orchestrator.start();
   console.log(`forgepilot-api/v1 listening on http://${host}:${port}`);
   console.log(`dsh control plane: ${config.dshSocketPath}`);
@@ -780,6 +812,9 @@ async function main(): Promise<void> {
     orchestrator.model
       ? `Pi model: ${orchestrator.model.provider}/${orchestrator.model.id}`
       : "Pi model: not configured (tasks will report PI_UNAVAILABLE)",
+  );
+  console.log(
+    `runtime diagnostics: GET http://${host}:${port}/api/v1/runtime/diagnostics (operator bearer)`,
   );
   const shutdown = (): void => {
     void orchestrator.stop().then(

@@ -2222,6 +2222,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runtime/diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Redacted runtime configuration and readiness report
+         * @description Operator-only diagnosis of the deployment's own configuration and state: dsh reachability, pinned repository/base SHA, Pi model, model gateway, enterprise identity, durable state, and budget. Startup, task, and model readiness are reported separately; a blocked boundary still returns 200 with the evidence and the next action. No secret material is returned. Only the local-operator bearer is accepted: deployment paths and readiness are not enterprise-user data.
+         */
+        get: operations["getRuntimeDiagnostics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4420,6 +4440,63 @@ export interface components {
             workspace_id: string;
             event_count: number;
             entries: components["schemas"]["SecurityAuditEntry"][];
+        };
+        RuntimeDiagnosticCheck: {
+            /** @enum {string} */
+            id: "config" | "dsh" | "repository" | "model" | "gateway" | "identity" | "persistence" | "budget";
+            /** @description Subsystem name; never a credential or secret. */
+            label: string;
+            /**
+             * @description `ready` — usable; `degraded` — usable with an operator warning; `blocked` — unusable until fixed; `not_configured` — optional subsystem absent (or required by a boundary, which makes that boundary blocked).
+             * @enum {string}
+             */
+            status: "ready" | "degraded" | "blocked" | "not_configured";
+            /** @description Readiness boundaries this component gates. */
+            stages: ("startup" | "task" | "model")[];
+            /** @description Redacted evidence for the status. Never contains token, credential, session, bootstrap, or key material; absolute state paths are omitted from the API (basenames only). */
+            detail: string;
+            /** @description Operator action that changes the status; null when nothing is wrong. */
+            next_action: string | null;
+        };
+        RuntimeDiagnostics: {
+            service: {
+                /** @enum {string} */
+                name: "forgepilot-api/v1";
+                version: string;
+                pid: number;
+                /** Format: date-time */
+                started_at: string;
+                uptime_seconds: number;
+                /**
+                 * @description One orchestrator per state directory. The task projection, budget journal, control-plane database, and append-only audit streams are single-writer; a second instance sharing them is unsupported.
+                 * @enum {boolean}
+                 */
+                single_instance: true;
+            };
+            readiness: {
+                /**
+                 * @description Configuration and startup-critical state are valid; a blocked startup refuses to serve.
+                 * @enum {string}
+                 */
+                startup: "ready" | "degraded" | "blocked";
+                /**
+                 * @description dsh, the pinned repository/base revision, and durable task state are usable; blocked means runs cannot start (DSH_UNAVAILABLE).
+                 * @enum {string}
+                 */
+                task: "ready" | "degraded" | "blocked";
+                /**
+                 * @description Pi model, gateway policy/credentials, and session-scoped egress are usable; blocked means every dispatch is denied (fail closed).
+                 * @enum {string}
+                 */
+                model: "ready" | "degraded" | "blocked";
+            };
+            checks: components["schemas"]["RuntimeDiagnosticCheck"][];
+            /** @description Component ids (`config`, `dsh`, …) whose status blocks a readiness boundary. Empty only when every boundary is ready or degraded. */
+            blockers: string[];
+            /** @description Safe operational notes, including the single-instance limitation. */
+            notes: string[];
+            /** Format: date-time */
+            generated_at: string;
         };
         Error: {
             /** @description The shared versioned error envelope (ADR-0008, DAT-226 alignment): a stable machine code, the processing stage, the outcome category, a safe localizable user message, service-decided retryability, retry-after where applicable, the request_id trace/case reference, safe-only structured details, and the authorized next action. No field ever carries secrets, credentials, invitation tokens, or sensitive diagnostics; those stay behind separate access checks. */
@@ -12824,6 +12901,44 @@ export interface operations {
             };
             /** @description SECURITY_AUDIT_LOG_TAMPERED or SECURITY_AUDIT_LOCK_TIMEOUT */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getRuntimeDiagnostics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Diagnostics report. Readiness may be degraded or blocked; inspect `readiness`, `checks`, and `blockers`. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeDiagnostics"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — a session credential is not the deployment operator */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

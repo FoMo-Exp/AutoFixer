@@ -25,6 +25,7 @@ import type { TaskService } from "./task-service.js";
 import { actionForRequest } from "./request-authority.js";
 import type { RequestAuthority } from "./request-authority.js";
 import type { IssueSyncService } from "../issue-sync/service.js";
+import type { RuntimeDiagnostics } from "../diagnostics/runtime.js";
 
 export interface ApiServerDeps {
   service: TaskService;
@@ -73,6 +74,12 @@ export interface ApiServerDeps {
    * nonexistent.
    */
   dashboard?: DashboardHttpDeps;
+  /**
+   * Runtime configuration diagnostics (DAT-257). Operator-only: the report
+   * exposes deployment state paths (basenames) and subsystem readiness, which
+   * are not enterprise-user data. Unset keeps the route nonexistent.
+   */
+  runtimeDiagnostics?: () => Promise<RuntimeDiagnostics>;
 }
 
 function writeSseEvent(res: http.ServerResponse, event: TaskEvent): void {
@@ -449,6 +456,29 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
       }
 
       const method = req.method ?? "GET";
+
+      // Runtime diagnostics (DAT-257) are deployment-operator data: the local
+      // bearer is the only accepted credential, never a workspace session.
+      if (segments[2] === "runtime") {
+        if (
+          deps.runtimeDiagnostics === undefined ||
+          segments.length !== 4 ||
+          segments[3] !== "diagnostics" ||
+          method !== "GET"
+        ) {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
+        }
+        const actor = authenticateRequest(req, deps);
+        if (actor.kind !== "local_operator") {
+          throw new ApiError(
+            403,
+            "FORBIDDEN",
+            "runtime diagnostics are available only to the local operator",
+          );
+        }
+        writeJson(res, 200, await deps.runtimeDiagnostics());
+        return;
+      }
 
       // GET /api/v1/workspaces — exactly the caller's live memberships.
       if (segments[2] === "workspaces" && segments.length === 3) {
