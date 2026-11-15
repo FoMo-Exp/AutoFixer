@@ -2,7 +2,7 @@
   "task_id": "golden-localized-001",
   "issue_id": "DAT-182",
   "repository": {
-    "url": "https://github.com/Luthiel/AutoFixer.git",
+    "url": "https://github.com/FoMo-Exp/AutoFixer.git",
     "base_sha": "52081eaddca099967fd8be13b3060337fde50d3f"
   },
   "actor_identity": "human:ludwig",

@@ -131,8 +131,8 @@ describe("terminal statuses are absorbing (QA round-1 blocker)", () => {
       workspaceId: "wsp_test",
       enterpriseId: "ent_test",
       repository: {
-        id: "github:Luthiel/AutoFixer",
-        display_name: "Luthiel/AutoFixer",
+        id: "github:FoMo-Exp/AutoFixer",
+        display_name: "FoMo-Exp/AutoFixer",
         base_ref: "main",
         base_sha: "52081ea",
       },

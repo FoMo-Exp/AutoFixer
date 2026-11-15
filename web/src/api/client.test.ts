@@ -20,7 +20,7 @@ describe("ForgePilotClient", () => {
 
     await client.createTask(
       {
-        repository_id: "github:Luthiel/AutoFixer",
+        repository_id: "github:FoMo-Exp/AutoFixer",
         base_ref: "main",
         summary: "Repair the export path",
         acceptance_criteria: ["Tests pass"],
@@ -40,7 +40,7 @@ describe("ForgePilotClient", () => {
       }),
     );
     expect(JSON.parse(fetchImpl.mock.calls[0]?.[1]?.body as string)).toEqual({
-      repository_id: "github:Luthiel/AutoFixer",
+      repository_id: "github:FoMo-Exp/AutoFixer",
       base_ref: "main",
       summary: "Repair the export path",
       acceptance_criteria: ["Tests pass"],

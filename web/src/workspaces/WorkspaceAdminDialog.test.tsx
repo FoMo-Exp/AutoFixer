@@ -129,6 +129,21 @@ describe("WorkspaceAdminDialog", () => {
     expect(client.listWorkspaceMembers).toHaveBeenCalledWith(workspace.id, undefined);
   });
 
+  it("opens directly on the requested setup tab", async () => {
+    const client = fakeClient();
+    render(
+      <WorkspaceAdminDialog
+        client={client as unknown as IdentityClient}
+        session={session}
+        onClose={() => undefined}
+        initialTab="teams"
+      />,
+    );
+
+    expect(await screen.findByText("Payments Core")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Teams" }).getAttribute("aria-selected")).toBe("true");
+  });
+
   it("changes a role with the membership version and reflects the server result", async () => {
     const client = fakeClient();
     client.updateWorkspaceMember.mockResolvedValue({ ...memberPage.items[0], role: "admin" });

@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld("forgePilotSettings", {
 });
 
 contextBridge.exposeInMainWorld("forgePilotAuth", {
+  setMode: (mode: unknown) => ipcRenderer.invoke("forgepilot:auth-set-mode", mode),
   getState: () => ipcRenderer.invoke("forgepilot:auth-state"),
   signIn: (input: unknown) => ipcRenderer.invoke("forgepilot:auth-sign-in", input),
   cancelSignIn: () => ipcRenderer.invoke("forgepilot:auth-cancel"),

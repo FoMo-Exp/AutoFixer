@@ -66,7 +66,7 @@ function seedV4Database(): {
   const integration = access.integrations.create(scope, {
     provider_instance_id: providerInstance.id,
     repository_id: "github:repo:9001",
-    repository_name: "Luthiel/AutoFixer",
+    repository_name: "FoMo-Exp/AutoFixer",
     source_credential_ref: "svc-source-1",
     checkout_credential_ref: "svc-checkout-1",
 
@@ -80,7 +80,7 @@ function seedV4Database(): {
         login: "octocat",
         source_kind: "direct_collaborator",
         provider_role: "write",
-        authority_ref: "repository:Luthiel/AutoFixer",
+        authority_ref: "repository:FoMo-Exp/AutoFixer",
         inherited_from: null,
       },
     ],
@@ -99,7 +99,7 @@ describe("provider roster migration v5", () => {
 
     migrate(db);
 
-    expect(appliedVersions(db)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(appliedVersions(db)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     const after = createProviderAccessRepositories(db).roster.listRoles(scope, integrationId);
     expect(after).toHaveLength(1);
     // Ids and timestamps survive verbatim — the rebuild copies, not re-keys.
@@ -119,7 +119,7 @@ describe("provider roster migration v5", () => {
           login: "octocat",
           source_kind: "effective_access",
           provider_role: "write",
-          authority_ref: "repository:Luthiel/AutoFixer",
+          authority_ref: "repository:FoMo-Exp/AutoFixer",
           inherited_from: null,
         },
       ],
@@ -149,7 +149,7 @@ describe("provider roster migration v5", () => {
           "bogus",
           "made_up_source",
           "read",
-          "repository:Luthiel/AutoFixer",
+          "repository:FoMo-Exp/AutoFixer",
           null,
           "2026-11-03T13:00:00.000Z",
           "2026-11-03T13:00:00.000Z",
@@ -163,7 +163,7 @@ describe("provider roster migration v5", () => {
     const afterFirst = createProviderAccessRepositories(db).roster.listRoles(scope, integrationId);
     migrate(db);
     migrate(db);
-    expect(appliedVersions(db)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(appliedVersions(db)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     expect(createProviderAccessRepositories(db).roster.listRoles(scope, integrationId)).toEqual(
       afterFirst,
     );
@@ -173,7 +173,7 @@ describe("provider roster migration v5", () => {
     const fresh = new DatabaseSync(":memory:") as ControlPlaneDb;
     fresh.exec("PRAGMA foreign_keys = ON");
     migrate(fresh);
-    expect(appliedVersions(fresh)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(appliedVersions(fresh)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
 
     const upgraded = seedV4Database();
     migrate(upgraded.db);

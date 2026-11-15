@@ -28,7 +28,7 @@ func mustRun(t *testing.T, store *EventStore, taskID, runID string, class RiskCl
 	run, err := NewRun(RunConfig{
 		TaskID: taskID, RunID: runID, IssueID: "issue-1",
 		ActorIdentity: "human:owner-1", ExecutionIdentity: "agent:runner-1",
-		RepositoryURL: "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL: "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:       "abc123",
 	}, assessment, store)
 	if err != nil {
@@ -45,7 +45,7 @@ func approveRun(t *testing.T, run *Run, issuedAt time.Time) {
 		TaskID: run.TaskID, RunID: run.RunID,
 		IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(time.Hour),
 		CapabilityGrantVersion: "grant-1",
-		RepositoryURL:          "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL:          "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:                "abc123",
 		PermittedPaths:         []string{"harness"},
 		PermittedTools:         []PermittedTool{{Identity: "go-test", AllowedArguments: []string{"./harness/"}}},
@@ -93,7 +93,7 @@ func TestNewRunRejectsLinkageMismatch(t *testing.T) {
 	_, err = NewRun(RunConfig{
 		TaskID: "task-1", RunID: "run-other", IssueID: "issue-1",
 		ActorIdentity: "a", ExecutionIdentity: "e",
-		RepositoryURL: "https://github.com/Luthiel/AutoFixer.git", BaseSHA: "abc123",
+		RepositoryURL: "https://github.com/FoMo-Exp/AutoFixer.git", BaseSHA: "abc123",
 	}, assessment, store)
 	if err == nil {
 		t.Error("mismatched assessment linkage: err = nil, want error")
@@ -122,7 +122,7 @@ func TestFullHappyPathToMerged(t *testing.T) {
 
 	req := ActionRequest{
 		Tool: "go-test", Arguments: []string{"./harness/"},
-		RepositoryURL: "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL: "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:       "abc123",
 		Branch:        "autofixer/task-1",
 		Paths:         []string{"harness/state.go"},
@@ -186,7 +186,7 @@ func TestProhibitedRunRejectedWithQueryableEvidence(t *testing.T) {
 		TaskID: "task-1", RunID: "run-1",
 		IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(time.Hour),
 		CapabilityGrantVersion: "grant-1",
-		RepositoryURL:          "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL:          "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:                "abc123",
 		MaxWallClockSeconds:    600,
 	})
@@ -221,7 +221,7 @@ func TestProhibitedRunRejectedWithQueryableEvidence(t *testing.T) {
 		TaskID: "task-1", RunID: "run-1",
 		IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(time.Hour),
 		CapabilityGrantVersion: "grant-2",
-		RepositoryURL:          "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL:          "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:                "abc123",
 		MaxWallClockSeconds:    600,
 	}); err == nil {
@@ -276,7 +276,7 @@ func TestOutOfWorkingScopeDispatchStopsRunAndLogs(t *testing.T) {
 
 	req := ActionRequest{
 		Tool: "rm-rf", Arguments: []string{"-rf", "/"},
-		RepositoryURL: "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL: "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:       "abc123",
 	}
 	d := run.EvaluateAndRecordAction(req)
@@ -348,7 +348,7 @@ func TestCancelledRunRetainsQueryableEvidence(t *testing.T) {
 	// dispatch after cancellation is denied
 	d := run.EvaluateAndRecordAction(ActionRequest{
 		Tool: "go-test", Arguments: []string{"./harness/"},
-		RepositoryURL: "https://github.com/Luthiel/AutoFixer.git", BaseSHA: "abc123",
+		RepositoryURL: "https://github.com/FoMo-Exp/AutoFixer.git", BaseSHA: "abc123",
 	})
 	if d.Allowed {
 		t.Error("dispatch after cancel must be denied")
@@ -362,7 +362,7 @@ func TestExpiredGrantDispatchDeniedAndStops(t *testing.T) {
 
 	d := run.EvaluateAndRecordAction(ActionRequest{
 		Tool: "go-test", Arguments: []string{"./harness/"},
-		RepositoryURL: "https://github.com/Luthiel/AutoFixer.git", BaseSHA: "abc123",
+		RepositoryURL: "https://github.com/FoMo-Exp/AutoFixer.git", BaseSHA: "abc123",
 	})
 	if d.Allowed || d.Code != DenyGrantExpired || d.StopCode != StopCodeGrantExpired {
 		t.Fatalf("decision = %+v, want deny %q + stop %q", d, DenyGrantExpired, StopCodeGrantExpired)
@@ -477,7 +477,7 @@ func TestAuditWriteFailureFailsClosedOnDispatch(t *testing.T) {
 	sabotageAudit(run)
 	d := run.EvaluateAndRecordAction(ActionRequest{
 		Tool: "go-test", Arguments: []string{"./harness/"},
-		RepositoryURL: "https://github.com/Luthiel/AutoFixer.git", BaseSHA: "abc123",
+		RepositoryURL: "https://github.com/FoMo-Exp/AutoFixer.git", BaseSHA: "abc123",
 	})
 	if d.Allowed || d.Code != DenyAuditFailure || d.StopCode != StopCodeAuditFailure {
 		t.Errorf("decision = %+v, want deny %q + stop %q", d, DenyAuditFailure, StopCodeAuditFailure)
@@ -684,7 +684,7 @@ func TestApproveRejectsMismatchedGrantLinkage(t *testing.T) {
 				TaskID: "task-1", RunID: "run-1",
 				IssuedAt: issuedAt, ExpiresAt: issuedAt.Add(time.Hour),
 				CapabilityGrantVersion: "grant-1",
-				RepositoryURL:          "https://github.com/Luthiel/AutoFixer.git",
+				RepositoryURL:          "https://github.com/FoMo-Exp/AutoFixer.git",
 				BaseSHA:                "abc123",
 				MaxWallClockSeconds:    600,
 			}
@@ -723,7 +723,7 @@ func TestStopTransitionAuditFailureFailsClosed(t *testing.T) {
 
 	d := run.EvaluateAndRecordAction(ActionRequest{
 		Tool: "rm-rf", Arguments: []string{"-rf"},
-		RepositoryURL: "https://github.com/Luthiel/AutoFixer.git", BaseSHA: "abc123",
+		RepositoryURL: "https://github.com/FoMo-Exp/AutoFixer.git", BaseSHA: "abc123",
 	})
 	if d.Allowed || d.Code != DenyAuditFailure || d.StopCode != StopCodeAuditFailure {
 		t.Errorf("decision = %+v, want deny %q + stop %q", d, DenyAuditFailure, StopCodeAuditFailure)

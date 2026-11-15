@@ -24,6 +24,7 @@ let disposeAuthIpc: () => void = () => undefined;
 let disposeDesktopAuth: () => void = () => undefined;
 let unsubscribeAuth: () => void = () => undefined;
 let startupError = "";
+let personalMode = false;
 
 function appIconPath(): string {
   return path.join(__dirname, "icon-1024.png");
@@ -123,7 +124,7 @@ function runWindowSmoke(window: BrowserWindow): void {
             let taskId = ${JSON.stringify(process.env["FORGEPILOT_ELECTRON_SMOKE_TASK_ID"] ?? "")};
             if (createMode) {
               const created = await call("00000000-0000-4000-8000-0000000000a1", "POST", "/api/v1/tasks", {
-                repository_id: "github:Luthiel/AutoFixer",
+                repository_id: "github:FoMo-Exp/AutoFixer",
                 base_ref: "main",
                 summary: "Scripted Pi summary window smoke"
               }, { "Idempotency-Key": "electron-window-pi-summary-" + summaryMode });
@@ -188,7 +189,7 @@ function runWindowSmoke(window: BrowserWindow): void {
             url: apiBaseUrl + "/api/v1/tasks",
             method: "POST",
             headers: { Accept: "application/json", "Content-Type": "application/json", "Idempotency-Key": "electron-window-smoke" },
-            body: JSON.stringify({ repository_id: "github:Luthiel/AutoFixer", base_ref: "main", summary: "Electron window smoke task" })
+            body: JSON.stringify({ repository_id: "github:FoMo-Exp/AutoFixer", base_ref: "main", summary: "Electron window smoke task" })
           });
           if (created.status !== 201) {
             throw new Error("real Node task creation failed: " + created.status + " " + (created.body || ""));
@@ -302,11 +303,17 @@ void app.whenReady().then(async () => {
     () => mainWindow,
     desktopAuth,
     isTrustedRendererUrl,
+    (mode) => {
+      personalMode = mode === "personal";
+    },
   );
   const proxy = createApiProxy({
     apiBaseUrl,
     getApiToken: () =>
-      desktopAuth.getApiToken() ?? (desktopAuth.getState().status === "legacy" ? launchToken : ""),
+      personalMode
+        ? launchToken
+        : (desktopAuth.getApiToken() ??
+          (desktopAuth.getState().status === "legacy" ? launchToken : "")),
     onUnauthorized: () => {
       void desktopAuth.expire();
     },

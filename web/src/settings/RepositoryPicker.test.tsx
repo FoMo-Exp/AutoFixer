@@ -14,9 +14,8 @@ const ACCOUNT = {
   createdAt: "2026-01-01T00:00:00.000Z",
 };
 
-// The real shape seen in the field: the form default points at one owner
-// (github:Luthiel/AutoFixer) while the bound account discovers the repo under
-// another (github:FoMo-Exp/AutoFixer).
+// Simulates a form opened with the pre-transfer owner while the bound account
+// discovers the repository under its current organization owner.
 const REPO = {
   id: "github:FoMo-Exp/AutoFixer",
   provider: "github" as const,
@@ -84,8 +83,8 @@ afterEach(() => {
 describe("auto-prefill when the default repository is not discovered", () => {
   it("auto-selects the discovered repo by name and offers its branches", async () => {
     mockBridge({ ...REPO, defaultBranch: "main" }, BRANCHES_MAIN_DEV);
-    // The default points at an owner the account does not see; the discovered
-    // AutoFixer should be recognised by name and auto-selected.
+    // The default points at the old owner; the discovered AutoFixer should be
+    // recognised by name and auto-selected under the new organization owner.
     render(<Harness initialRepo="github:Luthiel/AutoFixer" initialRef="main" />);
 
     // REGRESSION (field bug): the create dialog opened with both fields as

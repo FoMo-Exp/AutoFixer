@@ -14,6 +14,7 @@ import type {
   ProductState,
 } from "../api/client";
 import { ChangeReviewCard } from "./ChangeReview";
+import { IssueSyncPanel } from "./IssueSyncPanel";
 import { DeliveryStatusCard } from "./DeliveryStatus";
 import { describeIssueError, errorLabel } from "./errors";
 import type { IssueError } from "./errors";
@@ -319,6 +320,16 @@ export function IssueDetail({
       ) : (
         <div className="detail-grid">
           <div className="detail-main-column">
+            <IssueSyncPanel
+              client={client}
+              workspaceId={workspaceId}
+              issue={issue}
+              canMutate={canMutate}
+              onChanged={() => {
+                onChanged();
+                setReloadToken((value) => value + 1);
+              }}
+            />
             <section
               ref={stageCardRef}
               id="issue-stage-card"

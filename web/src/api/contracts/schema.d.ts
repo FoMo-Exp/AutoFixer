@@ -979,6 +979,62 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
+        /**
+         * Update synchronized provider issue fields
+         * @description Applies field-level last-modified-wins and records an immutable version before synchronizing the accepted values.
+         */
+        patch: operations["updateIssueContent"];
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List immutable synchronized content versions */
+        get: operations["listIssueContentVersions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List synchronized issue comments */
+        get: operations["listIssueSyncComments"];
+        put?: never;
+        /** Add and synchronize a comment */
+        post: operations["addIssueSyncComment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restore synchronized fields from an immutable version */
+        post: operations["rollbackIssueContent"];
+        delete?: never;
+        options?: never;
+        head?: never;
         patch?: never;
         trace?: never;
     };
@@ -2542,6 +2598,24 @@ export interface components {
             /** @description Service-derived fingerprint (versioned for log signals) that binds a repeated alert to one issue instead of spawning unbounded tasks; a repeat updates the existing issue's evidence. */
             dedupe_key: string;
             summary: string;
+            /** @description Synchronized provider issue body; excludes internal execution and approval evidence. */
+            description: string;
+            labels: string[];
+            /** @description External issue link and provider state; null only while sync is pending or failed. */
+            provider: {
+                /** @enum {string} */
+                provider_type: "github" | "gitlab";
+                issue_id: string;
+                issue_number: string;
+                /** Format: uri */
+                url: string;
+                /** @enum {string} */
+                state: "open" | "closed";
+                /** Format: date-time */
+                last_synced_at: string;
+            } | null;
+            /** @enum {string} */
+            sync_state: "pending" | "processing" | "synced" | "failed";
             /** @description Immutable originating signal or manual submission reference. */
             source_reference: string | null;
             /** @enum {string} */
@@ -4457,7 +4531,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    /** @example github:Luthiel/AutoFixer */
+                    /** @example github:FoMo-Exp/AutoFixer */
                     repository_id: string;
                     /** @example main */
                     base_ref: string;
@@ -5155,7 +5229,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    /** @example github:Luthiel/AutoFixer */
+                    /** @example github:FoMo-Exp/AutoFixer */
                     repository_id: string;
                     /** @example main */
                     base_ref: string;
@@ -8116,11 +8190,9 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    /** @description Immutable provider repository id bound to the workspace. */
-                    repository_id: string;
-                    /** @example main */
-                    base_ref: string;
                     summary: string;
+                    description?: string;
+                    labels?: string[];
                     /** @description Immutable report/signal reference; never a grant. */
                     source_reference?: string | null;
                 };
@@ -8215,6 +8287,297 @@ export interface operations {
             };
             /** @description ISSUE_NOT_FOUND */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    updateIssueContent: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the request with the same key and payload returns the recorded result instead of applying the command twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a new one. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    title?: string;
+                    description?: string;
+                    /** @enum {string} */
+                    state?: "open" | "closed";
+                    labels?: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description Synchronized issue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Issue"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description IDEMPOTENCY_CONFLICT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listIssueContentVersions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Content versions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: Record<string, never>[];
+                    };
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listIssueSyncComments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Synchronized comments */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: Record<string, never>[];
+                    };
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    addIssueSyncComment: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the request with the same key and payload returns the recorded result instead of applying the command twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a new one. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    body: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Issue after comment creation */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Issue"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    rollbackIssueContent: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replay-safe command identity. Repeating the request with the same key and payload returns the recorded result instead of applying the command twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a new one. */
+                "Idempotency-Key"?: string;
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                workspace_id: string;
+                issue_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    version_id: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Restored issue version */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Issue"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description IDEMPOTENCY_CONFLICT */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

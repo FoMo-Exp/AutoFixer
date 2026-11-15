@@ -24,6 +24,7 @@ import type { TaskEvent, TaskResource } from "./task-store.js";
 import type { TaskService } from "./task-service.js";
 import { actionForRequest } from "./request-authority.js";
 import type { RequestAuthority } from "./request-authority.js";
+import type { IssueSyncService } from "../issue-sync/service.js";
 
 export interface ApiServerDeps {
   service: TaskService;
@@ -57,6 +58,8 @@ export interface ApiServerDeps {
    * unrouted.
    */
   invitations?: InvitationService;
+  /** Workspace-scoped issue creation/list/detail and provider synchronization. */
+  issues?: IssueSyncService;
   /** External origin override for OAuth redirects; loopback derives per request. */
   publicOrigin?: string;
   /**
@@ -449,6 +452,36 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
 
       // GET /api/v1/workspaces — exactly the caller's live memberships.
       if (segments[2] === "workspaces" && segments.length === 3) {
+        if (method === "POST") {
+          if (deps.auth === undefined) {
+            throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
+          }
+          const session = requireSessionActor(deps.auth, req);
+          const body = await readJsonBody(req);
+          if (
+            typeof body !== "object" ||
+            body === null ||
+            typeof (body as Record<string, unknown>).name !== "string" ||
+            typeof (body as Record<string, unknown>).repository_id !== "string" ||
+            typeof (body as Record<string, unknown>).provider_instance_id !== "string"
+          ) {
+            throw new ApiError(
+              400,
+              "INVALID_REQUEST",
+              "name, repository_id and provider_instance_id are required",
+            );
+          }
+          writeJson(
+            res,
+            201,
+            deps.auth.createWorkspace(session.user.id, {
+              name: (body as { name: string }).name,
+              repository_id: (body as { repository_id: string }).repository_id,
+              provider_instance_id: (body as { provider_instance_id: string }).provider_instance_id,
+            }),
+          );
+          return;
+        }
         if (method !== "GET") {
           throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
         }
@@ -521,7 +554,134 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
       // Workspace-scoped task family (DAT-244).
       if (segments[2] === "workspaces") {
         const workspaceId = segments[3];
-        if (workspaceId === undefined || segments[4] !== "tasks") {
+        if (workspaceId === undefined) {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
+        }
+        if (segments[4] === "issues") {
+          if (deps.issues === undefined) {
+            throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
+          }
+          const actor = authenticateRequest(req, deps);
+          const issueActorId = actor.kind === "session" ? actor.ctx.user.id : undefined;
+          const access = scopedWorkspaceAccess(actor, deps, workspaceId);
+          if (access.readOnly && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+            throw new ApiError(403, "FORBIDDEN", "this session has read-only access");
+          }
+          const requestAction = actionForRequest(method, segments);
+          if (actor.kind === "session" && requestAction !== null && deps.authority !== undefined) {
+            deps.authority.require(actor.ctx.user.id, requestAction, workspaceId);
+          }
+          const tail = segments.slice(5);
+          if (tail.length === 0 && method === "GET") {
+            await deps.issues.syncWorkspace(workspaceId).catch(() => undefined);
+            const items = deps.issues.list(workspaceId);
+            writeJson(res, 200, { items, next_cursor: null });
+            return;
+          }
+          if (tail.length === 0 && method === "POST") {
+            const body = await readJsonBody(req);
+            const idempotencyKey = req.headers["idempotency-key"];
+            if (
+              typeof idempotencyKey !== "string" ||
+              idempotencyKey.length === 0 ||
+              idempotencyKey.length > 256
+            ) {
+              throw new ApiError(
+                400,
+                "INVALID_REQUEST",
+                "a 1–256 character Idempotency-Key is required",
+              );
+            }
+            const created = await deps.issues.create(
+              workspaceId,
+              {
+                summary: requireString(body, "summary"),
+                description: typeof body["description"] === "string" ? body["description"] : "",
+                ...(typeof body["source_reference"] === "string"
+                  ? { source_reference: body["source_reference"] }
+                  : {}),
+                labels: optionalStringArray(body, "labels"),
+              },
+              idempotencyKey,
+              issueActorId,
+            );
+            writeJson(res, 201, created);
+            return;
+          }
+          if (tail.length === 1 && (method === "GET" || method === "HEAD")) {
+            await deps.issues.syncWorkspace(workspaceId).catch(() => undefined);
+            const issue = deps.issues.get(workspaceId, tail[0]!);
+            if (!issue) throw new ApiError(404, "NOT_FOUND", "Issue was not found");
+            writeJson(res, 200, issue);
+            return;
+          }
+          if (tail.length === 1 && method === "PATCH") {
+            const body = await readJsonBody(req);
+            const key = req.headers["idempotency-key"];
+            if (typeof key !== "string" || !key)
+              throw new ApiError(400, "INVALID_REQUEST", "Idempotency-Key is required");
+            const result = await deps.issues.update(
+              workspaceId,
+              tail[0]!,
+              {
+                ...(typeof body["title"] === "string" ? { title: body["title"] } : {}),
+                ...(typeof body["description"] === "string"
+                  ? { description: body["description"] }
+                  : {}),
+                ...(body["state"] === "open" || body["state"] === "closed"
+                  ? { state: body["state"] }
+                  : {}),
+                ...(Array.isArray(body["labels"])
+                  ? { labels: optionalStringArray(body, "labels") }
+                  : {}),
+              },
+              key,
+              issueActorId,
+            );
+            writeJson(res, 200, result);
+            return;
+          }
+          if (tail.length === 2 && tail[1] === "versions" && method === "GET") {
+            writeJson(res, 200, { items: deps.issues.versions(workspaceId, tail[0]!) });
+            return;
+          }
+          if (tail.length === 2 && tail[1] === "comments" && method === "GET") {
+            writeJson(res, 200, { items: deps.issues.comments(workspaceId, tail[0]!) });
+            return;
+          }
+          if (tail.length === 2 && tail[1] === "comments" && method === "POST") {
+            const body = await readJsonBody(req);
+            const key = req.headers["idempotency-key"];
+            if (typeof key !== "string" || !key)
+              throw new ApiError(400, "INVALID_REQUEST", "Idempotency-Key is required");
+            const result = await deps.issues.addComment(
+              workspaceId,
+              tail[0]!,
+              requireString(body, "body"),
+              key,
+              issueActorId,
+            );
+            writeJson(res, 201, result);
+            return;
+          }
+          if (tail.length === 2 && tail[1] === "rollback" && method === "POST") {
+            const body = await readJsonBody(req);
+            const key = req.headers["idempotency-key"];
+            if (typeof key !== "string" || !key)
+              throw new ApiError(400, "INVALID_REQUEST", "Idempotency-Key is required");
+            const result = await deps.issues.rollback(
+              workspaceId,
+              tail[0]!,
+              requireString(body, "version_id"),
+              key,
+              issueActorId,
+            );
+            writeJson(res, 200, result);
+            return;
+          }
+          throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
+        }
+        if (segments[4] !== "tasks") {
           throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
         }
         const actor = authenticateRequest(req, deps);

@@ -229,7 +229,7 @@ export function SettingsDialog({
       onMouseDown={(event) => event.target === event.currentTarget && onClose()}
     >
       <section
-        className="modal modal-settings"
+        className="modal modal-settings glass"
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-title"

@@ -13,7 +13,7 @@ import (
 func testTask() planner.Task {
 	return planner.Task{
 		TaskID:        "task-afp03",
-		RepositoryURL: "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL: "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:       "abc123",
 		Goal:          "run the golden task",
 	}

@@ -121,7 +121,7 @@ describe("repository discovery", () => {
   it("maps GitHub repositories to task-scoped ids", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse(200, [
-        { full_name: "Luthiel/AutoFixer", default_branch: "main", private: true },
+        { full_name: "FoMo-Exp/AutoFixer", default_branch: "main", private: true },
         { full_name: "octocat/spoon-fork", default_branch: "trunk", private: false },
       ]),
     );
@@ -129,9 +129,9 @@ describe("repository discovery", () => {
     const repositories = await client.listRepositories(account());
     expect(repositories).toEqual([
       {
-        id: "github:Luthiel/AutoFixer",
+        id: "github:FoMo-Exp/AutoFixer",
         provider: "github",
-        owner: "Luthiel",
+        owner: "FoMo-Exp",
         name: "AutoFixer",
         defaultBranch: "main",
         private: true,

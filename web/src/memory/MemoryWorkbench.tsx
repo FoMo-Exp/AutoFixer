@@ -14,6 +14,7 @@ import type { Team } from "../api/identity";
 import { formatDate } from "../ui/format";
 import { redactText } from "../ui/redaction";
 import { Select } from "../ui/Select";
+import { useLiquidGlass } from "../ui/use-liquid-glass";
 import { MemoryItemDetail } from "./MemoryItemDetail";
 import {
   describeMemoryError,
@@ -144,6 +145,7 @@ export function MemoryWorkbench({
   loadTeams,
   loadWorkspaces,
 }: MemoryWorkbenchProps): ReactElement {
+  const sidebarGlassRef = useLiquidGlass<HTMLElement>();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string | undefined>(undefined);
   const [workspaceError, setWorkspaceError] = useState<MemoryError | undefined>(undefined);
@@ -397,11 +399,14 @@ export function MemoryWorkbench({
     workspaceError !== undefined && (workspaceError.status === 404 || workspaceError.status === 0);
 
   return (
-    <div className="workspace memory-workspace" data-view={mobileView}>
-      <aside className="sidebar memory-sidebar">
+    <div
+      className="workspace memory-workspace"
+      data-view={mobileView}
+      data-scroll-lock={!selectedItemId ? "true" : undefined}
+    >
+      <aside className="sidebar glass memory-sidebar" ref={sidebarGlassRef}>
         <div className="sidebar-heading">
           <div>
-            <span className="eyebrow">Workspace</span>
             <h1>Memory</h1>
           </div>
           <div className="memory-heading-actions">
@@ -520,55 +525,6 @@ export function MemoryWorkbench({
             />
           </div>
 
-          <details className="memory-scope-filters">
-            <summary>Scope filters</summary>
-            <form className="memory-scope-form" onSubmit={applyScope}>
-              <label className="memory-filter">
-                <span className="field-label">Team id</span>
-                <input
-                  value={scopeDraft.teamId}
-                  onChange={(event) =>
-                    setScopeDraft((current) => ({ ...current, teamId: event.target.value }))
-                  }
-                  autoComplete="off"
-                />
-              </label>
-              <label className="memory-filter">
-                <span className="field-label">Path prefix</span>
-                <input
-                  value={scopeDraft.pathPrefix}
-                  onChange={(event) =>
-                    setScopeDraft((current) => ({ ...current, pathPrefix: event.target.value }))
-                  }
-                  autoComplete="off"
-                />
-              </label>
-              <label className="memory-filter">
-                <span className="field-label">Language</span>
-                <input
-                  value={scopeDraft.language}
-                  onChange={(event) =>
-                    setScopeDraft((current) => ({ ...current, language: event.target.value }))
-                  }
-                  autoComplete="off"
-                />
-              </label>
-              <label className="memory-filter">
-                <span className="field-label">Task family</span>
-                <input
-                  value={scopeDraft.taskFamily}
-                  onChange={(event) =>
-                    setScopeDraft((current) => ({ ...current, taskFamily: event.target.value }))
-                  }
-                  autoComplete="off"
-                />
-              </label>
-              <button type="submit" className="button button-quiet button-small">
-                Apply scope filters
-              </button>
-            </form>
-          </details>
-
           {filtersActive && (
             <button
               type="button"
@@ -579,6 +535,55 @@ export function MemoryWorkbench({
             </button>
           )}
         </div>
+
+        <details className="memory-scope-filters">
+          <summary>Scope filters</summary>
+          <form className="memory-scope-form" onSubmit={applyScope}>
+            <label className="memory-filter">
+              <span className="field-label">Team id</span>
+              <input
+                value={scopeDraft.teamId}
+                onChange={(event) =>
+                  setScopeDraft((current) => ({ ...current, teamId: event.target.value }))
+                }
+                autoComplete="off"
+              />
+            </label>
+            <label className="memory-filter">
+              <span className="field-label">Path prefix</span>
+              <input
+                value={scopeDraft.pathPrefix}
+                onChange={(event) =>
+                  setScopeDraft((current) => ({ ...current, pathPrefix: event.target.value }))
+                }
+                autoComplete="off"
+              />
+            </label>
+            <label className="memory-filter">
+              <span className="field-label">Language</span>
+              <input
+                value={scopeDraft.language}
+                onChange={(event) =>
+                  setScopeDraft((current) => ({ ...current, language: event.target.value }))
+                }
+                autoComplete="off"
+              />
+            </label>
+            <label className="memory-filter">
+              <span className="field-label">Task family</span>
+              <input
+                value={scopeDraft.taskFamily}
+                onChange={(event) =>
+                  setScopeDraft((current) => ({ ...current, taskFamily: event.target.value }))
+                }
+                autoComplete="off"
+              />
+            </label>
+            <button type="submit" className="button button-quiet button-small">
+              Apply scope filters
+            </button>
+          </form>
+        </details>
 
         <div className="task-list" data-scroll="normal">
           {workspaceLoading ? (

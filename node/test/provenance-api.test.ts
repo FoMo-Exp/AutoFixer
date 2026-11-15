@@ -34,7 +34,7 @@ import { scriptedGateway, testRunScope } from "./helpers/test-gateway.js";
  */
 
 const APPROVER = "github:local-operator";
-const REPOSITORY_ID = "github:Luthiel/AutoFixer";
+const REPOSITORY_ID = "github:FoMo-Exp/AutoFixer";
 const BASE_SHA = "52081eaddca099967fd8be13b3060337fde50d3f";
 
 /** A QA-reproduced DAT-192 leak: raw command text that once reached available. */
@@ -83,7 +83,7 @@ function baseConfig(stateFile: string): OrchestratorConfig {
     apiTokenFile: path.join(tokenDir, "api-token"),
     taskStateFile: stateFile,
     repositoryId: REPOSITORY_ID,
-    repositoryUrl: "https://github.com/Luthiel/AutoFixer.git",
+    repositoryUrl: "https://github.com/FoMo-Exp/AutoFixer.git",
     baseRef: "main",
     baseSha: BASE_SHA,
     actorId: "usr_test_operator",
@@ -128,7 +128,7 @@ async function createAndApprove(base: string): Promise<TaskResource> {
     repository_id: REPOSITORY_ID,
     base_ref: "main",
     summary: "Verify provenance",
-    source_reference: "https://github.com/Luthiel/AutoFixer/issues/42",
+    source_reference: "https://github.com/FoMo-Exp/AutoFixer/issues/42",
     acceptance_criteria: ["provenance holds"],
   });
   expect(created.status).toBe(201);

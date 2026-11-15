@@ -15,6 +15,7 @@ import {
 } from "./security-format";
 import type { SecurityErrorDescription } from "./security-format";
 import { Select } from "../ui/Select";
+import { useLiquidGlass } from "../ui/use-liquid-glass";
 import { SecurityEmptyState, SecurityErrorNotice } from "./SecurityNotice";
 import {
   SECURITY_RULE_KIND_LABELS,
@@ -60,6 +61,7 @@ export function SecurityRulesPanel({
   userId,
   canAdminister,
 }: SecurityRulesPanelProps): ReactElement {
+  const sidebarGlassRef = useLiquidGlass<HTMLElement>();
   const [status, setStatus] = useState<SecurityRuleStatus | "all">("all");
   const [detectorId, setDetectorId] = useState("");
   const [detectorDraft, setDetectorDraft] = useState("");
@@ -322,10 +324,9 @@ export function SecurityRulesPanel({
 
   return (
     <div className="workspace security-workspace" data-view={selected ? "detail" : "list"}>
-      <aside className="sidebar security-sidebar">
+      <aside className="sidebar glass security-sidebar" ref={sidebarGlassRef}>
         <div className="sidebar-heading">
           <div>
-            <span className="eyebrow">Policy corrections</span>
             <h1>Rules</h1>
           </div>
           <div className="memory-heading-actions">

@@ -582,7 +582,6 @@ describe("template versions", () => {
         provenance: { author_type: "human" },
         trust: "human",
         sensitivity: "internal",
-        valid_from: "2026-11-05T00:00:00Z",
       },
       1,
     );

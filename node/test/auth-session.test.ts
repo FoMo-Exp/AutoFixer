@@ -59,7 +59,7 @@ async function createTaskStatus(
   const created = await postJson<{ id: string }>(
     `${authApp.base}/api/v1/tasks`,
     {
-      repository_id: "github:Luthiel/AutoFixer",
+      repository_id: "github:FoMo-Exp/AutoFixer",
       base_ref: "main",
       summary: "Session gating probe",
     },

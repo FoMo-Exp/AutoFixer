@@ -16,7 +16,7 @@ import type { IncomingHttpHeaders } from "node:http";
 import { startFakeProvider } from "./fake-provider.js";
 import type { FakeProvider, RecordedRequest } from "./fake-provider.js";
 
-export const REPO_OWNER = "Luthiel";
+export const REPO_OWNER = "FoMo-Exp";
 export const REPO_NAME = "AutoFixer";
 export const REPO_PATH = `/repos/${REPO_OWNER}/${REPO_NAME}`;
 export const REPO_METADATA_URL = REPO_PATH;

@@ -57,7 +57,7 @@
                   "repository_id": {
                     "type": "string",
                     "examples": [
-                      "github:Luthiel/AutoFixer"
+                      "github:FoMo-Exp/AutoFixer"
                     ]
                   },
                   "base_ref": {
@@ -1146,7 +1146,7 @@
                   "repository_id": {
                     "type": "string",
                     "examples": [
-                      "github:Luthiel/AutoFixer"
+                      "github:FoMo-Exp/AutoFixer"
                     ]
                   },
                   "base_ref": {
@@ -5921,23 +5921,20 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "repository_id",
-                  "base_ref",
                   "summary"
                 ],
                 "properties": {
-                  "repository_id": {
-                    "type": "string",
-                    "description": "Immutable provider repository id bound to the workspace."
-                  },
-                  "base_ref": {
-                    "type": "string",
-                    "examples": [
-                      "main"
-                    ]
-                  },
                   "summary": {
                     "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "labels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
                   },
                   "source_reference": {
                     "type": [
@@ -6069,6 +6066,520 @@
           },
           "404": {
             "description": "ISSUE_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "updateIssueContent",
+        "summary": "Update synchronized provider issue fields",
+        "description": "Applies field-level last-modified-wins and records an immutable version before synchronizing the accepted values.",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "issue_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "description": "Replay-safe command identity. Repeating the request with the same key and payload returns the recorded result instead of applying the command twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a new one."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "minProperties": 1,
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "open",
+                      "closed"
+                    ]
+                  },
+                  "labels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Synchronized issue",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Issue"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "ISSUE_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "IDEMPOTENCY_CONFLICT",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/versions": {
+      "get": {
+        "operationId": "listIssueContentVersions",
+        "summary": "List immutable synchronized content versions",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "issue_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Content versions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "ISSUE_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/comments": {
+      "get": {
+        "operationId": "listIssueSyncComments",
+        "summary": "List synchronized issue comments",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "issue_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Synchronized comments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "ISSUE_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "addIssueSyncComment",
+        "summary": "Add and synchronize a comment",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "issue_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "description": "Replay-safe command identity. Repeating the request with the same key and payload returns the recorded result instead of applying the command twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a new one."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "body"
+                ],
+                "properties": {
+                  "body": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Issue after comment creation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Issue"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "ISSUE_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/rollback": {
+      "post": {
+        "operationId": "rollbackIssueContent",
+        "summary": "Restore synchronized fields from an immutable version",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "issue_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "description": "Replay-safe command identity. Repeating the request with the same key and payload returns the recorded result instead of applying the command twice; the same key with a different payload is 409 IDEMPOTENCY_CONFLICT. A safe retry reuses the key; a new intent uses a new one."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "version_id"
+                ],
+                "properties": {
+                  "version_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Restored issue version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Issue"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "ISSUE_NOT_FOUND",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "IDEMPOTENCY_CONFLICT",
             "content": {
               "application/json": {
                 "schema": {
@@ -14720,6 +15231,10 @@
           "repository",
           "dedupe_key",
           "summary",
+          "description",
+          "labels",
+          "provider",
+          "sync_state",
           "source_reference",
           "product_state",
           "state_reason",
@@ -14742,6 +15257,74 @@
           },
           "summary": {
             "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "description": "Synchronized provider issue body; excludes internal execution and approval evidence."
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "provider": {
+            "description": "External issue link and provider state; null only while sync is pending or failed.",
+            "anyOf": [
+              {
+                "type": "object",
+                "required": [
+                  "provider_type",
+                  "issue_id",
+                  "issue_number",
+                  "url",
+                  "state",
+                  "last_synced_at"
+                ],
+                "properties": {
+                  "provider_type": {
+                    "type": "string",
+                    "enum": [
+                      "github",
+                      "gitlab"
+                    ]
+                  },
+                  "issue_id": {
+                    "type": "string"
+                  },
+                  "issue_number": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "open",
+                      "closed"
+                    ]
+                  },
+                  "last_synced_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sync_state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "processing",
+              "synced",
+              "failed"
+            ]
           },
           "source_reference": {
             "type": [

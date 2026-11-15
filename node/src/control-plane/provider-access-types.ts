@@ -111,6 +111,10 @@ export interface ServiceIntegration {
   source_credential_ref: string;
   checkout_credential_ref: string | null;
   delivery_credential_ref: string | null;
+  /** Separate repository-scoped credential for provider issue sync only. */
+  issue_sync_credential_ref: string | null;
+  /** Timestamp at which issue sync was enabled; excludes earlier history. */
+  issue_sync_connected_at: string | null;
   permission_visibility: PermissionVisibility;
   created_at: string;
   updated_at: string;
@@ -212,6 +216,7 @@ export interface CreateServiceIntegrationInput {
   /** Read capability for checkout; delivery write is separate and expiring. */
   checkout_credential_ref?: string;
   delivery_credential_ref?: string;
+  issue_sync_credential_ref?: string;
   permission_visibility: PermissionVisibility;
   actor_id: UserId;
 }

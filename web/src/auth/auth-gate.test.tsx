@@ -36,6 +36,7 @@ function bridgeWith(initial: DesktopAuthState) {
   return {
     emit,
     bridge: {
+      setMode: vi.fn(async () => undefined),
       getState: vi.fn(async () => state),
       signIn: vi.fn(async () => state),
       cancelSignIn: vi.fn(async () => state),
@@ -73,7 +74,7 @@ const workspace = {
   name: "Alpha",
   status: "active" as const,
   repository: {
-    repository_id: "github:Luthiel/AutoFixer",
+    repository_id: "github:FoMo-Exp/AutoFixer",
     provider_instance_id: "pi_github",
     provider_type: "github" as const,
   },
@@ -107,6 +108,8 @@ describe("auth gate", () => {
 
     render(<App />);
 
+    expect(await screen.findByRole("heading", { name: "让信号穿过双闸门" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /企业登录/ }));
     expect(await screen.findByRole("heading", { name: "Sign in to ForgePilot" })).toBeTruthy();
     expect(ForgePilotClient.prototype.listTasks).not.toHaveBeenCalled();
 
@@ -114,20 +117,25 @@ describe("auth gate", () => {
     expect(handle.bridge.signIn).toHaveBeenCalledWith({ provider_instance_id: "pi_github" });
   });
 
-  it("renders the workbench scoped to the caller's live workspace", async () => {
-    installDesktopAuth({ status: "signed_in", providers, session });
+  it("opens the workspace home after enterprise login resolves the caller's live workspace", async () => {
+    const handle = installDesktopAuth({ status: "signed_in", providers, session });
 
     render(<App />);
 
+    expect(await screen.findByRole("heading", { name: "让信号穿过双闸门" })).toBeTruthy();
+    expect(ForgePilotClient.prototype.listTasks).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: /企业登录/ }));
     expect(await screen.findByText("Ada Lovelace")).toBeTruthy();
-    await waitFor(() => expect(ForgePilotClient.prototype.listTasks).toHaveBeenCalled());
-    expect(await screen.findByRole("combobox", { name: "Workspace" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Alpha" })).toBeTruthy();
     expect(IdentityClient.prototype.listAllWorkspaces).toHaveBeenCalled();
+    expect(handle.bridge.setMode).toHaveBeenCalledWith("enterprise");
+    await waitFor(() => expect(ForgePilotClient.prototype.listTasks).toHaveBeenCalled());
   });
 
   it("turns a revoked desktop session into the recoverable expired gate", async () => {
     const handle = installDesktopAuth({ status: "signed_in", providers, session });
     render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /企业登录/ }));
     await screen.findByText("Ada Lovelace");
 
     handle.emit({
@@ -167,6 +175,7 @@ describe("auth gate", () => {
 
     render(<App />);
 
+    await userEvent.click(await screen.findByRole("button", { name: /企业登录/ }));
     expect(await screen.findByRole("heading", { name: "Sign in again to continue" })).toBeTruthy();
     await waitFor(() => expect(handle.bridge.expire).toHaveBeenCalled());
   });
@@ -180,10 +189,20 @@ describe("auth gate", () => {
 
     render(<App />);
 
-    expect(
-      await screen.findByRole("heading", { name: "Your account is not in a workspace yet" }),
-    ).toBeTruthy();
+    await userEvent.click(await screen.findByRole("button", { name: /企业登录/ }));
+    expect(await screen.findByRole("heading", { name: "Join a workspace" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
+  });
+
+  it("opens the local personal workbench using the main-process personal mode", async () => {
+    const handle = installDesktopAuth({ status: "signed_out", providers });
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "让信号穿过双闸门" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /个人登录/ }));
+
+    await waitFor(() => expect(handle.bridge.setMode).toHaveBeenCalledWith("personal"));
+    await waitFor(() => expect(ForgePilotClient.prototype.listTasks).toHaveBeenCalled());
   });
 });

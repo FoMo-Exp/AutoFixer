@@ -682,6 +682,7 @@ export class TaskService {
         },
         reason: reason?.trim() || "cancelled through the product API",
       });
+      if (!record.terminal) this.updateRunSummary(record, record.runId, cancelled.state);
       this.projectDshState(record, cancelled.state, reason?.trim() || null);
       return toTaskResource(record);
     } catch (error) {
@@ -797,7 +798,14 @@ export class TaskService {
   }
 
   getRunSummaries(taskId: string, workspaceId?: string) {
-    return this.requireRecord(taskId, workspaceId).runs;
+    const record = this.requireRecord(taskId, workspaceId);
+    // Older projections could finalize cancellation without updating the run
+    // summary. The cancelled task is itself an authoritative dsh projection.
+    return record.runs.map((run) =>
+      record.status === "cancelled" && run.run_id === record.runId
+        ? { ...run, state: "cancelled" as const }
+        : run,
+    );
   }
 
   /**

@@ -102,8 +102,8 @@ function world(): World {
   };
   const integration = access.integrations.create(scope, {
     provider_instance_id: provider.id,
-    repository_id: "github:Luthiel/AutoFixer",
-    repository_name: "Luthiel/AutoFixer",
+    repository_id: "github:FoMo-Exp/AutoFixer",
+    repository_name: "FoMo-Exp/AutoFixer",
     source_credential_ref: "svc-source-1",
     permission_visibility: "full",
     actor_id: ACTOR,
@@ -152,7 +152,7 @@ function world(): World {
             login: `login-${recordedSubject}`,
             source_kind: "direct_collaborator",
             provider_role: "push",
-            authority_ref: "repository:Luthiel/AutoFixer",
+            authority_ref: "repository:FoMo-Exp/AutoFixer",
             inherited_from: null,
           },
         ],

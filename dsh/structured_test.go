@@ -13,7 +13,7 @@ import (
 // names, with one source file and one dependency manifest.
 func structuredSource() sandbox.RevisionSource {
 	return sandbox.NewStaticRevisionSource(sandbox.StaticRevision{
-		RepositoryURL: "https://github.com/Luthiel/AutoFixer.git",
+		RepositoryURL: "https://github.com/FoMo-Exp/AutoFixer.git",
 		BaseSHA:       "ab12cd3ef456789012345678901234567890abcd",
 		Files: map[string]string{
 			"web/src/export.ts": "export const button = 1;\n",

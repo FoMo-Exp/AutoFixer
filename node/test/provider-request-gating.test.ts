@@ -35,7 +35,7 @@ import type {
  * — these tests drive real HTTP routes, not the gate helper.
  */
 
-const REPOSITORY_ID = "github:Luthiel/AutoFixer";
+const REPOSITORY_ID = "github:FoMo-Exp/AutoFixer";
 const SUBJECT = "1001"; // fakeProvider profile id of the default login
 
 let dsh: DshServerHandle;
@@ -107,7 +107,7 @@ function installIntegration(authApp: AuthApp, userId: string): BoundaryFixture {
   const integration = access.integrations.create(scope, {
     provider_instance_id: authApp.providerInstanceId,
     repository_id: REPOSITORY_ID,
-    repository_name: "Luthiel/AutoFixer",
+    repository_name: "FoMo-Exp/AutoFixer",
     source_credential_ref: "svc-source-1",
     checkout_credential_ref: "svc-checkout-1",
     delivery_credential_ref: "svc-delivery-1",

@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ReactElement } from "react";
-import type { ForgePilotClient, Issue, ProductState, Workspace } from "../api/client";
+import type { FormEvent, ReactElement } from "react";
+import type { CreateIssueInput, ForgePilotClient, Issue, ProductState, Workspace } from "../api/client";
 import { formatDate } from "../ui/format";
 import { productStageTone, productStateLabel } from "../ui/issues";
 import { redactText } from "../ui/redaction";
 import { Select } from "../ui/Select";
+import { useLiquidGlass } from "../ui/use-liquid-glass";
 import { IssueDetail } from "./IssueDetail";
 import { describeIssueError } from "./errors";
 import type { IssueError } from "./errors";
+import { CreateIdempotencyKeys } from "../api/idempotency";
 
 type IssueFilter = "all" | ProductState;
 
@@ -35,6 +37,7 @@ export function IssuesWorkbench({
   /** The caller's live workspace directory, owned by the identity surface. */
   loadWorkspaces: () => Promise<Workspace[]>;
 }): ReactElement {
+  const sidebarGlassRef = useLiquidGlass<HTMLElement>();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string | undefined>(undefined);
   const [workspaceError, setWorkspaceError] = useState<IssueError | undefined>(undefined);
@@ -53,6 +56,13 @@ export function IssuesWorkbench({
   const [selectedIssueId, setSelectedIssueId] = useState<string | undefined>(undefined);
   const [seedIssue, setSeedIssue] = useState<Issue | undefined>(undefined);
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
+  const [creating, setCreating] = useState(false);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createError, setCreateError] = useState<string | undefined>();
+  const [newTitle, setNewTitle] = useState("");
+  const [newDescription, setNewDescription] = useState("");
+  const [newLabels, setNewLabels] = useState("");
+  const createKeys = useRef(new CreateIdempotencyKeys());
 
   useEffect(() => {
     let active = true;
@@ -134,6 +144,7 @@ export function IssuesWorkbench({
   const activeWorkspaces = workspaces.filter((workspace) => workspace.status === "active");
   const selectedWorkspace = activeWorkspaces.find((workspace) => workspace.id === workspaceId);
   const canMutate = selectedWorkspace !== undefined && selectedWorkspace.role !== "viewer";
+  const canOpenCreate = selectedWorkspace?.role !== "viewer";
 
   function selectIssue(issue: Issue): void {
     setSelectedIssueId(issue.issue_id);
@@ -147,6 +158,34 @@ export function IssuesWorkbench({
     setMobileView("list");
   }
 
+  async function submitIssue(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (!workspaceId || !newTitle.trim() || createBusy) return;
+    setCreateBusy(true);
+    setCreateError(undefined);
+    const input: CreateIssueInput = {
+      summary: newTitle.trim(),
+      description: newDescription,
+      labels: newLabels.split(/[\n,]/u).map((label) => label.trim()).filter(Boolean),
+    };
+    try {
+      const issue = await client.createIssue(workspaceId, input, createKeys.current.forInput(input));
+      createKeys.current.complete(input);
+      setIssues((current) => [issue, ...current.filter((item) => item.issue_id !== issue.issue_id)]);
+      setCreating(false);
+      setNewTitle("");
+      setNewDescription("");
+      setNewLabels("");
+      setSelectedIssueId(issue.issue_id);
+      setSeedIssue(issue);
+      setMobileView("detail");
+    } catch (caught) {
+      setCreateError(describeIssueError(caught).message);
+    } finally {
+      setCreateBusy(false);
+    }
+  }
+
   const refreshList = useCallback((): void => {
     setListToken((value) => value + 1);
   }, []);
@@ -155,12 +194,39 @@ export function IssuesWorkbench({
     workspaceError !== undefined && (workspaceError.missing || workspaceError.code === "NOT_FOUND");
 
   return (
-    <div className="workspace issues-workspace" data-view={mobileView}>
-      <aside className="sidebar issues-sidebar">
+    <div
+      className="workspace issues-workspace"
+      data-view={mobileView}
+      data-scroll-lock={!selectedIssueId ? "true" : undefined}
+    >
+      <aside className="sidebar glass issues-sidebar" ref={sidebarGlassRef}>
         <div className="sidebar-heading">
-          <div>
-            <span className="eyebrow">Workspace</span>
-            <h1>Issues</h1>
+          <div className="sidebar-heading-main">
+            <div className="sidebar-title-row">
+              <h1>Issues</h1>
+              {canOpenCreate && (
+                <button
+                  type="button"
+                  className="task-create"
+                  onClick={() => setCreating(true)}
+                  aria-label="New issue"
+                  title="New issue"
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 14 14"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M7 1.5v11M1.5 7h11" />
+                  </svg>
+                </button>
+              )}
+            </div>
           </div>
           <span className="task-count">{issues.length}</span>
         </div>
@@ -334,6 +400,42 @@ export function IssuesWorkbench({
           </section>
         )}
       </main>
+      {creating && (
+        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setCreating(false); }}>
+          <section className="modal glass issue-create-modal" role="dialog" aria-modal="true" aria-labelledby="create-issue-title">
+            <div className="modal-heading">
+              <h2 id="create-issue-title">New issue</h2>
+              <button type="button" className="button button-quiet button-small" onClick={() => setCreating(false)} aria-label="Close">×</button>
+            </div>
+            {!workspaceId ? (
+              <div className="issue-create-empty-state">
+                <p>No active workspace is available to this credential.</p>
+                <p>Join or create a workspace from Workspaces, then create an issue here.</p>
+              </div>
+            ) : (
+            <form className="form-stack" onSubmit={(event) => void submitIssue(event)}>
+              <label className="field-label" htmlFor="new-issue-title">
+                <span className="label-text">Title<span className="required-dot">*</span></span>
+                <input id="new-issue-title" autoFocus required maxLength={256} value={newTitle} onChange={(event) => setNewTitle(event.target.value)} />
+              </label>
+              <label className="field-label" htmlFor="new-issue-description">
+                <span className="label-text">Description</span>
+                <textarea id="new-issue-description" rows={5} value={newDescription} onChange={(event) => setNewDescription(event.target.value)} />
+              </label>
+              <label className="field-label" htmlFor="new-issue-labels">
+                <span className="label-text">Labels</span>
+                <input id="new-issue-labels" value={newLabels} onChange={(event) => setNewLabels(event.target.value)} />
+              </label>
+              {createError && <p role="alert" className="form-error">{createError}</p>}
+              <div className="modal-actions">
+                <button type="button" className="button button-quiet" onClick={() => setCreating(false)}>Cancel</button>
+                <button type="submit" className="button button-primary" disabled={createBusy || !newTitle.trim()}>{createBusy ? "Creating…" : "Create issue"}</button>
+              </div>
+            </form>
+            )}
+          </section>
+        </div>
+      )}
     </div>
   );
 }
@@ -362,6 +464,15 @@ function IssueListItem({
         <div className="task-list-summary">{redactText(issue.summary)}</div>
         <div className="task-list-repo">
           <span className="mono">{redactText(issue.repository.repository_id)}</span>
+          <span className="issue-sync-indicator">
+            {issue.provider ? (
+              <a href={issue.provider.url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
+                {issue.provider.provider_type} #{issue.provider.issue_number} · {issue.provider.state}
+              </a>
+            ) : (
+              `Sync ${issue.sync_state}`
+            )}
+          </span>
         </div>
       </button>
     </article>

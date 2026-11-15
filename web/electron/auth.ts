@@ -463,6 +463,7 @@ export function installDesktopAuthIpc(
   getWindow: () => BrowserWindow | undefined,
   auth: DesktopAuth,
   isTrustedFrameUrl: (url: string) => boolean,
+  setMode: (mode: "enterprise" | "personal") => void = () => undefined,
 ): () => void {
   const isTrustedSender = (event: IpcMainInvokeEvent | IpcMainEvent): boolean => {
     const window = getWindow();
@@ -482,6 +483,12 @@ export function installDesktopAuthIpc(
     };
 
   const handlers: Record<string, (event: IpcMainInvokeEvent, input?: unknown) => unknown> = {
+    "forgepilot:auth-set-mode": guard((input) => {
+      const mode = input === "personal" ? "personal" : input === "enterprise" ? "enterprise" : undefined;
+      if (!mode) throw new Error("Invalid ForgePilot login mode.");
+      setMode(mode);
+      return Promise.resolve(auth.getState());
+    }),
     "forgepilot:auth-state": guard(() => Promise.resolve(auth.getState())),
     "forgepilot:auth-sign-in": guard((input) => {
       const value = input as { provider_instance_id?: unknown } | undefined;

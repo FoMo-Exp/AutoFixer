@@ -25,7 +25,7 @@ import { makeGate, scriptedStream, TEST_MODEL } from "./helpers/scripted-stream.
 import { scriptedGateway, testPolicyFor, testRunScope } from "./helpers/test-gateway.js";
 
 const APPROVER = "github:local-operator";
-const REPOSITORY_ID = "github:Luthiel/AutoFixer";
+const REPOSITORY_ID = "github:FoMo-Exp/AutoFixer";
 const BASE_SHA = "52081eaddca099967fd8be13b3060337fde50d3f";
 
 let dsh: DshServerHandle;
@@ -56,7 +56,7 @@ function testConfig(overrides: Partial<OrchestratorConfig> = {}): OrchestratorCo
     apiPort: 0,
     apiTokenFile: path.join(tokenDir, "api-token"),
     repositoryId: REPOSITORY_ID,
-    repositoryUrl: "https://github.com/Luthiel/AutoFixer.git",
+    repositoryUrl: "https://github.com/FoMo-Exp/AutoFixer.git",
     baseRef: "main",
     baseSha: BASE_SHA,
     actorId: "usr_test_operator",
@@ -106,7 +106,7 @@ async function createAndApprove(
     repository_id: REPOSITORY_ID,
     base_ref: "main",
     summary: "Verify the echo tool works",
-    source_reference: "https://github.com/Luthiel/AutoFixer/issues/42",
+    source_reference: "https://github.com/FoMo-Exp/AutoFixer/issues/42",
     acceptance_criteria: ["echo prints hello"],
     ...body,
   });
@@ -158,7 +158,7 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
       repository_id: REPOSITORY_ID,
       base_ref: "main",
       summary: "Verify the echo tool works",
-      source_reference: "https://github.com/Luthiel/AutoFixer/issues/42",
+      source_reference: "https://github.com/FoMo-Exp/AutoFixer/issues/42",
       acceptance_criteria: ["echo prints hello"],
     });
     expect(created.status).toBe(201);
@@ -428,7 +428,7 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
   });
 
   test("cancel aborts the Pi run and projects dsh's cancelled state", async () => {
-    const { base } = await startApp([
+    const { base, orchestrator } = await startApp([
       {
         kind: "tool",
         toolId: "echo",
@@ -458,6 +458,21 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     });
     expect(cancelled.status).toBe(202);
     expect(cancelled.body.status).toBe("cancelled");
+    const record = orchestrator.store.get(created.id)!;
+    const summary = record.runs.find((item) => item.run_id === runId)!;
+    expect(summary.state).toBe("cancelled");
+
+    const history = await getJson<{ items: RunSummary[] }>(
+      `${base}/api/v1/tasks/${created.id}/runs`,
+    );
+    expect(history.body.items.find((item) => item.run_id === runId)?.state).toBe("cancelled");
+    // Old persisted projections may have missed the cancellation update.
+    summary.state = "requested";
+    const legacyHistory = await getJson<{ items: RunSummary[] }>(
+      `${base}/api/v1/tasks/${created.id}/runs`,
+    );
+    expect(legacyHistory.body.items.find((item) => item.run_id === runId)?.state).toBe("cancelled");
+    summary.state = "cancelled";
 
     const events = await timeline(base, created.id);
     expect(

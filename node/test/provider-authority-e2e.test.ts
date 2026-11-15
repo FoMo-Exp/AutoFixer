@@ -40,13 +40,13 @@ const SUBJECT = "4242";
 const LOGIN = "octocat";
 const SECRET = "ghs_service_token_e2e_77bd";
 const CREDENTIAL_REF = "svc-source-1";
-const CANONICAL = "github:Luthiel/AutoFixer";
+const CANONICAL = "github:FoMo-Exp/AutoFixer";
 
-const REPO_URL = "/repos/Luthiel/AutoFixer";
-const COLLABORATORS_URL = "/repos/Luthiel/AutoFixer/collaborators?per_page=100&page=1";
-const OWNERS_URL = "/orgs/Luthiel/members?role=admin&per_page=100&page=1";
+const REPO_URL = "/repos/FoMo-Exp/AutoFixer";
+const COLLABORATORS_URL = "/repos/FoMo-Exp/AutoFixer/collaborators?per_page=100&page=1";
+const OWNERS_URL = "/orgs/FoMo-Exp/members?role=admin&per_page=100&page=1";
 
-const ORG_REPO = { id: 9001, owner: { id: 7, login: "Luthiel", type: "Organization" } };
+const ORG_REPO = { id: 9001, owner: { id: 7, login: "FoMo-Exp", type: "Organization" } };
 const PERSONAL_REPO = { id: 9002, owner: { id: 8, login: "Luthiel", type: "User" } };
 
 const credentials = createStaticServiceCredentialStore({ [CREDENTIAL_REF]: SECRET });
@@ -289,7 +289,7 @@ describe("reconcile → subject_authority → redemption", () => {
     // Then: a truncated page must not touch it.
     const truncated = scriptedAdapter({
       pages: [
-        page([role(SUBJECT, "direct_collaborator", "write", "repository:Luthiel/AutoFixer")], {
+        page([role(SUBJECT, "direct_collaborator", "write", "repository:FoMo-Exp/AutoFixer")], {
           truncated: true,
         }),
       ],
@@ -438,7 +438,7 @@ describe("per-subject refresh before a sensitive action", () => {
     provider = await startFakeProvider(
       exactRoutes({
         [REPO_URL]: { status: 200, body: ORG_REPO },
-        "/repos/Luthiel/AutoFixer/collaborators/octocat/permission": {
+        "/repos/FoMo-Exp/AutoFixer/collaborators/octocat/permission": {
           status: 200,
           body: {
             permission: "write",
@@ -468,7 +468,7 @@ describe("per-subject refresh before a sensitive action", () => {
     // The per-subject query is the exact collaborator path, not a roster sweep.
     expect(provider.urls()).toEqual([
       REPO_URL,
-      "/repos/Luthiel/AutoFixer/collaborators/octocat/permission",
+      "/repos/FoMo-Exp/AutoFixer/collaborators/octocat/permission",
     ]);
   });
 
@@ -494,7 +494,7 @@ describe("per-subject refresh before a sensitive action", () => {
     provider = await startFakeProvider(
       exactRoutes({
         [REPO_URL]: { status: 200, body: ORG_REPO },
-        "/repos/Luthiel/AutoFixer/collaborators/octocat/permission": { status: 404, body: {} },
+        "/repos/FoMo-Exp/AutoFixer/collaborators/octocat/permission": { status: 404, body: {} },
       }),
     );
 
@@ -651,7 +651,7 @@ describe("provenance cleanup after a complete roster", () => {
     provider = await startFakeProvider(
       exactRoutes({
         [REPO_URL]: { status: 200, body: ORG_REPO },
-        "/repos/Luthiel/AutoFixer/collaborators/octocat/permission": {
+        "/repos/FoMo-Exp/AutoFixer/collaborators/octocat/permission": {
           status: 200,
           body: { permission: "write", role_name: "write", user: { id: Number(SUBJECT) } },
         },
@@ -682,7 +682,7 @@ describe("pagination-limit failures stay incomplete", () => {
     const fixture = setupFixture();
     await seedMember(fixture);
     const fullPage = Array.from({ length: 100 }, (_, index) =>
-      role(String(5000 + index), "direct_collaborator", "read", "repository:Luthiel/AutoFixer"),
+      role(String(5000 + index), "direct_collaborator", "read", "repository:FoMo-Exp/AutoFixer"),
     );
     const adapter = scriptedAdapter({
       pages: [page(fullPage, { has_more: true, next_cursor: "1" })],

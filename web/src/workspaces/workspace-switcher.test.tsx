@@ -98,6 +98,11 @@ const beta = workspace("ws_beta", "Beta", "admin");
 
 const storedKey = "fp-workspace:usr_1";
 
+async function renderEnterpriseApp(): Promise<void> {
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: /企业登录/ }));
+}
+
 beforeEach(() => {
   installDesktopAuth();
   window.localStorage.setItem(storedKey, "ws_alpha");
@@ -127,7 +132,7 @@ afterEach(() => {
 
 describe("workspace switcher", () => {
   it("restores the stored workspace and shows its binding and role", async () => {
-    render(<App />);
+    await renderEnterpriseApp();
 
     const switcher = await screen.findByRole("combobox", { name: "Workspace" });
     expect(switcher.textContent).toContain("Alpha");
@@ -137,7 +142,7 @@ describe("workspace switcher", () => {
 
   it("asks for a workspace when more than one is accessible and none is stored", async () => {
     window.localStorage.removeItem(storedKey);
-    render(<App />);
+    await renderEnterpriseApp();
 
     expect(await screen.findByRole("heading", { name: "Choose a workspace" })).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: /Beta/ }));
@@ -159,8 +164,9 @@ describe("workspace switcher", () => {
         items: [task("beta-task", "ws_beta", "Beta repair")],
         next_cursor: null,
       });
-    render(<App />);
+    await renderEnterpriseApp();
 
+    await userEvent.click(await screen.findByRole("button", { name: "Open Tasks" }));
     await userEvent.click(await screen.findByRole("button", { name: /Alpha repair/ }));
     expect(await screen.findByRole("heading", { name: "Alpha repair" })).toBeTruthy();
 
@@ -185,8 +191,9 @@ describe("workspace switcher", () => {
       items: [task("alpha-task", "ws_alpha", "Alpha repair")],
       next_cursor: null,
     });
-    render(<App />);
+    await renderEnterpriseApp();
 
+    await userEvent.click(await screen.findByRole("button", { name: "Open Tasks" }));
     await userEvent.click(await screen.findByRole("button", { name: /Alpha repair/ }));
     await waitFor(() => expect(signals).toHaveLength(1));
 
@@ -221,7 +228,7 @@ describe("workspace switcher", () => {
         "Workspace was not found",
       ),
     );
-    render(<App />);
+    await renderEnterpriseApp();
 
     expect(await screen.findByRole("heading", { name: "Choose a workspace" })).toBeTruthy();
     await waitFor(() => expect(window.localStorage.getItem(storedKey)).toBeNull());
@@ -233,7 +240,7 @@ describe("workspace switcher", () => {
     vi.mocked(IdentityClient.prototype.listAllWorkspaces).mockResolvedValue([
       workspace("ws_one", "Solo"),
     ]);
-    render(<App />);
+    await renderEnterpriseApp();
 
     expect(await screen.findByRole("combobox", { name: "Workspace" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Choose a workspace" })).toBeNull();
@@ -244,7 +251,7 @@ describe("workspace switcher", () => {
     vi.mocked(IdentityClient.prototype.listAllWorkspaces)
       .mockResolvedValueOnce([alpha])
       .mockResolvedValueOnce([beta]);
-    render(<App />);
+    await renderEnterpriseApp();
 
     const switcher = await screen.findByRole("combobox", { name: "Workspace" });
     expect(switcher.textContent).toContain("Alpha");
@@ -264,8 +271,9 @@ describe("workspace switcher", () => {
       workspace("ws_view", "Viewer Team", "viewer"),
     ]);
     window.localStorage.setItem(storedKey, "ws_view");
-    render(<App />);
+    await renderEnterpriseApp();
 
+    await userEvent.click(await screen.findByRole("button", { name: "Open Tasks" }));
     expect(await screen.findByText("Viewer access is read-only.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /New task/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Start a task" })).toBeNull();

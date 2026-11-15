@@ -598,7 +598,7 @@ describe("join surface", () => {
     // The provider was asked at redemption time, over the exact routes the
     // adapter documents, with the service credential — never a user token.
     const requests = repo.requests();
-    expect(requests.some((request) => request.url === "/repos/Luthiel/AutoFixer")).toBe(true);
+    expect(requests.some((request) => request.url === "/repos/FoMo-Exp/AutoFixer")).toBe(true);
     const permission = requests.find((request) =>
       request.url.endsWith("/collaborators/zoe/permission"),
     );

@@ -80,7 +80,7 @@ async function createLegacyTask(authApp: AuthApp): Promise<TaskResource> {
   const created = await postJson<TaskResource>(
     `${authApp.base}/api/v1/tasks`,
     {
-      repository_id: "github:Luthiel/AutoFixer",
+      repository_id: "github:FoMo-Exp/AutoFixer",
       base_ref: "main",
       summary: "workspace scope probe",
     },
@@ -334,6 +334,58 @@ describe("workspace-scoped task surface (DAT-244)", () => {
     );
     expect(empty.status).toBe(200);
     expect(empty.body.items).toEqual([]);
+  });
+
+  test("enterprise admins create a workspace with an owner membership atomically", async () => {
+    const authApp = await app();
+    const admin = await webLogin(authApp);
+    const bootstrapped = await postJson(
+      `${authApp.base}/api/v1/admin/enterprises/${authApp.enterpriseId}/bootstrap`,
+      { provider_instance_id: authApp.providerInstanceId, subject: "1001" },
+      { "Content-Type": "application/json", "X-Bootstrap-Token": BOOTSTRAP_TOKEN },
+    );
+    expect(bootstrapped.status).toBe(200);
+
+    const created = await postJson<{
+      id: string;
+      role: string;
+      repository: { repository_id: string; provider_type: string };
+    }>(
+      `${authApp.base}/api/v1/workspaces`,
+      {
+        name: "Platform",
+        repository_id: "github:Luthiel/Platform",
+        provider_instance_id: authApp.providerInstanceId,
+      },
+      { "Content-Type": "application/json", ...cookieSessionHeaders(admin) },
+    );
+    expect(created.status).toBe(201);
+    expect(created.body.repository).toEqual({
+      repository_id: "github:Luthiel/Platform",
+      provider_type: "github",
+      provider_instance_id: authApp.providerInstanceId,
+    });
+    expect(created.body.role).toBe("owner");
+    const visible = await getJson<{ items: Array<{ id: string; role: string }> }>(
+      `${authApp.base}/api/v1/workspaces`,
+      cookieSessionHeaders(admin),
+    );
+    expect(visible.body.items.find((item) => item.id === created.body.id)?.role).toBe("owner");
+  });
+
+  test("ordinary signed-in users cannot create enterprise workspaces", async () => {
+    const authApp = await app();
+    const user = await webLogin(authApp);
+    const response = await postJson(
+      `${authApp.base}/api/v1/workspaces`,
+      {
+        name: "Unauthorized",
+        repository_id: "github:example/unauthorized",
+        provider_instance_id: authApp.providerInstanceId,
+      },
+      { "Content-Type": "application/json", ...cookieSessionHeaders(user) },
+    );
+    expect(response.status).toBe(403);
   });
 
   test("viewer can read but cannot mutate a scoped task", async () => {

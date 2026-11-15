@@ -31,6 +31,8 @@ import {
 export interface ProviderHttpRequest {
   url: string;
   headers: Readonly<Record<string, string>>;
+  method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+  body?: string;
 }
 
 export interface ProviderHttpResponse {
@@ -45,7 +47,12 @@ export type ProviderHttpClient = (request: ProviderHttpRequest) => Promise<Provi
 /** The subset of the Fetch API the transport needs. */
 type FetchLike = (
   url: string,
-  init: { method: string; headers: Record<string, string>; redirect: "error" },
+  init: {
+    method: string;
+    headers: Record<string, string>;
+    redirect: "error";
+    body?: string;
+  },
 ) => Promise<{
   status: number;
   headers: { forEach(callback: (value: string, key: string) => void): void };
@@ -67,13 +74,14 @@ export interface FetchHttpClientOptions {
  */
 export function createFetchHttpClient(options: FetchHttpClientOptions = {}): ProviderHttpClient {
   const fetchImpl: FetchLike = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
-  return async ({ url, headers }) => {
+  return async ({ url, headers, method = "GET", body: requestBody }) => {
     let response: Awaited<ReturnType<FetchLike>>;
     try {
       response = await fetchImpl(url, {
-        method: "GET",
+        method,
         headers: { ...headers },
         redirect: "error",
+        ...(requestBody !== undefined ? { body: requestBody } : {}),
       });
     } catch (error) {
       throw new ProviderUnavailableError(

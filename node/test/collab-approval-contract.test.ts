@@ -176,7 +176,7 @@ describe("approval and delivery contract", () => {
       state: "delivered",
       branch: "autofixer/iss_1",
       pr_id: "pr_1",
-      pr_url: "https://github.com/Luthiel/AutoFixer/pull/1",
+      pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
       error_code: null,
       created_at: "2026-11-03T00:00:00.000Z",
       updated_at: "2026-11-03T00:01:00.000Z",

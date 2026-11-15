@@ -46,8 +46,8 @@ export function op(): string {
 export const WORKSPACE = { enterprise_id: "ent_test", workspace_id: "ws_test" };
 
 export const REPOSITORY = {
-  repository_id: "github:Luthiel/AutoFixer",
-  url: "https://github.com/Luthiel/AutoFixer.git",
+  repository_id: "github:FoMo-Exp/AutoFixer",
+  url: "https://github.com/FoMo-Exp/AutoFixer.git",
   base_ref: "main",
   base_sha: "52081eaddca099967fd8be13b3060337fde50d3f",
 };

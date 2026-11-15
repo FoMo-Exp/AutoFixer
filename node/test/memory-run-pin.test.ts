@@ -19,7 +19,7 @@ let app: AuthApp;
 let scope: WorkspaceScope;
 let lessonId: string;
 
-const REPOSITORY_ID = "github:Luthiel/AutoFixer";
+const REPOSITORY_ID = "github:FoMo-Exp/AutoFixer";
 
 function operatorHeaders(): Record<string, string> {
   return { Authorization: `Bearer ${app.orchestrator.apiToken}` };

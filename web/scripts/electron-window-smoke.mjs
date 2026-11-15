@@ -73,7 +73,7 @@ try {
   const serviceEnv = {
     ...process.env,
     FORGEPILOT_BASE_SHA: baseSha,
-    FORGEPILOT_REPOSITORY_ID: "github:Luthiel/AutoFixer",
+    FORGEPILOT_REPOSITORY_ID: "github:FoMo-Exp/AutoFixer",
     FORGEPILOT_DSH_SOCKET: socketPath,
     FORGEPILOT_API_TOKEN_FILE: tokenFile,
     FORGEPILOT_TASK_STATE_FILE: path.join(tempDir, "task-state.json"),

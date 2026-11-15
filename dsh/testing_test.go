@@ -206,10 +206,10 @@ func lowRiskCreate(taskID string, tools ...string) createRequest {
 		Issue: issueRef{
 			Provider:        "github",
 			ExternalID:      "1234",
-			SourceReference: "https://github.com/Luthiel/AutoFixer/issues/1234",
+			SourceReference: "https://github.com/FoMo-Exp/AutoFixer/issues/1234",
 		},
 		Repository: repositoryRef{
-			RepositoryID: "github:Luthiel/AutoFixer",
+			RepositoryID: "github:FoMo-Exp/AutoFixer",
 			URL:          delivery.AllowedRepositoryURL,
 			BaseRef:      "main",
 			BaseSHA:      "ab12cd3ef456789012345678901234567890abcd",

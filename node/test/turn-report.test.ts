@@ -208,7 +208,7 @@ describe("model-facing text composition (DAT-193)", () => {
       summary: "Verify the echo tool works",
       sourceReference: null,
       acceptanceCriteria: ["echo prints hello"],
-      repositoryId: "github:Luthiel/AutoFixer",
+      repositoryId: "github:FoMo-Exp/AutoFixer",
       baseRef: "main",
       baseSha: "abc123",
       grant,

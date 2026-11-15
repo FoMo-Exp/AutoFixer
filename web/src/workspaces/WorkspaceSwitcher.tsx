@@ -20,7 +20,6 @@ export function WorkspaceSwitcher({
 }): ReactElement {
   return (
     <div className="workspace-switcher">
-      <span className="eyebrow">Workspace</span>
       <Select
         id="workspace-switcher"
         ariaLabel="Workspace"

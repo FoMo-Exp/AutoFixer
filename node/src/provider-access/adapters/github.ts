@@ -104,7 +104,7 @@ const ROLE_NAME: Readonly<Record<string, string>> = Object.freeze({
 
 /** Read-only service credential; never a user OAuth token (DAT-204 ruling). */
 export interface GitHubAdapterOptions {
-  /** Canonical id, e.g. `github:Luthiel/AutoFixer`. */
+  /** Canonical id, e.g. `github:FoMo-Exp/AutoFixer`. */
   canonical_repository_id: string;
   /** Reference into the DAT-203 credential boundary — never a secret. */
   credential_ref: string;

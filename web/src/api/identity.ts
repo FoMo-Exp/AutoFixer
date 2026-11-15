@@ -44,6 +44,8 @@ export type CreateInvitationBody =
   operations["createInvitation"]["requestBody"]["content"]["application/json"];
 export type CreateTeamBody =
   operations["createWorkspaceTeam"]["requestBody"]["content"]["application/json"];
+export type CreateWorkspaceBody =
+  operations["createWorkspace"]["requestBody"]["content"]["application/json"];
 export type UpdateTeamBody =
   operations["updateWorkspaceTeam"]["requestBody"]["content"]["application/json"];
 export type UpdateMemberBody =
@@ -71,6 +73,18 @@ export class IdentityClient extends ApiTransport {
 
   async listWorkspaces(cursor?: string, options: RequestOptions = {}): Promise<WorkspacePage> {
     return this.request<WorkspacePage>(`/api/v1/workspaces${cursorQuery(cursor)}`, {
+      signal: options.signal,
+    });
+  }
+
+  async createWorkspace(
+    body: CreateWorkspaceBody,
+    options: RequestOptions = {},
+  ): Promise<Workspace> {
+    return this.request<Workspace>("/api/v1/workspaces", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
       signal: options.signal,
     });
   }

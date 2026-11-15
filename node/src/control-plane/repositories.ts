@@ -110,6 +110,12 @@ export interface ControlPlaneRepositories {
   workspaces: WorkspaceRepository;
   teams: TeamRepository;
   memberships: MembershipRepository;
+  /** Create a workspace and its initial owner membership as one transaction. */
+  createWorkspaceWithOwner(
+    scope: EnterpriseScope,
+    input: CreateWorkspaceInput,
+    ownerUserId: UserId,
+  ): { workspace: Workspace; membership: Membership };
 }
 
 // ---------------------------------------------------------------------------
@@ -904,11 +910,28 @@ class SqliteMembershipRepository implements MembershipRepository {
  * receives the raw `ControlPlaneDb` and none writes SQL.
  */
 export function createRepositories(db: ControlPlaneDb): ControlPlaneRepositories {
+  const workspaces = new SqliteWorkspaceRepository(db);
+  const memberships = new SqliteMembershipRepository(db);
   return {
     enterprises: new SqliteEnterpriseRepository(db),
     providerInstances: new SqliteProviderInstanceRepository(db),
-    workspaces: new SqliteWorkspaceRepository(db),
+    workspaces,
     teams: new SqliteTeamRepository(db),
-    memberships: new SqliteMembershipRepository(db),
+    memberships,
+    createWorkspaceWithOwner(scope, input, ownerUserId) {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const workspace = workspaces.create(scope, input);
+        const membership = memberships.create(
+          { ...scope, workspace_id: workspace.id },
+          { user_id: ownerUserId, role: "owner" },
+        );
+        db.exec("COMMIT");
+        return { workspace, membership };
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
   };
 }

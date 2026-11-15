@@ -14,6 +14,7 @@ import type { InvitationRateLimits } from "./api/invitation-service.js";
 import { ProviderOAuth, readOAuthCredentialsFile } from "./api/oauth.js";
 import { createApiServer } from "./api/server.js";
 import { createTaskRunOutcomes } from "./api/run-outcomes.js";
+import { CollabMachine } from "./collab/machine.js";
 import { createRequestAuthority } from "./api/request-authority.js";
 import type { RequestAuthority } from "./api/request-authority.js";
 import { TaskService } from "./api/task-service.js";
@@ -96,6 +97,8 @@ import {
   readServiceCredentialFile,
 } from "./provider-access/credentials.js";
 import type { ServiceCredentialStore } from "./provider-access/credentials.js";
+import { IssueSyncService } from "./issue-sync/service.js";
+import { IssueSyncStore } from "./issue-sync/store.js";
 
 export interface OrchestratorOptions {
   config: OrchestratorConfig;
@@ -477,6 +480,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let memoryGovernance: MemoryGovernanceService | undefined;
   let rsi: RsiService | undefined;
   let rsiStore: RsiStore | undefined;
+  let issues: IssueSyncService | undefined;
   if (config.oauthClientsFile !== undefined) {
     controlPlane = openControlPlaneDb({ path: config.controlPlaneFile ?? ":memory:" });
     const repos = createRepositories(controlPlane);
@@ -575,6 +579,21 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       (config.providerServiceCredentialFile !== undefined
         ? readServiceCredentialFile(config.providerServiceCredentialFile)
         : createStaticServiceCredentialStore({}));
+    const collaborationPath = config.controlPlaneFile
+      ? `${config.controlPlaneFile}.collaboration.json`
+      : defaultSecurityStatePath("collaboration-state.json");
+    const collaboration = new CollabMachine({ persistencePath: collaborationPath });
+    issues = new IssueSyncService({
+      enterprise_id: config.enterpriseId,
+      actor_id: config.actorId,
+      workspaces: repos.workspaces,
+      providerInstances: repos.providerInstances,
+      integrations: providerAccess.integrations,
+      bindings: workspaceBindings,
+      machine: collaboration,
+      store: new IssueSyncStore(controlPlane),
+      credentials: serviceCredentials,
+    });
     const providerApiBaseUrl = options.providerApiBaseUrl;
     invitations = new InvitationService({
       repos,
@@ -664,6 +683,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     ...(auth !== undefined ? { auth } : {}),
     ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
     ...(invitations !== undefined ? { invitations } : {}),
+    ...(issues !== undefined ? { issues } : {}),
     ...(memory !== undefined && auth !== undefined
       ? {
           memory: {
@@ -720,11 +740,13 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
         });
         // Sleep-time consolidation begins with the service, never before it.
         memoryConsolidation?.start();
+        issues?.startPolling();
         return bound;
       });
     },
     stop: () => {
       memoryConsolidation?.stop();
+      issues?.stopPolling();
       service.disposeAll();
       // Durability boundary: a clean shutdown must not lose projected events.
       store.flushSync();

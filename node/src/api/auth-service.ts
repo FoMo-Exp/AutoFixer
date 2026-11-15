@@ -10,6 +10,7 @@ import type {
   LoginProvider,
   SessionKind,
   UserStatus,
+  CreateWorkspaceInput,
 } from "../control-plane/index.js";
 import type {
   ControlPlaneRepositories,
@@ -34,6 +35,10 @@ import type { OAuthCredentialsByOrigin, ProviderProfile } from "./oauth.js";
 import { assertPublicResolution, normalizeProviderOrigin } from "./provider-origin.js";
 import type { OriginDnsLookup } from "./provider-origin.js";
 import { mintSessionSecrets } from "./sessions.js";
+import {
+  InvalidRepositoryIdError,
+  parseCanonicalRepositoryId,
+} from "../provider-access/canonical-repository.js";
 
 /**
  * Identity, session, and administrator-bootstrap domain service.
@@ -547,10 +552,10 @@ export class AuthService {
       kind: ctx.session.kind,
       csrf_token: ctx.session.csrf_token,
       expires_at: ctx.session.expires_at,
-      enterprise_roles: this.#identity.enterpriseRoles.listByUser(ctx.user.id).map((role) => ({
-        enterprise_id: role.enterprise_id,
-        role: role.role,
-      })),
+      enterprise_roles: this.#identity.enterpriseRoles
+        .listByUser(ctx.user.id)
+        .filter((role) => role.enterprise_id === this.#config.enterpriseId)
+        .map((role) => ({ enterprise_id: role.enterprise_id, role: role.role })),
       memberships: memberships.map((membership) => ({
         enterprise_id: membership.enterprise_id,
         workspace_id: membership.workspace_id,
@@ -675,6 +680,65 @@ export class AuthService {
     return {
       items: page,
       next_cursor: last && startIndex + page.length < items.length ? last.id : null,
+    };
+  }
+
+  /** Create a workspace only for a bootstrap-provisioned enterprise admin. */
+  createWorkspace(userId: UserId, input: CreateWorkspaceInput): WorkspaceView {
+    const enterpriseId = this.#config.enterpriseId;
+    const role = this.#identity.enterpriseRoles.getByUser(enterpriseId, userId);
+    if (role?.role !== "admin") {
+      this.#audit({
+        event: "admin.denied",
+        enterprise_id: enterpriseId,
+        actor_kind: "user",
+        actor_user_id: userId,
+        details: { action: "workspace.create" },
+      });
+      throw new ApiError(403, "FORBIDDEN", "enterprise administrator authority is required");
+    }
+    const name = input.name.trim();
+    const repositoryId = input.repository_id.trim();
+    if (!name || !repositoryId) {
+      throw new ApiError(400, "INVALID_REQUEST", "Workspace name and repository_id are required");
+    }
+    let repository;
+    try {
+      repository = parseCanonicalRepositoryId(repositoryId);
+    } catch (error) {
+      if (error instanceof InvalidRepositoryIdError) {
+        throw new ApiError(400, "INVALID_REQUEST", error.message);
+      }
+      throw error;
+    }
+    const scope = { enterprise_id: enterpriseId, actor_id: userId };
+    const provider = this.#repos.providerInstances.getById(scope, input.provider_instance_id);
+    if (!provider || provider.provider_type !== repository.provider) {
+      throw new ApiError(
+        400,
+        "INVALID_REQUEST",
+        "The repository provider must match the selected provider instance",
+      );
+    }
+    const { workspace, membership } = this.#repos.createWorkspaceWithOwner(
+      scope,
+      { name, repository_id: repository.canonical, provider_instance_id: provider.id },
+      userId,
+    );
+    return {
+      id: workspace.id,
+      enterprise_id: workspace.enterprise_id,
+      name: workspace.name,
+      status: workspace.status,
+      repository: {
+        repository_id: workspace.repository_id,
+        provider_instance_id: workspace.provider_instance_id,
+        provider_type: provider.provider_type,
+      },
+      role: membership.role,
+      version: workspace.version,
+      created_at: workspace.created_at,
+      updated_at: workspace.updated_at,
     };
   }
 

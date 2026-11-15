@@ -89,6 +89,16 @@ afterEach(() => {
 });
 
 describe("issue workbench", () => {
+  it("uses the Tasks title-row create control and explains when no workspace is available", async () => {
+    const client = makeClient();
+    render(<IssuesWorkbench client={client} loadWorkspaces={() => Promise.resolve([])} />);
+
+    const create = await screen.findByRole("button", { name: "New issue" });
+    expect(create.closest(".sidebar-title-row")).not.toBeNull();
+    await userEvent.click(create);
+    expect(await screen.findByText(/No active workspace is available/)).toBeTruthy();
+  });
+
   it("loads the frozen candidate review for the named human approver", async () => {
     const client = makeClient();
     mockDetail(client);

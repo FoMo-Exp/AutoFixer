@@ -141,8 +141,8 @@ func testPRReport(t *testing.T) PullRequestReport {
 
 func TestValidateProjectRepositoryAndProtectedScope(t *testing.T) {
 	for _, repository := range []string{
-		"https://github.com/Luthiel/AutoFixer.git",
-		"https://github.com/Luthiel/AutoFixer",
+		"https://github.com/FoMo-Exp/AutoFixer.git",
+		"https://github.com/FoMo-Exp/AutoFixer",
 	} {
 		if err := ValidateRepositoryURL(repository); err != nil {
 			t.Errorf("ValidateRepositoryURL(%q): %v", repository, err)
@@ -150,6 +150,7 @@ func TestValidateProjectRepositoryAndProtectedScope(t *testing.T) {
 	}
 	for _, repository := range []string{
 		"http://github.com/Luthiel/AutoFixer.git",
+		"https://github.com/Luthiel/AutoFixer.git",
 		"https://github.com/luthiel/AutoFixer.git",
 		"https://github.com/Luthiel/AutoFixer.git.evil",
 		"https://github.com/Luthiel/AutoFixer.git?token=secret",
@@ -238,7 +239,7 @@ func TestPullRequestReportRejectsUnboundApprovalSubobservations(t *testing.T) {
 
 func TestProtectedDeliveryCreatesPRWithBoundReport(t *testing.T) {
 	client := &fakePRClient{result: PullRequest{
-		ID: "pr-id", Number: 17, URL: "https://github.com/Luthiel/AutoFixer/pull/17",
+		ID: "pr-id", Number: 17, URL: "https://github.com/FoMo-Exp/AutoFixer/pull/17",
 		RepositoryURL: AllowedRepositoryURL, BaseBranch: AllowedBaseBranch,
 		HeadBranch: "autofixer/task-173-abc1234", HeadSHA: "abc1234deadbeef",
 	}}
@@ -264,7 +265,7 @@ func TestProtectedDeliveryCreatesPRWithBoundReport(t *testing.T) {
 
 func TestProtectedDeliveryUpdatesPRAndRejectsProviderDrift(t *testing.T) {
 	client := &fakePRClient{result: PullRequest{
-		ID: "pr-id", Number: 17, URL: "https://github.com/Luthiel/AutoFixer/pull/17",
+		ID: "pr-id", Number: 17, URL: "https://github.com/FoMo-Exp/AutoFixer/pull/17",
 		RepositoryURL: AllowedRepositoryURL, BaseBranch: AllowedBaseBranch,
 		HeadBranch: "autofixer/task-173-abc1234", HeadSHA: "oldhead1234567",
 	}}

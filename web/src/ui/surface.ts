@@ -22,6 +22,9 @@ export function getSurface(): Surface {
 
 export function applySurface(surface: Surface): void {
   document.documentElement.dataset.surface = surface;
+  // The Glasswork material reads --m-* numbers from data-kind; keep it in
+  // lockstep with the neutral surface so the two skins never mix.
+  document.documentElement.dataset.kind = surface;
   try {
     window.localStorage.setItem(STORAGE_KEY, surface);
   } catch {
