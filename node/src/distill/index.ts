@@ -35,6 +35,40 @@ export { assertOutcomesInScope, captureEvidence, captureOutcome } from "./captur
 
 export { classifyOutcome, parseOutcomeEnvelope } from "./outcome.js";
 
+export { CAPTURE_JOB_STATES, createCaptureJobStore } from "./capture-store.js";
+export type {
+  CaptureJob,
+  CaptureJobFilter,
+  CaptureJobState,
+  CaptureJobStore,
+  EnqueueCaptureInput,
+} from "./capture-store.js";
+
+export {
+  buildOutcomeEnvelope,
+  CaptureEvidenceError,
+  classifyStopCode,
+  isCaptureTerminalState,
+  readTerminalRunEvidence,
+  RUN_EVENTS_MAX_PAGES,
+} from "./run-evidence.js";
+export type { RunEvidenceSource, StopClassification, TerminalRunEvidence } from "./run-evidence.js";
+
+export {
+  createOutcomeCaptureScheduler,
+  DEFAULT_CAPTURE_BATCH,
+  DEFAULT_CAPTURE_INTERVAL_MS,
+  DEFAULT_CAPTURE_LEASE_MS,
+  DEFAULT_CAPTURE_MAX_ATTEMPTS,
+  DEFAULT_CAPTURE_RETRY_MS,
+} from "./scheduler.js";
+export type {
+  CaptureDrainReport,
+  OutcomeCaptureScheduler,
+  OutcomeCaptureSchedulerOptions,
+  TerminalRunRegistration,
+} from "./scheduler.js";
+
 export {
   assertNoSecretOrPii,
   detectSecretOrPii,

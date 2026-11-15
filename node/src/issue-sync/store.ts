@@ -24,7 +24,7 @@ export interface ProviderIssueLink {
   last_synced_at: string;
 }
 
-export interface NewProviderIssueLink extends Omit<ProviderIssueLink, "id"> {}
+export type NewProviderIssueLink = Omit<ProviderIssueLink, "id">;
 
 export interface NewIssueSyncOperation {
   enterprise_id: string;

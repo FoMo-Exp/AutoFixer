@@ -11,7 +11,7 @@ import type { EnterpriseId } from "../control-plane/types.js";
 import type { WorkspaceRunBindingResolver } from "../api/task-service.js";
 import type { ServiceCredentialStore } from "../provider-access/credentials.js";
 import { createProviderIssueApi } from "./provider-api.js";
-import { IssueSyncStore } from "./store.js";
+import type { IssueSyncStore } from "./store.js";
 import {
   applyIssueChange,
   createIssueVersionHistory,

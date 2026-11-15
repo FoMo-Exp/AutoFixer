@@ -71,6 +71,8 @@ import type {
   RsiService,
   RsiStore,
 } from "./memory/index.js";
+import { createOutcomeCaptureScheduler, isCaptureTerminalState } from "./distill/index.js";
+import type { OutcomeCaptureScheduler, TerminalRunRegistration } from "./distill/index.js";
 import { resolveConfiguredModel } from "./pi/model.js";
 import {
   DependentWorkPauseLedger,
@@ -163,6 +165,11 @@ export interface OrchestratorHandle {
   memory: MemoryRetrievalService | undefined;
   /** Scoped memory repositories, for memory lifecycle wiring and tests. */
   memoryRepositories: MemoryRepositories | undefined;
+  /**
+   * Durable terminal-outcome capture (DAT-264); set with the control plane and
+   * memory store. Its retry cadence starts with the service.
+   */
+  memoryCapture: OutcomeCaptureScheduler | undefined;
   /** Bounded RSI governance service; set when the control plane is on. */
   rsi: RsiService | undefined;
   /** Scoped RSI store, for dataset provisioning and tests. */
@@ -477,6 +484,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let memoryConsolidation: MemoryConsolidationRunner | undefined;
   let memory: MemoryRetrievalService | undefined;
   let memoryRepositories: MemoryRepositories | undefined;
+  let memoryCapture: OutcomeCaptureScheduler | undefined;
   let memoryGovernance: MemoryGovernanceService | undefined;
   let rsi: RsiService | undefined;
   let rsiStore: RsiStore | undefined;
@@ -517,6 +525,19 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     // service is read-only over memory: it assembles bounded, cited bundles and
     // records audit rows; it cannot promote, edit, or grant anything.
     memoryRepositories = createMemoryRepositories(controlPlane);
+    // Terminal-outcome capture (DAT-264): a durable outbox over the same
+    // control-plane database. The enqueue comes from the task projection's
+    // server-side enterprise/workspace; the worker re-reads authoritative dsh
+    // evidence and writes exactly one episode per terminal snapshot.
+    memoryCapture = createOutcomeCaptureScheduler({
+      db: controlPlane,
+      memory: memoryRepositories,
+      dsh,
+      actorId: config.actorId,
+      onError: (error) => {
+        console.error("memory outcome capture:", error);
+      },
+    });
     const retrievalStore = createRetrievalStore(controlPlane);
     memory = createMemoryRetrievalService({
       memory: memoryRepositories,
@@ -653,6 +674,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     ...(model ? { model } : {}),
     runScope: options.runScope ?? deploymentRunScope(requestScopeDeps),
     ...(memory !== undefined && rsi !== undefined ? { memory: { memory, rsi } } : {}),
+    ...(memoryCapture !== undefined ? { capture: memoryCapture } : {}),
   });
   // Workspace dashboard (DAT-230): a read-only projection over the ledger,
   // budget journal, trace and task event log. It is only served when the
@@ -715,6 +737,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     memoryConsolidation,
     memory,
     memoryRepositories,
+    memoryCapture,
     rsi,
     rsiStore,
     dashboard,
@@ -738,6 +761,31 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
         await service.recoverFromDsh().catch((error: unknown) => {
           console.error("task recovery skipped:", error);
         });
+        // Capture every terminal run the recovered projection holds before the
+        // API serves reads: a restart resumes the outbox instead of losing the
+        // outcomes that reached dsh terminal states while this process was
+        // down. Failures stay pending in the outbox for the retry cadence.
+        if (memoryCapture !== undefined) {
+          const registrations: TerminalRunRegistration[] = [];
+          for (const record of store.list()) {
+            for (const run of record.runs) {
+              if (!isCaptureTerminalState(run.state)) {
+                continue;
+              }
+              registrations.push({
+                enterprise_id: record.enterpriseId,
+                workspace_id: record.workspaceId,
+                task_id: record.id,
+                run_id: run.run_id,
+                state: run.state,
+              });
+            }
+          }
+          await memoryCapture.recover(registrations).catch((error: unknown) => {
+            console.error("memory outcome capture recovery skipped:", error);
+          });
+        }
+        memoryCapture?.start();
         // Sleep-time consolidation begins with the service, never before it.
         memoryConsolidation?.start();
         issues?.startPolling();
@@ -746,6 +794,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     },
     stop: () => {
       memoryConsolidation?.stop();
+      memoryCapture?.stop();
       issues?.stopPolling();
       service.disposeAll();
       // Durability boundary: a clean shutdown must not lose projected events.
