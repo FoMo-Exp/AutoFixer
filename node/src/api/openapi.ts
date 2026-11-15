@@ -1194,11 +1194,13 @@ const issueSchema: JsonObject = {
     summary: { type: "string" },
     description: {
       type: "string",
-      description: "Synchronized provider issue body; excludes internal execution and approval evidence.",
+      description:
+        "Synchronized provider issue body; excludes internal execution and approval evidence.",
     },
     labels: { type: "array", items: { type: "string" } },
     provider: {
-      description: "External issue link and provider state; null only while sync is pending or failed.",
+      description:
+        "External issue link and provider state; null only while sync is pending or failed.",
       anyOf: [
         {
           type: "object",
@@ -4048,43 +4050,126 @@ export function buildOpenApiDocument(): OpenApiDocument {
       patch: {
         operationId: "updateIssueContent",
         summary: "Update synchronized provider issue fields",
-        description: "Applies field-level last-modified-wins and records an immutable version before synchronizing the accepted values.",
+        description:
+          "Applies field-level last-modified-wins and records an immutable version before synchronizing the accepted values.",
         parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER, IDEMPOTENCY_KEY_PARAMETER],
-        requestBody: { required: true, content: { "application/json": { schema: {
-          type: "object", minProperties: 1, properties: {
-            title: { type: "string" }, description: { type: "string" },
-            state: { type: "string", enum: ["open", "closed"] }, labels: { type: "array", items: { type: "string" } },
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                minProperties: 1,
+                properties: {
+                  title: { type: "string" },
+                  description: { type: "string" },
+                  state: { type: "string", enum: ["open", "closed"] },
+                  labels: { type: "array", items: { type: "string" } },
+                },
+              },
+            },
           },
-        } } } },
-        responses: { 200: { description: "Synchronized issue", ...jsonRef("#/components/schemas/Issue") }, 400: errorResponse("INVALID_REQUEST"), 404: errorResponse("ISSUE_NOT_FOUND"), 409: errorResponse("IDEMPOTENCY_CONFLICT") },
+        },
+        responses: {
+          200: { description: "Synchronized issue", ...jsonRef("#/components/schemas/Issue") },
+          400: errorResponse("INVALID_REQUEST"),
+          404: errorResponse("ISSUE_NOT_FOUND"),
+          409: errorResponse("IDEMPOTENCY_CONFLICT"),
+        },
       },
     },
     "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/versions": {
       get: {
-        operationId: "listIssueContentVersions", summary: "List immutable synchronized content versions",
+        operationId: "listIssueContentVersions",
+        summary: "List immutable synchronized content versions",
         parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER],
-        responses: { 200: { description: "Content versions", content: { "application/json": { schema: { type: "object", required: ["items"], properties: { items: { type: "array", items: { type: "object" } } } } } } }, 404: errorResponse("ISSUE_NOT_FOUND") },
+        responses: {
+          200: {
+            description: "Content versions",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["items"],
+                  properties: { items: { type: "array", items: { type: "object" } } },
+                },
+              },
+            },
+          },
+          404: errorResponse("ISSUE_NOT_FOUND"),
+        },
       },
     },
     "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/comments": {
       get: {
-        operationId: "listIssueSyncComments", summary: "List synchronized issue comments",
+        operationId: "listIssueSyncComments",
+        summary: "List synchronized issue comments",
         parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER],
-        responses: { 200: { description: "Synchronized comments", content: { "application/json": { schema: { type: "object", required: ["items"], properties: { items: { type: "array", items: { type: "object" } } } } } } }, 404: errorResponse("ISSUE_NOT_FOUND") },
+        responses: {
+          200: {
+            description: "Synchronized comments",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["items"],
+                  properties: { items: { type: "array", items: { type: "object" } } },
+                },
+              },
+            },
+          },
+          404: errorResponse("ISSUE_NOT_FOUND"),
+        },
       },
       post: {
-        operationId: "addIssueSyncComment", summary: "Add and synchronize a comment",
+        operationId: "addIssueSyncComment",
+        summary: "Add and synchronize a comment",
         parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER, IDEMPOTENCY_KEY_PARAMETER],
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["body"], properties: { body: { type: "string" } } } } } },
-        responses: { 201: { description: "Issue after comment creation", ...jsonRef("#/components/schemas/Issue") }, 400: errorResponse("INVALID_REQUEST"), 404: errorResponse("ISSUE_NOT_FOUND") },
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["body"],
+                properties: { body: { type: "string" } },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: "Issue after comment creation",
+            ...jsonRef("#/components/schemas/Issue"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          404: errorResponse("ISSUE_NOT_FOUND"),
+        },
       },
     },
     "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/rollback": {
       post: {
-        operationId: "rollbackIssueContent", summary: "Restore synchronized fields from an immutable version",
+        operationId: "rollbackIssueContent",
+        summary: "Restore synchronized fields from an immutable version",
         parameters: [WORKSPACE_ID_PARAMETER, ISSUE_ID_PARAMETER, IDEMPOTENCY_KEY_PARAMETER],
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["version_id"], properties: { version_id: { type: "string" } } } } } },
-        responses: { 200: { description: "Restored issue version", ...jsonRef("#/components/schemas/Issue") }, 400: errorResponse("INVALID_REQUEST"), 404: errorResponse("ISSUE_NOT_FOUND"), 409: errorResponse("IDEMPOTENCY_CONFLICT") },
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["version_id"],
+                properties: { version_id: { type: "string" } },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: "Restored issue version", ...jsonRef("#/components/schemas/Issue") },
+          400: errorResponse("INVALID_REQUEST"),
+          404: errorResponse("ISSUE_NOT_FOUND"),
+          409: errorResponse("IDEMPOTENCY_CONFLICT"),
+        },
       },
     },
     "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/stage": {

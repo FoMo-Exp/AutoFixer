@@ -201,13 +201,7 @@ export interface ProviderAdapter {
  * The action classes revocation must stop. One gate decision covers each of
  * them; a revoked subject loses all five at once.
  */
-export type ActionKind =
-  | "read"
-  | "stream"
-  | "artifact_read"
-  | "approval"
-  | "write"
-  | "issue_sync";
+export type ActionKind = "read" | "stream" | "artifact_read" | "approval" | "write" | "issue_sync";
 
 /** All action kinds, in request-path order (used by revocation effects). */
 export const ACTION_KINDS: readonly ActionKind[] = [

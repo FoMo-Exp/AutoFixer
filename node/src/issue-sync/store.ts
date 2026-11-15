@@ -2,11 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { ControlPlaneDb } from "../control-plane/db.js";
 import type { ProviderType } from "../control-plane/types.js";
-import type {
-  IssueContentVersion,
-  IssueVersionHistory,
-  SyncedIssueComment,
-} from "./versions.js";
+import type { IssueContentVersion, IssueVersionHistory, SyncedIssueComment } from "./versions.js";
 
 export interface ProviderIssueLink {
   id: string;
@@ -197,13 +193,14 @@ export class IssueSyncStore {
     if (!latest) return undefined;
     const initial = versions[0]!;
     const fieldModifiedAt = Object.fromEntries(
-      ( ["title", "description", "state", "labels"] as const).map((field) => [
+      (["title", "description", "state", "labels"] as const).map((field) => [
         field,
         initial.source_modified_at,
       ]),
     ) as IssueVersionHistory["field_modified_at"];
     for (const version of versions) {
-      for (const field of version.changed_fields) fieldModifiedAt[field] = version.source_modified_at;
+      for (const field of version.changed_fields)
+        fieldModifiedAt[field] = version.source_modified_at;
     }
     return {
       issue_id: issueId,
@@ -214,7 +211,11 @@ export class IssueSyncStore {
     };
   }
 
-  appendComments(workspaceId: string, issueId: string, comments: readonly SyncedIssueComment[]): number {
+  appendComments(
+    workspaceId: string,
+    issueId: string,
+    comments: readonly SyncedIssueComment[],
+  ): number {
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO issue_sync_comment (
          id, workspace_id, issue_id, source, source_comment_id, author, body, created_at, updated_at
@@ -258,7 +259,9 @@ export class IssueSyncStore {
         existing.operation_type !== input.operation_type ||
         existing.payload !== JSON.stringify(input.payload)
       ) {
-        throw new IssueSyncConflict("idempotency key was reused for a different issue sync operation");
+        throw new IssueSyncConflict(
+          "idempotency key was reused for a different issue sync operation",
+        );
       }
       return toOperation(existing);
     }
@@ -306,10 +309,12 @@ export class IssueSyncStore {
 
   claimPending(limit = 20, now = new Date().toISOString()): IssueSyncOperation[] {
     const staleBefore = new Date(Date.parse(now) - 2 * 60_000).toISOString();
-    this.db.prepare(
-      `UPDATE issue_sync_outbox SET state = 'failed', retry_after = ?, error_code = 'WORKER_RESTARTED', updated_at = ?
+    this.db
+      .prepare(
+        `UPDATE issue_sync_outbox SET state = 'failed', retry_after = ?, error_code = 'WORKER_RESTARTED', updated_at = ?
        WHERE state = 'processing' AND updated_at < ?`,
-    ).run(now, now, staleBefore);
+      )
+      .run(now, now, staleBefore);
     const rows = this.db
       .prepare(
         `SELECT * FROM issue_sync_outbox
@@ -317,7 +322,11 @@ export class IssueSyncStore {
                 (state = 'failed' AND (retry_after IS NULL OR retry_after <= ?)))
          ORDER BY created_at, operation_id LIMIT ?`,
       )
-      .all(new Date(Date.parse(now) - 60_000).toISOString(), now, Math.max(1, Math.min(limit, 100))) as unknown as OperationRow[];
+      .all(
+        new Date(Date.parse(now) - 60_000).toISOString(),
+        now,
+        Math.max(1, Math.min(limit, 100)),
+      ) as unknown as OperationRow[];
     const claimed: IssueSyncOperation[] = [];
     for (const row of rows) {
       const update = this.db
@@ -327,7 +336,11 @@ export class IssueSyncStore {
         )
         .run(now, row.operation_id);
       if (Number(update.changes) > 0) {
-        claimed.push({ ...toOperation(row), state: "processing", attempt_count: row.attempt_count + 1 });
+        claimed.push({
+          ...toOperation(row),
+          state: "processing",
+          attempt_count: row.attempt_count + 1,
+        });
       }
     }
     return claimed;
@@ -404,7 +417,8 @@ export class IssueSyncStore {
     const addedVersions = history.versions.filter((version) => version.sequence > previousSequence);
     this.db.exec("BEGIN");
     try {
-      for (const version of addedVersions) this.appendVersion(workspaceId, history.issue_id, version);
+      for (const version of addedVersions)
+        this.appendVersion(workspaceId, history.issue_id, version);
       this.appendComments(workspaceId, history.issue_id, history.comments);
       this.db.exec("COMMIT");
     } catch (error) {

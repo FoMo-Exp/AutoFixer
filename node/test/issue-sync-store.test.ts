@@ -28,17 +28,7 @@ function setup(): IssueSyncStore {
        (id, enterprise_id, name, repository_id, provider_instance_id, status,
         created_at, updated_at, created_by, updated_by, version)
      VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 1)`,
-  ).run(
-    "ws_1",
-    "ent_1",
-    "Example",
-    "github:owner/repo",
-    "pi_1",
-    now,
-    now,
-    "usr_1",
-    "usr_1",
-  );
+  ).run("ws_1", "ent_1", "Example", "github:owner/repo", "pi_1", now, now, "usr_1", "usr_1");
   return new IssueSyncStore(db);
 }
 

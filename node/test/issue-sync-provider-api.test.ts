@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createStaticServiceCredentialStore } from "../src/provider-access/credentials.js";
-import type { ProviderHttpRequest, ProviderHttpResponse } from "../src/provider-access/provider-http.js";
+import type {
+  ProviderHttpRequest,
+  ProviderHttpResponse,
+} from "../src/provider-access/provider-http.js";
 import { createProviderIssueApi } from "../src/issue-sync/provider-api.js";
 
 function response(body: unknown, status = 200): ProviderHttpResponse {
@@ -17,20 +20,27 @@ describe("provider issue API", () => {
       api_base_url: "https://api.github.test",
       http: async (request) => {
         requests.push(request);
-        return response({
-          id: 91,
-          number: 42,
-          html_url: "https://github.test/FoMo-Exp/AutoFixer/issues/42",
-          title: "A bug",
-          body: "Details",
-          state: "open",
-          labels: [{ name: "bug" }],
-          updated_at: "2026-11-14T10:00:00Z",
-        }, 201);
+        return response(
+          {
+            id: 91,
+            number: 42,
+            html_url: "https://github.test/FoMo-Exp/AutoFixer/issues/42",
+            title: "A bug",
+            body: "Details",
+            state: "open",
+            labels: [{ name: "bug" }],
+            updated_at: "2026-11-14T10:00:00Z",
+          },
+          201,
+        );
       },
     });
 
-    const created = await api.createIssue({ title: "A bug", description: "Details", labels: ["bug"] });
+    const created = await api.createIssue({
+      title: "A bug",
+      description: "Details",
+      labels: ["bug"],
+    });
 
     expect(created.number).toBe("42");
     expect(created.description).toBe("Details");
