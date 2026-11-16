@@ -16,6 +16,13 @@ import type { OrchestratorHandle } from "../src/index.js";
 import type { DshServerHandle } from "./helpers/dsh-server.js";
 import { startDshServer } from "./helpers/dsh-server.js";
 import { cookieSessionHeaders, startAuthApp, webLogin } from "./helpers/auth-app.js";
+import { TEST_MODEL } from "./helpers/scripted-stream.js";
+import {
+  TEST_CREDENTIAL,
+  TEST_CREDENTIAL_REF,
+  TEST_SCOPE,
+  testPolicyFor,
+} from "./helpers/test-gateway.js";
 
 /**
  * Runtime configuration diagnostics (DAT-257): the report must be honest about
@@ -68,6 +75,25 @@ function stateEnv(dir: string): NodeJS.ProcessEnv {
 
 function checkById(report: RuntimeDiagnostics, id: string) {
   return report.checks.find((entry) => entry.id === id);
+}
+
+function writeGatewayFiles(
+  dir: string,
+  scopes: Array<{ enterpriseId: string; workspaceId: string }>,
+): { policyFile: string; credentialsFile: string } {
+  const policyFile = path.join(dir, "gateway-policy.json");
+  const credentialsFile = path.join(dir, "gateway-credentials.json");
+  writeFileSync(
+    policyFile,
+    JSON.stringify({
+      policies: scopes.map((scope) => ({ scope, ...testPolicyFor(TEST_MODEL) })),
+    }),
+  );
+  writeFileSync(credentialsFile, JSON.stringify({ [TEST_CREDENTIAL_REF]: TEST_CREDENTIAL }), {
+    mode: 0o600,
+  });
+  chmodSync(credentialsFile, 0o600);
+  return { policyFile, credentialsFile };
 }
 
 describe("runtime diagnostics (DAT-257)", () => {
@@ -153,6 +179,110 @@ describe("runtime diagnostics (DAT-257)", () => {
     });
     expect(checkById(report, "budget")?.status).toBe("blocked");
     expect(report.readiness.startup).toBe("blocked");
+  });
+
+  test("a policy bound only to another workspace blocks model readiness", async () => {
+    const dir = tempDir("diagnostics-egress-other");
+    const files = writeGatewayFiles(dir, [{ enterpriseId: "ent_other", workspaceId: "ws_other" }]);
+    const report = await diagnoseEnvironment(
+      {
+        ...stateEnv(dir),
+        FORGEPILOT_DSH_SOCKET: path.join(dir, "absent.sock"),
+        FORGEPILOT_GATEWAY_POLICY_FILE: files.policyFile,
+        FORGEPILOT_GATEWAY_CREDENTIALS_FILE: files.credentialsFile,
+      },
+      { model: TEST_MODEL, resolveModel: false },
+    );
+    // File validity alone is not readiness: the policy parses, but no policy
+    // binds the scope this deployment would dispatch from.
+    expect(checkById(report, "gateway")?.status).toBe("ready");
+    expect(checkById(report, "gateway")?.detail).toContain("ent_other/ws_other");
+    expect(checkById(report, "egress")?.status).toBe("blocked");
+    expect(checkById(report, "egress")?.detail).toMatch(/no policy/);
+    expect(checkById(report, "egress")?.detail).toContain("ent_other/ws_other");
+    expect(report.readiness.model).toBe("blocked");
+    expect(JSON.stringify(report)).not.toContain(TEST_CREDENTIAL);
+  });
+
+  test("verified coverage for every active workspace is ready; extra workspaces degrade", async () => {
+    const dir = tempDir("diagnostics-egress-active");
+    const files = writeGatewayFiles(dir, [TEST_SCOPE]);
+    const config = configFromEnv({
+      ...stateEnv(dir),
+      FORGEPILOT_DSH_SOCKET: path.join(dir, "absent.sock"),
+      FORGEPILOT_ENTERPRISE_ID: TEST_SCOPE.enterpriseId,
+      FORGEPILOT_WORKSPACE_ID: TEST_SCOPE.workspaceId,
+      FORGEPILOT_GATEWAY_POLICY_FILE: files.policyFile,
+      FORGEPILOT_GATEWAY_CREDENTIALS_FILE: files.credentialsFile,
+    });
+
+    const covered = await collectRuntimeDiagnostics({
+      config,
+      model: TEST_MODEL,
+      resolveModel: false,
+      activeWorkspaces: [TEST_SCOPE],
+    });
+    expect(checkById(covered, "egress")?.status).toBe("ready");
+    expect(checkById(covered, "egress")?.detail).toContain("all 1 target scope");
+    // The identity surface is absent, so no request carries an authenticated
+    // egress scope: the boundary is degraded even though coverage is verified.
+    expect(covered.readiness.model).toBe("degraded");
+
+    const partial = await collectRuntimeDiagnostics({
+      config,
+      model: TEST_MODEL,
+      resolveModel: false,
+      activeWorkspaces: [
+        TEST_SCOPE,
+        { enterpriseId: TEST_SCOPE.enterpriseId, workspaceId: "ws_other" },
+      ],
+    });
+    expect(checkById(partial, "egress")?.status).toBe("degraded");
+    expect(checkById(partial, "egress")?.detail).toContain("ws_other: no policy");
+    expect(partial.readiness.model).toBe("degraded");
+
+    // With the identity surface present, verified coverage for every active
+    // workspace is the only state that may report the model boundary ready.
+    const oauthFile = path.join(dir, "oauth-clients.json");
+    writeFileSync(
+      oauthFile,
+      JSON.stringify({
+        "https://github.com": { client_id: "client-id", client_secret: "client-secret" },
+      }),
+      { mode: 0o600 },
+    );
+    chmodSync(oauthFile, 0o600);
+    const identityConfig = configFromEnv({
+      ...stateEnv(dir),
+      FORGEPILOT_DSH_SOCKET: path.join(dir, "absent.sock"),
+      FORGEPILOT_ENTERPRISE_ID: TEST_SCOPE.enterpriseId,
+      FORGEPILOT_WORKSPACE_ID: TEST_SCOPE.workspaceId,
+      FORGEPILOT_GATEWAY_POLICY_FILE: files.policyFile,
+      FORGEPILOT_GATEWAY_CREDENTIALS_FILE: files.credentialsFile,
+      FORGEPILOT_OAUTH_CLIENTS_FILE: oauthFile,
+      FORGEPILOT_BOOTSTRAP_TOKEN: "bootstrap-token-0123456789abcdef0123456789",
+      FORGEPILOT_CONTROL_PLANE_DB: path.join(dir, "control.sqlite"),
+    });
+    const ready = await collectRuntimeDiagnostics({
+      config: identityConfig,
+      model: TEST_MODEL,
+      resolveModel: false,
+      activeWorkspaces: [TEST_SCOPE],
+    });
+    expect(checkById(ready, "identity")?.status).toBe("ready");
+    expect(checkById(ready, "egress")?.status).toBe("ready");
+    expect(ready.readiness.model).toBe("ready");
+
+    // The offline CLI probe cannot enumerate workspaces; with identity enabled
+    // it must degrade coverage rather than claim readiness.
+    const offline = await collectRuntimeDiagnostics({
+      config: identityConfig,
+      model: TEST_MODEL,
+      resolveModel: false,
+    });
+    expect(checkById(offline, "egress")?.status).toBe("degraded");
+    expect(checkById(offline, "egress")?.detail).toMatch(/coverage is unverified/);
+    expect(offline.readiness.model).toBe("degraded");
   });
 
   test("unconfigured optional subsystems are explicit, not failures", async () => {

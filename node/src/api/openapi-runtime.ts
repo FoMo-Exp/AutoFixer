@@ -100,8 +100,12 @@ const runtimeDiagnosticsSchema: JsonObject = {
           type: "string",
           enum: [...READINESS_STATUSES],
           description:
-            "Pi model, gateway policy/credentials, and session-scoped egress are " +
-            "usable; blocked means every dispatch is denied (fail closed).",
+            "Pi model, gateway policy/credentials, and scope-bound egress coverage " +
+            "are usable. `egress` is evaluated per target workspace: a valid policy " +
+            "that binds only other scopes reports blocked; a partially covered " +
+            "active-workspace set reports degraded; an offline probe that cannot " +
+            "enumerate memberships never reports ready. Blocked means every " +
+            "dispatch from the failed scope is denied (fail closed).",
         },
       },
     },

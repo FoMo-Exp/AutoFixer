@@ -480,6 +480,11 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let providerAuthority: RequestAuthority | undefined;
   let workspaceBindings = createConfiguredWorkspaceRunBindingResolver(config);
   let requestScopeDeps: RequestScopeDeps | undefined;
+  // Live workspace rows for egress-coverage diagnostics (DAT-257). Read at
+  // probe time so a workspace created after startup is still seen; an
+  // unreadable control plane degrades coverage to "unverified" rather than
+  // fabricating readiness.
+  let listDiagnosticScopes: (() => GatewayScope[]) | undefined;
   let memoryConsolidation: MemoryConsolidationRunner | undefined;
   let memory: MemoryRetrievalService | undefined;
   let memoryRepositories: MemoryRepositories | undefined;
@@ -490,6 +495,13 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   if (config.oauthClientsFile !== undefined) {
     controlPlane = openControlPlaneDb({ path: config.controlPlaneFile ?? ":memory:" });
     const repos = createRepositories(controlPlane);
+    listDiagnosticScopes = () =>
+      repos.workspaces
+        .list({ enterprise_id: config.enterpriseId, actor_id: config.actorId }, "active")
+        .map((workspace) => ({
+          enterpriseId: config.enterpriseId,
+          workspaceId: workspace.id,
+        }));
     const identity = createIdentityRepositories(controlPlane);
     requestScopeDeps = {
       sessions: identity.sessions,
@@ -685,14 +697,22 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   // Runtime diagnostics (DAT-257) reuse the exact objects this process runs
   // with: the resolved model and live dsh client, never a second configuration
   // read. Paths stay basenames on the API; the CLI reports full paths.
-  const diagnostics = (): Promise<RuntimeDiagnostics> =>
-    collectRuntimeDiagnostics({
+  const diagnostics = (): Promise<RuntimeDiagnostics> => {
+    let activeWorkspaces: GatewayScope[] | undefined;
+    try {
+      activeWorkspaces = listDiagnosticScopes?.();
+    } catch {
+      activeWorkspaces = undefined;
+    }
+    return collectRuntimeDiagnostics({
       config,
       dsh,
       model,
       resolveModel: false,
       startedAt,
+      ...(activeWorkspaces !== undefined ? { activeWorkspaces } : {}),
     });
+  };
 
   const server = createApiServer({
     service,

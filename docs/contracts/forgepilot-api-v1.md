@@ -137,9 +137,9 @@ token, invitation key, or quarantine key. A blocked readiness boundary is still
 |---|---|
 | `readiness.startup` | configuration and startup-critical state are valid; `blocked` means the process must not serve |
 | `readiness.task` | dsh reachability, the pinned repository/base SHA, and the task projection are usable; `blocked` means no run can start (`DSH_UNAVAILABLE`-class failure) |
-| `readiness.model` | Pi model, gateway policy/credential pair, and session-scoped egress are usable; `blocked` means every dispatch is denied (fail closed) |
+| `readiness.model` | Pi model, gateway policy/credential pair, and scope-bound egress coverage are usable; a valid policy bound only to other scopes is `blocked`, a partially covered active-workspace set is `degraded`, and an offline probe that cannot enumerate memberships never reports `ready`; `blocked` means every dispatch from the failed scope is denied (fail closed) |
 | `readiness.*` values | `ready` \| `degraded` \| `blocked`; `degraded` warns without stopping that boundary |
-| `checks[]` | one entry per subsystem (`config`, `dsh`, `repository`, `model`, `gateway`, `identity`, `persistence`, `budget`), each with a closed `status` (`ready` \| `degraded` \| `blocked` \| `not_configured`), the boundaries it gates, redacted `detail`, and a `next_action` |
+| `checks[]` | one entry per subsystem (`config`, `dsh`, `repository`, `model`, `gateway`, `egress`, `identity`, `persistence`, `budget`), each with a closed `status` (`ready` \| `degraded` \| `blocked` \| `not_configured`), the boundaries it gates, redacted `detail`, and a `next_action` |
 | `blockers` | component ids whose status blocks at least one readiness boundary |
 | `service.single_instance` | always `true`: one orchestrator per state directory; the task projection, budget journal, control-plane database, and JSONL audit streams are single-writer |
 | `notes` | safe operational notes, including the single-instance limitation |

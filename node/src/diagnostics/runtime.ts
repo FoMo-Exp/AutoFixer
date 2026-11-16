@@ -8,9 +8,15 @@ import { configFromEnv } from "../config.js";
 import { DshClient } from "../dsh/client.js";
 import { redactSensitiveText } from "../errors/redact.js";
 import {
-  loadGatewayPolicyFile,
+  matchEndpoint,
+  parseScopedPolicies,
   providerCredentialEnvVars,
   readCredentialFile,
+} from "../gateway/index.js";
+import type {
+  GatewayCredentialStore,
+  GatewayScope,
+  ScopedPolicyBinding,
 } from "../gateway/index.js";
 import { loadBudgetPolicyFile } from "../budget/index.js";
 import { resolveConfiguredModel } from "../pi/model.js";
@@ -44,6 +50,7 @@ export const RUNTIME_COMPONENT_IDS = [
   "repository",
   "model",
   "gateway",
+  "egress",
   "identity",
   "persistence",
   "budget",
@@ -127,6 +134,14 @@ export interface RuntimeDiagnosticsOptions {
   dshTimeoutMs?: number;
   /** Include absolute state paths (CLI) instead of basenames (API surface). */
   includePaths?: boolean;
+  /**
+   * Active workspaces the identity surface can authorize (live control-plane
+   * rows). When provided, egress coverage is evaluated for every one of them;
+   * an uncovered workspace makes model readiness degraded. Absent means the
+   * offline probe cannot enumerate memberships and must say so rather than
+   * claim readiness.
+   */
+  activeWorkspaces?: GatewayScope[];
 }
 
 interface StateFileSpec {
@@ -349,7 +364,7 @@ function boundaryStatus(
 const REQUIRED_BY_STAGE: Record<ReadinessStage, ReadonlySet<RuntimeComponentId>> = {
   startup: new Set<RuntimeComponentId>(["config"]),
   task: new Set<RuntimeComponentId>(["config", "dsh", "repository", "persistence"]),
-  model: new Set<RuntimeComponentId>(["model", "gateway"]),
+  model: new Set<RuntimeComponentId>(["model", "gateway", "egress"]),
 };
 
 function serviceVersion(): string {
@@ -510,30 +525,51 @@ export async function collectRuntimeDiagnostics(
   }
   checks.push(dshCheck);
 
+  // Resolve the model and parse the gateway policy once: model readiness and
+  // egress coverage must agree on the same destination.
+  let resolvedModel: Model<Api> | undefined;
+  let modelError: string | undefined;
+  if (options.resolveModel === false) {
+    resolvedModel = options.model;
+  } else {
+    try {
+      resolvedModel = options.model ?? resolveConfiguredModel(config);
+    } catch (error) {
+      modelError = safeMessage(error);
+    }
+  }
+  const gatewayConfigured =
+    config.gatewayPolicyFile !== undefined && config.gatewayCredentialsFile !== undefined;
+  let gatewayProbe: {
+    bindings: ScopedPolicyBinding[];
+    credentials?: GatewayCredentialStore;
+    error?: string;
+  } = { bindings: [] };
+  if (gatewayConfigured) {
+    try {
+      gatewayProbe = {
+        bindings: parseScopedPolicies(
+          JSON.parse(fs.readFileSync(config.gatewayPolicyFile as string, "utf8")),
+        ),
+        credentials: readCredentialFile(config.gatewayCredentialsFile as string),
+      };
+    } catch (error) {
+      gatewayProbe = { bindings: [], error: safeMessage(error) };
+    }
+  }
+
   // --- model ------------------------------------------------------------
   checks.push(
     check("model", "Pi model", ["startup", "model"], () => {
-      if (options.resolveModel === false) {
-        return options.model
-          ? { status: "ready" as const, detail: `${options.model.provider}/${options.model.id}` }
-          : {
-              status: "not_configured" as const,
-              detail: "no model resolved; tasks report PI_UNAVAILABLE",
-              nextAction: "Set FORGEPILOT_PI_PROVIDER and FORGEPILOT_PI_MODEL",
-            };
-      }
-      let resolved: Model<Api> | undefined;
-      try {
-        resolved = options.model ?? resolveConfiguredModel(config);
-      } catch (error) {
+      if (modelError !== undefined) {
         return {
           status: "blocked" as const,
-          detail: safeMessage(error),
+          detail: modelError,
           nextAction:
             "Correct FORGEPILOT_PI_PROVIDER / FORGEPILOT_PI_MODEL / FORGEPILOT_PI_BASE_URL",
         };
       }
-      if (resolved === undefined) {
+      if (resolvedModel === undefined) {
         return {
           status: "not_configured" as const,
           detail: "no Pi provider/model configured; tasks report PI_UNAVAILABLE",
@@ -543,7 +579,7 @@ export async function collectRuntimeDiagnostics(
       }
       return {
         status: "ready" as const,
-        detail: `${resolved.provider}/${resolved.id}${resolved.baseUrl ? ` via ${resolved.baseUrl}` : ""}`,
+        detail: `${resolvedModel.provider}/${resolvedModel.id}${resolvedModel.baseUrl ? ` via ${resolvedModel.baseUrl}` : ""}`,
       };
     }),
   );
@@ -560,7 +596,7 @@ export async function collectRuntimeDiagnostics(
             "Unset those variables and configure FORGEPILOT_GATEWAY_CREDENTIALS_FILE instead; the orchestrator refuses env credentials",
         };
       }
-      if (config.gatewayPolicyFile === undefined || config.gatewayCredentialsFile === undefined) {
+      if (!gatewayConfigured) {
         return {
           status: "not_configured" as const,
           detail: "no gateway policy/credentials configured; every model dispatch is denied",
@@ -568,14 +604,116 @@ export async function collectRuntimeDiagnostics(
             "Set FORGEPILOT_GATEWAY_POLICY_FILE and FORGEPILOT_GATEWAY_CREDENTIALS_FILE together to enable model egress",
         };
       }
-      loadGatewayPolicyFile(config.gatewayPolicyFile);
-      readCredentialFile(config.gatewayCredentialsFile);
+      if (gatewayProbe.error !== undefined) {
+        return { status: "blocked" as const, detail: gatewayProbe.error };
+      }
+      const scopes = gatewayProbe.bindings
+        .map((binding) => `${binding.scope.enterpriseId}/${binding.scope.workspaceId}`)
+        .join(", ");
       return {
         status: "ready" as const,
         detail:
-          `policy ${displayPath(config.gatewayPolicyFile, includePaths)} validated; ` +
-          `credentials ${displayPath(config.gatewayCredentialsFile, includePaths)} owner-only; ` +
+          `policy ${displayPath(config.gatewayPolicyFile as string, includePaths)} validated for ` +
+          `${gatewayProbe.bindings.length} scope(s) [${scopes}]; ` +
+          `credentials ${displayPath(config.gatewayCredentialsFile as string, includePaths)} owner-only; ` +
           `audit ${displayPath(config.gatewayAuditFile ?? "not configured", includePaths)}`,
+      };
+    }),
+  );
+
+  // --- egress coverage --------------------------------------------------
+  // A syntactically valid policy proves nothing about the scope that will
+  // dispatch: resolution is keyed by the authenticated enterprise/workspace
+  // pair, so a policy set bound only to another workspace denies every call
+  // here. Coverage is therefore evaluated per target scope and never inferred
+  // from file validity.
+  checks.push(
+    check("egress", "model egress coverage", ["model"], () => {
+      if (!gatewayConfigured) {
+        return {
+          status: "not_configured" as const,
+          detail: "no gateway policy/credentials configured; no scope can dispatch",
+        };
+      }
+      if (gatewayProbe.error !== undefined) {
+        return {
+          status: "blocked" as const,
+          detail: `gateway configuration is invalid: ${gatewayProbe.error}`,
+        };
+      }
+      if (modelError !== undefined || resolvedModel === undefined) {
+        return {
+          status: "not_configured" as const,
+          detail: "no resolved model to match against the policy",
+        };
+      }
+      const active = options.activeWorkspaces;
+      const targets: GatewayScope[] =
+        active !== undefined && active.length > 0
+          ? active
+          : [{ enterpriseId: config.enterpriseId, workspaceId: config.workspaceId }];
+      const covered: string[] = [];
+      const failures: string[] = [];
+      for (const scope of targets) {
+        const label = `${scope.enterpriseId}/${scope.workspaceId}`;
+        const binding = gatewayProbe.bindings.find(
+          (entry) =>
+            entry.scope.enterpriseId === scope.enterpriseId &&
+            entry.scope.workspaceId === scope.workspaceId,
+        );
+        if (binding === undefined) {
+          failures.push(`${label}: no policy`);
+          continue;
+        }
+        const match = matchEndpoint(binding.policy, resolvedModel);
+        if ("deny" in match) {
+          failures.push(`${label}: ${match.deny}`);
+          continue;
+        }
+        if (gatewayProbe.credentials?.get(match.endpoint.credentialRef) === undefined) {
+          failures.push(
+            `${label}: credentialRef ${match.endpoint.credentialRef} is missing from the credentials file`,
+          );
+          continue;
+        }
+        covered.push(`${label}→${match.endpoint.endpointId}`);
+      }
+      const destination = `${resolvedModel.provider}/${resolvedModel.id}`;
+      if (covered.length === 0) {
+        return {
+          status: "blocked" as const,
+          detail:
+            `policy scopes [${gatewayProbe.bindings.map((binding) => `${binding.scope.enterpriseId}/${binding.scope.workspaceId}`).join(", ") || "none"}]; ` +
+            `${destination} is not dispatchable from any target scope: ${failures.join("; ")}; ` +
+            "every such dispatch is denied MODEL_EGRESS_DENIED",
+          nextAction: `Add or correct a policies entry for ${targets.map((scope) => `${scope.enterpriseId}/${scope.workspaceId}`).join(", ")} approving this model and an endpoint credential`,
+        };
+      }
+      if (failures.length > 0) {
+        return {
+          status: "degraded" as const,
+          detail:
+            `verified ${covered.join(", ")}; ${failures.join("; ")}; ` +
+            "dispatches from the failed scope(s) are denied MODEL_EGRESS_DENIED",
+          nextAction: "Add the missing policy/endpoint/credential for the failed scope(s)",
+        };
+      }
+      // Every target is covered. Without a live control-plane list the probe
+      // cannot see workspaces created after the policy file, so an identity
+      // deployment must not claim global readiness from an offline scan.
+      if ((active === undefined || active.length === 0) && config.oauthClientsFile !== undefined) {
+        return {
+          status: "degraded" as const,
+          detail:
+            `verified ${covered.join(", ")} for the configured scope; active workspace ` +
+            "coverage is unverified in this offline probe (session memberships may resolve to other scopes)",
+          nextAction:
+            "Run the API diagnostics while the service is running so live workspace coverage is verified",
+        };
+      }
+      return {
+        status: "ready" as const,
+        detail: `verified ${covered.join(", ")} for all ${targets.length} target scope(s)`,
       };
     }),
   );
