@@ -209,7 +209,7 @@ export class PreparationBridge {
       observation.repository.repository_id,
       grant.repositoryUrl,
     );
-    const accepted = qualifiedAttempts(artifacts.candidate, policy.checks);
+    const accepted = qualifiedAttempts(artifacts.validation.validation, policy.checks);
     if (accepted === null) {
       this.dispositionFailure(issue, run, {
         code: "CANDIDATE_INVALID",
@@ -241,20 +241,25 @@ export class PreparationBridge {
         run_id: runId,
       });
     }
-    const diff = artifactContent<DshPatchDiffArtifact>(patchRaw, "patch_diff");
-    // The envelope digest covers the artifact JSON; the retained patch
-    // identity is the digest over the exact diff bytes, which is what a
-    // reviewer recomputes and what candidate freeze cross-checks.
-    void artifactDigest(patchRaw, "patch_diff");
+    // Every envelope must name this run and the requested artifact type, and
+    // its digest must recompute from the content it carries: a corrupt or
+    // substituted artifact can never pass on the strength of its own claim.
+    const patch = verifiedArtifact<DshPatchDiffArtifact>(patchRaw, runId, "patch_diff");
+    const candidate = verifiedArtifact<DshCandidateArtifact>(candidateRaw, runId, "candidate");
+    const validation = verifiedArtifact<DshValidationSummaryArtifact>(
+      validationRaw,
+      runId,
+      "validation_summary",
+    );
+    // The retained patch identity is the digest over the exact diff bytes,
+    // which is what a reviewer recomputes and what candidate freeze
+    // cross-checks; the envelope digest covers the artifact document.
     return {
-      diff,
-      candidate: artifactContent<DshCandidateArtifact>(candidateRaw, "candidate"),
-      validation: artifactContent<DshValidationSummaryArtifact>(
-        validationRaw,
-        "validation_summary",
-      ),
-      patchDigest: diff.diff_digest,
-      candidateDigest: artifactDigest(candidateRaw, "candidate"),
+      diff: patch.content,
+      candidate: candidate.content,
+      validation: validation.content,
+      patchDigest: patch.content.diff_digest,
+      candidateDigest: candidate.digest,
       reportDigest,
     };
   }
@@ -339,6 +344,60 @@ export class PreparationBridge {
         validation_head: validation.head_sha,
         diff_base: diff.base_sha,
         diff_head: diff.head_sha,
+      });
+    }
+    if (candidate.run_id !== run.run_id || validation.run_id !== run.run_id) {
+      fail("an artifact names another preparation run", {
+        run_id: run.run_id,
+        candidate_run_id: candidate.run_id,
+        validation_run_id: validation.run_id,
+      });
+    }
+    if (candidate.task_id !== observation.taskId) {
+      fail("the candidate artifact names another task", {
+        task_id: observation.taskId,
+        candidate_task_id: candidate.task_id,
+      });
+    }
+    if (validation.state !== run.state) {
+      fail("the validation summary names another run state", {
+        run_state: run.state,
+        validation_state: validation.state,
+      });
+    }
+    if (validation.branch !== candidate.branch) {
+      fail("candidate and validation summary name different branches", {
+        candidate_branch: candidate.branch,
+        validation_branch: validation.branch,
+      });
+    }
+    if (report.branch !== candidate.branch) {
+      fail("candidate and patch report name different branches", {
+        candidate_branch: candidate.branch,
+        report_branch: report.branch,
+      });
+    }
+    // Candidate eligibility may only be read from one identical list of
+    // attempts: the manifest, the validation summary, and the patch report of
+    // the same revision must agree item by item. A passing manifest cannot
+    // stand next to a missing, failed, or different summary.
+    const candidateAttempts = normalizedAttempts(candidate.validation, "candidate.validation", run);
+    const summaryAttempts = normalizedAttempts(
+      validation.validation,
+      "validation_summary.validation",
+      run,
+    );
+    const reportAttempts = normalizedAttempts(report.validation, "patch_report.validation", run);
+    if (!attemptsEqual(candidateAttempts, summaryAttempts)) {
+      fail("candidate validation attempts differ from the validation summary", {
+        candidate_attempts: attemptSignatures(candidateAttempts),
+        summary_attempts: attemptSignatures(summaryAttempts),
+      });
+    }
+    if (!attemptsEqual(candidateAttempts, reportAttempts)) {
+      fail("candidate validation attempts differ from the patch report", {
+        candidate_attempts: attemptSignatures(candidateAttempts),
+        report_attempts: attemptSignatures(reportAttempts),
       });
     }
     if (diff.changed_paths.length === 0) {
@@ -514,11 +573,16 @@ export class PreparationBridge {
         run_id: run.run_id,
       });
     }
-    const candidate = run.artifact_refs.find((ref) => ref.kind === "candidate");
+    const candidate = at("candidate", artifacts.candidateDigest);
     if (candidate === undefined) {
-      throw new CollabError("CANDIDATE_INVALID", "the run retained no candidate artifact", {
-        run_id: run.run_id,
-      });
+      throw new CollabError(
+        "CANDIDATE_INVALID",
+        "the run retained no matching candidate artifact",
+        {
+          run_id: run.run_id,
+          candidate_digest: artifacts.candidateDigest,
+        },
+      );
     }
     const testReports = passing.map((attempt, index) => {
       const digest = requireDigestValue(
@@ -960,7 +1024,24 @@ export class PreparationBridge {
 
 // ---------------------------------------------------------------- artifacts
 
-function artifactContent<T>(raw: Record<string, unknown>, artifactType: string): T {
+interface VerifiedArtifact<T> {
+  content: T;
+  digest: string;
+}
+
+/**
+ * Validate one dsh artifact envelope before anything reads its content.
+ *
+ * The envelope must be the requested artifact of exactly this run, its digest
+ * must be a sha256 hex value, and that value must recompute from the content.
+ * An artifact that merely declares a digest — a substituted document, a stale
+ * read from another run, a corrupted body — never reaches the freeze.
+ */
+function verifiedArtifact<T>(
+  raw: Record<string, unknown>,
+  runId: string,
+  artifactType: string,
+): VerifiedArtifact<T> {
   if (raw["artifact_type"] !== artifactType) {
     throw new CollabError(
       "CANDIDATE_INVALID",
@@ -968,16 +1049,19 @@ function artifactContent<T>(raw: Record<string, unknown>, artifactType: string):
       { artifact_type: raw["artifact_type"] },
     );
   }
+  if (raw["run_id"] !== runId) {
+    throw new CollabError("CANDIDATE_INVALID", `${artifactType} artifact belongs to another run`, {
+      artifact_type: artifactType,
+      run_id: raw["run_id"],
+      expected: runId,
+    });
+  }
   const content = raw["content"];
   if (!isRecord(content)) {
     throw new CollabError("CANDIDATE_INVALID", `${artifactType} artifact has no content object`, {
       artifact_type: artifactType,
     });
   }
-  return content as T;
-}
-
-function artifactDigest(raw: Record<string, unknown>, artifactType: string): string {
   const digest = raw["digest"];
   if (!isRecord(digest)) {
     throw new CollabError("CANDIDATE_INVALID", `${artifactType} artifact has no digest`, {
@@ -991,7 +1075,148 @@ function artifactDigest(raw: Record<string, unknown>, artifactType: string): str
       artifact_type: artifactType,
     });
   }
-  return value;
+  const computed = canonicalArtifactDigest(content);
+  if (computed !== value) {
+    throw new CollabError(
+      "CANDIDATE_INVALID",
+      `${artifactType} artifact content does not match its envelope digest`,
+      { artifact_type: artifactType, declared: value, computed },
+    );
+  }
+  return { content: content as T, digest: value };
+}
+
+/**
+ * The sha256 dsh stamps on an artifact envelope: Go's `encoding/json` bytes of
+ * the content document. The response preserves struct field order, so
+ * `JSON.stringify` reproduces the same document except for the HTML escapes
+ * Go always applies (`<`, `>`, `&`) and the U+2028/U+2029 escapes it adds for
+ * JSONP safety; those are re-applied here before hashing.
+ *
+ * Exported so tests can build envelopes the way dsh does instead of copying
+ * the encoding rules.
+ */
+export function canonicalArtifactDigest(content: unknown): string {
+  const serialized = JSON.stringify(content);
+  if (serialized === undefined) {
+    throw new CollabError("CANDIDATE_INVALID", "artifact content is not JSON-serializable", {});
+  }
+  const canonical = serialized.replace(/[<>&\u2028\u2029]/g, (character) => {
+    switch (character) {
+      case "<":
+        return "\\u003c";
+      case ">":
+        return "\\u003e";
+      case "&":
+        return "\\u0026";
+      case "\u2028":
+        return "\\u2028";
+      default:
+        return "\\u2029";
+    }
+  });
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
+}
+
+interface NormalizedAttempt {
+  tool: string;
+  arguments: string[];
+  exit_status: number | null;
+  output_digest: { algorithm: "sha256"; value: string };
+  event_reference: string;
+}
+
+/**
+ * Parse one validation-attempt list into an exact, comparable shape. Attempts
+ * are execution evidence: a check name, the registered arguments, an exit
+ * status, the output digest, and the event that proves it. Anything else is
+ * not evidence and stops the freeze.
+ */
+function normalizedAttempts(
+  value: unknown,
+  field: string,
+  run: DshRunResponse,
+): NormalizedAttempt[] {
+  if (!Array.isArray(value)) {
+    throw new CollabError("CANDIDATE_INVALID", `${field} must be an array`, { field });
+  }
+  return value.map((entry, index) => {
+    const attempt = asRecord(entry, `${field}[${index}]`);
+    const rawArguments = attempt["arguments"] ?? [];
+    if (
+      !Array.isArray(rawArguments) ||
+      rawArguments.some((argument) => typeof argument !== "string")
+    ) {
+      throw new CollabError("CANDIDATE_INVALID", `${field}[${index}].arguments must be strings`, {
+        field: `${field}[${index}].arguments`,
+      });
+    }
+    const exitStatus = attempt["exit_status"];
+    if (
+      exitStatus !== null &&
+      exitStatus !== undefined &&
+      (typeof exitStatus !== "number" || !Number.isInteger(exitStatus))
+    ) {
+      throw new CollabError(
+        "CANDIDATE_INVALID",
+        `${field}[${index}].exit_status must be an integer or null`,
+        { field: `${field}[${index}].exit_status` },
+      );
+    }
+    const digest = attempt["output_digest"];
+    if (
+      !isRecord(digest) ||
+      digest["algorithm"] !== "sha256" ||
+      typeof digest["value"] !== "string" ||
+      !SHA256_HEX.test(digest["value"])
+    ) {
+      throw new CollabError(
+        "CANDIDATE_INVALID",
+        `${field}[${index}].output_digest must be a sha256 digest`,
+        { field: `${field}[${index}].output_digest` },
+      );
+    }
+    const eventReference = requireString(
+      attempt["event_reference"],
+      `${field}[${index}].event_reference`,
+    );
+    const event = /^evidence:\/\/events\/([^/]+)\/([0-9]+)$/.exec(eventReference);
+    if (event === null || event[1] !== run.run_id || Number(event[2]) < 1) {
+      throw new CollabError(
+        "CANDIDATE_INVALID",
+        `${field}[${index}].event_reference does not name an event of this run`,
+        { field: `${field}[${index}].event_reference`, event_reference: eventReference },
+      );
+    }
+    return {
+      tool: requireString(attempt["tool"], `${field}[${index}].tool`),
+      arguments: rawArguments as string[],
+      exit_status: exitStatus === undefined ? null : exitStatus,
+      output_digest: { algorithm: "sha256", value: digest["value"] },
+      event_reference: eventReference,
+    };
+  });
+}
+
+function attemptSignatures(attempts: NormalizedAttempt[]): string[] {
+  return attempts.map((attempt) =>
+    JSON.stringify([
+      attempt.tool,
+      attempt.arguments,
+      attempt.exit_status,
+      attempt.output_digest.value,
+      attempt.event_reference,
+    ]),
+  );
+}
+
+function attemptsEqual(left: NormalizedAttempt[], right: NormalizedAttempt[]): boolean {
+  const leftSignatures = attemptSignatures(left);
+  const rightSignatures = attemptSignatures(right);
+  return (
+    leftSignatures.length === rightSignatures.length &&
+    leftSignatures.every((signature, index) => signature === rightSignatures[index])
+  );
 }
 
 function requireDigestValue(
@@ -1015,14 +1240,14 @@ function requireDigestValue(
  * with no recorded attempt.
  */
 function qualifiedAttempts(
-  candidate: DshCandidateArtifact,
+  attempts: DshValidationEvidence[],
   checks: string[],
 ): DshValidationEvidence[] | null {
-  const failed = candidate.validation.filter((attempt) => attempt.exit_status !== 0);
+  const failed = attempts.filter((attempt) => attempt.exit_status !== 0);
   if (failed.length > 0) {
     return null;
   }
-  const passing = candidate.validation.filter(
+  const passing = attempts.filter(
     (attempt) =>
       attempt.exit_status === 0 &&
       attempt.output_digest !== undefined &&

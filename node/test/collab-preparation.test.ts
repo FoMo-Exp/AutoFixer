@@ -16,7 +16,7 @@ import type { GatewayScopeBinding } from "../src/gateway/index.js";
 import { CandidateContentStore, diffDigest } from "../src/collab/candidate-store.js";
 import { CollabError } from "../src/collab/errors.js";
 import { CollabMachine } from "../src/collab/machine.js";
-import { PreparationBridge } from "../src/collab/preparation.js";
+import { PreparationBridge, canonicalArtifactDigest } from "../src/collab/preparation.js";
 import type { CandidateRecord } from "../src/collab/types.js";
 import { TaskService } from "../src/api/task-service.js";
 import { TaskStore, createTaskRecord } from "../src/api/task-store.js";
@@ -32,7 +32,6 @@ const TREE_SHA = "d4e5f60718293a4b5c6d7e8f9012345678a1b2c3";
 const TREE2 = "2".repeat(40);
 const TEST_OUTPUT = "cd".repeat(32);
 const REPORT_DIGEST = "ef".repeat(32);
-const CANDIDATE_ENVELOPE = "ab".repeat(32);
 const CHECK = "go.test";
 
 const DIFF = [
@@ -225,11 +224,18 @@ function validationContent(
   };
 }
 
-function envelope<T>(artifactType: string, content: T, digest = "12".repeat(32)) {
+function envelope<T>(
+  artifactType: string,
+  content: T,
+  overrides: { digest?: string; runId?: string } = {},
+) {
   return {
-    run_id: RUN_ID,
+    run_id: overrides.runId ?? RUN_ID,
     artifact_type: artifactType,
-    digest: { algorithm: "sha256", value: digest },
+    digest: {
+      algorithm: "sha256",
+      value: overrides.digest ?? canonicalArtifactDigest(content),
+    },
     content,
   };
 }
@@ -240,17 +246,16 @@ function artifactSet(
     patch?: DshPatchDiffArtifact;
     candidate?: DshCandidateArtifact;
     validation?: DshValidationSummaryArtifact;
+    runId?: string;
   } = {},
 ): Map<string, Record<string, unknown>> {
+  const runId = options.runId ?? RUN_ID;
   return new Map<string, Record<string, unknown>>([
-    ["patch_diff", envelope("patch_diff", options.patch ?? patchDiffContent())],
-    [
-      "candidate",
-      envelope("candidate", options.candidate ?? candidateContent(), CANDIDATE_ENVELOPE),
-    ],
+    ["patch_diff", envelope("patch_diff", options.patch ?? patchDiffContent(), { runId })],
+    ["candidate", envelope("candidate", options.candidate ?? candidateContent(), { runId })],
     [
       "validation_summary",
-      envelope("validation_summary", options.validation ?? validationContent()),
+      envelope("validation_summary", options.validation ?? validationContent(), { runId }),
     ],
   ]);
 }
@@ -433,7 +438,7 @@ describe("stopped preparation → frozen candidate (DAT-258)", () => {
         head_sha: HEAD2,
         pr_id: null,
         change_summary: "Second revision.",
-        validation: [evidence()],
+        validation: [evidence({ event_reference: `evidence://events/${PREVIOUS_RUN_ID}/3` })],
         evidence_references: [`evidence://events/${PREVIOUS_RUN_ID}/3`],
         report_digest: REPORT_DIGEST,
       },
@@ -441,6 +446,7 @@ describe("stopped preparation → frozen candidate (DAT-258)", () => {
     const diff2 = `${DIFF}-export const other = 3;\n`;
     const digest2 = diffDigest(diff2);
     const set2 = artifactSet({
+      runId: PREVIOUS_RUN_ID,
       patch: patchDiffContent({
         diff: diff2,
         diff_digest: digest2,
@@ -449,14 +455,18 @@ describe("stopped preparation → frozen candidate (DAT-258)", () => {
       }),
       candidate: candidateContent({
         run_id: PREVIOUS_RUN_ID,
+        branch: "autofixer/tsk_prep_1-badc0de",
         head_sha: HEAD2,
         tree_sha: TREE2,
         diff_digest: digest2,
         summary: "Second revision.",
+        validation: [evidence({ event_reference: `evidence://events/${PREVIOUS_RUN_ID}/3` })],
       }),
       validation: validationContent({
         run_id: PREVIOUS_RUN_ID,
+        branch: "autofixer/tsk_prep_1-badc0de",
         head_sha: HEAD2,
+        validation: [evidence({ event_reference: `evidence://events/${PREVIOUS_RUN_ID}/3` })],
       }),
     });
     const bridge2 = new PreparationBridge({
@@ -482,6 +492,7 @@ describe("stopped preparation → frozen candidate (DAT-258)", () => {
     const collab = machine();
     const failed = evidence({ exit_status: 1 });
     const run = dshRun();
+    run.patch_report = { ...(run.patch_report ?? {}), validation: [failed] };
     const set = artifactSet({
       candidate: candidateContent({ validation: [failed] }),
       validation: validationContent({ validation: [failed] }),
@@ -550,11 +561,96 @@ describe("stopped preparation → frozen candidate (DAT-258)", () => {
     expect(collab.listCandidates(issueOf(collab).issue_id)).toEqual([]);
   });
 
+  test("an artifact envelope digest that does not match its content is refused", async () => {
+    for (const artifactId of ["patch_diff", "candidate", "validation_summary"]) {
+      const collab = machine();
+      const set = artifactSet();
+      const envelope = set.get(artifactId) as { digest: { value: string } };
+      envelope.digest.value = "ab".repeat(32);
+      await expect(bridge(collab, set).observe(observation(dshRun()))).rejects.toThrow(
+        /content does not match its envelope digest/,
+      );
+      expect(issueOf(collab).product_state).toBe("needs_human");
+      expect(collab.listCandidates(issueOf(collab).issue_id)).toEqual([]);
+    }
+  });
+
+  test("an artifact envelope from another run is refused", async () => {
+    const collab = machine();
+    const set = artifactSet({ runId: PREVIOUS_RUN_ID });
+    await expect(bridge(collab, set).observe(observation(dshRun()))).rejects.toThrow(
+      /belongs to another run/,
+    );
+    expect(issueOf(collab).product_state).toBe("needs_human");
+  });
+
+  test("a validation summary missing the candidate's passing attempt is refused", async () => {
+    const collab = machine();
+    const set = artifactSet({ validation: validationContent({ validation: [] }) });
+    await expect(bridge(collab, set).observe(observation(dshRun()))).rejects.toThrow(
+      /differ from the validation summary/,
+    );
+    expect(issueOf(collab).product_state).toBe("needs_human");
+    expect(collab.listCandidates(issueOf(collab).issue_id)).toEqual([]);
+  });
+
+  test("a validation summary reporting a failed attempt the candidate claims passed is refused", async () => {
+    const collab = machine();
+    const set = artifactSet({
+      validation: validationContent({ validation: [evidence({ exit_status: 1 })] }),
+    });
+    await expect(bridge(collab, set).observe(observation(dshRun()))).rejects.toThrow(
+      /differ from the validation summary/,
+    );
+    expect(issueOf(collab).product_state).toBe("needs_human");
+    expect(collab.listCandidates(issueOf(collab).issue_id)).toEqual([]);
+  });
+
+  test("candidate attempts that differ from the patch report are refused", async () => {
+    const collab = machine();
+    const run = dshRun();
+    run.patch_report = { ...(run.patch_report ?? {}), validation: [] };
+    const set = artifactSet();
+    await expect(bridge(collab, set).observe(observation(run))).rejects.toThrow(
+      /differ from the patch report/,
+    );
+    expect(issueOf(collab).product_state).toBe("needs_human");
+    expect(collab.listCandidates(issueOf(collab).issue_id)).toEqual([]);
+  });
+
+  test("a validation summary whose content names another run is refused", async () => {
+    const collab = machine();
+    const set = artifactSet({
+      validation: validationContent({ run_id: PREVIOUS_RUN_ID }),
+    });
+    await expect(bridge(collab, set).observe(observation(dshRun()))).rejects.toThrow(
+      /an artifact names another preparation run/,
+    );
+    expect(issueOf(collab).product_state).toBe("needs_human");
+  });
+
+  test("a validation event reference from another run is refused", async () => {
+    const collab = machine();
+    const foreign = evidence({ event_reference: `evidence://events/${PREVIOUS_RUN_ID}/3` });
+    const run = dshRun();
+    run.patch_report = { ...(run.patch_report ?? {}), validation: [foreign] };
+    const set = artifactSet({
+      candidate: candidateContent({ validation: [foreign] }),
+      validation: validationContent({ validation: [foreign] }),
+    });
+    await expect(bridge(collab, set).observe(observation(run))).rejects.toThrow(
+      /does not name an event of this run/,
+    );
+    expect(issueOf(collab).product_state).toBe("needs_human");
+  });
+
   test("a failed preparation is dispositioned once, not re-transitioned on every observation", async () => {
     const collab = machine();
     const run = dshRun();
+    run.patch_report = { ...(run.patch_report ?? {}), validation: [] };
     const set = artifactSet({
       candidate: candidateContent({ validation: [] }),
+      validation: validationContent({ validation: [] }),
     });
     expect(await bridge(collab, set).observe(observation(run))).toBeNull();
     expect(await bridge(collab, set).observe(observation(run))).toBeNull();
@@ -564,6 +660,44 @@ describe("stopped preparation → frozen candidate (DAT-258)", () => {
       .filter((record) => record.command === "transition_issue" && record.outcome === "applied");
     expect(transitions).toHaveLength(1);
     expect(issueOf(collab).product_state).toBe("needs_human");
+  });
+});
+
+describe("artifact envelope digest (DAT-258)", () => {
+  test("recomputes dsh's canonical JSON digest over artifact content", () => {
+    // Golden fixture produced by Go's `json.Marshal` of the same document
+    // (`dsh/artifact_digest_test.go` asserts the same digest on that side):
+    // HTML escapes, U+2028 escaping, field order, and UTF-8 all have to agree
+    // or every real artifact would be refused as corrupt.
+    const content = {
+      run_id: "run_golden",
+      state: "stopped",
+      base_sha: "a<b>&c",
+      head_sha: "héad\u2028sep",
+      branch: "autofixer/golden",
+      validation: [
+        {
+          tool: "go.test",
+          arguments: ["go.test", "focused"],
+          exit_status: 0,
+          output_digest: {
+            algorithm: "sha256",
+            value: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          },
+          event_reference: "evidence://events/run_golden/3",
+        },
+      ],
+    };
+    expect(canonicalArtifactDigest(content)).toBe(
+      "b0484dbebfcb6483009b910fed253107ea254f3ceebe0c966174f8680b89407f",
+    );
+  });
+
+  test("a modified document hashes to a different digest", () => {
+    const content = { run_id: "run_golden", state: "stopped", validation: [] as unknown[] };
+    const before = canonicalArtifactDigest(content);
+    content.validation.push({ tool: "go.test" });
+    expect(canonicalArtifactDigest(content)).not.toBe(before);
   });
 });
 
