@@ -221,6 +221,11 @@ const SECURITY_ENDPOINTS: Array<[method: string, path: string]> = [
   ["post", "/api/v1/workspaces/{workspace_id}/security/audit/exports"],
 ];
 
+/** Runtime configuration diagnostics (DAT-257). */
+const RUNTIME_ENDPOINTS: Array<[method: string, path: string]> = [
+  ["get", "/api/v1/runtime/diagnostics"],
+];
+
 const ALL_ENDPOINTS = [
   ...M0_ENDPOINTS,
   ...AUTH_ENDPOINTS,
@@ -231,6 +236,7 @@ const ALL_ENDPOINTS = [
   ...RSI_ENDPOINTS,
   ...DASHBOARD_ENDPOINTS,
   ...SECURITY_ENDPOINTS,
+  ...RUNTIME_ENDPOINTS,
 ];
 
 describe("forgepilot-api/v1 OpenAPI document", () => {

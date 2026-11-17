@@ -484,7 +484,8 @@ export function installDesktopAuthIpc(
 
   const handlers: Record<string, (event: IpcMainInvokeEvent, input?: unknown) => unknown> = {
     "forgepilot:auth-set-mode": guard((input) => {
-      const mode = input === "personal" ? "personal" : input === "enterprise" ? "enterprise" : undefined;
+      const mode =
+        input === "personal" ? "personal" : input === "enterprise" ? "enterprise" : undefined;
       if (!mode) throw new Error("Invalid ForgePilot login mode.");
       setMode(mode);
       return Promise.resolve(auth.getState());

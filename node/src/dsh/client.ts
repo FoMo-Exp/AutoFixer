@@ -57,6 +57,8 @@ interface DshRequestSpec {
   body?: unknown;
   idempotencyKey?: string;
   protocolHeader: boolean;
+  /** Abort the request after this many milliseconds (diagnostics probes). */
+  timeoutMs?: number;
 }
 
 /**
@@ -77,8 +79,13 @@ export class DshClient {
     this.tokenFile = options.tokenFile ?? `${options.socketPath}.token`;
   }
 
-  health(): Promise<DshHealth> {
-    return this.request<DshHealth>({ method: "GET", path: "/v1/health", protocolHeader: false });
+  health(timeoutMs?: number): Promise<DshHealth> {
+    return this.request<DshHealth>({
+      method: "GET",
+      path: "/v1/health",
+      protocolHeader: false,
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    });
   }
 
   createRun(
@@ -215,6 +222,13 @@ export class DshClient {
         ),
       );
     });
+    if (spec.timeoutMs !== undefined) {
+      // A socket that accepts but never answers must not pin a diagnostics
+      // request (or its file descriptor) forever.
+      req.setTimeout(spec.timeoutMs, () => {
+        req.destroy(new Error(`dsh request timed out after ${spec.timeoutMs}ms`));
+      });
+    }
     if (payload !== undefined) {
       req.write(payload);
     }

@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
-import type { CreateIssueInput, ForgePilotClient, Issue, ProductState, Workspace } from "../api/client";
+import type {
+  CreateIssueInput,
+  ForgePilotClient,
+  Issue,
+  ProductState,
+  Workspace,
+} from "../api/client";
 import { formatDate } from "../ui/format";
 import { productStageTone, productStateLabel } from "../ui/issues";
 import { redactText } from "../ui/redaction";
@@ -166,12 +172,22 @@ export function IssuesWorkbench({
     const input: CreateIssueInput = {
       summary: newTitle.trim(),
       description: newDescription,
-      labels: newLabels.split(/[\n,]/u).map((label) => label.trim()).filter(Boolean),
+      labels: newLabels
+        .split(/[\n,]/u)
+        .map((label) => label.trim())
+        .filter(Boolean),
     };
     try {
-      const issue = await client.createIssue(workspaceId, input, createKeys.current.forInput(input));
+      const issue = await client.createIssue(
+        workspaceId,
+        input,
+        createKeys.current.forInput(input),
+      );
       createKeys.current.complete(input);
-      setIssues((current) => [issue, ...current.filter((item) => item.issue_id !== issue.issue_id)]);
+      setIssues((current) => [
+        issue,
+        ...current.filter((item) => item.issue_id !== issue.issue_id),
+      ]);
       setCreating(false);
       setNewTitle("");
       setNewDescription("");
@@ -401,11 +417,28 @@ export function IssuesWorkbench({
         )}
       </main>
       {creating && (
-        <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setCreating(false); }}>
-          <section className="modal glass issue-create-modal" role="dialog" aria-modal="true" aria-labelledby="create-issue-title">
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setCreating(false);
+          }}
+        >
+          <section
+            className="modal glass issue-create-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-issue-title"
+          >
             <div className="modal-heading">
               <h2 id="create-issue-title">New issue</h2>
-              <button type="button" className="button button-quiet button-small" onClick={() => setCreating(false)} aria-label="Close">×</button>
+              <button
+                type="button"
+                className="button button-quiet button-small"
+                onClick={() => setCreating(false)}
+                aria-label="Close"
+              >
+                ×
+              </button>
             </div>
             {!workspaceId ? (
               <div className="issue-create-empty-state">
@@ -413,25 +446,59 @@ export function IssuesWorkbench({
                 <p>Join or create a workspace from Workspaces, then create an issue here.</p>
               </div>
             ) : (
-            <form className="form-stack" onSubmit={(event) => void submitIssue(event)}>
-              <label className="field-label" htmlFor="new-issue-title">
-                <span className="label-text">Title<span className="required-dot">*</span></span>
-                <input id="new-issue-title" autoFocus required maxLength={256} value={newTitle} onChange={(event) => setNewTitle(event.target.value)} />
-              </label>
-              <label className="field-label" htmlFor="new-issue-description">
-                <span className="label-text">Description</span>
-                <textarea id="new-issue-description" rows={5} value={newDescription} onChange={(event) => setNewDescription(event.target.value)} />
-              </label>
-              <label className="field-label" htmlFor="new-issue-labels">
-                <span className="label-text">Labels</span>
-                <input id="new-issue-labels" value={newLabels} onChange={(event) => setNewLabels(event.target.value)} />
-              </label>
-              {createError && <p role="alert" className="form-error">{createError}</p>}
-              <div className="modal-actions">
-                <button type="button" className="button button-quiet" onClick={() => setCreating(false)}>Cancel</button>
-                <button type="submit" className="button button-primary" disabled={createBusy || !newTitle.trim()}>{createBusy ? "Creating…" : "Create issue"}</button>
-              </div>
-            </form>
+              <form className="form-stack" onSubmit={(event) => void submitIssue(event)}>
+                <label className="field-label" htmlFor="new-issue-title">
+                  <span className="label-text">
+                    Title<span className="required-dot">*</span>
+                  </span>
+                  <input
+                    id="new-issue-title"
+                    autoFocus
+                    required
+                    maxLength={256}
+                    value={newTitle}
+                    onChange={(event) => setNewTitle(event.target.value)}
+                  />
+                </label>
+                <label className="field-label" htmlFor="new-issue-description">
+                  <span className="label-text">Description</span>
+                  <textarea
+                    id="new-issue-description"
+                    rows={5}
+                    value={newDescription}
+                    onChange={(event) => setNewDescription(event.target.value)}
+                  />
+                </label>
+                <label className="field-label" htmlFor="new-issue-labels">
+                  <span className="label-text">Labels</span>
+                  <input
+                    id="new-issue-labels"
+                    value={newLabels}
+                    onChange={(event) => setNewLabels(event.target.value)}
+                  />
+                </label>
+                {createError && (
+                  <p role="alert" className="form-error">
+                    {createError}
+                  </p>
+                )}
+                <div className="modal-actions">
+                  <button
+                    type="button"
+                    className="button button-quiet"
+                    onClick={() => setCreating(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="button button-primary"
+                    disabled={createBusy || !newTitle.trim()}
+                  >
+                    {createBusy ? "Creating…" : "Create issue"}
+                  </button>
+                </div>
+              </form>
             )}
           </section>
         </div>
@@ -466,8 +533,14 @@ function IssueListItem({
           <span className="mono">{redactText(issue.repository.repository_id)}</span>
           <span className="issue-sync-indicator">
             {issue.provider ? (
-              <a href={issue.provider.url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
-                {issue.provider.provider_type} #{issue.provider.issue_number} · {issue.provider.state}
+              <a
+                href={issue.provider.url}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(event) => event.stopPropagation()}
+              >
+                {issue.provider.provider_type} #{issue.provider.issue_number} ·{" "}
+                {issue.provider.state}
               </a>
             ) : (
               `Sync ${issue.sync_state}`

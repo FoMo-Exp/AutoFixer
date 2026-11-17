@@ -30,6 +30,7 @@ import {
 import { DASHBOARD_OPENAPI_SCHEMAS, dashboardOpenApiPaths } from "./openapi-dashboard.js";
 import { MEMORY_OPENAPI_SCHEMAS, memoryOpenApiPaths } from "./openapi-memory.js";
 import { RSI_OPENAPI_SCHEMAS, rsiOpenApiPaths } from "./openapi-rsi.js";
+import { RUNTIME_OPENAPI_SCHEMAS, runtimeOpenApiPaths } from "./openapi-runtime.js";
 import { SECURITY_OPENAPI_SCHEMAS, securityOpenApiPaths } from "./openapi-security.js";
 import type { JsonObject } from "./openapi-types.js";
 
@@ -4792,6 +4793,10 @@ export function buildOpenApiDocument(): OpenApiDocument {
   // rechecked recovery, and the tamper-evident non-secret audit trail.
   Object.assign(paths, securityOpenApiPaths());
 
+  // Runtime configuration diagnostics (DAT-257): redacted component checks and
+  // separate startup/task/model readiness for the deployment operator.
+  Object.assign(paths, runtimeOpenApiPaths());
+
   // Stamp the security requirement and 401 response onto every operation so
   // auth coverage cannot silently miss an endpoint.
   stampAuth(paths);
@@ -4902,6 +4907,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
         ...RSI_OPENAPI_SCHEMAS,
         ...DASHBOARD_OPENAPI_SCHEMAS,
         ...SECURITY_OPENAPI_SCHEMAS,
+        ...RUNTIME_OPENAPI_SCHEMAS,
         Error: errorSchema,
       },
       securitySchemes: {
