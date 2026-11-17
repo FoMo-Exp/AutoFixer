@@ -225,10 +225,24 @@ export interface DshCancelResponse {
  * is the authoritative revision the run produced — null for the local
  * control plane, which never binds a run to a head.
  */
+export interface DshValidationEvidence {
+  tool: string;
+  arguments?: string[];
+  exit_status?: number | null;
+  output_digest?: { algorithm: string; value: string };
+  event_reference: string;
+}
+
 export interface DshPatchReportSummary {
+  contract_version?: string;
   patch_status?: string;
   base_sha?: string;
+  branch?: string | null;
   head_sha?: string | null;
+  pr_id?: string | null;
+  change_summary?: string;
+  validation?: DshValidationEvidence[];
+  evidence_references?: string[];
   report_digest?: string;
 }
 

@@ -20,6 +20,7 @@ import { createTurnSummaryReportTool } from "../pi/turn-report-tool.js";
 import { piSystemPrompt, taskPrompt } from "../pi/prompts.js";
 import type { PiSessionOptions } from "../pi/session.js";
 import { PiSession } from "../pi/session.js";
+import type { OutcomeCaptureScheduler } from "../distill/index.js";
 import { assembleRunMemory } from "./run-memory.js";
 import type { RunMemoryDeps } from "./run-memory.js";
 import { SAFETY_DENIAL_CODES } from "./run-outcomes.js";
@@ -197,6 +198,14 @@ export interface TaskServiceDeps {
    * policy-only and is recorded on the task — it never blocks delivery.
    */
   memory?: RunMemoryDeps;
+  /**
+   * Durable terminal-outcome capture (DAT-264). Set with the control plane and
+   * memory store. The service only registers the dsh-reported terminal
+   * snapshot; the scheduler re-reads the authoritative evidence, so a caller
+   * never supplies an outcome. An enqueue failure degrades capture (recovered
+   * from the persisted projection at next start), never the task request.
+   */
+  capture?: Pick<OutcomeCaptureScheduler, "enqueue">;
 }
 
 /**
@@ -996,6 +1005,9 @@ export class TaskService {
     };
     this.deps.store.put(record);
     this.store.setStatus(record, "rejected", "dsh rejected the requested work as prohibited");
+    // dsh recorded the rejected run before refusing the create; register that
+    // exact terminal snapshot for capture, then close the task.
+    this.registerTerminalCapture(record, "rejected");
     // setStatus already flagged the record terminal; this records the single
     // terminal event and marks it so recovery can never append a second one.
     this.finalizeIfTerminal(record);
@@ -1365,7 +1377,28 @@ export class TaskService {
       record.actionsInFlight > 0,
     );
     this.store.setStatus(record, projectDshState(state, phase), reason);
+    this.registerTerminalCapture(record, state);
     this.finalizeIfTerminal(record);
+  }
+
+  /**
+   * Register the dsh-reported terminal snapshot for memory capture. Only a
+   * state dsh itself reported is registered: a Node-side stop (no model,
+   * unreachable run) has no evidence chain and must never become an outcome.
+   * The scheduler ignores non-terminal states and is idempotent per snapshot.
+   */
+  private registerTerminalCapture(record: TaskRecord, state: DshState): void {
+    const capture = this.deps.capture;
+    if (capture === undefined || record.runId === null) {
+      return;
+    }
+    capture.enqueue({
+      enterprise_id: record.enterpriseId,
+      workspace_id: record.workspaceId,
+      task_id: record.id,
+      run_id: record.runId,
+      state,
+    });
   }
 
   private finalizeIfTerminal(record: TaskRecord): void {

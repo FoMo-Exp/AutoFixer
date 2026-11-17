@@ -188,3 +188,63 @@ Envelope: identifier 200, reason 400, change summary 2000, tool 200,
 reference 300 characters; ≤ 24 evidence references, ≤ 16 validation attempts.
 Distillation: ≤ 16 materials of ≤ 4000 characters each. Every list is bounded;
 nothing here reads or writes unbounded data.
+
+## 8. Scheduled capture from authoritative dsh evidence (DAT-264)
+
+The envelope of §1–§2 is produced by a durable capture outbox, never by an
+agent assertion and never by the Node task projection alone.
+
+### 8.1 Sources
+
+A capture job exists only for a run whose authoritative `GET /v1/runs/{id}`
+reports a terminal dsh state. The envelope is built strictly from that
+evidence:
+
+| Envelope field | Source |
+| --- | --- |
+| `task_id`, `run_id`, `issue_id` | the run resource |
+| `terminal_state` | the run resource `state` |
+| `delivery.*` | the run's finalized `patch_report` |
+| `delivery.validation[]` | the patch report's retained attempts |
+| `evidence[]` | the patch report's `evidence_references` (typed `run`) |
+| `stop_disposition`, `failure_cause`, `reason` | the highest-sequence `state_transition` event's `decision_or_stop_code` |
+
+A run that is not terminal, has no `patch_report`, has no state-transition
+evidence, or whose newest transition disagrees with the reported state is not
+capturable. The job records a stable error code and retries; it never writes a
+fallback envelope.
+
+### 8.2 Terminal classification
+
+`rejected` and `cancelled` require the recorded decision/stop code as their
+reason. `stopped` is classified from that code, fail closed:
+
+| Code family | Disposition / cause |
+| --- | --- |
+| `stop_out_of_grant`, `deny_*`, gate refusals (`*_denied`, `grant_scope_exceeded`) | `failed` / `policy_denied` |
+| `stop_execution_failure` | `failed` / `tool_failure` |
+| `execution_resource_limit_exceeded` | `failed` / `resource_limit` |
+| `execution_limit_unenforceable`, `execution_supervision_unavailable`, `execution_descendants_survived`, `stop_audit_failure` | `infra_failure` |
+| anything else (for example `stop_local_review_required`) | `unknown` |
+
+`timed_out` and `expired` are `timeout`. `unknown`, `timeout`, and
+`infra_failure` remain episode-only: they are never success, never positive
+evidence, and never distilled from. A `merged` run whose patch report is not
+`merged` is contradictory evidence and is refused (`MERGED_WITHOUT_DELIVERY`).
+
+### 8.3 Scheduling and idempotency
+
+- Terminal snapshots are enqueued from the server-side task projection, which
+  supplies the owning enterprise/workspace. The worker never takes a workspace
+  from the run payload, and `task_id` on the run must equal the job's task.
+- One row exists per `(workspace_id, run_id, terminal_state)`. Re-enqueueing,
+  restart recovery, and duplicate delivery are no-ops for a captured snapshot.
+  A stopped run that later becomes cancelled is a different terminal snapshot
+  and is captured separately, as its own episode.
+- A worker claims a due row under a lease. Capture and the `captured` marker
+  commit in one transaction (the outbox shares the memory store's connection),
+  so a crash between the episode write and completion cannot duplicate it.
+- A failed dsh read, evidence gap, or memory write leaves the row `pending`
+  with a stable error code and bounded backoff. After the attempt budget the
+  row becomes `failed`, visible to operators, instead of retrying forever or
+  reporting success.

@@ -1365,6 +1365,40 @@ const MIGRATIONS: Migration[] = [
     version: 15,
     statements: [`ALTER TABLE service_integration ADD COLUMN issue_sync_connected_at TEXT`],
   },
+  {
+    // Durable outcome-capture outbox (DAT-264). One row per authoritative
+    // terminal snapshot of a run: the worker reads the dsh evidence, captures
+    // the episode, and marks the row captured in the same transaction, so a
+    // restart or a duplicate enqueue never captures the same terminal outcome
+    // twice. `state`, `lease_until`, and `retry_after` make concurrent workers
+    // and failed deliveries recoverable instead of silently lost.
+    version: 16,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS memory_outcome_capture (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id) ON DELETE CASCADE,
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        task_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        terminal_state TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending' CHECK (
+          state IN ('pending', 'processing', 'captured', 'failed')
+        ),
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        lease_until TEXT,
+        retry_after TEXT,
+        last_error TEXT,
+        item_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (workspace_id, run_id, terminal_state)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_outcome_capture_pending
+        ON memory_outcome_capture(state, retry_after, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_outcome_capture_scope
+        ON memory_outcome_capture(enterprise_id, workspace_id, run_id)`,
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
