@@ -110,7 +110,9 @@ export function applyIssueChange(
     changedFields.push(field);
   }
 
-  const knownComments = new Set(history.comments.map((comment) => `${comment.source}\0${comment.source_comment_id}`));
+  const knownComments = new Set(
+    history.comments.map((comment) => `${comment.source}\0${comment.source_comment_id}`),
+  );
   const comments = [...history.comments];
   for (const comment of incoming.comments ?? []) {
     const key = `${comment.source}\0${comment.source_comment_id}`;
@@ -150,7 +152,9 @@ export function rollbackIssueContent(
   const target = history.versions.find((version) => version.version_id === targetVersionId);
   if (!target) throw new Error(`unknown issue content version ${targetVersionId}`);
   const at = normalizeInstant(modifiedAt);
-  const changedFields = FIELDS.filter((field) => !sameField(history.content[field], target.content[field]));
+  const changedFields = FIELDS.filter(
+    (field) => !sameField(history.content[field], target.content[field]),
+  );
   if (changedFields.length === 0) return history;
   const content = cloneContent(target.content);
   const version: IssueContentVersion = {
@@ -167,7 +171,10 @@ export function rollbackIssueContent(
     ...history,
     content,
     field_modified_at: Object.fromEntries(
-      FIELDS.map((field) => [field, changedFields.includes(field) ? at : history.field_modified_at[field]]),
+      FIELDS.map((field) => [
+        field,
+        changedFields.includes(field) ? at : history.field_modified_at[field],
+      ]),
     ) as Record<IssueSyncField, string>,
     versions: [...history.versions, version],
   };

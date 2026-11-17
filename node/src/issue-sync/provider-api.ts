@@ -1,7 +1,10 @@
 /** Narrow GitHub/GitLab issue API adapter for the dedicated sync credential. */
 
 import type { ProviderType } from "../control-plane/types.js";
-import { withServiceCredential, type ServiceCredentialStore } from "../provider-access/credentials.js";
+import {
+  withServiceCredential,
+  type ServiceCredentialStore,
+} from "../provider-access/credentials.js";
 import {
   assertProviderStatus,
   createFetchHttpClient,
@@ -107,31 +110,38 @@ export function createProviderIssueApi(options: IssueSyncAdapterOptions): Provid
     body?: Record<string, unknown>,
   ): Promise<T> {
     const parsed = new URL(url);
-    if (parsed.origin !== base.origin || !parsed.pathname.startsWith(base.pathname.replace(/\/$/, ""))) {
+    if (
+      parsed.origin !== base.origin ||
+      !parsed.pathname.startsWith(base.pathname.replace(/\/$/, ""))
+    ) {
       throw new Error("issue-sync request escaped the configured provider API origin");
     }
-    return withServiceCredential(options.credentials, options.issue_sync_credential_ref, async (secret) => {
-      const response = await transport({
-        url,
-        method,
-        headers:
-          provider === "github"
-            ? {
-                Accept: "application/vnd.github+json",
-                Authorization: `Bearer ${secret}`,
-                "X-GitHub-Api-Version": "2022-11-28",
-                ...(body ? { "Content-Type": "application/json" } : {}),
-              }
-            : {
-                "PRIVATE-TOKEN": secret,
-                ...(body ? { "Content-Type": "application/json" } : {}),
-              },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-      });
-      assertProviderStatus(provider, response, url);
-      if (response.status === 404) throw new Error("provider issue was not found");
-      return parseJsonBody<T>(response.body, url);
-    });
+    return withServiceCredential(
+      options.credentials,
+      options.issue_sync_credential_ref,
+      async (secret) => {
+        const response = await transport({
+          url,
+          method,
+          headers:
+            provider === "github"
+              ? {
+                  Accept: "application/vnd.github+json",
+                  Authorization: `Bearer ${secret}`,
+                  "X-GitHub-Api-Version": "2022-11-28",
+                  ...(body ? { "Content-Type": "application/json" } : {}),
+                }
+              : {
+                  "PRIVATE-TOKEN": secret,
+                  ...(body ? { "Content-Type": "application/json" } : {}),
+                },
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        });
+        assertProviderStatus(provider, response, url);
+        if (response.status === 404) throw new Error("provider issue was not found");
+        return parseJsonBody<T>(response.body, url);
+      },
+    );
   }
 
   return {
@@ -140,7 +150,11 @@ export function createProviderIssueApi(options: IssueSyncAdapterOptions): Provid
       const payload =
         provider === "github"
           ? { title: input.title, body: input.description, labels: input.labels ?? [] }
-          : { title: input.title, description: input.description, labels: (input.labels ?? []).join(",") };
+          : {
+              title: input.title,
+              description: input.description,
+              labels: (input.labels ?? []).join(","),
+            };
       return mapIssue(await request<JsonObject>(issueUrl(), "POST", payload), provider);
     },
     async getIssue(issueId) {
@@ -151,7 +165,8 @@ export function createProviderIssueApi(options: IssueSyncAdapterOptions): Provid
       for (let page = 1; page <= 100; page += 1) {
         const params = new URLSearchParams({ state: "all", per_page: "100", page: String(page) });
         if (provider === "github") params.set("sort", "updated");
-        if (updatedSince) params.set(provider === "github" ? "since" : "updated_after", updatedSince);
+        if (updatedSince)
+          params.set(provider === "github" ? "since" : "updated_after", updatedSince);
         const url = `${issueUrl()}?${params.toString()}`;
         const raw = await getRaw(url);
         const rows = parseJsonArray(raw.body, url);
@@ -184,9 +199,10 @@ export function createProviderIssueApi(options: IssueSyncAdapterOptions): Provid
     async listComments(issueId) {
       const comments: ProviderIssueComment[] = [];
       for (let page = 1; page <= 100; page += 1) {
-        const collection = provider === "github"
-          ? `${issueUrl(issueItemPath(issueId))}/comments`
-          : `${base.origin}${base.pathname.replace(/\/$/, "")}/projects/${encodeURIComponent(repository.path)}/issues/${issueId}/notes`;
+        const collection =
+          provider === "github"
+            ? `${issueUrl(issueItemPath(issueId))}/comments`
+            : `${base.origin}${base.pathname.replace(/\/$/, "")}/projects/${encodeURIComponent(repository.path)}/issues/${issueId}/notes`;
         const url = `${collection}?per_page=100&page=${page}`;
         const rows = parseJsonArray((await getRaw(url)).body, url);
         comments.push(...rows.map((row) => mapComment(row, provider)));
@@ -206,23 +222,28 @@ export function createProviderIssueApi(options: IssueSyncAdapterOptions): Provid
 
   async function getRaw(url: string): Promise<{ body: string }> {
     const parsed = new URL(url);
-    if (parsed.origin !== base.origin) throw new Error("issue-sync request escaped provider origin");
-    return withServiceCredential(options.credentials, options.issue_sync_credential_ref, async (secret) => {
-      const response = await transport({
-        url,
-        method: "GET",
-        headers:
-          provider === "github"
-            ? {
-                Accept: "application/vnd.github+json",
-                Authorization: `Bearer ${secret}`,
-                "X-GitHub-Api-Version": "2022-11-28",
-              }
-            : { "PRIVATE-TOKEN": secret },
-      });
-      assertProviderStatus(provider, response, url);
-      return { body: response.body };
-    });
+    if (parsed.origin !== base.origin)
+      throw new Error("issue-sync request escaped provider origin");
+    return withServiceCredential(
+      options.credentials,
+      options.issue_sync_credential_ref,
+      async (secret) => {
+        const response = await transport({
+          url,
+          method: "GET",
+          headers:
+            provider === "github"
+              ? {
+                  Accept: "application/vnd.github+json",
+                  Authorization: `Bearer ${secret}`,
+                  "X-GitHub-Api-Version": "2022-11-28",
+                }
+              : { "PRIVATE-TOKEN": secret },
+        });
+        assertProviderStatus(provider, response, url);
+        return { body: response.body };
+      },
+    );
   }
 }
 
@@ -272,7 +293,9 @@ function mapComment(row: JsonObject, provider: ProviderType): ProviderIssueComme
     author,
     body,
     created_at: new Date(createdAt).toISOString(),
-    updated_at: Number.isFinite(Date.parse(updatedAt)) ? new Date(updatedAt).toISOString() : new Date(createdAt).toISOString(),
+    updated_at: Number.isFinite(Date.parse(updatedAt))
+      ? new Date(updatedAt).toISOString()
+      : new Date(createdAt).toISOString(),
   };
 }
 

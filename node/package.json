@@ -15,7 +15,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "export:openapi": "npm run build && node dist/scripts/export-openapi.js"
+    "export:openapi": "npm run build && node dist/scripts/export-openapi.js",
+    "doctor": "npm run build && node dist/src/doctor.js",
+    "doctor:json": "npm run build && node dist/src/doctor.js --json"
   },
   "dependencies": {
     "@mariozechner/pi-agent-core": "^0.73.1",

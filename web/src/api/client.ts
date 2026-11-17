@@ -20,7 +20,8 @@ export type IssueRunState = IssueRun["state"];
 export type IssueStageTransition =
   operations["transitionIssueStage"]["requestBody"]["content"]["application/json"];
 export type IssuePage = operations["listIssues"]["responses"][200]["content"]["application/json"];
-export type CreateIssueInput = operations["createIssue"]["requestBody"]["content"]["application/json"];
+export type CreateIssueInput =
+  operations["createIssue"]["requestBody"]["content"]["application/json"];
 
 export interface IssueSyncVersion {
   version_id: string;
@@ -585,7 +586,11 @@ export class ForgePilotClient extends ApiTransport {
     return this.request<IssuePage>(`${issuePath(workspaceId)}${query}`);
   }
 
-  async createIssue(workspaceId: string, input: CreateIssueInput, idempotencyKey: string): Promise<Issue> {
+  async createIssue(
+    workspaceId: string,
+    input: CreateIssueInput,
+    idempotencyKey: string,
+  ): Promise<Issue> {
     return this.request<Issue>(issuePath(workspaceId), {
       method: "POST",
       headers: {
@@ -601,12 +606,16 @@ export class ForgePilotClient extends ApiTransport {
   }
 
   async getIssueVersions(workspaceId: string, issueId: string): Promise<IssueSyncVersion[]> {
-    const result = await this.request<{ items: IssueSyncVersion[] }>(issuePath(workspaceId, issueId, "versions"));
+    const result = await this.request<{ items: IssueSyncVersion[] }>(
+      issuePath(workspaceId, issueId, "versions"),
+    );
     return result.items;
   }
 
   async getIssueComments(workspaceId: string, issueId: string): Promise<IssueSyncComment[]> {
-    const result = await this.request<{ items: IssueSyncComment[] }>(issuePath(workspaceId, issueId, "comments"));
+    const result = await this.request<{ items: IssueSyncComment[] }>(
+      issuePath(workspaceId, issueId, "comments"),
+    );
     return result.items;
   }
 
@@ -623,7 +632,12 @@ export class ForgePilotClient extends ApiTransport {
     });
   }
 
-  async addIssueComment(workspaceId: string, issueId: string, body: string, idempotencyKey: string): Promise<Issue> {
+  async addIssueComment(
+    workspaceId: string,
+    issueId: string,
+    body: string,
+    idempotencyKey: string,
+  ): Promise<Issue> {
     return this.request<Issue>(issuePath(workspaceId, issueId, "comments"), {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
@@ -631,7 +645,12 @@ export class ForgePilotClient extends ApiTransport {
     });
   }
 
-  async rollbackIssueContent(workspaceId: string, issueId: string, versionId: string, idempotencyKey: string): Promise<Issue> {
+  async rollbackIssueContent(
+    workspaceId: string,
+    issueId: string,
+    versionId: string,
+    idempotencyKey: string,
+  ): Promise<Issue> {
     return this.request<Issue>(issuePath(workspaceId, issueId, "rollback"), {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },

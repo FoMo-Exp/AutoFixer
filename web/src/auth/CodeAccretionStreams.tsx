@@ -155,14 +155,7 @@ function drawBentSnippet(
     // Match both strip edges exactly to the warp; an approximate tangent scale
     // creates visible gaps and comb-like bands in the soft emission layer. The
     // glyph column stays vertical so text never turns upside down mid-orbit.
-    context.transform(
-      dx / (stripWidth / 2),
-      dy / (stripWidth / 2),
-      0,
-      scale * squeeze,
-      0,
-      0,
-    );
+    context.transform(dx / (stripWidth / 2), dy / (stripWidth / 2), 0, scale * squeeze, 0, 0);
     context.drawImage(
       image,
       sourceX,
@@ -296,9 +289,7 @@ export function CodeAccretionStreams(): ReactElement {
         // Distance reduces apparent size; transverse compression strengthens
         // inward while a lensed arc can still stretch the image tangentially.
         // The floor keeps the last readable moments from collapsing into a speck.
-        const scale =
-          (mobile ? 0.62 : 0.95) *
-          (0.26 + 0.74 * (radius / path[0].radius) ** 1.35);
+        const scale = (mobile ? 0.62 : 0.95) * (0.26 + 0.74 * (radius / path[0].radius) ** 1.35);
         // Hold full strength until the ribbon is close to the apparent shadow,
         // then redshift and extinguish it at the horizon. The old exponential
         // fade killed the code in open space, so the capture read as a blink.

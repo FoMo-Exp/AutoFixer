@@ -13897,6 +13897,53 @@
           }
         ]
       }
+    },
+    "/api/v1/runtime/diagnostics": {
+      "get": {
+        "operationId": "getRuntimeDiagnostics",
+        "summary": "Redacted runtime configuration and readiness report",
+        "description": "Operator-only diagnosis of the deployment's own configuration and state: dsh reachability, pinned repository/base SHA, Pi model, model gateway, enterprise identity, durable state, and budget. Startup, task, and model readiness are reported separately; a blocked boundary still returns 200 with the evidence and the next action. No secret material is returned. Only the local-operator bearer is accepted: deployment paths and readiness are not enterprise-user data.",
+        "responses": {
+          "200": {
+            "description": "Diagnostics report. Readiness may be degraded or blocked; inspect `readiness`, `checks`, and `blockers`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeDiagnostics"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN — a session credential is not the deployment operator",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -23125,6 +23172,184 @@
             "items": {
               "$ref": "#/components/schemas/SecurityAuditEntry"
             }
+          }
+        }
+      },
+      "RuntimeDiagnosticCheck": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "status",
+          "stages",
+          "detail",
+          "next_action"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "enum": [
+              "config",
+              "dsh",
+              "repository",
+              "model",
+              "gateway",
+              "egress",
+              "identity",
+              "persistence",
+              "budget"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "description": "Subsystem name; never a credential or secret."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "degraded",
+              "blocked",
+              "not_configured"
+            ],
+            "description": "`ready` — usable; `degraded` — usable with an operator warning; `blocked` — unusable until fixed; `not_configured` — optional subsystem absent (or required by a boundary, which makes that boundary blocked)."
+          },
+          "stages": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "startup",
+                "task",
+                "model"
+              ]
+            },
+            "description": "Readiness boundaries this component gates."
+          },
+          "detail": {
+            "type": "string",
+            "description": "Redacted evidence for the status. Never contains token, credential, session, bootstrap, or key material; absolute state paths are omitted from the API (basenames only)."
+          },
+          "next_action": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Operator action that changes the status; null when nothing is wrong."
+          }
+        }
+      },
+      "RuntimeDiagnostics": {
+        "type": "object",
+        "required": [
+          "service",
+          "readiness",
+          "checks",
+          "blockers",
+          "notes",
+          "generated_at"
+        ],
+        "properties": {
+          "service": {
+            "type": "object",
+            "required": [
+              "name",
+              "version",
+              "pid",
+              "started_at",
+              "uptime_seconds",
+              "single_instance"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "enum": [
+                  "forgepilot-api/v1"
+                ]
+              },
+              "version": {
+                "type": "string"
+              },
+              "pid": {
+                "type": "integer"
+              },
+              "started_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "uptime_seconds": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "single_instance": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ],
+                "description": "One orchestrator per state directory. The task projection, budget journal, control-plane database, and append-only audit streams are single-writer; a second instance sharing them is unsupported."
+              }
+            }
+          },
+          "readiness": {
+            "type": "object",
+            "required": [
+              "startup",
+              "task",
+              "model"
+            ],
+            "properties": {
+              "startup": {
+                "type": "string",
+                "enum": [
+                  "ready",
+                  "degraded",
+                  "blocked"
+                ],
+                "description": "Configuration and startup-critical state are valid; a blocked startup refuses to serve."
+              },
+              "task": {
+                "type": "string",
+                "enum": [
+                  "ready",
+                  "degraded",
+                  "blocked"
+                ],
+                "description": "dsh, the pinned repository/base revision, and durable task state are usable; blocked means runs cannot start (DSH_UNAVAILABLE)."
+              },
+              "model": {
+                "type": "string",
+                "enum": [
+                  "ready",
+                  "degraded",
+                  "blocked"
+                ],
+                "description": "Pi model, gateway policy/credentials, and scope-bound egress coverage are usable. `egress` is evaluated per target workspace: a valid policy that binds only other scopes reports blocked; a partially covered active-workspace set reports degraded; an offline probe that cannot enumerate memberships never reports ready. Blocked means every dispatch from the failed scope is denied (fail closed)."
+              }
+            }
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuntimeDiagnosticCheck"
+            }
+          },
+          "blockers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Component ids (`config`, `dsh`, …) whose status blocks a readiness boundary. Empty only when every boundary is ready or degraded."
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Safe operational notes, including the single-instance limitation."
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
