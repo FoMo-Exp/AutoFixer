@@ -316,6 +316,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/runs/{run_id}/approvals", s.handleApproval)
 	mux.HandleFunc("POST /v1/runs/{run_id}/actions", s.handleSubmitAction)
 	mux.HandleFunc("POST /v1/runs/{run_id}/cancel", s.handleCancel)
+	mux.HandleFunc("POST /v1/runs/{run_id}/stop", s.handleStop)
 	mux.HandleFunc("GET /v1/runs/{run_id}/events", s.handleEvents)
 	mux.HandleFunc("GET /v1/runs/{run_id}/evidence-bundle", s.handleEvidenceBundle)
 	mux.HandleFunc("GET /v1/runs/{run_id}/artifacts/{artifact_id}", s.handleArtifact)

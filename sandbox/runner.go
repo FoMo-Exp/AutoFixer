@@ -293,6 +293,11 @@ func New(run *harness.Run, opts Options) (*Runner, error) {
 // terminating execution removes it.
 func (r *Runner) Workspace() string { return r.workspace }
 
+// Closed reports whether the one-time workspace was already removed. A closed
+// runner can no longer capture a prepared change: the evidence lives in the
+// append-only event store, never in the destroyed workspace.
+func (r *Runner) Closed() bool { return r.closed }
+
 // Execute dispatches one tool invocation inside the runner's workspace.
 //
 // The call first moves an approved run into running (the only state change

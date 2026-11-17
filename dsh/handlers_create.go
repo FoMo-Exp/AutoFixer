@@ -136,6 +136,7 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		issue:          req.Issue,
 		approvalExpiry: now.Add(s.cfg.ApprovalWindow),
 		actionIDs:      map[string]bool{},
+		testTrees:      map[int]string{},
 	}
 
 	if err := s.store.claimTask(taskID, runID); err != nil {

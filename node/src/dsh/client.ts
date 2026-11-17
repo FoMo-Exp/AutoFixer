@@ -16,6 +16,8 @@ import type {
   DshEventsResponse,
   DshHealth,
   DshRunResponse,
+  DshStopRequest,
+  DshStopResponse,
 } from "./types.js";
 
 /** Error raised for any non-2xx dsh-control/v1 response. */
@@ -145,6 +147,25 @@ export class DshClient {
     return this.request<DshCancelResponse>({
       method: "POST",
       path: `/v1/runs/${encodeURIComponent(runId)}/cancel`,
+      body,
+      idempotencyKey,
+      protocolHeader: true,
+    });
+  }
+
+  /**
+   * Signal that local preparation completed. dsh revokes the grant, freezes
+   * the prepared change from the still-live checkout, and moves a running run
+   * to `stopped`. Repeating against a stopped run returns the same completion.
+   */
+  stopRun(
+    runId: string,
+    body: DshStopRequest,
+    idempotencyKey: string = randomUUID(),
+  ): Promise<DshStopResponse> {
+    return this.request<DshStopResponse>({
+      method: "POST",
+      path: `/v1/runs/${encodeURIComponent(runId)}/stop`,
       body,
       idempotencyKey,
       protocolHeader: true,

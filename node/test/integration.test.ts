@@ -619,6 +619,52 @@ describe("forgepilot-api/v1 against the real dsh control plane", () => {
     expect(scripted.calls[2]?.some((content) => content.includes("run one more check"))).toBe(true);
   });
 
+  test("complete_local_preparation stops the run and projects the authoritative stop", async () => {
+    const { base } = await startApp([
+      {
+        kind: "tool",
+        text: "Checking the echo tool.",
+        toolId: "echo",
+        args: { message: "hello" },
+        pathScope: ["node/check.txt"],
+        rationale: "verify echo works",
+      },
+      {
+        kind: "complete",
+        text: "The requested work is done; requesting local completion.",
+      },
+      { kind: "text", text: "Preparation completed." },
+    ]);
+    const created = await createAndApprove(base);
+    const runId = requireRunId(created);
+
+    await waitUntil(
+      async () =>
+        (await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`)).body.status ===
+        "stopped",
+      "authoritative stopped projection",
+    );
+
+    // Completion is the agent's explicit signal: the run is stopped, the grant
+    // is gone, and the task no longer accepts follow-up work. dsh remains the
+    // fact source for the stop itself.
+    const run = await dsh.client.getRun(runId);
+    expect(run.state).toBe("stopped");
+    expect(run.grant_status.state).toBe("revoked");
+    expect(run.patch_report?.patch_status).toBe("not_created");
+
+    const task = await getJson<TaskResource>(`${base}/api/v1/tasks/${created.id}`);
+    expect(task.body.status).toBe("stopped");
+    expect(task.body.status_reason).toBeNull();
+
+    const followUp = await postJson<ApiErrorBody>(`${base}/api/v1/tasks/${created.id}/messages`, {
+      mode: "follow_up",
+      content: "one more check",
+    });
+    expect(followUp.status).toBe(409);
+    expect(followUp.body.error.code).toBe("TASK_STATE_CONFLICT");
+  });
+
   test("foreign repositories are refused before contacting dsh", async () => {
     const { base } = await startApp([]);
     const response = await postJson<ApiErrorBody>(`${base}/api/v1/tasks`, {

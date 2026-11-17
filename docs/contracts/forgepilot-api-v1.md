@@ -993,6 +993,15 @@ retained content and can be recomputed independently instead of trusted. The
 containment check resolves symlinks, so a retention root that only appears to be
 outside the worktree is refused.
 
+A settled Pi turn is not completion: the same session may still be steered or
+receive follow-up messages. The agent ends local preparation through one
+explicit `complete_local_preparation` tool call after the requested change and
+its required tests are done, and the service then asks dsh to stop the run. A
+run that stops without passing validation evidence for the frozen tree
+(cancellation, timeout, rejection, failure, or a premature completion) keeps its
+truthful terminal state and freezes no candidate; only dsh's authoritative
+`stopped` result with a prepared revision produces a review card.
+
 Validation evidence is passing evidence, and the required checks are **policy**,
 not execution output. A configuration administrator registers a versioned test
 policy scoped to one workspace and repository: required checks, `config_digest`

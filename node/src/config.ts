@@ -36,6 +36,21 @@ export interface OrchestratorConfig {
   pathHints: string[];
   /** dsh tool identities tasks may request. */
   toolCapabilities: string[];
+  /**
+   * Required checks of the test policy a frozen candidate is bound to
+   * (DAT-258). A gated name here must also be a registered sandbox profile
+   * (`go.test`, `node.test`); the default is `go.test`.
+   */
+  testChecks?: string[];
+  /** Test-environment identity recorded with the policy (default `dsh-isolated-v1`). */
+  testEnvironment?: string;
+  /** Explicit sha256:<64 hex> digest of the test configuration; derived from the checks when unset. */
+  testConfigDigest?: string;
+  /**
+   * Retention root for frozen candidate diff content (DAT-258). It must live
+   * outside every preparation worktree; defaults under the per-user state dir.
+   */
+  candidateStoreRoot?: string;
   /** Wall-clock bound requested for each run, in seconds. */
   maxWallClockSeconds: number;
   /** Pi model provider and id; both unset means PI_UNAVAILABLE. */
@@ -278,6 +293,14 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     approverIdentity: env["FORGEPILOT_APPROVER_IDENTITY"] ?? "github:local-operator",
     pathHints: csv(env["FORGEPILOT_PATH_HINTS"], ["node"]),
     toolCapabilities: csv(env["FORGEPILOT_TOOL_CAPABILITIES"], ["echo", "sleep"]),
+    testChecks: csv(env["FORGEPILOT_TEST_CHECKS"], ["go.test"]),
+    testEnvironment: env["FORGEPILOT_TEST_ENVIRONMENT"]?.trim() || "dsh-isolated-v1",
+    ...(env["FORGEPILOT_TEST_CONFIG_DIGEST"]?.trim()
+      ? { testConfigDigest: env["FORGEPILOT_TEST_CONFIG_DIGEST"]?.trim() }
+      : {}),
+    candidateStoreRoot:
+      env["FORGEPILOT_CANDIDATE_STORE_ROOT"]?.trim() ||
+      defaultSecurityStatePath("candidate-content"),
     maxWallClockSeconds: positiveInt(
       env["FORGEPILOT_MAX_WALL_CLOCK_SECONDS"],
       120,
@@ -426,6 +449,12 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): Orchestrato
     DEFAULT_MEMORY_CONSOLIDATION_INTERVAL_MS,
     "FORGEPILOT_MEMORY_CONSOLIDATION_INTERVAL_MS",
   );
+  if (
+    config.testConfigDigest !== undefined &&
+    !/^sha256:[0-9a-f]{64}$/.test(config.testConfigDigest)
+  ) {
+    throw new Error("FORGEPILOT_TEST_CONFIG_DIGEST must be sha256:<64 hex characters>");
+  }
   return config;
 }
 

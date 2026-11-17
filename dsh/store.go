@@ -52,6 +52,22 @@ type runRecord struct {
 	runner   *sandbox.Runner
 	registry *tools.Registry
 
+	// Prepared-change freeze (DAT-258): captured once from the run's
+	// materialized checkout, retained on the record after cleanup, and bound
+	// into the evidence chain only when the run also completed validation
+	// against the exact captured tree.
+	change         *sandbox.ProposedChange
+	changeCaptured bool
+	changeErr      error
+	branch         string
+	prepared       bool
+	// testTrees maps one completed test.run completion event's sequence to
+	// the git tree object its working tree had at that moment. Validation
+	// evidence only counts for the frozen revision when its tree is the
+	// captured one, so an edit after the last test cannot borrow that test's
+	// result.
+	testTrees map[int]string
+
 	busy     bool
 	cancel   context.CancelFunc
 	execDone chan struct{}
@@ -308,11 +324,22 @@ func (rec *runRecord) latestAuditReference() string {
 }
 
 // closeRunnerLocked tears down the one-time workspace once the run can no
-// longer dispatch. The caller must hold rec.mu.
+// longer dispatch. The caller must hold rec.mu. A stopped run counts as
+// finished here even though the ADR lets it be re-approved with a new grant:
+// the current grant is revoked, so its workspace and prepared change must be
+// frozen before the workspace is removed.
 func (rec *runRecord) closeRunnerLocked() error {
-	if !harness.IsTerminal(rec.run.State) || rec.runner == nil {
+	if rec.runner == nil {
 		return nil
 	}
+	if !harness.IsTerminal(rec.run.State) && rec.run.State != harness.StateStopped {
+		return nil
+	}
+	// Freeze whatever the run prepared before the workspace that holds it is
+	// removed. A cancelled or timed-out run may have destroyed its workspace
+	// already; capture then retains nothing and the terminal state stays the
+	// truthful answer.
+	_ = rec.captureChangeLocked()
 	runner := rec.runner
 	rec.runner = nil
 	return runner.Close()

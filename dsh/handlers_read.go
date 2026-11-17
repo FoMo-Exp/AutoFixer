@@ -90,6 +90,10 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	defer rec.mu.Unlock()
 
 	run := rec.run
+	// Freeze a prepared change before the run is read as final: the workspace
+	// that holds it is removed with the terminal run, and every derived
+	// artifact below must agree with one retained revision.
+	rec.prepareChangeLocked()
 	events := rec.events.Events(run.RunID)
 	state := run.State
 	finalized := bundleFinalized(state)
@@ -114,7 +118,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 			response.PatchReport = &report
 		}
 	}
-	snapshot := buildApprovalSnapshot(run, now)
+	snapshot := buildApprovalSnapshot(rec, now)
 	response.ApprovalSnapshot = &snapshot
 
 	writeJSON(w, http.StatusOK, response)
@@ -279,6 +283,7 @@ func (s *Server) handleEvidenceBundle(w http.ResponseWriter, r *http.Request) {
 func (s *Server) evidenceBundle(rec *runRecord) (*delivery.EvidenceBundle, harness.State, *requestError) {
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
+	rec.prepareChangeLocked()
 	state := rec.run.State
 	if !bundleFinalized(state) {
 		return nil, state, &requestError{
@@ -322,22 +327,52 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, CodeRunNotFound, "Run not found.", nil)
 		return
 	}
+	// Capture the prepared change before serving anything derived from it:
+	// the terminal run's workspace is removed, and the diff artifacts must
+	// come from the same retained revision the patch report describes.
+	rec.mu.Lock()
+	rec.prepareChangeLocked()
+	rec.mu.Unlock()
 	artifactID := r.PathValue("artifact_id")
 	switch artifactID {
-	case "patch_diff", "validation_summary":
+	case "patch_diff", "validation_summary", "candidate":
 		rec.mu.Lock()
-		finalized := bundleFinalized(rec.run.State)
+		state := rec.run.State
+		var content any
+		var requestErr *requestError
+		switch {
+		case !bundleFinalized(state):
+			requestErr = &requestError{
+				status:  http.StatusConflict,
+				code:    CodeArtifactNotFinalized,
+				message: "Artifact is not available for a non-terminal run.",
+			}
+		case !rec.prepared || rec.change == nil:
+			// The run finalized without a validated prepared change, so this
+			// artifact was never produced. That is the contract's 404, not a
+			// placeholder document.
+			requestErr = &requestError{
+				status:  http.StatusNotFound,
+				code:    CodeArtifactNotFound,
+				message: fmt.Sprintf("Artifact %q does not exist for this run: no validated change was prepared.", artifactID),
+			}
+		default:
+			events := rec.events.Events(rec.run.RunID)
+			switch artifactID {
+			case "patch_diff":
+				content = buildChangeArtifact(rec.change)
+			case "validation_summary":
+				content = buildValidationArtifact(rec, events)
+			default:
+				content = buildCandidateArtifact(rec, events)
+			}
+		}
 		rec.mu.Unlock()
-		if !finalized {
-			writeError(w, r, http.StatusConflict, CodeArtifactNotFinalized,
-				"Artifact is not available for a non-terminal run.", nil)
+		if requestErr != nil {
+			writeError(w, r, requestErr.status, requestErr.code, requestErr.message, requestErr.details)
 			return
 		}
-		// These artifacts are only produced by a delivery step outside the
-		// local control plane; a finalized run has simply never had one,
-		// so the contract's 404 ARTIFACT_NOT_FOUND is the truthful answer.
-		writeError(w, r, http.StatusNotFound, CodeArtifactNotFound,
-			fmt.Sprintf("Artifact %q is not produced by the local control plane.", artifactID), nil)
+		s.writeArtifact(w, r, rec, artifactID, content)
 		return
 	case "patch_report":
 		rec.mu.Lock()

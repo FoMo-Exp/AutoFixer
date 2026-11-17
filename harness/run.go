@@ -22,6 +22,11 @@ const (
 	DenyGrantLinkageMismatch          = "deny_grant_linkage_mismatch"
 	DenyTransitionPreconditionMissing = "deny_transition_precondition_missing"
 
+	// DecisionRevisionPrepared records that a stopped or terminal run's
+	// prepared change was frozen as one exact candidate revision. It creates
+	// no branch and no PR; the later delivery step is the only provider write.
+	DecisionRevisionPrepared = "revision_prepared"
+
 	StopCodeAuditFailure = "stop_audit_failure"
 )
 
@@ -225,6 +230,46 @@ func (r *Run) SetPR(branch, headSHA, prID string) error {
 
 func (r *Run) mergeEligibilityCurrent() bool {
 	return r.HeadSHA != nil && r.mergeEligibleHead != nil && *r.mergeEligibleHead == *r.HeadSHA
+}
+
+// BindPreparedRevision records the exact revision a stopped or terminal run
+// prepared locally (ADR-0007 "Code, validation, and immutable candidates").
+//
+// The candidate head is a locally created commit object: this method creates
+// no branch, ref, push, or PR, and harness `awaiting_review` still means a
+// provider PR exists. The binding is written as one append-only evidence
+// event so the evidence bundle can prove which revision its validation
+// evidence belongs to. A run binds at most one prepared revision; a later
+// revision is a new run, never a rebind.
+func (r *Run) BindPreparedRevision(branch, headSHA string) error {
+	if branch == "" || !strings.HasPrefix(branch, BranchPrefix) {
+		return fmt.Errorf("harness: prepared branch %q must start with %q", branch, BranchPrefix)
+	}
+	if headSHA == "" {
+		return errors.New("harness: prepared revision requires a head SHA")
+	}
+	if r.State != StateStopped && !IsTerminal(r.State) {
+		return fmt.Errorf("harness: prepared revision requires a stopped run, not %q", r.State)
+	}
+	if r.HeadSHA != nil {
+		if *r.HeadSHA == headSHA && r.Branch != nil && *r.Branch == branch {
+			return nil
+		}
+		return errors.New("harness: the run already bound a different revision")
+	}
+	r.mergeEligibleHead = nil
+	branchCopy := branch
+	headCopy := headSHA
+	r.Branch = &branchCopy
+	r.HeadSHA = &headCopy
+	ev := r.baseEvent(EventTypeStateTransition, r.State, r.State)
+	code := DecisionRevisionPrepared
+	ev.DecisionOrStopCode = &code
+	if _, err := r.store.Append(ev); err != nil {
+		r.Revoked = true
+		return fmt.Errorf("harness: audit write failed while binding the prepared revision: %w", err)
+	}
+	return nil
 }
 
 // EvaluateAndRecordAction applies the policy executor, records the decision

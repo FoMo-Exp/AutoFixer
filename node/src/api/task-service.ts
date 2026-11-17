@@ -3,9 +3,18 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Api, Model } from "@mariozechner/pi-ai";
 
 import type { OrchestratorConfig } from "../config.js";
+import { CollabError } from "../collab/errors.js";
+import type { CandidateRecord } from "../collab/types.js";
+import type { PreparationBridge } from "../collab/preparation.js";
 import { DshError } from "../dsh/client.js";
 import type { DshClient } from "../dsh/client.js";
-import type { DshGrantSummary, DshProposedWork, DshRunResponse, DshState } from "../dsh/types.js";
+import type {
+  DshGrantSummary,
+  DshProposedWork,
+  DshRunResponse,
+  DshState,
+  DshStopResponse,
+} from "../dsh/types.js";
 import type { AuthenticatedPrincipal } from "../control-plane/request-scope.js";
 import type { GatewayScopeBinding, ModelGateway } from "../gateway/index.js";
 import {
@@ -16,6 +25,7 @@ import {
 } from "../errors/index.js";
 import type { DiagnosticAccessPolicy, SensitiveDiagnostics } from "../errors/index.js";
 import { createDshRequestActionTool } from "../pi/dsh-request-action-tool.js";
+import { createCompletePreparationTool } from "../pi/completion-tool.js";
 import { createTurnSummaryReportTool } from "../pi/turn-report-tool.js";
 import { piSystemPrompt, taskPrompt } from "../pi/prompts.js";
 import type { PiSessionOptions } from "../pi/session.js";
@@ -206,6 +216,15 @@ export interface TaskServiceDeps {
    * from the persisted projection at next start), never the task request.
    */
   capture?: Pick<OutcomeCaptureScheduler, "enqueue">;
+  /**
+   * Local preparation → collaborator candidate freeze (DAT-258). Set when the
+   * durable collaboration machine owns the issue/run record; the service
+   * signals local completion to dsh and mirrors the frozen revision into the
+   * collaboration record before projecting the terminal task status. Unset
+   * keeps task projection unchanged (the collaboration surface is not
+   * configured in minimal deployments).
+   */
+  preparation?: Pick<PreparationBridge, "observe">;
 }
 
 /**
@@ -375,6 +394,12 @@ export class TaskService {
    * absorbing terminal statuses, a stale read can never revive a task.
    */
   private readonly refreshQueues = new Map<string, Promise<void>>();
+  /**
+   * In-flight local-completion requests keyed by dsh run. A retried or
+   * concurrent `complete_local_preparation` call joins the same stop request
+   * instead of signalling dsh twice (DAT-258).
+   */
+  private readonly completionRequests = new Map<string, Promise<DshStopResponse>>();
   /**
    * In-flight creates keyed by Idempotency-Key (M3): two concurrent creates
    * with the same key join one dsh run instead of racing two.
@@ -1056,6 +1081,12 @@ export class TaskService {
     const reportTool = createTurnSummaryReportTool({
       onReport: (report) => summaryTracker.recordReport(report),
     });
+    // Completion is an explicit, model-chosen signal, never a side effect of a
+    // settled turn: steer/follow-up keep one session alive across turns, and
+    // only this call ends local preparation (DAT-258).
+    const completionTool = createCompletePreparationTool({
+      complete: () => this.requestPreparationCompletion(record),
+    });
     let sessionRef: PiSession | null = null;
     const tool = createDshRequestActionTool({
       client: this.deps.dsh,
@@ -1112,7 +1143,7 @@ export class TaskService {
       sessionId,
       systemPrompt,
       model: this.deps.model,
-      tools: [tool, reportTool],
+      tools: [tool, reportTool, completionTool],
       // Every model call this session makes goes through the gateway, bound to
       // this task's durable enterprise/workspace identity — never the process
       // configuration (DAT-245) — together with the authenticated request's
@@ -1254,6 +1285,54 @@ export class TaskService {
   }
 
   /**
+   * Complete local preparation on the agent's explicit signal (DAT-258).
+   *
+   * A settled turn is not completion: the same session may be steered or
+   * receive follow-up messages, so only the model's dedicated tool call ends
+   * the run. dsh revokes the grant and freezes the validated revision; the
+   * refresh then mirrors the frozen candidate into the collaboration record
+   * before the task projects the terminal `stopped` status. A refusal (busy
+   * dispatch, terminal run, unreachable dsh) is rethrown to the tool so the
+   * model sees a failed call rather than an invented completion.
+   */
+  private requestPreparationCompletion(record: TaskRecord): Promise<DshStopResponse> {
+    if (!record.runId) {
+      return Promise.reject(new Error("The task has no run to complete."));
+    }
+    if (record.terminal) {
+      return Promise.reject(new Error("The task has already ended; there is nothing to complete."));
+    }
+    const runId = record.runId;
+    const inflight = this.completionRequests.get(runId);
+    if (inflight) {
+      return inflight;
+    }
+    const request: Promise<DshStopResponse> = (async (): Promise<DshStopResponse> => {
+      try {
+        return await this.deps.dsh.stopRun(runId, {
+          requested_by: {
+            actor_id: this.deps.config.actorId,
+            identity: this.deps.config.approverIdentity,
+          },
+          reason: "Pi declared local preparation complete.",
+        });
+      } finally {
+        // Read the authoritative stop (and freeze its candidate) before the
+        // tool reports any outcome to the model. On a refusal the refresh
+        // reads the real state instead of inventing one; the failure still
+        // reaches the model as a failed tool call.
+        await this.refreshNow(record);
+      }
+    })().finally(() => {
+      if (this.completionRequests.get(runId) === request) {
+        this.completionRequests.delete(runId);
+      }
+    });
+    this.completionRequests.set(runId, request);
+    return request;
+  }
+
+  /**
    * Project one evaluated Pi summary onto the task and record it as the
    * contract's `pi.summary.updated` event. Only evaluated summaries are
    * published: the raw turn text lives nowhere in the event or the record.
@@ -1278,11 +1357,12 @@ export class TaskService {
   }
 
   /**
-   * Queue a dsh state refresh for this task. Refreshes for one task are
-   * serialized so out-of-order getRun responses cannot apply stale state on
-   * top of newer projections.
+   * Queue a dsh state refresh for this task and return the queued chain, so a
+   * caller that must observe the result (local completion) can await it.
+   * Refreshes for one task are serialized so out-of-order getRun responses
+   * cannot apply stale state on top of newer projections.
    */
-  private queueRefresh(record: TaskRecord): void {
+  private refreshNow(record: TaskRecord): Promise<void> {
     const previous = this.refreshQueues.get(record.id) ?? Promise.resolve();
     const next = previous
       .then(() => this.refreshRunState(record))
@@ -1291,6 +1371,11 @@ export class TaskService {
         // catch keeps one failed refresh from poisoning the task's queue.
       });
     this.refreshQueues.set(record.id, next);
+    return next;
+  }
+
+  private queueRefresh(record: TaskRecord): void {
+    void this.refreshNow(record);
   }
 
   /**
@@ -1350,8 +1435,99 @@ export class TaskService {
       actions_completed: run.execution_counts.actions_allowed,
       actions_total: null,
     };
-    this.projectDshState(record, run.state, null);
+    // A stopped run is terminal in the UI projection, so its candidate must be
+    // frozen into the collaboration record first: afterwards the task status
+    // is absorbing and no later refresh can run.
+    const completionReason =
+      run.state === "stopped" ? await this.freezeStoppedPreparation(record, run) : null;
+    this.projectDshState(record, run.state, completionReason);
     this.store.save(record);
+  }
+
+  /**
+   * Mirror one stopped, validated preparation into the collaboration record
+   * (DAT-258) before the task projects the terminal `stopped` status.
+   *
+   * Returns a status reason when the freeze failed: the run itself is still a
+   * truthful stop, but no candidate exists and the collaboration issue records
+   * the human disposition. Non-preparations (cancellation, timeout, rejection,
+   * unvalidated change) return null and stay without a candidate.
+   */
+  private async freezeStoppedPreparation(
+    record: TaskRecord,
+    run: DshRunResponse,
+  ): Promise<string | null> {
+    const preparation = this.deps.preparation;
+    if (preparation === undefined || !record.runId) {
+      return null;
+    }
+    if (run.patch_report?.patch_status !== "prepared_no_pr") {
+      return null;
+    }
+    try {
+      const candidate = await preparation.observe({
+        taskId: record.id,
+        workspace: {
+          enterprise_id: record.enterpriseId,
+          workspace_id: record.workspaceId,
+        },
+        repository: {
+          repository_id: record.repository.id,
+          base_ref: record.repository.base_ref,
+          base_sha: record.repository.base_sha,
+        },
+        summary: record.summary,
+        sourceReference: record.sourceReference,
+        run,
+      });
+      if (candidate !== null) {
+        this.recordObservedCandidate(record, candidate);
+      }
+      return null;
+    } catch (error) {
+      this.store.appendEvent(record, "evidence.appended", {
+        kind: "candidate_freeze_failed",
+        run_id: run.run_id,
+        code: error instanceof CollabError ? error.code : "CANDIDATE_FREEZE_FAILED",
+      });
+      return "local preparation stopped without a frozen candidate; human disposition required";
+    }
+  }
+
+  /**
+   * Project the frozen candidate onto the task's observable surface: its
+   * revision and digest enter the artifact index, and the exact validation
+   * attempts are published once as `validation.completed`. The candidate record
+   * itself stays owned by the collaboration machine (DAT-259 exposes it).
+   */
+  private recordObservedCandidate(record: TaskRecord, candidate: CandidateRecord): void {
+    record.headSha = candidate.head_sha;
+    if (record.artifactIndex.some((artifact) => artifact.artifact_id === "candidate")) {
+      return;
+    }
+    upsertArtifactMetadata(record, {
+      artifact_id: "candidate",
+      available: true,
+      digest: candidate.diff.digest,
+      head_sha: candidate.head_sha,
+    });
+    this.store.appendEvent(record, "validation.completed", {
+      run_id: candidate.run_id,
+      candidate_id: candidate.candidate_id,
+      base_sha: candidate.base_sha,
+      head_sha: candidate.head_sha,
+      diff_digest: candidate.diff.digest,
+      required_checks: [...candidate.validation.required_checks],
+      results: candidate.validation.results.map((result) => ({
+        tool: result.tool,
+        exit_status: result.exit_status,
+        output_digest: result.output_digest,
+      })),
+    });
+    this.store.appendEvent(record, "artifact.available", {
+      run_id: candidate.run_id,
+      artifact_id: "candidate",
+    });
   }
 
   private updateRunSummary(record: TaskRecord, runId: string, state: DshState): void {
