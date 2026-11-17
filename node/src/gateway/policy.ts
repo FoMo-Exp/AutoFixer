@@ -35,6 +35,28 @@ export interface ScopedPolicyBinding {
   policy: GatewayPolicy;
 }
 
+function scopeKey(scope: GatewayScope): string {
+  return JSON.stringify([scope.enterpriseId, scope.workspaceId]);
+}
+
+/**
+ * Scope uniqueness is part of the policy-set contract, not a resolver detail:
+ * two entries for one enterprise/workspace pair make resolution ambiguous, so
+ * every reader (startup loader and diagnostics) must reject them identically.
+ */
+function requireUniqueScopes(bindings: readonly ScopedPolicyBinding[]): void {
+  const seen = new Set<string>();
+  for (const binding of bindings) {
+    const key = scopeKey(binding.scope);
+    if (seen.has(key)) {
+      throw new Error(
+        `gateway policy scope ${binding.scope.enterpriseId}/${binding.scope.workspaceId} is registered twice`,
+      );
+    }
+    seen.add(key);
+  }
+}
+
 /**
  * The scope-backed resolver (DAT-242): serves one validated policy per
  * enterprise/workspace pair. Resolution is keyed by the authenticated scope,
@@ -48,19 +70,14 @@ export function createScopeBackedPolicyResolver(
   // Runtime-populated registry: entries come from the deployment's policy
   // configuration, and the composite key serializes the scope pair the same
   // way at insertion (below) and lookup (resolve).
+  requireUniqueScopes(bindings);
   const byScope = new Map<string, GatewayPolicy>();
   for (const binding of bindings) {
-    const key = JSON.stringify([binding.scope.enterpriseId, binding.scope.workspaceId]);
-    if (byScope.has(key)) {
-      throw new Error(
-        `gateway policy scope ${binding.scope.enterpriseId}/${binding.scope.workspaceId} is registered twice`,
-      );
-    }
-    byScope.set(key, validateGatewayPolicy(binding.policy));
+    byScope.set(scopeKey(binding.scope), validateGatewayPolicy(binding.policy));
   }
   return {
     resolve(requested: GatewayScope): GatewayPolicy | undefined {
-      return byScope.get(JSON.stringify([requested.enterpriseId, requested.workspaceId]));
+      return byScope.get(scopeKey(requested));
     },
   };
 }
@@ -242,7 +259,7 @@ export function parseScopedPolicies(raw: unknown): ScopedPolicyBinding[] {
   if (!Array.isArray(policiesRaw) || policiesRaw.length === 0) {
     throw new Error("gateway policy file policies must be a non-empty array");
   }
-  return policiesRaw.map((rawPolicy, index) => {
+  const bindings = policiesRaw.map((rawPolicy, index) => {
     const label = `gateway policy file policies[${index}]`;
     if (typeof rawPolicy !== "object" || rawPolicy === null) {
       throw new Error(`${label} must be an object`);
@@ -261,6 +278,11 @@ export function parseScopedPolicies(raw: unknown): ScopedPolicyBinding[] {
       policy: validateGatewayPolicy(rawPolicy),
     };
   });
+  // A parsed file is only valid if production could load it: duplicate
+  // enterprise/workspace pairs fail here, before any consumer treats the
+  // first matching binding as authoritative.
+  requireUniqueScopes(bindings);
+  return bindings;
 }
 
 /** Load and validate a scoped policy set from a JSON file. */

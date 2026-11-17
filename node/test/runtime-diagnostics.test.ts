@@ -10,7 +10,7 @@ import type { OrchestratorConfig } from "../src/config.js";
 import { collectRuntimeDiagnostics, diagnoseEnvironment } from "../src/diagnostics/runtime.js";
 import type { RuntimeDiagnostics } from "../src/diagnostics/runtime.js";
 import { doctorExitCode } from "../src/doctor.js";
-import { PROVIDER_CREDENTIAL_ENV_VARS } from "../src/gateway/index.js";
+import { loadGatewayPolicyFile, PROVIDER_CREDENTIAL_ENV_VARS } from "../src/gateway/index.js";
 import { createOrchestrator } from "../src/index.js";
 import type { OrchestratorHandle } from "../src/index.js";
 import type { DshServerHandle } from "./helpers/dsh-server.js";
@@ -283,6 +283,33 @@ describe("runtime diagnostics (DAT-257)", () => {
     expect(checkById(offline, "egress")?.status).toBe("degraded");
     expect(checkById(offline, "egress")?.detail).toMatch(/coverage is unverified/);
     expect(offline.readiness.model).toBe("degraded");
+  });
+
+  test("duplicate policy scopes block startup exactly as production loading does", async () => {
+    const dir = tempDir("diagnostics-duplicate-scope");
+    const files = writeGatewayFiles(dir, [TEST_SCOPE, TEST_SCOPE]);
+    // The production loader rejects the same bytes; diagnostics must agree
+    // instead of trusting the first matching binding.
+    expect(() => loadGatewayPolicyFile(files.policyFile)).toThrow(/registered twice/);
+
+    const report = await diagnoseEnvironment(
+      {
+        ...stateEnv(dir),
+        FORGEPILOT_DSH_SOCKET: path.join(dir, "absent.sock"),
+        FORGEPILOT_ENTERPRISE_ID: TEST_SCOPE.enterpriseId,
+        FORGEPILOT_WORKSPACE_ID: TEST_SCOPE.workspaceId,
+        FORGEPILOT_GATEWAY_POLICY_FILE: files.policyFile,
+        FORGEPILOT_GATEWAY_CREDENTIALS_FILE: files.credentialsFile,
+      },
+      { model: TEST_MODEL, resolveModel: false },
+    );
+    expect(checkById(report, "gateway")?.status).toBe("blocked");
+    expect(checkById(report, "gateway")?.detail).toMatch(/registered twice/);
+    expect(checkById(report, "egress")?.status).toBe("blocked");
+    expect(report.readiness.startup).toBe("blocked");
+    expect(report.readiness.model).toBe("blocked");
+    expect(doctorExitCode(report)).toBe(2);
+    expect(JSON.stringify(report)).not.toContain(TEST_CREDENTIAL);
   });
 
   test("unconfigured optional subsystems are explicit, not failures", async () => {

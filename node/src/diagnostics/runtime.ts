@@ -547,6 +547,9 @@ export async function collectRuntimeDiagnostics(
   } = { bindings: [] };
   if (gatewayConfigured) {
     try {
+      // parseScopedPolicies is the same validator production startup uses:
+      // per-binding schema plus scope uniqueness. Diagnostics must not accept
+      // a policy set the loader would refuse.
       gatewayProbe = {
         bindings: parseScopedPolicies(
           JSON.parse(fs.readFileSync(config.gatewayPolicyFile as string, "utf8")),
