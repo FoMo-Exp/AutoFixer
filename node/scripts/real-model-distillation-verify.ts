@@ -159,6 +159,12 @@ export const VERIFICATION_ENV = {
   modelId: "FORGEPILOT_PI_MODEL",
   modelBaseUrl: "FORGEPILOT_PI_BASE_URL",
   budgetPolicyFile: "FORGEPILOT_BUDGET_POLICY_FILE",
+  /**
+   * Protected deployment configuration naming the one capture outbox this
+   * harness may read. A caller-selected database path is never trusted on its
+   * own: it must resolve to exactly this file (QA round 3).
+   */
+  captureDb: "FORGEPILOT_CAPTURE_DB_FILE",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -305,10 +311,12 @@ export function realModeBlockers(
   if ((args.authorizationRef ?? "").trim().length === 0) {
     blockers.push("AUTHORIZATION_REFERENCE_MISSING");
   }
-  if ((args.captureDb ?? "").trim() === "") {
-    blockers.push("TRUSTED_CAPTURE_DB_MISSING");
-  } else if (!fs.existsSync(args.captureDb as string)) {
-    blockers.push("TRUSTED_CAPTURE_DB_UNREADABLE");
+  const trustBlocker = captureDbTrustBlocker(
+    args.captureDb,
+    env[VERIFICATION_ENV.captureDb] ?? null,
+  );
+  if (trustBlocker !== null) {
+    blockers.push(trustBlocker);
   }
   const hasCaptureId = (args.captureId ?? "").trim().length > 0;
   const hasRunId = (args.runId ?? "").trim().length > 0;
@@ -316,7 +324,9 @@ export function realModeBlockers(
     blockers.push("CAPTURE_SELECTOR_INVALID");
   }
   for (const [name, value] of Object.entries(VERIFICATION_ENV)) {
-    if (name === "modelBaseUrl") {
+    // The capture DB is checked by captureDbTrustBlocker, which reports its
+    // own missing/unreadable/untrusted code without duplicating CONFIG_MISSING.
+    if (name === "modelBaseUrl" || value === VERIFICATION_ENV.captureDb) {
       continue;
     }
     if ((env[value] ?? "").trim() === "") {
@@ -512,6 +522,7 @@ export interface VerificationEvidence {
       source_enterprise_id: string;
       source_workspace_id: string;
       source_digest_verified: true;
+      source_db_trust_anchor: "deployment_config_path_match";
     } | null;
     terminal_state: string;
     outcome_class: string;
@@ -620,6 +631,39 @@ export function openSourceCaptureDb(file: string): ControlPlaneDb {
 }
 
 /**
+ * The capture database trust anchor (QA round 3). A read-only open proves only
+ * that the harness does not modify the file; it says nothing about where the
+ * file came from. Real mode therefore requires the caller path to resolve to
+ * the exact capture outbox named by protected deployment configuration, and
+ * opens that configured path rather than the caller's.
+ */
+export function captureDbTrustBlocker(
+  provided: string | null,
+  configured: string | null,
+): string | null {
+  if ((configured ?? "").trim() === "") {
+    return `CONFIG_MISSING:${VERIFICATION_ENV.captureDb}`;
+  }
+  if (!fs.existsSync(configured as string)) {
+    return "TRUSTED_CAPTURE_DB_UNREADABLE";
+  }
+  if ((provided ?? "").trim() === "") {
+    return "TRUSTED_CAPTURE_DB_MISSING";
+  }
+  if (!fs.existsSync(provided as string)) {
+    return "TRUSTED_CAPTURE_DB_UNREADABLE";
+  }
+  try {
+    if (fs.realpathSync(provided as string) !== fs.realpathSync(configured as string)) {
+      return "CAPTURE_DB_NOT_TRUSTED";
+    }
+  } catch {
+    return "TRUSTED_CAPTURE_DB_UNREADABLE";
+  }
+  return null;
+}
+
+/**
  * Read and verify one trusted capture snapshot before anything is distilled.
  *
  * This is the provenance gate the bare-envelope design lacked. A structurally
@@ -699,7 +743,16 @@ export function readTrustedCaptureSnapshot(input: {
       "capture row is not a known, learnable outcome",
     );
   }
-  if (row.outcome_class !== null && row.outcome_class !== classification.class) {
+  // A missing recorded class is not "trust the derived value": the source
+  // gate requires the class the capture writer recorded to agree with what
+  // the envelope derives. Null fails closed.
+  if (row.outcome_class === null) {
+    throw new CaptureProvenanceError(
+      "CAPTURE_OUTCOME_CLASS_MISSING",
+      "capture row records no outcome class",
+    );
+  }
+  if (row.outcome_class !== classification.class) {
     throw new CaptureProvenanceError(
       "CAPTURE_OUTCOME_CLASS_MISMATCH",
       "capture row class disagrees with the envelope",
@@ -713,7 +766,7 @@ export function readTrustedCaptureSnapshot(input: {
       task_id: row.task_id,
       run_id: row.run_id,
       terminal_state: row.terminal_state,
-      outcome_class: row.outcome_class ?? classification.class,
+      outcome_class: row.outcome_class,
       envelope: row.envelope,
       envelope_digest: row.envelope_digest,
     },
@@ -1252,7 +1305,9 @@ export async function runVerification(
     let selectedPolicyScope = args.policyScope;
     if (args.mode === "real") {
       try {
-        sourceDb = openSourceCaptureDb(args.captureDb as string);
+        // Open the protected configured path, never the caller-selected one:
+        // the caller path only had to prove it resolves to the same file.
+        sourceDb = openSourceCaptureDb((env[VERIFICATION_ENV.captureDb] ?? "").trim());
         trusted = readTrustedCaptureSnapshot({
           db: sourceDb,
           captureId: args.captureId,
@@ -1407,6 +1462,7 @@ export async function runVerification(
               source_enterprise_id: trusted.snapshot.enterprise_id,
               source_workspace_id: trusted.snapshot.workspace_id,
               source_digest_verified: true,
+              source_db_trust_anchor: "deployment_config_path_match",
             },
       terminal_state: captured.envelope.terminal_state,
       outcome_class: captured.classification.class,

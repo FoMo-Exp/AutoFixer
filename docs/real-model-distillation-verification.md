@@ -81,6 +81,8 @@ export FORGEPILOT_GATEWAY_CREDENTIALS_FILE=/protected/gateway-credentials.json
 export FORGEPILOT_PI_PROVIDER=<approved provider>
 export FORGEPILOT_PI_MODEL=<approved model id>
 export FORGEPILOT_BUDGET_POLICY_FILE=/protected/budget-policy.json
+# protected deployment config: the one trusted capture outbox this harness may read
+export FORGEPILOT_CAPTURE_DB_FILE=/protected/control-plane.sqlite
 # optional, for OpenAI-compatible endpoints:
 # export FORGEPILOT_PI_BASE_URL=https://approved.internal.example/v1
 
@@ -103,7 +105,8 @@ message that could carry request content. A capture row that fails provenance
 is blocked with its stable code (`CAPTURE_RECORD_NOT_FOUND`,
 `CAPTURE_NOT_COMPLETED`, `CAPTURE_ENVELOPE_DIGEST_MISMATCH`,
 `CAPTURE_BINDING_MISMATCH`, `CAPTURE_NOT_LEARNABLE`,
-`CAPTURE_OUTCOME_CLASS_MISMATCH`, `SOURCE_SCOPE_MISMATCH`, …).
+`CAPTURE_OUTCOME_CLASS_MISSING`, `CAPTURE_OUTCOME_CLASS_MISMATCH`,
+`CAPTURE_DB_NOT_TRUSTED`, `SOURCE_SCOPE_MISMATCH`, …).
 
 ## 4. Real-mode prerequisites
 
@@ -135,17 +138,24 @@ A structurally valid envelope is not evidence. Real mode does not accept an
 envelope file at all; the only accepted source is a row in the trusted capture
 outbox. Before any dispatch the harness verifies:
 
+0. the caller-supplied `--capture-db` resolves to the exact file named by the
+   protected `FORGEPILOT_CAPTURE_DB_FILE`; the configured file is what is
+   opened. A self-made database — even one with a captured row, a valid merged
+   envelope, matching identities, and a self-computed matching digest — is
+   refused as `CAPTURE_DB_NOT_TRUSTED` before dispatch;
 1. the row exists and is `captured` (not pending, processing, or failed);
 2. its stored envelope is present and its SHA-256 equals the stored digest;
 3. the envelope parses under the DAT-233 outcome contract and its `task_id`,
    `run_id`, and `terminal_state` equal the row's;
 4. the derived outcome is known and learnable (not timeout/unknown/infra);
-5. the row's recorded outcome class agrees with the derived class;
+5. the row records an outcome class (a null class fails closed as
+   `CAPTURE_OUTCOME_CLASS_MISSING`) and it agrees with the derived class;
 6. the selected policy scope is the row's capturing enterprise/workspace.
 
 Any mismatch blocks before gateway construction or a model call. The evidence
-records the source capture id, source enterprise/workspace, and
-`source_digest_verified: true`. A forged but structurally valid envelope —
+records the source capture id, source enterprise/workspace,
+`source_digest_verified: true`, and
+`source_db_trust_anchor: deployment_config_path_match`. A forged but structurally valid envelope —
 whether placed in a tampered row or bound to another run — is refused with zero
 dispatch (regression tests cover both).
 
@@ -258,6 +268,9 @@ The harness itself was also run against the offline fixture:
 - The isolated database is removed unless `--state-dir`/`--keep-state` is
   used. Preserve the state directory before a handoff if the capture and
   admission rows are needed for audit.
-- `--capture-db` is opened read-only. Point it at a stable snapshot or backup
-  of the control-plane database; a live WAL database may need a consistent
-  copy so the selected row and its digest are visible.
+- `--capture-db` must match the protected `FORGEPILOT_CAPTURE_DB_FILE` and is
+  opened read-only. Point it at a stable snapshot or backup of the
+  control-plane database; a live WAL database may need a consistent copy so
+  the selected row and its digest are visible. Configuring a forged file at
+  the trusted path is a deployment compromise, not a caller input: keep the
+  env file and the outbox owner-only and reviewed like the gateway files.

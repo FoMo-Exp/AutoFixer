@@ -9,6 +9,7 @@ import {
   FIXTURE_CANDIDATE_STATEMENT,
   assertEvidenceRedacted,
   acceptedAsRealModelEvidence,
+  captureDbTrustBlocker,
   openSourceCaptureDb,
   parseVerificationArgs,
   readTrustedCaptureSnapshot,
@@ -95,6 +96,8 @@ function captureFixture(
     state?: "captured" | "pending";
     digest?: "correct" | "tampered";
     binding?: "consistent" | "mismatched";
+    /** Simulate a capture writer that never recorded the derived class. */
+    outcomeClass?: "missing" | "wrong";
   } = {},
 ): CaptureFixture {
   const dir = tempDir();
@@ -146,6 +149,13 @@ function captureFixture(
         envelope_digest:
           options.digest === "tampered" ? sha256("tampered-envelope") : sha256(serialized),
       });
+    }
+    if (options.outcomeClass === "missing") {
+      db.prepare("UPDATE memory_outcome_capture SET outcome_class = NULL WHERE id = ?").run(job.id);
+    } else if (options.outcomeClass === "wrong") {
+      db.prepare("UPDATE memory_outcome_capture SET outcome_class = 'rejected' WHERE id = ?").run(
+        job.id,
+      );
     }
     return {
       dbPath,
@@ -228,7 +238,7 @@ describe("verification arguments", () => {
       { ANTHROPIC_API_KEY: "sk-ant-ambient" },
     );
     expect(blockers).toContain("AUTHORIZATION_REFERENCE_MISSING");
-    expect(blockers).toContain("TRUSTED_CAPTURE_DB_MISSING");
+    expect(blockers).toContain("CONFIG_MISSING:FORGEPILOT_CAPTURE_DB_FILE");
     expect(blockers).toContain("CAPTURE_SELECTOR_INVALID");
     expect(blockers).toContain("AMBIENT_PROVIDER_CREDENTIALS:ANTHROPIC_API_KEY");
     expect(blockers).toContain("CONFIG_MISSING:FORGEPILOT_GATEWAY_POLICY_FILE");
@@ -253,6 +263,7 @@ describe("verification arguments", () => {
         FORGEPILOT_PI_PROVIDER: "anthropic",
         FORGEPILOT_PI_MODEL: "claude-x",
         FORGEPILOT_BUDGET_POLICY_FILE: "budget.json",
+        FORGEPILOT_CAPTURE_DB_FILE: fixture.dbPath,
       },
     );
     expect(blockers).toEqual([]);
@@ -331,6 +342,30 @@ describe("trusted capture provenance", () => {
     }
   });
 
+  test("a captured row with no recorded outcome class is refused", () => {
+    const fixture = captureFixture({ outcomeClass: "missing" });
+    const db = openSourceCaptureDb(fixture.dbPath);
+    try {
+      expect(() =>
+        readTrustedCaptureSnapshot({ db, captureId: fixture.captureId, runId: null }),
+      ).toThrowError(/no outcome class/);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("a captured row whose recorded class disagrees with the envelope is refused", () => {
+    const fixture = captureFixture({ outcomeClass: "wrong" });
+    const db = openSourceCaptureDb(fixture.dbPath);
+    try {
+      expect(() =>
+        readTrustedCaptureSnapshot({ db, captureId: fixture.captureId, runId: null }),
+      ).toThrowError(/class disagrees/);
+    } finally {
+      db.close();
+    }
+  });
+
   test("an unknown capture id is refused", () => {
     const fixture = captureFixture({});
     const db = openSourceCaptureDb(fixture.dbPath);
@@ -341,6 +376,86 @@ describe("trusted capture provenance", () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe("capture database trust anchor", () => {
+  test("a caller path that does not resolve to the configured outbox is untrusted", () => {
+    const trusted = captureFixture({});
+    const forged = captureFixture({});
+    // A self-made database can be internally consistent (captured row, valid
+    // merged envelope, matching digest), so path trust is what refuses it.
+    expect(captureDbTrustBlocker(forged.dbPath, trusted.dbPath)).toBe("CAPTURE_DB_NOT_TRUSTED");
+    expect(captureDbTrustBlocker(trusted.dbPath, trusted.dbPath)).toBeNull();
+    expect(captureDbTrustBlocker(trusted.dbPath, null)).toBe(
+      "CONFIG_MISSING:FORGEPILOT_CAPTURE_DB_FILE",
+    );
+  });
+
+  test("an internally consistent but substituted capture database blocks with zero dispatch", async () => {
+    const trusted = captureFixture({});
+    const forged = captureFixture({});
+    const evidence = await runVerification(
+      {
+        mode: "real",
+        authorizationRef: "DAT-270/approved-comment",
+        captureDb: forged.dbPath,
+        captureId: forged.captureId,
+        runId: null,
+        evidenceOut: "ignored.json",
+        stateDir: null,
+        keepState: false,
+        policyScope: null,
+        help: false,
+      },
+      {
+        env: {
+          FORGEPILOT_GATEWAY_POLICY_FILE: "policy.json",
+          FORGEPILOT_GATEWAY_CREDENTIALS_FILE: "credentials.json",
+          FORGEPILOT_PI_PROVIDER: "openai",
+          FORGEPILOT_PI_MODEL: "gpt-x",
+          FORGEPILOT_BUDGET_POLICY_FILE: "budget.json",
+          FORGEPILOT_CAPTURE_DB_FILE: trusted.dbPath,
+        },
+      },
+    );
+    expect(evidence.status).toBe("blocked");
+    expect(evidence.blockers).toContain("CAPTURE_DB_NOT_TRUSTED");
+    expect(evidence.scenarios).toEqual([]);
+    expect(evidence.outcome).toBeNull();
+    expect(evidence.accepted_as_real_model_evidence).toBe(false);
+  });
+
+  test("a captured row with no outcome class blocks with zero dispatch", async () => {
+    const fixture = captureFixture({ outcomeClass: "missing" });
+    const evidence = await runVerification(
+      {
+        mode: "real",
+        authorizationRef: "DAT-270/approved-comment",
+        captureDb: fixture.dbPath,
+        captureId: fixture.captureId,
+        runId: null,
+        evidenceOut: "ignored.json",
+        stateDir: null,
+        keepState: false,
+        policyScope: null,
+        help: false,
+      },
+      {
+        env: {
+          FORGEPILOT_GATEWAY_POLICY_FILE: "policy.json",
+          FORGEPILOT_GATEWAY_CREDENTIALS_FILE: "credentials.json",
+          FORGEPILOT_PI_PROVIDER: "openai",
+          FORGEPILOT_PI_MODEL: "gpt-x",
+          FORGEPILOT_BUDGET_POLICY_FILE: "budget.json",
+          FORGEPILOT_CAPTURE_DB_FILE: fixture.dbPath,
+        },
+      },
+    );
+    expect(evidence.status).toBe("blocked");
+    expect(evidence.blockers).toContain("CAPTURE_OUTCOME_CLASS_MISSING");
+    expect(evidence.scenarios).toEqual([]);
+    expect(evidence.outcome).toBeNull();
   });
 });
 
@@ -412,6 +527,7 @@ describe("real mode is blocked before dispatch", () => {
           FORGEPILOT_PI_PROVIDER: "openai",
           FORGEPILOT_PI_MODEL: "gpt-x",
           FORGEPILOT_BUDGET_POLICY_FILE: "budget.json",
+          FORGEPILOT_CAPTURE_DB_FILE: fixture.dbPath,
         },
       },
     );
@@ -447,6 +563,7 @@ describe("real mode is blocked before dispatch", () => {
           FORGEPILOT_PI_PROVIDER: "openai",
           FORGEPILOT_PI_MODEL: "gpt-x",
           FORGEPILOT_BUDGET_POLICY_FILE: "budget.json",
+          FORGEPILOT_CAPTURE_DB_FILE: fixture.dbPath,
         },
       },
     );
