@@ -36,6 +36,7 @@ import {
   type CanonicalRepositoryId,
 } from "../canonical-repository.js";
 import { withServiceCredential, type ServiceCredentialStore } from "../credentials.js";
+import { permissionVisibilityForProvider } from "../permission-visibility.js";
 import {
   assertProviderStatus,
   assertRateLimitBudget,
@@ -272,7 +273,7 @@ export function createGitHubAdapter(options: GitHubAdapterOptions): ProviderAdap
   const http = options.http ?? createFetchHttpClient();
 
   const capabilities: ProviderAdapterCapabilities = {
-    effective_permission_visibility: "full",
+    effective_permission_visibility: permissionVisibilityForProvider("github"),
     pagination: { per_page_max: 100, pages_max: pagesMax },
     rate_limit: {
       requests_per_minute: options.requests_per_minute ?? 1_000,

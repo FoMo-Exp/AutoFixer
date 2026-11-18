@@ -116,6 +116,34 @@ Endpoints (details in the OpenAPI document):
 | `POST /api/v1/admin/users/{user_id}/suspend` | optional `enterprise_id` | `200 User` |
 | `POST /api/v1/admin/users/{user_id}/activate` | optional `enterprise_id` | `200 User` |
 
+## Repository service integration (DAT-267)
+
+A workspace has at most one active repository-scoped service integration.
+This administrator surface initializes, reads, and deactivates it; it replaces
+writing `service_integration` rows by hand for DAT-260 acceptance. The request
+never names the provider instance or repository: both come from the workspace
+row and its approved provider instance, and `permission_visibility` comes from
+the provider adapter, so an operator cannot claim broader visibility than the
+adapter proves. Bodies carry credential *references* only: each must already resolve in the
+server credential boundary, secret-shaped values are rejected by construction,
+credential references are never returned, and neither references nor secrets
+reach the audit trail.
+
+`PUT` is replay-safe — an identical retry returns `200` with the existing
+integration, while a different configuration for an already-active integration
+is `409`, so a retry never silently replaces installed credentials. The audit
+record and the row change commit in one transaction; an audit failure is `503`
+and applies nothing. `DELETE` sets `uninstalled` and is idempotent. That row
+keeps the workspace's authority marker in place, so every ordinary workspace
+request fails closed until an administrator initializes a new integration (the
+administrator surface itself stays reachable).
+
+| Request | Request body | Response |
+|---|---|---|
+| `GET /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/service-integration` | none | `200 ServiceIntegration`; `404 SERVICE_INTEGRATION_NOT_FOUND` |
+| `PUT /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/service-integration` | `source_credential_ref`, optional `checkout_credential_ref`, `delivery_credential_ref` | `201` created, `200` identical replay, `409 SERVICE_INTEGRATION_EXISTS` / `SERVICE_INTEGRATION_BINDING_INVALID`, `503` audit unavailable |
+| `DELETE /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/service-integration` | none | `204`; `503` audit unavailable |
+
 ## Runtime diagnostics (DAT-257)
 
 `GET /api/v1/runtime/diagnostics` returns a redacted `RuntimeDiagnostics`
@@ -788,6 +816,11 @@ Stable codes and their default envelope semantics:
 | `INVALID_TRANSITION` | 409 | policy | stop | no | `refresh` |
 | `PRECONDITION_FAILED` | 409 | policy | stop | no | `refresh` |
 | `WORKSPACE_REPOSITORY_CONFLICT` | 409 | validation | stop | no | — |
+| `WORKSPACE_ARCHIVED` | 409 | validation | stop | no | `refresh` |
+| `SERVICE_INTEGRATION_NOT_FOUND` | 404 | validation | stop | no | — |
+| `SERVICE_INTEGRATION_EXISTS` | 409 | validation | stop | no | `refresh` |
+| `SERVICE_INTEGRATION_BINDING_INVALID` | 409 | validation | stop | no | `contact_admin` |
+| `SERVICE_INTEGRATION_AUDIT_UNAVAILABLE` | 503 | execution | stop | no | `contact_admin` |
 | `MEMBERSHIP_CONFLICT` | 409 | validation | stop | no | — |
 | `AUTHORITY_RECHECK_REQUIRED` | 409 | reconciliation | stop | no | `reconcile` |
 | `DSH_GRANT_EXPIRED` | 410 | policy | stop | no | `request_review` |

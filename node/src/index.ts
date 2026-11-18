@@ -29,6 +29,8 @@ import { CandidateContentStore } from "./collab/candidate-store.js";
 import { PreparationBridge } from "./collab/preparation.js";
 import { createRequestAuthority } from "./api/request-authority.js";
 import type { RequestAuthority } from "./api/request-authority.js";
+import { createServiceIntegrationService } from "./api/service-integration-service.js";
+import type { ServiceIntegrationService } from "./api/service-integration-service.js";
 import { TaskService } from "./api/task-service.js";
 import { TaskStore } from "./api/task-store.js";
 import {
@@ -584,6 +586,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let rsiStore: RsiStore | undefined;
   let issues: IssueSyncService | undefined;
   let collab: CollabHttpDeps | undefined;
+  let serviceIntegrations: ServiceIntegrationService | undefined;
   if (config.oauthClientsFile !== undefined) {
     controlPlane = openControlPlaneDb({ path: config.controlPlaneFile ?? ":memory:" });
     const repos = createRepositories(controlPlane);
@@ -695,6 +698,20 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       (config.providerServiceCredentialFile !== undefined
         ? readServiceCredentialFile(config.providerServiceCredentialFile)
         : createStaticServiceCredentialStore({}));
+    // Administrator-controlled integration initialization (DAT-267). Every
+    // binding is resolved from the workspace row, the referenced credentials
+    // must already resolve in the boundary above, and the audit row commits in
+    // the same transaction as the state change.
+    serviceIntegrations = createServiceIntegrationService({
+      db: controlPlane,
+      enterpriseId: config.enterpriseId,
+      workspaces: repos.workspaces,
+      providerInstances: repos.providerInstances,
+      enterpriseRoles: identity.enterpriseRoles,
+      integrations: providerAccess.integrations,
+      credentials: serviceCredentials,
+      audit: identity.authAudit,
+    });
     const providerApiBaseUrl = options.providerApiBaseUrl;
     // Candidate review, candidate-bound human approval, and broker-controlled
     // delivery (DAT-259). Constructed with the identity surface, because every
@@ -960,6 +977,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     ...(auth !== undefined ? { auth } : {}),
     ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
     ...(invitations !== undefined ? { invitations } : {}),
+    ...(serviceIntegrations !== undefined ? { serviceIntegrations } : {}),
     ...(issues !== undefined ? { issues } : {}),
     ...(collab !== undefined ? { collab } : {}),
     ...(memory !== undefined && auth !== undefined
