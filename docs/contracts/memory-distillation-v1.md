@@ -248,3 +248,75 @@ evidence, and never distilled from. A `merged` run whose patch report is not
   with a stable error code and bounded backoff. After the attempt budget the
   row becomes `failed`, visible to operators, instead of retrying forever or
   reporting success.
+
+## 9. Scheduled distillation of captured outcomes (DAT-265)
+
+Capture (§8) records the exact redacted envelope it used, with a SHA-256
+digest, in the same transaction as the episode. Distillation is a second
+durable outbox over those snapshots: it is derived from a captured row, never
+from a callback, an agent assertion, or a re-read of dsh.
+
+### 9.1 Derivation
+
+One `memory_distillation` row exists per captured snapshot whose derived
+outcome class is learnable — `accepted`, `rejected`, `cancelled`, `failed`.
+Episode-only classes (`timeout`, `unknown`, `infra_failure`) never get a row,
+so they can never reach a model call and can never become a candidate or a
+success claim. A snapshot captured before this outbox existed (no stored
+envelope) is never back-filled from a reconstructed envelope; it simply has no
+distillation job.
+
+The row carries the server-side enterprise/workspace of the capture row. The
+worker derives the memory scope and the gateway scope binding from those
+columns only — the envelope and the model cannot retarget them. A row whose
+capture snapshot disagrees with the row's scope is refused with `SCOPE_DENIED`
+before any context is composed, and a snapshot whose stored digest no longer
+matches is refused with `ENVELOPE_DIGEST_MISMATCH` before any model call.
+
+### 9.2 One pass
+
+1. Claim a due row under a lease.
+2. Re-read the capture snapshot, verify digest and scope, rebuild the outcome
+   record from the stored envelope (§2) and the captured episode.
+3. Compose the §6 context (this outcome only) and dispatch through the ADR-0005
+   gateway. A gateway denial or a transport failure fails the pass closed: no
+   item is written and the row is retried with a stable error code.
+4. Parse the §4 schema and run the §5 validation. A policy-violating batch is
+   closed as `skipped` / `POLICY_VIOLATION_BATCH` and persists nothing, not
+   even its clean candidates.
+5. Run every accepted candidate through the DAT-234 admission gate. Dedupe,
+   contradiction, and poisoning checks live there: an exact or near duplicate
+   folds its evidence into the existing item; a contradiction is drawn as a
+   `contradicts` link with a retirement *proposal* (never executed here); a
+   poisoned candidate is discarded with its reason codes recorded.
+6. Persist the items and the row's completion in one transaction.
+
+### 9.3 Nothing is promoted
+
+A distilled candidate is persisted as a **`proposed`** item even when the gate
+would admit it. The pipeline passes the admission gate's no-promotion mode, so
+`proposed -> candidate -> active` remains the human-gated lifecycle path
+(§5, DAT-235). Retrieval already excludes `proposed` items, so an agent cannot
+read back its own un-reviewed output as fact.
+
+### 9.4 Traceability
+
+Each pass records the capture job, the run and terminal state, the derived
+outcome class, the model id, the prompt-template version, the persisted (or
+merged-into) item ids, and accepted/dropped counts. Each item's provenance
+carries the pipeline's model and prompt version — never values the extractor
+supplied — and its evidence rows cite only references capture recorded. The
+admission decision row for the candidate hash completes the audit chain.
+
+### 9.5 Idempotency and recovery
+
+- Deriving is idempotent: one row per captured snapshot (`UNIQUE` capture key),
+  so a restart or a duplicate projection is a no-op.
+- A duplicate snapshot (the same content distilled again) is handled by the
+  admission gate's exact-hash idempotency: it merges into the first item rather
+  than creating a second one.
+- A crash after the model call but before persistence leaves the row claimed
+  and retryable; the retry re-dispatches and persists once.
+- Attempts are bounded; exhausting them marks the row `failed` with a stable
+  error code, visible to operators, instead of retrying forever or reporting a
+  success that never happened.

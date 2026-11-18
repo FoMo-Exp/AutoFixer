@@ -121,14 +121,16 @@ async function rejectRun(runId: string, scopeDigest: string): Promise<void> {
   });
 }
 
-function newScheduler(overrides: { maxAttempts?: number } = {}): OutcomeCaptureScheduler {
+function newScheduler(
+  overrides: { maxAttempts?: number; retryDelayMs?: number; batchSize?: number } = {},
+): OutcomeCaptureScheduler {
   return createOutcomeCaptureScheduler({
     db,
     memory,
     dsh: dsh.client,
     actorId: ACTOR,
     leaseMs: 5_000,
-    retryDelayMs: 1,
+    retryDelayMs: overrides.retryDelayMs ?? 1,
     intervalMs: 60 * 60 * 1000,
     ...overrides,
   });
@@ -393,7 +395,10 @@ describe("authoritative dsh terminal capture", () => {
 
   test("a non-terminal run is never captured as a terminal outcome", async () => {
     const { runId, taskId } = await createRun();
-    const scheduler = newScheduler({ maxAttempts: 2 });
+    // A backoff longer than one drain pass keeps the assertion deterministic:
+    // otherwise the row becomes due again mid-pass and burns its whole attempt
+    // budget within one drain.
+    const scheduler = newScheduler({ maxAttempts: 2, retryDelayMs: 60_000 });
     scheduler.enqueue(registration(runId, taskId, "stopped"));
     const first = await scheduler.drain();
     expect(first).toMatchObject({ captured: 0, retried: 1 });
@@ -475,7 +480,9 @@ describe("idempotent, recoverable scheduling", () => {
   test("a delivery failure is retried and never reported as captured", async () => {
     const { runId, taskId } = await createRun();
     await cancelRun(runId);
-    const scheduler = newScheduler();
+    // One row per pass: a 1ms backoff could otherwise become due again inside
+    // the same drain and record a second attempt before the assertion.
+    const scheduler = newScheduler({ batchSize: 1 });
     scheduler.enqueue(registration(runId, taskId, "cancelled"));
 
     db.exec(`CREATE TRIGGER capture_delivery_down
@@ -580,5 +587,18 @@ describe("orchestrator terminal projection → capture", () => {
       .filter((record) => record.current.source_run_id === String(runId));
     expect(episodes).toHaveLength(1);
     expect(episodes[0]?.current.statement).toContain("terminal outcome cancelled");
+
+    // DAT-265 derives its work from this snapshot: capture stored the exact
+    // redacted envelope, its class, and its digest in the same transaction.
+    const capturedJob = capture.jobs
+      .list({ workspace_id: started.workspaceId, run_id: String(runId) })
+      .at(0);
+    expect(capturedJob?.outcome_class).toBe("cancelled");
+    expect(capturedJob?.envelope_digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.parse(capturedJob?.envelope ?? "null")).toMatchObject({
+      run_id: String(runId),
+      terminal_state: "cancelled",
+    });
+    expect(started.orchestrator.memoryDistillation).toBeDefined();
   }, 120_000);
 });

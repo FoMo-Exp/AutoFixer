@@ -1399,6 +1399,52 @@ const MIGRATIONS: Migration[] = [
         ON memory_outcome_capture(enterprise_id, workspace_id, run_id)`,
     ],
   },
+  {
+    // Distillation outbox (DAT-265). The capture outbox keeps the exact
+    // evidence snapshot it captured, so the distillation job is derived from
+    // a durable row instead of a callback: a crash between capture and
+    // distillation loses nothing, and the snapshot's digest makes the stored
+    // envelope verifiable before a model ever sees it.
+    //
+    // The snapshot columns are nullable because rows captured before this
+    // migration have no stored envelope; they are never back-filled with a
+    // reconstructed envelope (that would fabricate evidence). Those rows
+    // simply never produce a distillation job.
+    version: 17,
+    statements: [
+      `ALTER TABLE memory_outcome_capture ADD COLUMN outcome_class TEXT`,
+      `ALTER TABLE memory_outcome_capture ADD COLUMN envelope TEXT`,
+      `ALTER TABLE memory_outcome_capture ADD COLUMN envelope_digest TEXT`,
+      `CREATE TABLE IF NOT EXISTS memory_distillation (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id) ON DELETE CASCADE,
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        capture_job_id TEXT NOT NULL REFERENCES memory_outcome_capture(id) ON DELETE CASCADE,
+        run_id TEXT NOT NULL,
+        terminal_state TEXT NOT NULL,
+        outcome_class TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending' CHECK (
+          state IN ('pending', 'processing', 'distilled', 'skipped', 'failed')
+        ),
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        lease_until TEXT,
+        retry_after TEXT,
+        last_error TEXT,
+        model_id TEXT,
+        prompt_template_version TEXT NOT NULL,
+        item_ids TEXT NOT NULL DEFAULT '[]',
+        accepted INTEGER NOT NULL DEFAULT 0 CHECK (accepted >= 0),
+        dropped INTEGER NOT NULL DEFAULT 0 CHECK (dropped >= 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (capture_job_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_distillation_pending
+        ON memory_distillation(state, retry_after, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_distillation_scope
+        ON memory_distillation(enterprise_id, workspace_id, run_id)`,
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------

@@ -99,7 +99,9 @@ describe("provider roster migration v5", () => {
 
     migrate(db);
 
-    expect(appliedVersions(db)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    expect(appliedVersions(db)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+    ]);
     const after = createProviderAccessRepositories(db).roster.listRoles(scope, integrationId);
     expect(after).toHaveLength(1);
     // Ids and timestamps survive verbatim — the rebuild copies, not re-keys.
@@ -163,7 +165,9 @@ describe("provider roster migration v5", () => {
     const afterFirst = createProviderAccessRepositories(db).roster.listRoles(scope, integrationId);
     migrate(db);
     migrate(db);
-    expect(appliedVersions(db)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    expect(appliedVersions(db)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+    ]);
     expect(createProviderAccessRepositories(db).roster.listRoles(scope, integrationId)).toEqual(
       afterFirst,
     );
@@ -173,7 +177,9 @@ describe("provider roster migration v5", () => {
     const fresh = new DatabaseSync(":memory:") as ControlPlaneDb;
     fresh.exec("PRAGMA foreign_keys = ON");
     migrate(fresh);
-    expect(appliedVersions(fresh)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    expect(appliedVersions(fresh)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+    ]);
 
     const upgraded = seedV4Database();
     migrate(upgraded.db);

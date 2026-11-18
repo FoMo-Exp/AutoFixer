@@ -43,6 +43,15 @@ export interface AdmitOptions {
   /** Ledger of this workspace's captured evidence. Required. */
   evidence: EvidenceResolver;
   run_id?: string | null;
+  /**
+   * May an `admitted` candidate move from `proposed` to `candidate` here.
+   * Defaults to true (the ADR's `proposed -> candidate` step is the gate
+   * passing). The distillation pipeline passes `false`: ADR-0009 persists
+   * distilled candidates as `proposed`, and only the human-gated promotion
+   * path may move them, so a clean distillation pass must never promote its
+   * own output.
+   */
+  promote?: boolean;
 }
 
 export interface AdmissionOutcome {
@@ -186,8 +195,10 @@ function admitOrMerge(
 
   // The ADR's `proposed -> candidate` step is exactly these checks passing.
   // A held candidate stays `proposed` for human review; a merged one is not a
-  // new item and keeps whatever state its twin already had.
-  if (disposition === "admitted") {
+  // new item and keeps whatever state its twin already had. A caller that owns
+  // a stricter lifecycle (distillation) keeps even an admitted candidate at
+  // `proposed` so only the human-gated path can promote it.
+  if (disposition === "admitted" && options.promote !== false) {
     memory.items.setStatus(scope, target.item.id, "candidate", target.item.current_version);
   }
 

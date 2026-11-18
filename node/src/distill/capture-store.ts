@@ -34,8 +34,28 @@ export interface CaptureJob {
   retry_after: string | null;
   last_error: string | null;
   item_id: string | null;
+  /**
+   * Derived outcome class of the captured snapshot (`accepted`, `rejected`,
+   * `cancelled`, `failed`, `timeout`, `unknown`, `infra_failure`). The
+   * distillation outbox derives learnable snapshots from it.
+   */
+  outcome_class: string | null;
+  /** The redacted envelope exactly as captured, for a faithful re-distillation. */
+  envelope: string | null;
+  /** SHA-256 of `envelope` as stored; verified before any model call. */
+  envelope_digest: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** The captured snapshot the distillation outbox reads back. */
+export interface CaptureSnapshot {
+  /** Redacted outcome envelope serialized as JSON. */
+  envelope: string;
+  /** Derived outcome class of that envelope. */
+  outcome_class: string;
+  /** SHA-256 of `envelope` as stored. */
+  envelope_digest: string;
 }
 
 export interface EnqueueCaptureInput {
@@ -60,8 +80,13 @@ export interface CaptureJobStore {
   enqueue(input: EnqueueCaptureInput): CaptureJob;
   /** Claim the oldest due row under a lease; `null` when nothing is due. */
   claim(now: Date, leaseMs: number): CaptureJob | null;
-  /** Mark the snapshot captured with the episode it produced. */
-  markCaptured(id: string, itemId: string, now?: Date): void;
+  /**
+   * Mark the snapshot captured with the episode it produced and the exact
+   * envelope it was built from. The snapshot columns are what a later
+   * distillation job re-reads; they are written in the same transaction as
+   * the episode.
+   */
+  markCaptured(id: string, itemId: string, snapshot: CaptureSnapshot, now?: Date): void;
   /** Return a claimed row to `pending` with a bounded backoff. */
   markRetry(id: string, errorCode: string, retryAfter: Date, now?: Date): void;
   /** End a snapshot as permanently failed after its attempt budget. */
@@ -83,6 +108,9 @@ interface CaptureJobRow {
   retry_after: string | null;
   last_error: string | null;
   item_id: string | null;
+  outcome_class: string | null;
+  envelope: string | null;
+  envelope_digest: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -101,6 +129,9 @@ function toJob(row: CaptureJobRow): CaptureJob {
     retry_after: row.retry_after,
     last_error: row.last_error,
     item_id: row.item_id,
+    outcome_class: row.outcome_class,
+    envelope: row.envelope,
+    envelope_digest: row.envelope_digest,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -123,6 +154,14 @@ function requireErrorCode(code: string): string {
     throw new ValidationError("capture job error code must be a stable uppercase token");
   }
   return code;
+}
+
+/** A snapshot digest is lowercase hex SHA-256; anything else is a bug. */
+function requireDigest(digest: string): string {
+  if (typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest)) {
+    throw new ValidationError("capture snapshot digest must be a lowercase hex SHA-256");
+  }
+  return digest;
 }
 
 export function createCaptureJobStore(db: ControlPlaneDb): CaptureJobStore {
@@ -194,13 +233,21 @@ export function createCaptureJobStore(db: ControlPlaneDb): CaptureJobStore {
       return get(candidate.id) ?? null;
     },
 
-    markCaptured(id, itemId, now = new Date()) {
+    markCaptured(id, itemId, snapshot, now = new Date()) {
       db.prepare(
         `UPDATE memory_outcome_capture
-         SET state = 'captured', item_id = ?, lease_until = NULL, retry_after = NULL,
+         SET state = 'captured', item_id = ?, outcome_class = ?, envelope = ?,
+             envelope_digest = ?, lease_until = NULL, retry_after = NULL,
              last_error = NULL, updated_at = ?
          WHERE id = ?`,
-      ).run(requireToken(itemId, "item_id"), now.toISOString(), id);
+      ).run(
+        requireToken(itemId, "item_id"),
+        requireToken(snapshot.outcome_class, "outcome_class"),
+        requireToken(snapshot.envelope, "envelope"),
+        requireDigest(snapshot.envelope_digest),
+        now.toISOString(),
+        id,
+      );
     },
 
     markRetry(id, errorCode, retryAfter, now = new Date()) {

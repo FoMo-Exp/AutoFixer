@@ -41,8 +41,38 @@ export type {
   CaptureJobFilter,
   CaptureJobState,
   CaptureJobStore,
+  CaptureSnapshot,
   EnqueueCaptureInput,
 } from "./capture-store.js";
+
+export {
+  createDistillationJobStore,
+  DISTILLATION_JOB_STATES,
+  LEARNABLE_OUTCOME_CLASSES,
+} from "./distillation-store.js";
+export type {
+  DistillationJob,
+  DistillationJobFilter,
+  DistillationJobState,
+  DistillationJobStore,
+  MarkDistilledInput,
+} from "./distillation-store.js";
+
+export {
+  createMemoryDistillationRunner,
+  DEFAULT_DISTILL_BATCH,
+  DEFAULT_DISTILL_INTERVAL_MS,
+  DEFAULT_DISTILL_LEASE_MS,
+  DEFAULT_DISTILL_MAX_ATTEMPTS,
+  DEFAULT_DISTILL_RETRY_MS,
+  DistillationError,
+} from "./pipeline.js";
+export type {
+  DistillDrainReport,
+  DistillationPassReport,
+  MemoryDistillationRunner,
+  MemoryDistillationRunnerOptions,
+} from "./pipeline.js";
 
 export {
   buildOutcomeEnvelope,
