@@ -7,6 +7,7 @@ import type { DeliveryBroker } from "../collab/delivery-broker.js";
 import { DeliveryProviderError } from "../collab/delivery-broker.js";
 import { CollabError } from "../collab/errors.js";
 import type { CollabMachine } from "../collab/machine.js";
+import type { PullRequestGovernanceService } from "../collab/pr-governance.js";
 import type { DigestRef, IssueRecord, UserRef } from "../collab/types.js";
 import { ApiError } from "./errors.js";
 import { readJsonBody, requireString, writeJson } from "./http-util.js";
@@ -48,6 +49,11 @@ export interface CollabHttpDeps {
   candidates: CandidateReviewService;
   approvals: ApprovalService;
   deliveries: DeliveryBroker;
+  /**
+   * Read-only provider governance observation (DAT-261). Unset keeps the
+   * observation route unserved rather than returning an invented snapshot.
+   */
+  governance?: PullRequestGovernanceService;
 }
 
 /** Who the request acts as; derived from the authenticated request, never a body field. */
@@ -108,6 +114,7 @@ const STATUS_BY_CODE: Readonly<Record<string, number>> = {
   APPROVER_NOT_AUTHORIZED: 403,
   DELIVERY_FORBIDDEN: 403,
   DELIVERY_AUDIT_UNAVAILABLE: 503,
+  GOVERNANCE_NOT_OBSERVABLE: 409,
   PROVIDER_ERROR: 503,
 };
 
@@ -337,6 +344,18 @@ export async function handleCollabRequest(
     }
 
     // deliveries
+    if (action === "governance") {
+      if (method !== "GET" || id === undefined || deps.governance === undefined) {
+        return false;
+      }
+      // Observation is a pure read: no approval, merge, dismissal, or check
+      // waiver exists on this path. A delivery without a PR is 409
+      // GOVERNANCE_NOT_OBSERVABLE; a provider that cannot be read is reported
+      // as blocked/unknown *inside* a 200 observation, never as a stale fact.
+      const delivery = deps.deliveries.get(issue.issue_id, id);
+      writeJson(ctx.res, 200, await deps.governance.observe(delivery));
+      return true;
+    }
     if (action === "reconcile") {
       if (method !== "POST" || id === undefined) {
         return false;

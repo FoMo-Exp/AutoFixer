@@ -1,0 +1,67 @@
+{
+  "observation_id": "gov_01J0DAT261CURRENT",
+  "issue_id": "iss_01J0DAT261",
+  "delivery_id": "dlv_01J0DAT261",
+  "repository_id": "github:FoMo-Exp/AutoFixer",
+  "provider": "github",
+  "pr_id": "7",
+  "pr_url": "https://github.com/FoMo-Exp/AutoFixer/pull/7",
+  "delivery_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "pull_request_state": "open",
+  "observed_at": "2026-11-18T09:00:00Z",
+  "validity": "current",
+  "observations_valid": true,
+  "merge_queue_eligible": true,
+  "deny_reason": null,
+  "checks": {
+    "state": "observed",
+    "reason": null,
+    "observed_at": "2026-11-18T09:00:00Z",
+    "items": [
+      {
+        "name": "build",
+        "status": "passed",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observed_at": "2026-11-18T08:50:00Z"
+      },
+      {
+        "name": "test",
+        "status": "passed",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "observed_at": "2026-11-18T08:55:00Z"
+      }
+    ]
+  },
+  "approvals": {
+    "state": "observed",
+    "reason": null,
+    "observed_at": "2026-11-18T09:00:00Z",
+    "required": [
+      "Luthiel",
+      "Ludwig-Planck"
+    ],
+    "satisfied": true,
+    "items": [
+      {
+        "identity": "Luthiel",
+        "decision": "approved",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "submitted_at": "2026-11-18T08:56:00Z"
+      },
+      {
+        "identity": "Ludwig-Planck",
+        "decision": "approved",
+        "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "submitted_at": "2026-11-18T08:57:00Z"
+      }
+    ]
+  },
+  "review_discussions": {
+    "state": "observed",
+    "reason": null,
+    "observed_at": "2026-11-18T09:00:00Z",
+    "unresolved": 0
+  },
+  "supersedes": null
+}

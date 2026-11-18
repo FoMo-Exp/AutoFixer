@@ -192,3 +192,40 @@ export type {
 export { AUTOFIXER_BRANCH_PREFIX, autofixerBranchFor } from "./types.js";
 export { auditChainProblem, canonicalJson, digestOf } from "./audit.js";
 export type { AuditCommand, AuditOutcome, AuditRecord } from "./audit.js";
+export {
+  DEFAULT_REQUIRED_APPROVERS,
+  GOVERNANCE_APPROVAL_DECISIONS,
+  GOVERNANCE_CHECK_STATES,
+  GOVERNANCE_DENY_REASONS,
+  GOVERNANCE_OBSERVATION_STATES,
+  GOVERNANCE_UNAVAILABLE_REASONS,
+  GOVERNANCE_VALIDITY,
+  GovernanceProviderError,
+  PullRequestGovernanceService,
+  finalizeGovernanceObservation,
+  observationStillCurrent,
+} from "./pr-governance.js";
+export type {
+  GovernanceApprovalDecision,
+  GovernanceApprovalObservation,
+  GovernanceApprovals,
+  GovernanceCheckObservation,
+  GovernanceCheckState,
+  GovernanceChecks,
+  GovernanceDeliveryRef,
+  GovernanceDenyReason,
+  GovernanceDiscussions,
+  GovernanceObservationState,
+  GovernanceUnavailableReason,
+  GovernanceValidity,
+  PRGovernanceProvider,
+  ProviderGovernanceSnapshot,
+  PullRequestGovernanceObservation,
+  PullRequestGovernanceServiceOptions,
+  SupersededObservation,
+} from "./pr-governance.js";
+export { createGitHubGovernanceProvider } from "./github-pr-governance.js";
+export type {
+  GitHubGovernanceBinding,
+  GitHubGovernanceProviderOptions,
+} from "./github-pr-governance.js";

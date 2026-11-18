@@ -47,6 +47,29 @@ export interface FakeGitHubOptions {
     pull_head_sha?: string;
     pull_base_ref?: string;
   };
+  /**
+   * Read-only governance facts this repository serves (DAT-261). The rows are
+   * shaped like GitHub's REST/GraphQL answers so the adapter parses exactly
+   * what production returns.
+   */
+  governance?: {
+    check_runs?: Array<{
+      name: string;
+      status: string;
+      conclusion: string | null;
+      head_sha: string;
+      started_at?: string | null;
+      completed_at?: string | null;
+    }>;
+    reviews?: Array<{
+      user: { login: string };
+      state: string;
+      commit_id: string;
+      submitted_at: string | null;
+    }>;
+    review_threads?: Array<{ isResolved: boolean }>;
+    thread_page_has_next?: boolean;
+  };
 }
 
 interface FakeCommit {
@@ -489,6 +512,53 @@ export async function startFakeGitHub(options: FakeGitHubOptions): Promise<FakeG
         (bodyOut["base"] as Record<string, unknown>)["ref"] = options.override.pull_base_ref;
       }
       return { status: 201, body: bodyOut };
+    }
+
+    // ------------------------------------------------------- governance reads
+    const pullByNumber = new RegExp(`^${prefix}/pulls/([0-9]+)$`).exec(url);
+    if (method === "GET" && pullByNumber !== null) {
+      const pr = pullRequests.find((row) => row.number === Number(pullByNumber[1]));
+      if (pr === undefined) {
+        return { status: 404, body: { message: "Not Found" } };
+      }
+      return { status: 200, body: prBody(pr) };
+    }
+
+    const checkRunsMatch = new RegExp(`^${prefix}/commits/([0-9a-f]{40})/check-runs\\?`).exec(url);
+    if (method === "GET" && checkRunsMatch !== null) {
+      const head = checkRunsMatch[1] as string;
+      const rows = (options.governance?.check_runs ?? []).filter((row) => row.head_sha === head);
+      return { status: 200, body: { total_count: rows.length, check_runs: rows } };
+    }
+
+    const reviewsMatch = new RegExp(`^${prefix}/pulls/([0-9]+)/reviews\\?`).exec(url);
+    if (method === "GET" && reviewsMatch !== null) {
+      return { status: 200, body: options.governance?.reviews ?? [] };
+    }
+
+    if (method === "POST" && url === "/graphql") {
+      // The adapter sends a read-only reviewThreads query; anything about a
+      // mutation has no route here at all.
+      const body = parseJson(request);
+      const query = typeof body["query"] === "string" ? body["query"] : "";
+      if (!query.includes("reviewThreads")) {
+        return { status: 400, body: { errors: [{ message: "unsupported query" }] } };
+      }
+      return {
+        status: 200,
+        body: {
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  pageInfo: { hasNextPage: options.governance?.thread_page_has_next === true },
+                  nodes: options.governance?.review_threads ?? [],
+                },
+              },
+            },
+          },
+        },
+      };
     }
 
     return { status: 599, body: { error: `unexpected request ${method} ${url}` } };

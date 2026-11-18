@@ -537,6 +537,7 @@ approval, and never treats an approval as a merge or check waiver.
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries?cursor=`                  | path ids; optional `cursor`                                                           | `{items: Delivery[], next_cursor}`  | ✅     |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}`            | path ids                                                                              | `Delivery`                          | ✅     |
 | `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}/reconcile` | optional `note`; `Idempotency-Key` header                                             | `202 Delivery`                      | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}/governance` | path ids (read-only)                                                                  | `PullRequestGovernanceObservation`  | ✅     |
 
 UI behavior that follows the contract:
 
@@ -563,3 +564,9 @@ UI behavior that follows the contract:
   copy. Both expose the contract's reconcile command; the reconcile request is
   an explicit, non-automatic action with an idempotency key, and `delivered`
   still claims no merge.
+- The governance observation (DAT-261) is read-only per-head evidence. Checks,
+  approvals, and review discussions are shown with the `head_sha` and
+  `observed_at` they describe; `superseded` (head moved), `blocked` (missing
+  integration/credential/permission/PR), and `unknown` (provider unreadable)
+  states must not be rendered as passing, and the workbench never offers an
+  approve, dismiss, check-waiver, or merge action from it.
