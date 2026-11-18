@@ -216,10 +216,13 @@ changed paths, stats, and unified diff. `validation_summary` lists every
 completed test attempt of that tree with its exit status, output digest, and
 event reference. `candidate` is the immutable manifest the Node delivery layer
 retains when it freezes a product-level candidate: workspace, repository,
-base/tree/head, branch name, diff digest, summary, risk class, validation, and
-evidence references. The three artifacts exist only for a `stopped` run whose
-frozen revision has validation evidence; any other finalized run answers
-`404 ARTIFACT_NOT_FOUND`.
+base/tree/head, the exact `commit` identity behind the head (message, author,
+and committer as git stores them), branch name, diff digest, summary, risk
+class, validation, and evidence references. The commit identity is what a
+delivery adapter reproduces when it publishes the approved head; it is not a
+second, independently composed commit. The three artifacts exist only for a
+`stopped` run whose frozen revision has validation evidence; any other
+finalized run answers `404 ARTIFACT_NOT_FOUND`.
 
 An execution event includes its sequence, immutable state transition, redacted
 tool identity/arguments, redacted output digest, decision/stop code, and

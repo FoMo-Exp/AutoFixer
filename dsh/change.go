@@ -242,10 +242,10 @@ func buildValidationArtifact(rec *runRecord, events []harness.ExecutionEvent) va
 }
 
 // candidateArtifact is the control plane's immutable candidate manifest: the
-// exact base/tree/head identity, the diff digest, the summary, and the
-// validation attempts of that same revision. It creates nothing; the Node
-// delivery layer retains it as the run's `candidate` artifact when it freezes
-// a product-level candidate.
+// exact base/tree/head identity, the commit identity behind that head, the diff
+// digest, the summary, and the validation attempts of that same revision. It
+// creates nothing; the Node delivery layer retains it as the run's `candidate`
+// artifact when it freezes a product-level candidate.
 type candidateArtifact struct {
 	RunID              string                        `json:"run_id"`
 	TaskID             string                        `json:"task_id"`
@@ -254,6 +254,7 @@ type candidateArtifact struct {
 	BaseSHA            string                        `json:"base_sha"`
 	TreeSHA            string                        `json:"tree_sha"`
 	HeadSHA            string                        `json:"head_sha"`
+	Commit             sandbox.CommitIdentity        `json:"commit"`
 	Branch             string                        `json:"branch"`
 	DiffDigest         string                        `json:"diff_digest"`
 	ChangedPaths       []string                      `json:"changed_paths"`
@@ -287,6 +288,7 @@ func buildCandidateArtifact(rec *runRecord, events []harness.ExecutionEvent) can
 		BaseSHA:            change.BaseSHA,
 		TreeSHA:            change.TreeSHA,
 		HeadSHA:            change.HeadSHA,
+		Commit:             change.Commit,
 		Branch:             rec.branch,
 		DiffDigest:         change.DiffDigest,
 		ChangedPaths:       append([]string{}, change.ChangedPaths...),
