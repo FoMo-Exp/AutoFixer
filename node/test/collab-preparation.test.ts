@@ -21,13 +21,13 @@ import type { CandidateRecord } from "../src/collab/types.js";
 import { TaskService } from "../src/api/task-service.js";
 import { TaskStore, createTaskRecord } from "../src/api/task-store.js";
 import type { OrchestratorConfig } from "../src/config.js";
-import { REPOSITORY, WORKSPACE } from "./helpers/collab.js";
+import { REPOSITORY, WORKSPACE, candidateCommit } from "./helpers/collab.js";
 
 const RUN_ID = "run_dsh_prep_1";
 const PREVIOUS_RUN_ID = "run_dsh_prep_0";
 const TASK_ID = "tsk_prep_1";
-const HEAD_SHA = "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00";
-const HEAD2 = "1".repeat(40);
+const HEAD_SHA = "22a990f48b03a597da04a35c564deaea8ac5ecee";
+const HEAD2 = "bd6c6c61205ae6f33e225d1b9c16d6533ca27b15";
 const TREE_SHA = "d4e5f60718293a4b5c6d7e8f9012345678a1b2c3";
 const TREE2 = "2".repeat(40);
 const TEST_OUTPUT = "cd".repeat(32);
@@ -197,6 +197,7 @@ function candidateContent(overrides: Partial<DshCandidateArtifact> = {}): DshCan
     base_sha: REPOSITORY.base_sha,
     tree_sha: TREE_SHA,
     head_sha: HEAD_SHA,
+    commit: candidateCommit(TASK_ID, RUN_ID),
     branch: "autofixer/tsk_prep_1-c0ffee0",
     diff_digest: DIFF_DIGEST,
     changed_paths: ["web/src/export.ts"],
@@ -458,6 +459,7 @@ describe("stopped preparation → frozen candidate (DAT-258)", () => {
         branch: "autofixer/tsk_prep_1-badc0de",
         head_sha: HEAD2,
         tree_sha: TREE2,
+        commit: candidateCommit(TASK_ID, PREVIOUS_RUN_ID),
         diff_digest: digest2,
         summary: "Second revision.",
         validation: [evidence({ event_reference: `evidence://events/${PREVIOUS_RUN_ID}/3` })],
@@ -544,6 +546,37 @@ describe("stopped preparation → frozen candidate (DAT-258)", () => {
     });
     await expect(bridge(collab, set).observe(observation(dshRun()))).rejects.toBeInstanceOf(
       CollabError,
+    );
+    expect(issueOf(collab).product_state).toBe("needs_human");
+    expect(collab.listCandidates(issueOf(collab).issue_id)).toEqual([]);
+  });
+
+  test("a candidate commit identity that does not reproduce the head is refused", async () => {
+    const collab = machine();
+    const set = artifactSet({
+      candidate: candidateContent({
+        // The message names the task and run, but the author date differs from
+        // the one the sandbox hashed, so the object cannot be the head.
+        commit: {
+          ...candidateCommit(TASK_ID, RUN_ID),
+          author: { ...candidateCommit(TASK_ID, RUN_ID).author, date: "1971-01-01T00:00:00 +0000" },
+        },
+      }),
+    });
+    await expect(bridge(collab, set).observe(observation(dshRun()))).rejects.toThrow(
+      /head is not the commit its identity describes/,
+    );
+    expect(issueOf(collab).product_state).toBe("needs_human");
+    expect(collab.listCandidates(issueOf(collab).issue_id)).toEqual([]);
+  });
+
+  test("a candidate artifact without a commit identity is refused", async () => {
+    const collab = machine();
+    const content = candidateContent();
+    const { commit: _commit, ...withoutCommit } = content;
+    const set = artifactSet({ candidate: withoutCommit as DshCandidateArtifact });
+    await expect(bridge(collab, set).observe(observation(dshRun()))).rejects.toThrow(
+      /carries no commit identity/,
     );
     expect(issueOf(collab).product_state).toBe("needs_human");
     expect(collab.listCandidates(issueOf(collab).issue_id)).toEqual([]);

@@ -7,7 +7,13 @@ import { RECONCILABLE_STATES, deliveryBranchProblem, deliveryView } from "./deli
 import type { DeliveryView } from "./delivery.js";
 import { CollabError } from "./errors.js";
 import type { CollabMachine } from "./machine.js";
-import type { CandidateRecord, DeliveryRecord, RepositoryRef, UserRef } from "./types.js";
+import type {
+  CandidateCommit,
+  CandidateRecord,
+  DeliveryRecord,
+  RepositoryRef,
+  UserRef,
+} from "./types.js";
 import { autofixerBranchFor } from "./types.js";
 
 /**
@@ -44,6 +50,12 @@ export interface ProviderPullRequestEvidence {
   pr_url: string;
   branch: string;
   head_sha: string;
+  /**
+   * The PR's target branch. Reuse evidence binds the whole identity of the
+   * delivery — head *and* base — so a PR for the same revision against another
+   * branch can never be accepted as this delivery.
+   */
+  base_ref: string;
   state: "open" | "closed" | "merged";
 }
 
@@ -68,6 +80,18 @@ export interface PushBranchInput {
   tree_sha: string;
   /** Diff digest the pushed commit must reproduce. */
   diff_digest: string;
+  /**
+   * The exact retained patch the approved candidate froze. A provider that
+   * rebuilds the tree from base blobs applies this content; it is the same
+   * bytes a reviewer read and the same digest the approval bound.
+   */
+  diff_content: string;
+  /**
+   * The exact commit identity the candidate head names. A provider must
+   * reproduce this object (same tree, parent, message, author, committer) so
+   * the branch it writes carries the approved commit itself.
+   */
+  commit: CandidateCommit;
 }
 
 export type PushBranchOutcome =
@@ -99,6 +123,7 @@ export interface DeliveryProvider {
     repository: RepositoryRef,
     branch: string,
     headSha: string,
+    targetBranch: string,
   ): Promise<ProviderPullRequestEvidence | null>;
   openPullRequest(input: OpenPullRequestInput): Promise<ProviderPullRequestEvidence>;
 }
@@ -131,6 +156,13 @@ export interface DeliveryBrokerOptions {
   }) => boolean;
   /** Audit sink availability; a missing/closed sink blocks every write. */
   auditAvailable?: () => boolean;
+  /**
+   * The retained candidate content the approval's `diff.digest` names. A
+   * provider that reconstructs the approved tree from the patch needs the
+   * exact retained bytes; without a store the broker refuses the write rather
+   * than pushing an unverifiable tree.
+   */
+  candidateContent?: { read(digest: string): string };
 }
 
 export interface RequestDeliveryOptions {
@@ -297,7 +329,12 @@ export class DeliveryBroker {
     // an explicit reconcile may resolve it.
     let existingPr: ProviderPullRequestEvidence | null;
     try {
-      existingPr = await provider.findPullRequest(delivery.repository, branch, delivery.head_sha);
+      existingPr = await provider.findPullRequest(
+        delivery.repository,
+        branch,
+        delivery.head_sha,
+        delivery.target_branch,
+      );
     } catch {
       return deliveryView(
         this.recordState(delivery, options, "unknown", {
@@ -310,7 +347,8 @@ export class DeliveryBroker {
       existingPr !== null &&
       existingPr.state === "open" &&
       existingPr.head_sha === delivery.head_sha &&
-      existingPr.branch === branch
+      existingPr.branch === branch &&
+      existingPr.base_ref === delivery.target_branch
     ) {
       this.recordState(delivery, options, "pushing", {});
       // A PR alone is not proof of delivery: the provider branch must still
@@ -345,6 +383,29 @@ export class DeliveryBroker {
       );
     }
 
+    // The push must publish exactly the approved commit. Both the recorded
+    // commit identity and the retained patch are required before the intention
+    // to write is recorded; a missing piece leaves the operation pending.
+    const commit = candidate.commit;
+    if (commit === null) {
+      throw new CollabError(
+        "DELIVERY_FORBIDDEN",
+        "the candidate records no commit identity, so the approved head cannot be reproduced",
+        { delivery_id: delivery.delivery_id, candidate_id: candidate.candidate_id },
+      );
+    }
+    if (this.options.candidateContent === undefined) {
+      throw new CollabError(
+        "DELIVERY_FORBIDDEN",
+        "candidate content is not available to the broker",
+        { delivery_id: delivery.delivery_id },
+      );
+    }
+    // Read (and re-verify) the retained patch before any write. A missing or
+    // corrupted blob leaves the operation pending: nothing was published, and
+    // the same operation may be retried once the content boundary is restored.
+    const diffContent = this.options.candidateContent.read(candidate.diff.digest);
+
     this.recordState(delivery, options, "pushing", {});
     let outcome: PushBranchOutcome;
     try {
@@ -355,6 +416,8 @@ export class DeliveryBroker {
         head_sha: delivery.head_sha,
         tree_sha: candidate.tree_sha,
         diff_digest: candidate.diff.digest,
+        diff_content: diffContent,
+        commit,
       });
     } catch {
       return deliveryView(
@@ -484,7 +547,12 @@ export class DeliveryBroker {
     let pr: ProviderPullRequestEvidence | null;
     try {
       branchEvidence = await provider.observeBranch(delivery.repository, branch);
-      pr = await provider.findPullRequest(delivery.repository, branch, delivery.head_sha);
+      pr = await provider.findPullRequest(
+        delivery.repository,
+        branch,
+        delivery.head_sha,
+        delivery.target_branch,
+      );
     } catch {
       throw new DeliveryProviderError();
     }
@@ -498,6 +566,7 @@ export class DeliveryBroker {
       pr.state === "open" &&
       pr.head_sha === delivery.head_sha &&
       pr.branch === branch &&
+      pr.base_ref === delivery.target_branch &&
       branchEvidence.head_sha === delivery.head_sha
     ) {
       return deliveryView(

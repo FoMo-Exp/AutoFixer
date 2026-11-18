@@ -17,6 +17,8 @@ export interface RecordedRequest {
   url: string;
   /** Lower-cased header names. */
   headers: Record<string, string>;
+  /** Request body bytes as UTF-8, empty for bodyless requests. */
+  body: string;
 }
 
 export interface FakeProviderResponse {
@@ -26,7 +28,9 @@ export interface FakeProviderResponse {
   body?: unknown;
 }
 
-export type FakeProviderHandler = (request: RecordedRequest) => FakeProviderResponse;
+export type FakeProviderHandler = (
+  request: RecordedRequest,
+) => FakeProviderResponse | Promise<FakeProviderResponse>;
 
 export interface FakeProvider {
   /** `http://127.0.0.1:<port>` — passed as the adapter's api_base_url. */
@@ -51,27 +55,37 @@ function lowerCaseHeaders(headers: IncomingHttpHeaders): Record<string, string> 
 export async function startFakeProvider(handler: FakeProviderHandler): Promise<FakeProvider> {
   const requests: RecordedRequest[] = [];
   const server: Server = createServer((request, response) => {
-    const recorded: RecordedRequest = {
-      method: request.method ?? "GET",
-      url: request.url ?? "/",
-      headers: lowerCaseHeaders(request.headers),
-    };
-    requests.push(recorded);
-    // Drain any body so the socket is reusable.
-    request.resume();
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+    });
     request.on("end", () => {
-      const fake = handler(recorded);
-      const body =
-        typeof fake.body === "string"
-          ? fake.body
-          : fake.body === undefined
-            ? ""
-            : JSON.stringify(fake.body);
-      response.writeHead(fake.status, {
-        "content-type": "application/json",
-        ...(fake.headers ?? {}),
-      });
-      response.end(body);
+      const recorded: RecordedRequest = {
+        method: request.method ?? "GET",
+        url: request.url ?? "/",
+        headers: lowerCaseHeaders(request.headers),
+        body: Buffer.concat(chunks).toString("utf8"),
+      };
+      requests.push(recorded);
+      void Promise.resolve(handler(recorded)).then(
+        (fake) => {
+          const body =
+            typeof fake.body === "string"
+              ? fake.body
+              : fake.body === undefined
+                ? ""
+                : JSON.stringify(fake.body);
+          response.writeHead(fake.status, {
+            "content-type": "application/json",
+            ...(fake.headers ?? {}),
+          });
+          response.end(body);
+        },
+        (error: unknown) => {
+          response.writeHead(500, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: String(error) }));
+        },
+      );
     });
   });
 

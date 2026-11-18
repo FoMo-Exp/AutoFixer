@@ -19,6 +19,8 @@ import type {
   ApprovalDecision,
   ApprovalRecord,
   ArtifactRef,
+  CandidateCommit,
+  CandidateCommitPerson,
   CandidateDiff,
   CandidateRecord,
   CandidateValidation,
@@ -485,6 +487,44 @@ function relativePath(value: unknown, field: string): string {
     });
   }
   return text;
+}
+
+/**
+ * The exact commit object a frozen candidate head names (DAT-260): the
+ * run-bound message and the author/committer git stored. The fields are
+ * validated for what git can serialize, never normalized — a "fixed up"
+ * identity would hash to a commit the approval never covered.
+ */
+function parseCandidateCommit(value: unknown, field: string): CandidateCommit {
+  const source = object(value, field);
+  assertExactKeys(source, ["message", "author", "committer"], field);
+  const parsePerson = (raw: unknown, label: string): CandidateCommitPerson => {
+    const person = object(raw, label);
+    assertExactKeys(person, ["name", "email", "date"], label);
+    const name = bounded(person["name"], `${label}.name`, DISPLAY_NAME_MAX);
+    const email = bounded(person["email"], `${label}.email`, DISPLAY_NAME_MAX);
+    // eslint-disable-next-line no-control-regex -- git cannot store these bytes in an identity
+    if (/[<>\n\r\u0000]/.test(name) || /[<>\n\r\u0000]/.test(email)) {
+      throw new CollabError("CANDIDATE_INVALID", `${label} contains characters git cannot store`, {
+        field: label,
+      });
+    }
+    if (!email.includes("@")) {
+      throw new CollabError("CANDIDATE_INVALID", `${label}.email must be an email address`, {
+        field: `${label}.email`,
+      });
+    }
+    return {
+      name,
+      email,
+      date: bounded(person["date"], `${label}.date`, DISPLAY_NAME_MAX),
+    };
+  };
+  return {
+    message: bounded(source["message"], `${field}.message`, SUMMARY_MAX),
+    author: parsePerson(source["author"], `${field}.author`),
+    committer: parsePerson(source["committer"], `${field}.committer`),
+  };
 }
 
 /**
@@ -1663,6 +1703,7 @@ function handleFreezeCandidate(state: CollabState, payload: Payload): unknown {
       "base_sha",
       "head_sha",
       "tree_sha",
+      "commit",
       "diff",
       "validation",
       "risk",
@@ -1721,6 +1762,12 @@ function handleFreezeCandidate(state: CollabState, payload: Payload): unknown {
     });
   }
   const treeSha = str(payload["tree_sha"], "tree_sha");
+  // Candidates frozen before DAT-260 (and their replayed audit records) carry
+  // no commit identity; the field stays null and delivery refuses them.
+  const commit =
+    payload["commit"] === undefined || payload["commit"] === null
+      ? null
+      : parseCandidateCommit(payload["commit"], "commit");
   const summary = bounded(payload["summary"], "summary", SUMMARY_MAX);
   const diff = parseCandidateDiff(payload["diff"], "diff");
   const validation = parseCandidateValidation(payload["validation"], "validation");
@@ -1904,6 +1951,7 @@ function handleFreezeCandidate(state: CollabState, payload: Payload): unknown {
     base_sha: baseSha,
     head_sha: headSha,
     tree_sha: treeSha,
+    commit: commit === null ? null : { ...commit },
     diff,
     summary,
     validation,

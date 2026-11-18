@@ -271,6 +271,17 @@ export interface DshValidationSummaryArtifact {
 }
 
 /**
+ * The exact commit object the candidate head names: the message and the
+ * author/committer as git stores them. dsh created this commit locally; a
+ * delivery adapter reproduces it instead of composing an equivalent commit.
+ */
+export interface DshCommitIdentity {
+  message: string;
+  author: { name: string; email: string; date: string };
+  committer: { name: string; email: string; date: string };
+}
+
+/**
  * The immutable candidate manifest (`candidate`) the Node delivery layer
  * retains when it freezes a product-level candidate. It creates nothing on
  * its own: the branch is a prospective name, not a provider ref.
@@ -283,6 +294,7 @@ export interface DshCandidateArtifact {
   base_sha: string;
   tree_sha: string;
   head_sha: string;
+  commit: DshCommitIdentity;
   branch: string;
   diff_digest: string;
   changed_paths: string[];

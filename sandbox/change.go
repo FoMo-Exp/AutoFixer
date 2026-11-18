@@ -49,6 +49,25 @@ const (
 	captiveCommitDate  = "1970-01-01T00:00:00 +0000"
 )
 
+// CommitPerson is one author/committer identity recorded in the candidate
+// commit object, in the exact form git stores it.
+type CommitPerson struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+	// Date is the git object date ("1970-01-01T00:00:00 +0000"), not a
+	// display timestamp.
+	Date string `json:"date"`
+}
+
+// CommitIdentity is the exact commit object the candidate head names. A
+// delivery adapter that must publish that exact head reproduces these fields
+// byte for byte; it never invents a message or an author after validation.
+type CommitIdentity struct {
+	Message   string       `json:"message"`
+	Author    CommitPerson `json:"author"`
+	Committer CommitPerson `json:"committer"`
+}
+
 // ProposedChange is the frozen description of the change a preparation run
 // produced. It is computed from the run's materialized checkout after the
 // untrusted execution ended and before the workspace is removed, so a review
@@ -62,6 +81,10 @@ type ProposedChange struct {
 	// git commit object (never a ref, branch, or provider write) whose
 	// identity is deterministic for one base, tree, task, and run.
 	HeadSHA string
+	// Commit is the exact identity behind HeadSHA. It travels with the
+	// candidate so delivery can reproduce the approved commit instead of
+	// creating an equivalent one with a different hash.
+	Commit CommitIdentity
 	// Diff is the exact unified diff a reviewer reads, and DiffDigest is the
 	// sha256 hex of those bytes.
 	Diff       string
@@ -119,6 +142,19 @@ func (r *Runner) CaptureChange(ctx context.Context) (*ProposedChange, error) {
 	}
 
 	message := fmt.Sprintf("autofixer candidate for %s\n\nrun: %s\n", r.run.TaskID, r.run.RunID)
+	identity := CommitIdentity{
+		Message: message,
+		Author: CommitPerson{
+			Name:  captiveCommitName,
+			Email: captiveCommitEmail,
+			Date:  captiveCommitDate,
+		},
+		Committer: CommitPerson{
+			Name:  captiveCommitName,
+			Email: captiveCommitEmail,
+			Date:  captiveCommitDate,
+		},
+	}
 	headRaw, err := r.gitPlumbingEnv(ctx, repoDir, captiveGitEnv(r.workspace),
 		"commit-tree", treeSHA, "-p", baseSHA, "-m", message)
 	if err != nil {
@@ -153,6 +189,7 @@ func (r *Runner) CaptureChange(ctx context.Context) (*ProposedChange, error) {
 		BaseSHA:      baseSHA,
 		TreeSHA:      treeSHA,
 		HeadSHA:      headSHA,
+		Commit:       identity,
 		Diff:         string(diffRaw),
 		DiffDigest:   hex.EncodeToString(sum[:]),
 		ChangedPaths: paths,

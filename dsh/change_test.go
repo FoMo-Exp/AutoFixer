@@ -400,6 +400,19 @@ func TestStopFreezesValidatedPreparation(t *testing.T) {
 	if candidate.Branch != *report.Branch || candidate.TaskID != "tsk_prepared" {
 		t.Errorf("candidate branch/task = %q/%q, want %q/tsk_prepared", candidate.Branch, candidate.TaskID, *report.Branch)
 	}
+	// The exact commit identity travels with the candidate: a delivery adapter
+	// must reproduce this object, not create an equivalent commit under a
+	// different hash.
+	wantMessage := "autofixer candidate for tsk_prepared\n\nrun: " + runID + "\n"
+	if candidate.Commit.Message != wantMessage {
+		t.Errorf("candidate commit message = %q, want %q", candidate.Commit.Message, wantMessage)
+	}
+	for _, person := range []sandbox.CommitPerson{candidate.Commit.Author, candidate.Commit.Committer} {
+		if person.Name != "AutoFixer" || person.Email != "autofixer@localhost" ||
+			person.Date != "1970-01-01T00:00:00 +0000" {
+			t.Errorf("candidate commit identity = %+v, want the deterministic captive identity", person)
+		}
+	}
 	if len(candidate.Validation) != 1 || len(candidate.EvidenceReferences) < 2 {
 		t.Errorf("candidate lacks validation evidence: %+v", candidate)
 	}

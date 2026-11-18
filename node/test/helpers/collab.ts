@@ -4,6 +4,7 @@ import {
   grantEvidenceRef,
   planEvidenceRef,
 } from "../../src/collab/evidence.js";
+import { commitObjectSha } from "../../src/collab/git-objects.js";
 import { CollabMachine } from "../../src/collab/machine.js";
 import type {
   ArtifactInput,
@@ -14,6 +15,7 @@ import type {
 } from "../../src/collab/machine.js";
 import type {
   ArtifactRef,
+  CandidateCommit,
   IssueRecord,
   LeaseRecord,
   RunRecord,
@@ -163,7 +165,38 @@ export const CANDIDATE_DIFF = [
   "",
 ].join("\n");
 
-export const CANDIDATE_HEAD = "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00";
+export const CANDIDATE_COMMIT_PERSON = {
+  name: "AutoFixer",
+  email: "autofixer@localhost",
+  date: "1970-01-01T00:00:00 +0000",
+} as const;
+
+/**
+ * The exact commit identity the sandbox freezes for one run. The head SHA is
+ * derived from it (never chosen), so a fixture candidate is the same object a
+ * delivery adapter must reproduce.
+ */
+export function candidateCommit(taskId: string, runId: string): CandidateCommit {
+  return {
+    message: `autofixer candidate for ${taskId}\n\nrun: ${runId}\n`,
+    author: { ...CANDIDATE_COMMIT_PERSON },
+    committer: { ...CANDIDATE_COMMIT_PERSON },
+  };
+}
+
+export function candidateHead(
+  taskId: string,
+  runId: string,
+  treeSha: string = CANDIDATE_TREE,
+  baseSha: string = REPOSITORY.base_sha,
+): string {
+  return commitObjectSha({
+    tree_sha: treeSha,
+    parent_shas: [baseSha],
+    identity: candidateCommit(taskId, runId),
+  });
+}
+
 /** Content digest of the retained test-report artifact. */
 export const TEST_REPORT_DIGEST = "cd".repeat(32);
 export const TEST_PLAN_CHECKS = ["npm test -- retry"];
@@ -233,10 +266,18 @@ export function stoppedPreparation(
     worktreeId?: string;
     recordPlan?: boolean;
     policyId?: string;
+    /** The repository the issue is bound to (defaults to REPOSITORY). */
+    repository?: typeof REPOSITORY;
+    /** The retained diff content (defaults to CANDIDATE_DIFF). */
+    diff?: string;
+    /** The prepared tree (defaults to CANDIDATE_TREE). */
+    treeSha?: string;
   } = {},
 ): PreparationContext {
   const worktreeId = overrides.worktreeId ?? "wt_candidate";
+  const repository = overrides.repository ?? REPOSITORY;
   const run = openRun(machine, issueId, {
+    repository,
     worktree: {
       worktree_id: worktreeId,
       path: overrides.worktreePath ?? `/tmp/worktrees/${worktreeId}`,
@@ -275,21 +316,34 @@ export function stoppedPreparation(
       policy_id: policyId,
     });
   }
-  const digest = diffDigest(CANDIDATE_DIFF);
+  const diffContent = overrides.diff ?? CANDIDATE_DIFF;
+  const treeSha = overrides.treeSha ?? CANDIDATE_TREE;
+  const digest = diffDigest(diffContent);
+  const headSha = candidateHead(issueId, run.run_id, treeSha, repository.base_sha);
   const artifacts = [
     machine.attachArtifact({
       operation_id: op(),
       actor: "worker:a",
       run_id: run.run_id,
       lease,
-      artifact: artifactInput({ kind: "candidate", digest, head_sha: CANDIDATE_HEAD }),
+      artifact: artifactInput({
+        kind: "candidate",
+        digest,
+        base_sha: repository.base_sha,
+        head_sha: headSha,
+      }),
     }),
     machine.attachArtifact({
       operation_id: op(),
       actor: "worker:a",
       run_id: run.run_id,
       lease,
-      artifact: artifactInput({ kind: "patch", digest, head_sha: CANDIDATE_HEAD }),
+      artifact: artifactInput({
+        kind: "patch",
+        digest,
+        base_sha: repository.base_sha,
+        head_sha: headSha,
+      }),
     }),
     machine.attachArtifact({
       operation_id: op(),
@@ -299,7 +353,8 @@ export function stoppedPreparation(
       artifact: artifactInput({
         kind: "report",
         digest: OTHER_DIGEST,
-        head_sha: CANDIDATE_HEAD,
+        base_sha: repository.base_sha,
+        head_sha: headSha,
       }),
     }),
     machine.attachArtifact({
@@ -310,7 +365,8 @@ export function stoppedPreparation(
       artifact: artifactInput({
         kind: "test_report",
         digest: TEST_REPORT_DIGEST,
-        head_sha: CANDIDATE_HEAD,
+        base_sha: repository.base_sha,
+        head_sha: headSha,
       }),
     }),
   ];
@@ -322,6 +378,7 @@ export function stoppedPreparation(
     artifact: artifactInput({
       kind: "evidence_bundle",
       digest: "ab".repeat(32),
+      base_sha: repository.base_sha,
       head_sha: "e".repeat(40),
     }),
   });
@@ -332,7 +389,7 @@ export function stoppedPreparation(
     lease,
     to: "stopped",
     stop_reason: "local preparation complete; validation evidence recorded",
-    head_sha: CANDIDATE_HEAD,
+    head_sha: headSha,
   });
   const issue = machine.getIssue(issueId) as IssueRecord;
   if (issue.product_state === "planning") {
@@ -351,9 +408,9 @@ export function stoppedPreparation(
     artifacts,
     other_revision_artifact: otherRevisionArtifact,
     plan: machine.getTestPlan(run.run_id),
-    head_sha: CANDIDATE_HEAD,
-    tree_sha: CANDIDATE_TREE,
-    diff_content: CANDIDATE_DIFF,
+    head_sha: headSha,
+    tree_sha: treeSha,
+    diff_content: diffContent,
     diff_digest: digest,
   };
 }
@@ -383,9 +440,10 @@ export function freezeCandidateInput(
     issue_id: context.issue.issue_id,
     run_id: context.run.run_id,
     summary: "Guard the retry header against null and add a regression test.",
-    base_sha: REPOSITORY.base_sha,
+    base_sha: context.issue.repository.base_sha,
     head_sha: context.head_sha,
     tree_sha: context.tree_sha,
+    commit: candidateCommit(context.issue.issue_id, context.run.run_id),
     diff: {
       digest_algorithm: "sha256",
       digest: context.diff_digest,

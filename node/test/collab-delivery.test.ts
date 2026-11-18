@@ -120,6 +120,7 @@ class FakeProvider implements DeliveryProvider {
       pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
       branch: input.branch,
       head_sha: this.prMode === "wrong_head" ? OTHER_HEAD : input.head_sha,
+      base_ref: input.target_branch,
       state: "open",
     };
     this.pr = pr;
@@ -157,6 +158,7 @@ interface Fixture {
   root: string;
   clock: Clock;
   machine: CollabMachine;
+  store: CandidateContentStore;
   directory: FakeDirectory;
   approvalService: ApprovalService;
   provider: FakeProvider;
@@ -191,8 +193,9 @@ let root = "";
 function setup(options: SetupOptions = {}): Fixture {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "autofixer-delivery-"));
   const clock = new Clock();
+  const store = new CandidateContentStore(path.join(root, "candidates"));
   const machine = new CollabMachine({
-    candidateStore: new CandidateContentStore(path.join(root, "candidates")),
+    candidateStore: store,
     now: clock.now,
     ...(options.ttlSeconds !== undefined ? { approvalTtlSeconds: options.ttlSeconds } : {}),
   });
@@ -269,6 +272,7 @@ function setup(options: SetupOptions = {}): Fixture {
     machine,
     providers: { github: provider },
     approvalDirectory: directory,
+    candidateContent: { read: (digest) => store.read(digest) },
     deliveryAuthorized: () => options.deliveryAuthorized ?? true,
     auditAvailable: () => options.auditAvailable ?? true,
   });
@@ -278,6 +282,7 @@ function setup(options: SetupOptions = {}): Fixture {
     clock,
     machine,
     directory,
+    store,
     approvalService,
     provider,
     broker,
@@ -587,12 +592,58 @@ describe("broker-controlled push and PR", () => {
       pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
       branch,
       head_sha: f.candidate.head_sha,
+      base_ref: REPOSITORY.base_ref,
       state: "open",
     };
     const view = await f.broker.deliver(delivery.delivery_id, { actor: "broker:delivery" });
     expect(view.state).toBe("delivered");
     expect(f.provider.pushCalls).toHaveLength(0);
     expect(f.provider.openCalls).toHaveLength(0);
+  });
+
+  test("a PR for the same revision against another base is not adopted", async () => {
+    const f = setup();
+    const delivery = requestDelivery(f);
+    const branch = autofixerBranchFor(f.issue.issue_id);
+    f.provider.branchHead = f.candidate.head_sha;
+    f.provider.pr = {
+      pr_id: "pr_1",
+      pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
+      branch,
+      head_sha: f.candidate.head_sha,
+      base_ref: "release",
+      state: "open",
+    };
+    const view = await f.broker.deliver(delivery.delivery_id, { actor: "broker:delivery" });
+    expect(view.state).toBe("delivered");
+    // The wrong-base PR was not evidence of this delivery: the broker pushed
+    // and opened its own PR against the repository base instead.
+    expect(f.provider.pushCalls).toHaveLength(1);
+    expect(f.provider.openCalls).toHaveLength(1);
+    expect(f.provider.openCalls[0]?.target_branch).toBe(REPOSITORY.base_ref);
+  });
+
+  test("an open PR targeting another base cannot reconcile to delivered", async () => {
+    const f = setup();
+    const delivery = requestDelivery(f);
+    f.provider.pushMode = "ambiguous";
+    await f.broker.deliver(delivery.delivery_id, { actor: "broker:delivery" });
+    const branch = autofixerBranchFor(f.issue.issue_id);
+    f.provider.branchHead = f.candidate.head_sha;
+    f.provider.pr = {
+      pr_id: "pr_1",
+      pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
+      branch,
+      head_sha: f.candidate.head_sha,
+      base_ref: "release",
+      state: "open",
+    };
+    const view = await f.broker.reconcile(delivery.delivery_id, {
+      operation_id: op(),
+      actor: "broker:reconcile",
+    });
+    expect(view.state).toBe("partial");
+    expect(view.error_code).toBe("PR_NOT_OBSERVED");
   });
 
   test("an existing PR whose branch is gone is partial, never delivered", async () => {
@@ -605,6 +656,7 @@ describe("broker-controlled push and PR", () => {
       pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
       branch,
       head_sha: f.candidate.head_sha,
+      base_ref: REPOSITORY.base_ref,
       state: "open",
     };
     const view = await f.broker.deliver(delivery.delivery_id, { actor: "broker:delivery" });
@@ -645,6 +697,7 @@ describe("broker-controlled push and PR", () => {
       pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
       branch,
       head_sha: f.candidate.head_sha,
+      base_ref: REPOSITORY.base_ref,
       state: "open",
     };
     const view = await f.broker.reconcile(delivery.delivery_id, {
@@ -667,6 +720,7 @@ describe("broker-controlled push and PR", () => {
       pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
       branch,
       head_sha: f.candidate.head_sha,
+      base_ref: REPOSITORY.base_ref,
       state: "open",
     };
     const view = await f.broker.reconcile(delivery.delivery_id, {
@@ -758,6 +812,7 @@ describe("pre-write authority, grant, audit, and branch checks", () => {
       machine: f.machine,
       providers: { github: f.provider },
       approvalDirectory: f.directory,
+      candidateContent: { read: (digest) => f.store.read(digest) },
       deliveryAuthorized: () => true,
     });
     const delivery = requestDelivery(f);

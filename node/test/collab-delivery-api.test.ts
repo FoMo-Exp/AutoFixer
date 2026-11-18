@@ -115,6 +115,7 @@ class FakeProvider {
       pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
       branch: input.branch,
       head_sha: input.head_sha,
+      base_ref: input.target_branch,
       state: "open",
     };
     this.pr = pr;
@@ -252,6 +253,7 @@ function setup(): Fixture {
     machine,
     providers: { github: provider },
     approvalDirectory: directory,
+    candidateContent: { read: (digest) => store.read(digest) },
     deliveryAuthorized: createDeliveryPermission({
       machine,
       access,
@@ -468,6 +470,7 @@ function restartedServices(f: Fixture): { machine: CollabMachine; deps: CollabHt
         machine,
         providers: { github: f.provider },
         approvalDirectory: directory,
+        candidateContent: { read: (digest) => f.store.read(digest) },
         deliveryAuthorized: createDeliveryPermission({
           machine,
           access: f.access,
@@ -756,6 +759,7 @@ describe("broker-controlled delivery", () => {
         machine: f.machine,
         providers: {},
         approvalDirectory: directory,
+        candidateContent: { read: (digest) => f.store.read(digest) },
         deliveryAuthorized: () => true,
         auditAvailable: () => true,
       }),
@@ -894,6 +898,7 @@ describe("broker-controlled delivery", () => {
       pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
       branch: `autofixer/${f.issue.issue_id}`,
       head_sha: f.candidateHead,
+      base_ref: REPOSITORY.base_ref,
       state: "open",
     };
     const reconciled = await call(f, {
@@ -971,6 +976,7 @@ describe("broker-controlled delivery", () => {
       pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
       branch: `autofixer/${f.issue.issue_id}`,
       head_sha: f.candidateHead,
+      base_ref: REPOSITORY.base_ref,
       state: "open" as const,
     };
     f.provider.pr = pr;
@@ -1104,6 +1110,7 @@ describe("broker-controlled delivery", () => {
       pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
       branch: `autofixer/${f.issue.issue_id}`,
       head_sha: f.candidateHead,
+      base_ref: REPOSITORY.base_ref,
       state: "open",
     };
     const reconciled = await call(f, {

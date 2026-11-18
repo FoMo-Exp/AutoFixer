@@ -12,6 +12,7 @@ import { ApprovalService } from "./collab/approval-service.js";
 import { CandidateReviewService } from "./collab/candidate-service.js";
 import { DeliveryBroker } from "./collab/delivery-broker.js";
 import type { DeliveryProvider } from "./collab/delivery-broker.js";
+import { createGitHubDeliveryProvider } from "./collab/github-delivery.js";
 import { createApprovalDirectory, createDeliveryPermission } from "./api/collab-authority.js";
 import type { CollabHttpDeps } from "./api/collab-http.js";
 import { createInvitationAuthority } from "./api/invitation-authority.js";
@@ -685,11 +686,22 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       enterpriseId: config.enterpriseId,
       workspaceId: config.workspaceId,
     });
+    // DAT-247's service credential boundary: secrets come from a protected
+    // file (or explicit injection), never from a user OAuth token. An empty
+    // store makes the point refresh fail closed.
+    const serviceCredentials =
+      options.providerServiceCredentials ??
+      (config.providerServiceCredentialFile !== undefined
+        ? readServiceCredentialFile(config.providerServiceCredentialFile)
+        : createStaticServiceCredentialStore({}));
+    const providerApiBaseUrl = options.providerApiBaseUrl;
     // Candidate review, candidate-bound human approval, and broker-controlled
     // delivery (DAT-259). Constructed with the identity surface, because every
     // route is membership-scoped and approval eligibility is a live
-    // control-plane + provider-roster fact. The broker holds no provider adapter
-    // by default: delivery stays blocked until DAT-260 supplies a reviewed one.
+    // control-plane + provider-roster fact. The real GitHub adapter (DAT-260)
+    // resolves the *active* repository integration's delivery credential at
+    // the moment of each call; an absent, suspended or credential-less
+    // integration resolves to null and the adapter refuses every operation.
     const approvalDirectory = createApprovalDirectory({
       enterprise_id: config.enterpriseId,
       memberships: repos.memberships,
@@ -703,8 +715,36 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       approvals: new ApprovalService(collaboration, approvalDirectory),
       deliveries: new DeliveryBroker({
         machine: collaboration,
-        providers: options.deliveryProviders ?? {},
+        providers: options.deliveryProviders ?? {
+          github: createGitHubDeliveryProvider({
+            credentials: serviceCredentials,
+            resolve: (repository) => {
+              const integration = providerAccess.integrations.getByRepository(
+                {
+                  enterprise_id: config.enterpriseId,
+                  actor_id: "collab-delivery-provider",
+                },
+                repository.repository_id,
+              );
+              if (
+                integration === undefined ||
+                integration.install_status !== "active" ||
+                integration.delivery_credential_ref === null
+              ) {
+                return null;
+              }
+              return {
+                canonical_repository_id: integration.repository_id,
+                credential_ref: integration.delivery_credential_ref,
+              };
+            },
+            ...(providerApiBaseUrl !== undefined ? { api_base_url: providerApiBaseUrl } : {}),
+          }),
+        },
         approvalDirectory,
+        // The exact retained patch the approval covered. `read` re-hashes the
+        // bytes, so a corrupted or substituted blob can never be pushed.
+        candidateContent: { read: (digest) => candidateStore.read(digest) },
         deliveryAuthorized: createDeliveryPermission({
           machine: collaboration,
           access: providerAccess,
@@ -731,14 +771,6 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
         : config.controlPlaneFile !== undefined
           ? readOrCreateInvitationDigestKey(`${config.controlPlaneFile}.invitation-key`)
           : randomBytes(32);
-    // DAT-247's service credential boundary: secrets come from a protected
-    // file (or explicit injection), never from a user OAuth token. An empty
-    // store makes the point refresh fail closed.
-    const serviceCredentials =
-      options.providerServiceCredentials ??
-      (config.providerServiceCredentialFile !== undefined
-        ? readServiceCredentialFile(config.providerServiceCredentialFile)
-        : createStaticServiceCredentialStore({}));
     issues = new IssueSyncService({
       enterprise_id: config.enterpriseId,
       actor_id: config.actorId,
@@ -750,7 +782,6 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       store: new IssueSyncStore(controlPlane),
       credentials: serviceCredentials,
     });
-    const providerApiBaseUrl = options.providerApiBaseUrl;
     invitations = new InvitationService({
       repos,
       identity,
