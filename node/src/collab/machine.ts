@@ -908,6 +908,28 @@ export class CollabMachine {
 
   // ------------------------------------------------------------ durability
 
+  /**
+   * Whether the append-only audit log can be durably appended to right now.
+   *
+   * Provider writes are barred when this is false: an untracked provider
+   * side effect would be worse than a refused delivery. A process-local
+   * machine (no persistence path) cannot prove durability across a restart,
+   * so it reports `false` rather than assuming an in-memory array is enough.
+   */
+  auditAvailable(): boolean {
+    if (this.persistencePath === undefined) {
+      return false;
+    }
+    try {
+      const directory = path.dirname(this.persistencePath);
+      fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+      fs.accessSync(directory, fs.constants.W_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Atomically persist the audit log if a path is configured. */
   flushSync(): void {
     if (this.persistencePath === undefined) {

@@ -13,6 +13,8 @@ import { ControlPlaneError } from "../control-plane/errors.js";
 import { principalFromSession } from "../control-plane/request-scope.js";
 import { handleInvitationRequest } from "./invitation-http.js";
 import type { InvitationService } from "./invitation-service.js";
+import { handleCollabRequest } from "./collab-http.js";
+import type { CollabHttpDeps } from "./collab-http.js";
 import {
   isApiError,
   optionalStringArray,
@@ -61,6 +63,13 @@ export interface ApiServerDeps {
   invitations?: InvitationService;
   /** Workspace-scoped issue creation/list/detail and provider synchronization. */
   issues?: IssueSyncService;
+  /**
+   * Collaboration delivery surface (DAT-259): the issue's immutable candidates,
+   * candidate-bound human approvals, and broker-controlled deliveries. Served
+   * below the existing issue family only when the identity surface exists, so
+   * every request is membership-scoped; unset keeps those routes nonexistent.
+   */
+  collab?: CollabHttpDeps;
   /** External origin override for OAuth redirects; loopback derives per request. */
   publicOrigin?: string;
   /**
@@ -588,9 +597,6 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
           throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
         }
         if (segments[4] === "issues") {
-          if (deps.issues === undefined) {
-            throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
-          }
           const actor = authenticateRequest(req, deps);
           const issueActorId = actor.kind === "session" ? actor.ctx.user.id : undefined;
           const access = scopedWorkspaceAccess(actor, deps, workspaceId);
@@ -602,6 +608,42 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
             deps.authority.require(actor.ctx.user.id, requestAction, workspaceId);
           }
           const tail = segments.slice(5);
+          // Candidate review, candidate-bound approval, and broker-controlled
+          // delivery (DAT-259). The path workspace is already resolved against
+          // live membership and, for session actors, the action class against
+          // the effective-access gate above. This surface does not depend on
+          // provider issue sync, so it is served whenever the identity surface
+          // (and therefore membership) exists.
+          if (deps.collab !== undefined && tail.length >= 2) {
+            const handled = await handleCollabRequest(deps.collab, {
+              req,
+              res,
+              url,
+              requestId,
+              workspaceId,
+              issueId: tail[0]!,
+              tail: tail.slice(1),
+              actor:
+                actor.kind === "session"
+                  ? {
+                      kind: "session",
+                      user_id: actor.ctx.user.id,
+                      display_name: actor.ctx.user.display_name,
+                    }
+                  : { kind: "local_operator", user_id: null, display_name: null },
+              requesterAuthorized:
+                actor.kind === "local_operator"
+                  ? true
+                  : deps.authority === undefined ||
+                    deps.authority.check(actor.ctx.user.id, "delivery", workspaceId).allowed,
+            });
+            if (handled) {
+              return;
+            }
+          }
+          if (deps.issues === undefined) {
+            throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
+          }
           if (tail.length === 0 && method === "GET") {
             await deps.issues.syncWorkspace(workspaceId).catch(() => undefined);
             const items = deps.issues.list(workspaceId);

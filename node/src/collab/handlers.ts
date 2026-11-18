@@ -7,6 +7,7 @@ import {
 } from "./contract.js";
 import type { ApprovalInvalidationReason, DeliveryState } from "./contract.js";
 import { bindingForCandidate, bindingMismatch, approvalStateAt } from "./approval.js";
+import { RECONCILABLE_STATES } from "./delivery.js";
 import {
   canTransitionDelivery,
   deliveryBranchProblem,
@@ -2672,7 +2673,7 @@ function handleReconcileDelivery(state: CollabState, payload: Payload): unknown 
     "reconcile_delivery",
   );
   const delivery = deliveryOf(state, payload["delivery_id"], "delivery_id");
-  if (delivery.state !== "unknown" && delivery.state !== "partial") {
+  if (!RECONCILABLE_STATES.includes(delivery.state)) {
     throw new CollabError(
       "DELIVERY_STATE_CONFLICT",
       `delivery state ${delivery.state} has nothing to reconcile`,

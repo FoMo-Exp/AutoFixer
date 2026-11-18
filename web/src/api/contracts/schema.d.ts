@@ -1274,7 +1274,7 @@ export interface paths {
         put?: never;
         /**
          * Request broker-controlled delivery for an approved candidate
-         * @description Records the delivery operation (identity and intention) before any provider write and returns it in state `pending`; the trusted broker performs the push/PR. Delivery requires a current, valid candidate-bound approval (409 APPROVAL_NOT_APPROVED) — an assignee, blame author, or team leader is never sufficient — and consumes that approval: reusing a consumed approval is 409 APPROVAL_CONSUMED. A safe retry with the same Idempotency-Key reconciles the same operation instead of creating a second branch/PR. No direct main write, merge, self-review, or check waiver exists.
+         * @description Records the delivery operation (identity and intention) before any provider write; the trusted broker then performs at most one push/PR attempt for this operation in the same request, and the response reports the recorded state. Delivery requires a current, valid candidate-bound approval (409 APPROVAL_NOT_APPROVED) — an assignee, blame author, or team leader is never sufficient — and consumes that approval: reusing a consumed approval is 409 APPROVAL_CONSUMED. A safe retry with the same Idempotency-Key reconciles the same operation instead of creating a second branch/PR. `partial` and `unknown` are explicit outcomes, never success; they leave only through the reconcile route. No direct main write, merge, self-review, or check waiver exists.
          */
         post: operations["requestIssueDelivery"];
         delete?: never;
@@ -1313,8 +1313,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Reconcile an ambiguous delivery outcome against provider evidence
-         * @description The only path out of `unknown` (and a supported retry out of `partial`): the service re-reads branch and provider operation evidence for this operation and records the reconciled state before any further write, so retries never duplicate a PR. Reconciliation is an `unknown`-outcome remedy, not a bounded retry: the request is never automatically retried. A delivery with nothing to reconcile is 409 DELIVERY_STATE_CONFLICT.
+         * Reconcile an ambiguous or crash-orphaned delivery outcome against provider evidence
+         * @description The only path out of `unknown` and `partial`, and the only convergence path for an in-flight `pushing` / `opening_pr` state left behind by a process that died during a provider write: the service re-reads branch and provider operation evidence for this operation and records the reconciled state before any further write, so retries never duplicate a PR. It performs no provider write and is never automatically retried. A live write already in progress in this process is refused; a delivery that has nothing to reconcile (`pending`, `delivered`, `failed`, `cancelled`) is 409 DELIVERY_STATE_CONFLICT.
          */
         post: operations["reconcileIssueDelivery"];
         delete?: never;
@@ -9814,7 +9814,7 @@ export interface operations {
                 };
             };
             /** @description PROVIDER_ERROR — retryable; no write was performed */
-            502: {
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
