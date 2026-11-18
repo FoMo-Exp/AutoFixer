@@ -240,6 +240,7 @@ is [ADR-0001](docs/adr/0001-forgepilot-governance-and-threat-model.md).
 | [Task evidence contract](docs/contracts/task-evidence-contract-v1.md) | Versioned record shape for runs and evidence |
 | [dsh control contract](docs/contracts/dsh-control-v1.md) | Local Node-to-dsh protocol |
 | [Product API contract](docs/contracts/forgepilot-api-v1.md) | UI-to-Node API, errors, idempotency, workspace scope |
+| [First-run and controlled-delivery runbook](docs/first-run-controlled-delivery.md) | Operator setup, diagnostics, reviewed delivery, reconciliation, and PR observation |
 | [Architecture decisions](docs/adr) | Governance, prototype composition, Pi orchestration, credentials, egress, memory |
 | [Node orchestrator](node/README.md) | Authority boundary, gateway, budgets, authentication, durability |
 | [Workbench](web/README.md) | Issue, candidate review, security, memory, RSI, and settings surfaces |
