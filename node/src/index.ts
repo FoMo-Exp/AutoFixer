@@ -56,6 +56,7 @@ import { createUsageLedgerStore } from "./ledger/index.js";
 import type { UsageLedgerStore } from "./ledger/index.js";
 import type { BudgetStore } from "./budget/index.js";
 import {
+  createMemoryAdmissionRepository,
   createMemoryConsolidationRunner,
   createMemoryGovernanceService,
   createMemoryLifecycleStore,
@@ -73,8 +74,16 @@ import type {
   RsiService,
   RsiStore,
 } from "./memory/index.js";
-import { createOutcomeCaptureScheduler, isCaptureTerminalState } from "./distill/index.js";
-import type { OutcomeCaptureScheduler, TerminalRunRegistration } from "./distill/index.js";
+import {
+  createMemoryDistillationRunner,
+  createOutcomeCaptureScheduler,
+  isCaptureTerminalState,
+} from "./distill/index.js";
+import type {
+  MemoryDistillationRunner,
+  OutcomeCaptureScheduler,
+  TerminalRunRegistration,
+} from "./distill/index.js";
 import { resolveConfiguredModel } from "./pi/model.js";
 import {
   DependentWorkPauseLedger,
@@ -175,6 +184,12 @@ export interface OrchestratorHandle {
    * memory store. Its retry cadence starts with the service.
    */
   memoryCapture: OutcomeCaptureScheduler | undefined;
+  /**
+   * Durable distillation of captured known outcomes (DAT-265); set with the
+   * control plane and memory store. It derives its work from the capture
+   * outbox, so it shares its lifecycle with capture.
+   */
+  memoryDistillation: MemoryDistillationRunner | undefined;
   /** Bounded RSI governance service; set when the control plane is on. */
   rsi: RsiService | undefined;
   /** Scoped RSI store, for dataset provisioning and tests. */
@@ -522,6 +537,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let memory: MemoryRetrievalService | undefined;
   let memoryRepositories: MemoryRepositories | undefined;
   let memoryCapture: OutcomeCaptureScheduler | undefined;
+  let memoryDistillation: MemoryDistillationRunner | undefined;
   let memoryGovernance: MemoryGovernanceService | undefined;
   let rsi: RsiService | undefined;
   let rsiStore: RsiStore | undefined;
@@ -580,6 +596,29 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       actorId: config.actorId,
       onError: (error) => {
         console.error("memory outcome capture:", error);
+      },
+    });
+    // Distillation of captured known outcomes (DAT-265): derived from the
+    // capture outbox's snapshots, dispatched through the ADR-0005 gateway under
+    // the job's server-side workspace, and persisted as `proposed` only after
+    // the DAT-233 validation and DAT-234 admission gate pass.
+    memoryDistillation = createMemoryDistillationRunner({
+      db: controlPlane,
+      memory: memoryRepositories,
+      admission: createMemoryAdmissionRepository(controlPlane),
+      gateway,
+      model,
+      actorId: config.actorId,
+      onDistilled: (job, report) => {
+        if (report.state === "distilled") {
+          console.log(
+            `memory distillation ${job.workspace_id}: run ${report.run_id} ` +
+              `accepted=${report.accepted} dropped=${report.dropped}`,
+          );
+        }
+      },
+      onError: (error) => {
+        console.error("memory distillation:", error);
       },
     });
     const retrievalStore = createRetrievalStore(controlPlane);
@@ -800,6 +839,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     memory,
     memoryRepositories,
     memoryCapture,
+    memoryDistillation,
     rsi,
     rsiStore,
     dashboard,
@@ -849,6 +889,24 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
           });
         }
         memoryCapture?.start();
+        // Distillation derives its work from the capture outbox before the API
+        // serves reads (a DB-only step), then processes rows on its retry
+        // cadence plus one immediate pass: snapshots captured while this
+        // process was down resume once, never twice, and a slow gateway call
+        // never delays readiness.
+        if (memoryDistillation !== undefined) {
+          try {
+            memoryDistillation.sync();
+          } catch (error: unknown) {
+            console.error("memory distillation recovery skipped:", error);
+          }
+          memoryDistillation.start();
+          void memoryDistillation
+            .drain()
+            .catch((error: unknown) =>
+              console.error("memory distillation recovery skipped:", error),
+            );
+        }
         // Sleep-time consolidation begins with the service, never before it.
         memoryConsolidation?.start();
         issues?.startPolling();
@@ -857,6 +915,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     },
     stop: () => {
       memoryConsolidation?.stop();
+      memoryDistillation?.stop();
       memoryCapture?.stop();
       issues?.stopPolling();
       service.disposeAll();

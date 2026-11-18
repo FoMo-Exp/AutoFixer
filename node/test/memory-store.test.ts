@@ -143,8 +143,9 @@ describe("Memory migrations", () => {
     // access, v5 DAT-247 effective_access, v6 DAT-204 invitation, v7 DAT-234
     // admission decisions and retirement candidates, v8 DAT-235 promotion
     // and consolidation lifecycle, v9 DAT-236 bounded retrieval, v10 DAT-237
-    // enterprise templates, v11 DAT-238 bounded RSI, and v12-v15 issue sync.
-    expect(applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    // enterprise templates, v11 DAT-238 bounded RSI, v12-v15 issue sync,
+    // v16 DAT-264 outcome capture, and v17 DAT-265 distillation outbox.
+    expect(applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
   });
 });
 

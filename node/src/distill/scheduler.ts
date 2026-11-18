@@ -29,6 +29,7 @@ import type { ControlPlaneDb } from "../control-plane/db.js";
 import { ValidationError } from "../control-plane/errors.js";
 import type { WorkspaceScope } from "../control-plane/types.js";
 import type { MemoryRepositories } from "../memory/index.js";
+import { createHash } from "node:crypto";
 import { captureOutcome } from "./capture.js";
 import { createCaptureJobStore } from "./capture-store.js";
 import type { CaptureJob, CaptureJobStore } from "./capture-store.js";
@@ -158,7 +159,20 @@ export function createOutcomeCaptureScheduler(
     // `runAtomically` covers both writes.
     return options.memory.runAtomically(() => {
       const captured = captureOutcome(options.memory, scope, envelope);
-      jobs.markCaptured(job.id, captured.episode.item.id, now());
+      // Persist the exact redacted envelope alongside the episode: the
+      // distillation outbox derives its work from this durable snapshot, so a
+      // crash right after capture still resumes distillation after restart.
+      const serialized = JSON.stringify(captured.envelope);
+      jobs.markCaptured(
+        job.id,
+        captured.episode.item.id,
+        {
+          envelope: serialized,
+          outcome_class: captured.classification.class,
+          envelope_digest: createHash("sha256").update(serialized).digest("hex"),
+        },
+        now(),
+      );
       return captured;
     });
   };
