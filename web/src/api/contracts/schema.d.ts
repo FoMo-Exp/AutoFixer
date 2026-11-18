@@ -1332,7 +1332,7 @@ export interface paths {
         };
         /**
          * Observe the pull request's current-head checks, approvals, and discussions
-         * @description A read-only observation of the delivered PR's current head, bound to that exact `head_sha` and the `observed_at` time. Required checks, decisive reviews, and unresolved review conversations are read from the provider; each item carries its own head binding, so a check or approval recorded against an older commit is absent from a new head, never inherited. A head change marks the previous observation `superseded` (and reports it in `supersedes`), and a new head starts with only what the provider reports for it. Missing integration or credential, a permission denial, or an absent PR is `blocked`; a timeout, rate limit, 5xx, or an incomplete/truncated provider answer is `unknown`; neither reuses the last known values. `merge_queue_eligible` is a projection of GitHub's merge boundary only — this route never approves, dismisses a review, waives a check, or merges, and a reading never changes delivery state.
+         * @description A read-only observation of the delivered PR's current head, bound to that exact `head_sha` and the `observed_at` time. Required checks, decisive reviews, and unresolved review conversations are read from the provider; each item carries its own head binding, so a check or approval recorded against an older commit is absent from a new head, never inherited. A head change marks the previous observation `superseded` (and reports it in `supersedes`), and a new head starts with only what the provider reports for it. Missing integration or credential, a permission denial, or an absent PR is `blocked`; a timeout, rate limit, 5xx, or an incomplete/truncated provider answer is `unknown`; neither reuses the last known values. `conditions_satisfied` covers only what the reader can observe, and `not_evaluated` names the gates it cannot (QA verdict, the branch-protection required check set, merge-queue availability), so this route makes no merge or merge-queue eligibility claim. It never approves, dismisses a review, waives a check, or merges, and a reading never changes delivery state.
          */
         get: operations["observeIssueDeliveryGovernance"];
         put?: never;
@@ -2918,7 +2918,7 @@ export interface components {
              */
             reconciled_at: string | null;
         };
-        /** @description One read-only observation of a pull request's current-head governance (DAT-261, ADR-0007). Checks, approvals, and review discussions are observations of one exact `head_sha` at one `observed_at`; a new head invalidates them all and an observation of an older head is `superseded` and never eligible. Missing configuration, permission denial, or an absent PR is `blocked`; a timeout/rate limit/5xx/incomplete answer is `unknown`; neither reuses the previous head's values. `merge_queue_eligible` reports GitHub merge-queue admission only: this surface never approves, dismisses a review, waives a check, or merges. */
+        /** @description One read-only observation of a pull request's current-head governance (DAT-261, ADR-0007). Checks, approvals, and review discussions are observations of one exact `head_sha` at one `observed_at`; a new head invalidates them all and an observation of an older head is `superseded`. Missing configuration, permission denial, or an absent PR is `blocked`; a timeout/rate limit/5xx/incomplete answer is `unknown`; neither reuses the previous head's values. `conditions_satisfied` covers only the conditions this read-only observation can verify; the gates this reader cannot observe (QA verdict, the branch-protection required check set, and merge-queue availability) are listed in `not_evaluated`, so this record makes no merge or merge-queue eligibility claim. The surface never approves, dismisses a review, waives a check, or merges. */
         PullRequestGovernanceObservation: {
             observation_id: string;
             issue_id: string;
@@ -2943,13 +2943,15 @@ export interface components {
             validity: "current" | "superseded" | "unknown" | "blocked";
             /** @description True only for a current-head observation with all dimensions observed. */
             observations_valid: boolean;
-            /** @description GitHub merge-queue admission eligibility. It never implies an approval or merge performed by this service. */
-            merge_queue_eligible: boolean;
+            /** @description Every condition this observation can verify holds: the current head equals the delivery head, the PR is open, at least one check was observed and all observed checks passed, there are no unresolved review conversations, and the approval quorum holds on this head. It is NOT a merge or merge-queue eligibility claim. */
+            conditions_satisfied: boolean;
+            /** @description Gates this read-only reader cannot observe, so no consumer may infer them as satisfied from this record: the QA verdict, the branch-protection required check set, and merge-queue availability. */
+            not_evaluated: ("qa_verdict" | "branch_protection_required_checks" | "merge_queue_availability")[];
             /**
-             * @description Why this head is not eligible; null only when it is.
+             * @description The first observed condition that does not hold; null only when every observable condition holds.
              * @enum {string|null}
              */
-            deny_reason: "head_unavailable" | "head_changed" | "governance_blocked" | "governance_unknown" | "pull_request_not_open" | "checks_missing" | "checks_not_passed" | "review_discussions_unresolved" | "approvals_incomplete" | null;
+            unmet_condition: "head_unavailable" | "head_changed" | "governance_blocked" | "governance_unknown" | "pull_request_not_open" | "checks_missing" | "checks_not_passed" | "review_discussions_unresolved" | "approvals_incomplete" | null;
             checks: components["schemas"]["GovernanceChecks"];
             approvals: components["schemas"]["GovernanceApprovals"];
             review_discussions: components["schemas"]["GovernanceDiscussions"];

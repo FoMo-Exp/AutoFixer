@@ -1163,16 +1163,21 @@ request naming that approval is `409 APPROVAL_CONSUMED`.
 ### PR current-head governance observation (DAT-261)
 
 `GET .../deliveries/{delivery_id}/governance` is a read-only observation of the
-delivered pull request's merge boundary, bound to one exact `head_sha` and one
+delivered pull request's current head, bound to one exact `head_sha` and one
 `observed_at`. Checks, approvals, and review discussions are observed per head;
 a head change starts a fresh observation, marks the previous one `superseded`
 and reports it in `supersedes`, and never carries an older commit's check or
 approval forward. A missing integration/credential, permission denial, or an
-absent PR is `blocked`; a timeout, rate limit, 5xx, or truncated answer is
-`unknown`; neither reuses the last known values. `merge_queue_eligible` and
-`deny_reason` report GitHub's merge boundary only — the route never approves,
-dismisses a review, waives a check, merges, or changes delivery state. A
-delivery without a PR is `409 GOVERNANCE_NOT_OBSERVABLE`. The full semantics,
+absent PR is `blocked`; a timeout, rate limit, 5xx, or truncated/uninterpretable
+answer is `unknown`; neither reuses the last known values. An unreadable
+decisive review makes the approval dimension `unknown` with no items rather
+than leaving an older approval in place, and an unreadable check row likewise
+makes the check dimension `unknown`. `conditions_satisfied` covers only the
+conditions the reader can verify; `not_evaluated` names the gates it cannot
+(QA verdict, branch-protection required check set, merge-queue availability), so
+the record makes no merge or merge-queue eligibility claim. The route never
+approves, dismisses a review, waives a check, merges, or changes delivery state.
+A delivery without a PR is `409 GOVERNANCE_NOT_OBSERVABLE`. The full semantics,
 failure classification, and fixtures are in
 `docs/contracts/pr-governance-v1.md`.
 

@@ -59,12 +59,13 @@ does not persist a snapshot, so a later read cannot resurrect an earlier
 head's facts. `observations_valid` is true only for a `current` observation
 with every dimension observed.
 
-## 3. Eligibility and the hard boundaries
+## 3. Observed conditions — not a merge-queue claim
 
-`merge_queue_eligible` is GitHub merge-queue admission computed from the
-observation, and `deny_reason` says why an ineligible head is ineligible:
+`conditions_satisfied` is true only when every condition **this read-only
+observation can verify** holds, and `unmet_condition` names the first one that
+does not:
 
-| `deny_reason` | Condition |
+| `unmet_condition` | Condition |
 | --- | --- |
 | `head_unavailable` | `head_sha` could not be read. |
 | `head_changed` | The PR head no longer equals the delivered head (`superseded`). |
@@ -76,26 +77,50 @@ observation, and `deny_reason` says why an ineligible head is ineligible:
 | `review_discussions_unresolved` | At least one review conversation is unresolved. |
 | `approvals_incomplete` | Not every required approver's newest decisive review on this head is an approval. |
 
-Eligibility reports the merge boundary only. The service never approves,
-dismisses a review, waives a check, merges, or changes delivery state in
-response to an observation; a deployment's merge remains a provider-side,
-human-governed action.
+The record deliberately makes **no merge or merge-queue eligibility claim**.
+`not_evaluated` lists the gates this reader cannot observe and which therefore
+must never be inferred as satisfied:
 
-## 4. Failure classification
+- `qa_verdict` — the QA result is a collaboration-domain fact, not a GitHub one.
+- `branch_protection_required_checks` — the branch's required check/status set
+  needs branch-protection administration, which this read-only reader does not
+  read. A non-required check passing is not evidence that the required set
+  exists or passed.
+- `merge_queue_availability` — merge-queue configuration and mergeability /
+  conflict state are not observed.
 
-| Failure | `validity` | `reason` |
+The service never approves, dismisses a review, waives a check, or merges; a
+merge remains a provider-side, human-governed action.
+
+## 4. Failure and completeness classification
+
+| Failure | `validity` / dimension | `reason` |
 | --- | --- | --- |
 | No active repository integration | `blocked` | `integration_not_configured` |
 | Credential reference not resolvable | `blocked` | `credential_unavailable` |
 | Provider `401`/`403` | `blocked` | `permission_denied` |
 | PR `404` | `blocked` | `pull_request_not_found` |
 | Timeout, rate limit, `5xx`, network | `unknown` | `provider_unavailable` |
-| Malformed/truncated body or thread page | `unknown` | `invalid_provider_response` |
+| Malformed/truncated container, thread page, or review-thread answer | `unknown` | `invalid_provider_response` |
 
 A blocked or unknown observation has `head_sha: null`, empty check/approval
-items, `review_discussions.unresolved: null`, `merge_queue_eligible: false`,
+items, `review_discussions.unresolved: null`, `conditions_satisfied: false`,
 and the reason repeated on every dimension. Nothing from a previous
 observation is copied into it.
+
+A malformed **row** is narrower than a malformed container:
+
+- A review row that cannot be interpreted (non-object, missing state, or a
+  decisive `APPROVED`/`CHANGES_REQUESTED` row missing its reviewer, `commit_id`,
+  or submit time) makes the **approval** dimension `unknown` with
+  `invalid_provider_response` and **empty items**. The old approval is never
+  kept, because it may have been superseded by the unreadable rejection.
+  Documented non-decisive states (`COMMENTED`, `PENDING`, `DISMISSED`) are
+  skipped; an unrecognised state makes the set `unknown`.
+- A check row that cannot be bound to a name/commit/status, or a truncated
+  check page, makes the **checks** dimension `unknown` with empty items.
+- In both cases the other dimensions remain as observed, `validity` is
+  `unknown`, and `conditions_satisfied` is false.
 
 ## 5. Fixtures
 

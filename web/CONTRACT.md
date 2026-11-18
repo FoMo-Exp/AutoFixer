@@ -567,6 +567,9 @@ UI behavior that follows the contract:
 - The governance observation (DAT-261) is read-only per-head evidence. Checks,
   approvals, and review discussions are shown with the `head_sha` and
   `observed_at` they describe; `superseded` (head moved), `blocked` (missing
-  integration/credential/permission/PR), and `unknown` (provider unreadable)
-  states must not be rendered as passing, and the workbench never offers an
-  approve, dismiss, check-waiver, or merge action from it.
+  integration/credential/permission/PR), and `unknown` (provider unreadable or
+  an uninterpretable review/check row) states must not be rendered as passing,
+  and the workbench never offers an approve, dismiss, check-waiver, or merge
+  action from it. `conditions_satisfied` covers only the observed conditions;
+  `not_evaluated` (QA verdict, branch-protection required checks, merge-queue
+  availability) must be displayed as not evaluated, never as satisfied.

@@ -12,8 +12,13 @@
   "observed_at": "2026-11-18T09:10:00Z",
   "validity": "blocked",
   "observations_valid": false,
-  "merge_queue_eligible": false,
-  "deny_reason": "governance_blocked",
+  "conditions_satisfied": false,
+  "not_evaluated": [
+    "qa_verdict",
+    "branch_protection_required_checks",
+    "merge_queue_availability"
+  ],
+  "unmet_condition": "governance_blocked",
   "checks": {
     "state": "blocked",
     "reason": "permission_denied",

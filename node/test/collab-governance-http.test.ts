@@ -97,6 +97,8 @@ function passingSnapshot(
       { identity: "Luthiel", decision: "approved", head_sha: head, submitted_at: NOW },
       { identity: "Ludwig-Planck", decision: "approved", head_sha: head, submitted_at: NOW },
     ],
+    checks_complete: true,
+    approvals_complete: true,
     unresolved_discussions: 0,
     ...overrides,
   };
@@ -330,8 +332,8 @@ describe("GET .../deliveries/{delivery_id}/governance", () => {
       head_sha: delivery.head_sha,
       validity: "current",
       observations_valid: true,
-      merge_queue_eligible: true,
-      deny_reason: null,
+      conditions_satisfied: true,
+      unmet_condition: null,
     });
     expect((body["checks"] as { items: unknown[] }).items).toHaveLength(2);
     expect((body["approvals"] as { satisfied: boolean }).satisfied).toBe(true);
@@ -347,8 +349,8 @@ describe("GET .../deliveries/{delivery_id}/governance", () => {
       validity: "blocked",
       head_sha: null,
       observations_valid: false,
-      merge_queue_eligible: false,
-      deny_reason: "governance_blocked",
+      conditions_satisfied: false,
+      unmet_condition: "governance_blocked",
     });
     expect((body["checks"] as { reason: string }).reason).toBe("permission_denied");
   });
@@ -358,7 +360,7 @@ describe("GET .../deliveries/{delivery_id}/governance", () => {
     const response = await fetch(url(), { headers: bearer() });
     const body = (await response.json()) as Record<string, unknown>;
     expect(body["validity"]).toBe("unknown");
-    expect(body["merge_queue_eligible"]).toBe(false);
+    expect(body["conditions_satisfied"]).toBe(false);
     expect((body["checks"] as { reason: string }).reason).toBe("provider_unavailable");
   });
 
@@ -379,8 +381,8 @@ describe("GET .../deliveries/{delivery_id}/governance", () => {
     const body = (await response.json()) as Record<string, unknown>;
     expect(body["head_sha"]).toBe(OTHER_HEAD);
     expect(body["validity"]).toBe("superseded");
-    expect(body["deny_reason"]).toBe("head_changed");
-    expect(body["merge_queue_eligible"]).toBe(false);
+    expect(body["unmet_condition"]).toBe("head_changed");
+    expect(body["conditions_satisfied"]).toBe(false);
     // Old-head evidence is not inherited into the new head's observation.
     expect((body["checks"] as { items: unknown[] }).items).toEqual([]);
     expect((body["approvals"] as { items: unknown[] }).items).toEqual([]);

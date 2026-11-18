@@ -80,6 +80,8 @@ function snapshot(overrides: Partial<ProviderGovernanceSnapshot> = {}): Provider
     head_sha: HEAD,
     pull_request_state: "open",
     checks: [check("build", "passed"), check("test", "passed")],
+    checks_complete: true,
+    approvals_complete: true,
     approvals: [
       approval("Luthiel", "approved"),
       approval("Ludwig-Planck", "approved", HEAD, "2026-11-18T09:01:00.000Z"),
@@ -130,8 +132,8 @@ describe("a current head is eligible only on its own evidence", () => {
       delivery_head_sha: HEAD,
       validity: "current",
       observations_valid: true,
-      merge_queue_eligible: true,
-      deny_reason: null,
+      conditions_satisfied: true,
+      unmet_condition: null,
       pull_request_state: "open",
     });
     expect(observation.checks.items).toHaveLength(2);
@@ -145,31 +147,31 @@ describe("a current head is eligible only on its own evidence", () => {
     const observation = await service(
       new ScriptedProvider(snapshot({ checks: [check("build", "failed")] })),
     ).observe(DELIVERY);
-    expect(observation.merge_queue_eligible).toBe(false);
+    expect(observation.conditions_satisfied).toBe(false);
     expect(observation.observations_valid).toBe(false);
-    expect(observation.deny_reason).toBe("checks_not_passed");
+    expect(observation.unmet_condition).toBe("checks_not_passed");
   });
 
   test("a pending check is not a pass", async () => {
     const observation = await service(
       new ScriptedProvider(snapshot({ checks: [check("build", "pending")] })),
     ).observe(DELIVERY);
-    expect(observation.deny_reason).toBe("checks_not_passed");
+    expect(observation.unmet_condition).toBe("checks_not_passed");
   });
 
   test("no check observed is checks_missing, never a passing gate", async () => {
     const observation = await service(new ScriptedProvider(snapshot({ checks: [] }))).observe(
       DELIVERY,
     );
-    expect(observation.deny_reason).toBe("checks_missing");
-    expect(observation.merge_queue_eligible).toBe(false);
+    expect(observation.unmet_condition).toBe("checks_missing");
+    expect(observation.conditions_satisfied).toBe(false);
   });
 
   test("an unresolved review conversation denies the head", async () => {
     const observation = await service(
       new ScriptedProvider(snapshot({ unresolved_discussions: 2 })),
     ).observe(DELIVERY);
-    expect(observation.deny_reason).toBe("review_discussions_unresolved");
+    expect(observation.unmet_condition).toBe("review_discussions_unresolved");
     expect(observation.review_discussions.unresolved).toBe(2);
   });
 
@@ -177,7 +179,7 @@ describe("a current head is eligible only on its own evidence", () => {
     const observation = await service(
       new ScriptedProvider(snapshot({ approvals: [approval("Luthiel", "approved")] })),
     ).observe(DELIVERY);
-    expect(observation.deny_reason).toBe("approvals_incomplete");
+    expect(observation.unmet_condition).toBe("approvals_incomplete");
     expect(observation.approvals.required).toEqual(["Luthiel", "Ludwig-Planck"]);
   });
 
@@ -193,7 +195,7 @@ describe("a current head is eligible only on its own evidence", () => {
         }),
       ),
     ).observe(DELIVERY);
-    expect(observation.deny_reason).toBe("approvals_incomplete");
+    expect(observation.unmet_condition).toBe("approvals_incomplete");
     expect(observation.approvals.items.find((item) => item.identity === "Luthiel")?.decision).toBe(
       "changes_requested",
     );
@@ -204,7 +206,7 @@ describe("a current head is eligible only on its own evidence", () => {
       const observation = await service(
         new ScriptedProvider(snapshot({ pull_request_state })),
       ).observe(DELIVERY);
-      expect(observation.deny_reason).toBe("pull_request_not_open");
+      expect(observation.unmet_condition).toBe("pull_request_not_open");
     }
   });
 });
@@ -232,8 +234,8 @@ describe("a new head inherits nothing", () => {
     ).observe(DELIVERY);
     expect(observation.validity).toBe("superseded");
     expect(observation.observations_valid).toBe(false);
-    expect(observation.merge_queue_eligible).toBe(false);
-    expect(observation.deny_reason).toBe("head_changed");
+    expect(observation.conditions_satisfied).toBe(false);
+    expect(observation.unmet_condition).toBe("head_changed");
   });
 
   test("the previous observation is reported as superseded when the head moves", async () => {
@@ -266,7 +268,7 @@ describe("missing or unreadable observations are explicit", () => {
     const observation = await service().observe(DELIVERY);
     expect(observation.validity).toBe("blocked");
     expect(observation.head_sha).toBeNull();
-    expect(observation.deny_reason).toBe("governance_blocked");
+    expect(observation.unmet_condition).toBe("governance_blocked");
     expect(observation.checks).toMatchObject({
       state: "blocked",
       reason: "integration_not_configured",
@@ -274,7 +276,7 @@ describe("missing or unreadable observations are explicit", () => {
     });
     expect(observation.approvals.state).toBe("blocked");
     expect(observation.review_discussions.unresolved).toBeNull();
-    expect(observation.merge_queue_eligible).toBe(false);
+    expect(observation.conditions_satisfied).toBe(false);
   });
 
   test("a permission denial is blocked and names only the reason", async () => {
@@ -294,18 +296,61 @@ describe("missing or unreadable observations are explicit", () => {
       ),
     );
     const fresh = await svc.observe(DELIVERY);
-    expect(fresh.merge_queue_eligible).toBe(true);
+    expect(fresh.conditions_satisfied).toBe(true);
 
     const unavailable = await svc.observe(DELIVERY);
     expect(unavailable.validity).toBe("unknown");
     expect(unavailable.observations_valid).toBe(false);
-    expect(unavailable.merge_queue_eligible).toBe(false);
+    expect(unavailable.conditions_satisfied).toBe(false);
     expect(unavailable.head_sha).toBeNull();
     expect(unavailable.checks.items).toEqual([]);
     expect(unavailable.approvals.satisfied).toBe(false);
-    expect(unavailable.deny_reason).toBe("head_unavailable");
+    expect(unavailable.unmet_condition).toBe("head_unavailable");
     // The previous head's passing evidence is not carried into this record.
     expect(unavailable.supersedes).not.toBeNull();
+  });
+
+  test("an unreadable newer rejection makes approvals unknown, not the old approval", async () => {
+    // The reader proved it cannot interpret a decisive review; the service must
+    // discard the whole reviewer set instead of keeping the old APPROVED row.
+    const observation = await service(
+      new ScriptedProvider(
+        snapshot({
+          approvals: [approval("Luthiel", "approved", HEAD, "2026-11-18T09:00:00.000Z")],
+          approvals_complete: false,
+        }),
+      ),
+    ).observe(DELIVERY);
+    expect(observation.approvals).toMatchObject({
+      state: "unknown",
+      reason: "invalid_provider_response",
+      satisfied: false,
+      items: [],
+    });
+    expect(observation.checks.state).toBe("observed");
+    expect(observation.validity).toBe("unknown");
+    expect(observation.observations_valid).toBe(false);
+    expect(observation.conditions_satisfied).toBe(false);
+    expect(observation.unmet_condition).toBe("governance_unknown");
+  });
+
+  test("an incomplete check set is unknown, not an all-passed check set", async () => {
+    const observation = await service(
+      new ScriptedProvider(
+        snapshot({
+          checks: [check("build", "passed")],
+          checks_complete: false,
+        }),
+      ),
+    ).observe(DELIVERY);
+    expect(observation.checks).toMatchObject({
+      state: "unknown",
+      reason: "invalid_provider_response",
+      items: [],
+    });
+    expect(observation.approvals.state).toBe("observed");
+    expect(observation.conditions_satisfied).toBe(false);
+    expect(observation.unmet_condition).toBe("governance_unknown");
   });
 
   test("an unexpected provider throw is unknown, not a fabricated result", async () => {
@@ -345,8 +390,13 @@ describe("finalizeGovernanceObservation is the single eligibility rule", () => {
       observed_at: NOW.toISOString(),
       validity: "current",
       observations_valid: true,
-      merge_queue_eligible: true,
-      deny_reason: null,
+      conditions_satisfied: true,
+      not_evaluated: [
+        "qa_verdict",
+        "branch_protection_required_checks",
+        "merge_queue_availability",
+      ],
+      unmet_condition: null,
       checks: {
         state: "observed",
         reason: null,
@@ -369,10 +419,10 @@ describe("finalizeGovernanceObservation is the single eligibility rule", () => {
       },
       supersedes: null,
     };
-    expect(finalizeGovernanceObservation(base).merge_queue_eligible).toBe(true);
+    expect(finalizeGovernanceObservation(base).conditions_satisfied).toBe(true);
     const moved = finalizeGovernanceObservation({ ...base, head_sha: OTHER_HEAD });
     expect(moved.validity).toBe("superseded");
-    expect(moved.deny_reason).toBe("head_changed");
-    expect(moved.merge_queue_eligible).toBe(false);
+    expect(moved.unmet_condition).toBe("head_changed");
+    expect(moved.conditions_satisfied).toBe(false);
   });
 });

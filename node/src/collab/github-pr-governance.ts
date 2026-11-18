@@ -98,6 +98,9 @@ interface PullRequestEvidence {
   state: "open" | "closed" | "merged";
 }
 
+/** Review states documented as not decisive for the head. */
+const NON_DECISIVE_REVIEW_STATES = new Set(["COMMENTED", "PENDING", "DISMISSED"]);
+
 const FAILED_CONCLUSIONS = new Set([
   "failure",
   "timed_out",
@@ -244,23 +247,34 @@ export function createGitHubGovernanceProvider(
     return { head_sha: headSha, state };
   }
 
+  interface PageRead {
+    rows: Record<string, unknown>[];
+    /** At least one row was not the documented object shape. */
+    malformed: boolean;
+    /** The list stopped at `pagesMax` while the provider still had more. */
+    truncated: boolean;
+  }
+
   /**
    * Read one paginated list. `extract` receives the decoded body and returns
-   * the page's rows, or null when the shape is not what the endpoint
-   * documents. A short page ends the list; a permanently full list is
-   * incomplete and therefore `unknown`.
+   * the page's rows (or null when the container shape is not what the endpoint
+   * documents). A row that is not an object is reported as `malformed` rather
+   * than dropped: silently discarding a row could hide the newest failing
+   * check or rejecting review. A short page ends the list; a permanently full
+   * list is `truncated` and must never be read as complete.
    */
   async function readPages(
     secret: string,
     url: string,
-    extract: (body: unknown) => Record<string, unknown>[] | null,
-  ): Promise<Record<string, unknown>[]> {
+    extract: (body: unknown) => { rows: unknown[] } | null,
+  ): Promise<PageRead> {
     const rows: Record<string, unknown>[] = [];
+    let malformed = false;
     for (let page = 1; page <= pagesMax; page += 1) {
       const target = `${url}${url.includes("?") ? "&" : "?"}per_page=${String(perPage)}&page=${String(page)}`;
       const response = await call(secret, target, { method: "GET" });
       if (response.status === 404) {
-        return [];
+        return { rows: [], malformed: false, truncated: false };
       }
       if (response.status !== 200) {
         throw new GovernanceProviderError("unknown", "invalid_provider_response");
@@ -269,33 +283,32 @@ export function createGitHubGovernanceProvider(
       if (extracted === null) {
         throw new GovernanceProviderError("unknown", "invalid_provider_response");
       }
-      rows.push(...extracted);
-      // A short page is the last page; a full page with a next link means the
-      // answer is incomplete and must never be read as a complete list.
-      if (extracted.length < perPage) {
-        return rows;
+      for (const row of extracted.rows) {
+        const parsed = recordField(row);
+        if (parsed === null) {
+          malformed = true;
+          continue;
+        }
+        rows.push(parsed);
+      }
+      if (extracted.rows.length < perPage) {
+        return { rows, malformed, truncated: false };
       }
       if (response.links !== "" && !/rel="next"/.test(response.links)) {
-        return rows;
+        return { rows, malformed, truncated: false };
       }
     }
-    throw new GovernanceProviderError("unknown", "invalid_provider_response");
+    return { rows, malformed, truncated: true };
   }
 
-  function arrayRows(body: unknown): Record<string, unknown>[] | null {
-    if (!Array.isArray(body)) {
-      return null;
-    }
-    return body.filter((row): row is Record<string, unknown> => recordField(row) !== null);
+  function arrayRows(body: unknown): { rows: unknown[] } | null {
+    return Array.isArray(body) ? { rows: body } : null;
   }
 
-  function checkRunRows(body: unknown): Record<string, unknown>[] | null {
+  function checkRunRows(body: unknown): { rows: unknown[] } | null {
     const container = recordField(body);
     const rows = container?.["check_runs"];
-    if (!Array.isArray(rows)) {
-      return null;
-    }
-    return rows.filter((row): row is Record<string, unknown> => recordField(row) !== null);
+    return Array.isArray(rows) ? { rows } : null;
   }
 
   async function readChecks(
@@ -303,26 +316,30 @@ export function createGitHubGovernanceProvider(
     bound: BoundRepository,
     headSha: string,
     observedAt: string,
-  ): Promise<GovernanceCheckObservation[]> {
-    const rows = await readPages(
+  ): Promise<{ checks: GovernanceCheckObservation[]; complete: boolean }> {
+    const page = await readPages(
       secret,
       `${apiBase}/repos/${bound.repo_path}/commits/${headSha}/check-runs?filter=latest`,
       checkRunRows,
     );
     const checks: GovernanceCheckObservation[] = [];
-    for (const row of rows) {
+    let complete = !page.malformed && !page.truncated;
+    for (const row of page.rows) {
       const name = stringField(row["name"]);
       const rowSha = stringField(row["head_sha"]);
-      if (name === null || rowSha === null) {
+      const rawStatus = stringField(row["status"]);
+      if (name === null || rowSha === null || !isGitObjectId(rowSha) || rawStatus === null) {
+        // A check row we cannot bind to name/commit/status could be the failing
+        // one; the check set is not complete.
+        complete = false;
         continue;
       }
-      const status = stringField(row["status"]);
       const conclusion = stringField(row["conclusion"]);
       const completedAt = stringField(row["completed_at"]) ?? stringField(row["started_at"]);
       checks.push({
         name,
         status:
-          status !== "completed"
+          rawStatus !== "completed"
             ? "pending"
             : conclusion === "success"
               ? "passed"
@@ -334,24 +351,35 @@ export function createGitHubGovernanceProvider(
         observed_at: completedAt ?? observedAt,
       });
     }
-    return checks;
+    return { checks, complete };
   }
 
   async function readApprovals(
     secret: string,
     bound: BoundRepository,
     number: number,
-  ): Promise<GovernanceApprovalObservation[]> {
-    const rows = await readPages(
+  ): Promise<{ approvals: GovernanceApprovalObservation[]; complete: boolean }> {
+    const page = await readPages(
       secret,
       `${apiBase}/repos/${bound.repo_path}/pulls/${String(number)}/reviews`,
       arrayRows,
     );
     const approvals: GovernanceApprovalObservation[] = [];
-    for (const row of rows) {
+    let complete = !page.malformed && !page.truncated;
+    for (const row of page.rows) {
       const state = stringField(row["state"]);
+      if (state === null) {
+        // A review without a readable state could be the newest rejection.
+        complete = false;
+        continue;
+      }
+      if (NON_DECISIVE_REVIEW_STATES.has(state)) {
+        continue;
+      }
       if (state !== "APPROVED" && state !== "CHANGES_REQUESTED") {
-        // COMMENTED/PENDING/DISMISSED and any newer state are not decisive.
+        // An unrecognised state may be decisive in a newer API revision, so
+        // the review set cannot be treated as complete.
+        complete = false;
         continue;
       }
       const user = recordField(row["user"]);
@@ -364,8 +392,10 @@ export function createGitHubGovernanceProvider(
         !isGitObjectId(commitId) ||
         submittedAt === null
       ) {
-        // A review without an author, commit, or submit time cannot be bound
-        // to the current head, so it is not evidence of anything.
+        // A decisive review that cannot be bound to reviewer/commit/time must
+        // never be dropped: dropping a newer rejection would leave an older
+        // approval looking like the reviewer's latest decision.
+        complete = false;
         continue;
       }
       approvals.push({
@@ -375,7 +405,7 @@ export function createGitHubGovernanceProvider(
         submitted_at: submittedAt,
       });
     }
-    return approvals;
+    return { approvals, complete };
   }
 
   async function readUnresolvedDiscussions(
@@ -431,13 +461,15 @@ export function createGitHubGovernanceProvider(
       return secretFor(bound, async (secret) => {
         const pull = await readPullRequest(secret, bound, number);
         const checks = await readChecks(secret, bound, pull.head_sha, observedAt);
-        const approvals = await readApprovals(secret, bound, number);
+        const reviews = await readApprovals(secret, bound, number);
         const unresolved = await readUnresolvedDiscussions(secret, bound.coords, number);
         return {
           head_sha: pull.head_sha,
           pull_request_state: pull.state,
-          checks,
-          approvals,
+          checks: checks.checks,
+          checks_complete: checks.complete,
+          approvals: reviews.approvals,
+          approvals_complete: reviews.complete,
           unresolved_discussions: unresolved,
         };
       });

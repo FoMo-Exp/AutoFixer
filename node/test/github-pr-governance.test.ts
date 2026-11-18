@@ -170,8 +170,8 @@ describe("GitHub governance reads", () => {
 
     expect(observation.head_sha).toBe(HEAD);
     expect(observation.validity).toBe("current");
-    expect(observation.merge_queue_eligible).toBe(true);
-    expect(observation.deny_reason).toBeNull();
+    expect(observation.conditions_satisfied).toBe(true);
+    expect(observation.unmet_condition).toBeNull();
     expect(observation.checks.items).toEqual([
       { name: "build", status: "passed", head_sha: HEAD, observed_at: "2026-11-18T09:10:00Z" },
       { name: "lint", status: "passed", head_sha: HEAD, observed_at: "2026-11-18T09:11:00Z" },
@@ -212,8 +212,8 @@ describe("GitHub governance reads", () => {
     const { provider } = await setup({ governance });
     const observation = await new PullRequestGovernanceService({ provider }).observe(DELIVERY);
     expect(observation.checks.items.map((item) => item.status)).toEqual(["failed", "pending"]);
-    expect(observation.deny_reason).toBe("checks_not_passed");
-    expect(observation.merge_queue_eligible).toBe(false);
+    expect(observation.unmet_condition).toBe("checks_not_passed");
+    expect(observation.conditions_satisfied).toBe(false);
   });
 
   test("an unresolved review thread blocks the head", async () => {
@@ -222,7 +222,7 @@ describe("GitHub governance reads", () => {
     const { provider } = await setup({ governance });
     const observation = await new PullRequestGovernanceService({ provider }).observe(DELIVERY);
     expect(observation.review_discussions.unresolved).toBe(1);
-    expect(observation.deny_reason).toBe("review_discussions_unresolved");
+    expect(observation.unmet_condition).toBe("review_discussions_unresolved");
   });
 
   test("an older-head approval is not evidence about the current head", async () => {
@@ -233,17 +233,17 @@ describe("GitHub governance reads", () => {
     const observation = await new PullRequestGovernanceService({ provider }).observe(DELIVERY);
     expect(observation.head_sha).toBe(other);
     expect(observation.validity).toBe("superseded");
-    expect(observation.deny_reason).toBe("head_changed");
+    expect(observation.unmet_condition).toBe("head_changed");
     expect(observation.checks.items).toEqual([]);
     expect(observation.approvals.items).toEqual([]);
-    expect(observation.merge_queue_eligible).toBe(false);
+    expect(observation.conditions_satisfied).toBe(false);
   });
 
   test("a changed head starts a fresh observation and marks the old one superseded", async () => {
     const { fake, provider } = await setup();
     const service = new PullRequestGovernanceService({ provider });
     const first = await service.observe(DELIVERY);
-    expect(first.merge_queue_eligible).toBe(true);
+    expect(first.conditions_satisfied).toBe(true);
 
     // A human push moves the PR; the previous checks/approvals do not follow.
     const nextHead = "5".repeat(40);
@@ -258,7 +258,7 @@ describe("GitHub governance reads", () => {
       head_sha: HEAD,
       invalidation_reason: "head_changed",
     });
-    expect(second.merge_queue_eligible).toBe(false);
+    expect(second.conditions_satisfied).toBe(false);
   });
 
   test("a truncated review-thread page is unknown, not 'all resolved'", async () => {
@@ -272,6 +272,80 @@ describe("GitHub governance reads", () => {
   });
 });
 
+describe("uninterpretable review rows are never silently dropped", () => {
+  test("an unreadable newer rejection makes the whole approval set unknown", async () => {
+    const governance = baseGovernance();
+    governance.reviews = [
+      {
+        user: { login: "Luthiel" },
+        state: "APPROVED",
+        commit_id: HEAD,
+        submitted_at: "2026-11-18T09:12:00Z",
+      },
+      // The newer, decisive rejection cannot be bound to a commit.
+      {
+        user: { login: "Luthiel" },
+        state: "CHANGES_REQUESTED",
+        commit_id: null,
+        submitted_at: "2026-11-18T09:20:00Z",
+      },
+      {
+        user: { login: "Ludwig-Planck" },
+        state: "APPROVED",
+        commit_id: HEAD,
+        submitted_at: "2026-11-18T09:13:00Z",
+      },
+    ];
+    const { provider } = await setup({ governance });
+    const observation = await new PullRequestGovernanceService({ provider }).observe(DELIVERY);
+    expect(observation.approvals).toMatchObject({
+      state: "unknown",
+      reason: "invalid_provider_response",
+      satisfied: false,
+      items: [],
+    });
+    expect(observation.checks.state).toBe("observed");
+    expect(observation.validity).toBe("unknown");
+    expect(observation.conditions_satisfied).toBe(false);
+    expect(observation.unmet_condition).toBe("governance_unknown");
+  });
+
+  test("a non-object review row also makes the approval set unknown", async () => {
+    const governance = baseGovernance();
+    governance.reviews = [
+      {
+        user: { login: "Luthiel" },
+        state: "APPROVED",
+        commit_id: HEAD,
+        submitted_at: "2026-11-18T09:12:00Z",
+      },
+      "not-a-review",
+    ];
+    const { provider } = await setup({ governance });
+    const observation = await new PullRequestGovernanceService({ provider }).observe(DELIVERY);
+    expect(observation.approvals.state).toBe("unknown");
+    expect(observation.approvals.items).toEqual([]);
+  });
+
+  test("a decisive review without a submit time is not treated as absent", async () => {
+    const governance = baseGovernance();
+    governance.reviews = [
+      {
+        user: { login: "Luthiel" },
+        state: "APPROVED",
+        commit_id: HEAD,
+        submitted_at: "2026-11-18T09:12:00Z",
+      },
+      { user: { login: "Luthiel" }, state: "CHANGES_REQUESTED", commit_id: HEAD },
+    ];
+    const { provider } = await setup({ governance });
+    const observation = await new PullRequestGovernanceService({ provider }).observe(DELIVERY);
+    expect(observation.approvals.satisfied).toBe(false);
+    expect(observation.approvals.state).toBe("unknown");
+    expect(observation.conditions_satisfied).toBe(false);
+  });
+});
+
 describe("GitHub governance failure classification", () => {
   test("a permission denial is blocked and makes no further request", async () => {
     const { fake, provider } = await setup({
@@ -281,7 +355,7 @@ describe("GitHub governance failure classification", () => {
     expect(observation.validity).toBe("blocked");
     expect(observation.checks.reason).toBe("permission_denied");
     expect(observation.head_sha).toBeNull();
-    expect(observation.merge_queue_eligible).toBe(false);
+    expect(observation.conditions_satisfied).toBe(false);
     expect(fake.requests).toHaveLength(1);
   });
 
@@ -293,13 +367,13 @@ describe("GitHub governance failure classification", () => {
       DELIVERY,
     );
     expect(observation.validity).toBe("unknown");
-    expect(observation.deny_reason).toBe("head_unavailable");
+    expect(observation.unmet_condition).toBe("head_unavailable");
 
     const outage = await new PullRequestGovernanceService({ provider }).observe(DELIVERY);
     expect(outage.validity).toBe("unknown");
     expect(outage.checks.reason).toBe("provider_unavailable");
     expect(outage.head_sha).toBeNull();
-    expect(outage.merge_queue_eligible).toBe(false);
+    expect(outage.conditions_satisfied).toBe(false);
   });
 
   test("an absent pull request is blocked", async () => {

@@ -24,8 +24,11 @@ import type { DeliveryRecord, RepositoryRef } from "./types.js";
  *
  * The surface is observation only. There is deliberately no `merge`,
  * `approve`, `dismiss`, or `waive` capability in this module or in the
- * provider seam it consumes: the observation may report that GitHub's merge
- * boundary is eligible, and it still performs no approval or merge itself.
+ * provider seam it consumes. It also makes no merge or merge-queue eligibility
+ * claim: this reader does not observe the branch-protection required check
+ * set, merge-queue availability, mergeability/conflicts, or a QA verdict, so
+ * those gates are listed in `not_evaluated` and `conditions_satisfied` covers
+ * only the conditions the observation itself can verify.
  */
 
 /** How one observation dimension was obtained for the observed head. */
@@ -51,8 +54,19 @@ export const GOVERNANCE_UNAVAILABLE_REASONS = [
 ] as const;
 export type GovernanceUnavailableReason = (typeof GOVERNANCE_UNAVAILABLE_REASONS)[number];
 
-/** Why an observed head is not eligible for GitHub merge-queue admission. */
-export const GOVERNANCE_DENY_REASONS = [
+/**
+ * Gates this read-only observation cannot verify. A consumer must not infer
+ * merge or merge-queue eligibility while any of these is unobserved.
+ */
+export const GOVERNANCE_NOT_EVALUATED = [
+  "qa_verdict",
+  "branch_protection_required_checks",
+  "merge_queue_availability",
+] as const;
+export type GovernanceNotEvaluated = (typeof GOVERNANCE_NOT_EVALUATED)[number];
+
+/** Which observed condition this head fails, if any. */
+export const GOVERNANCE_UNMET_CONDITIONS = [
   "head_unavailable",
   "head_changed",
   "governance_blocked",
@@ -63,7 +77,7 @@ export const GOVERNANCE_DENY_REASONS = [
   "review_discussions_unresolved",
   "approvals_incomplete",
 ] as const;
-export type GovernanceDenyReason = (typeof GOVERNANCE_DENY_REASONS)[number];
+export type GovernanceUnmetCondition = (typeof GOVERNANCE_UNMET_CONDITIONS)[number];
 
 export const GOVERNANCE_CHECK_STATES = ["passed", "failed", "pending"] as const;
 export type GovernanceCheckState = (typeof GOVERNANCE_CHECK_STATES)[number];
@@ -150,11 +164,17 @@ export interface PullRequestGovernanceObservation {
   /** True only for a current-head observation with every dimension observed. */
   observations_valid: boolean;
   /**
-   * GitHub merge-queue admission eligibility computed from this observation.
-   * It never merges, approves, or dismisses anything.
+   * Every condition this observation can verify holds: current delivery head,
+   * an open PR, at least one observed check with all observed checks passing,
+   * zero unresolved review conversations, and the approval quorum on this
+   * head. It is **not** a merge or merge-queue eligibility claim — see
+   * `not_evaluated` for the gates this reader cannot observe.
    */
-  merge_queue_eligible: boolean;
-  deny_reason: GovernanceDenyReason | null;
+  conditions_satisfied: boolean;
+  /** Gates this observation cannot verify; never inferred as satisfied. */
+  not_evaluated: GovernanceNotEvaluated[];
+  /** The first observed condition that does not hold; null only when all do. */
+  unmet_condition: GovernanceUnmetCondition | null;
   checks: GovernanceChecks;
   approvals: GovernanceApprovals;
   review_discussions: GovernanceDiscussions;
@@ -170,7 +190,19 @@ export interface ProviderGovernanceSnapshot {
   head_sha: string;
   pull_request_state: "open" | "closed" | "merged";
   checks: GovernanceCheckObservation[];
+  /**
+   * False when the provider returned a check page this reader could not
+   * interpret completely. A partially understood check set must never be read
+   * as "all observed checks passed".
+   */
+  checks_complete: boolean;
   approvals: GovernanceApprovalObservation[];
+  /**
+   * False when a review row could not be bound to a reviewer/commit/time. A
+   * newer `changes_requested` row that failed to parse must not leave an older
+   * approval looking like the reviewer's latest decision.
+   */
+  approvals_complete: boolean;
   unresolved_discussions: number;
 }
 
@@ -201,9 +233,10 @@ export class GovernanceProviderError extends Error {
 }
 
 /**
- * Compute validity, eligibility, and the deny reason from the observation's
- * own dimensions. Pure: the service and the fixtures use the same function,
- * so a record can never claim eligibility its observations do not support.
+ * Compute validity and the observed-condition result from the observation's
+ * own dimensions. Pure: the service and the fixtures use the same function, so
+ * a record can never claim a satisfied condition its observations do not
+ * support.
  */
 export function finalizeGovernanceObservation(
   observation: PullRequestGovernanceObservation,
@@ -226,55 +259,56 @@ export function finalizeGovernanceObservation(
     validity = "current";
   }
 
-  const deny = (reason: GovernanceDenyReason): PullRequestGovernanceObservation => ({
+  const unmet = (reason: GovernanceUnmetCondition): PullRequestGovernanceObservation => ({
     ...observation,
     validity,
     observations_valid: false,
-    merge_queue_eligible: false,
-    deny_reason: reason,
+    conditions_satisfied: false,
+    unmet_condition: reason,
   });
 
   if (validity === "blocked") {
-    return deny("governance_blocked");
+    return unmet("governance_blocked");
   }
   if (validity === "unknown") {
-    return deny(observation.head_sha === null ? "head_unavailable" : "governance_unknown");
+    return unmet(observation.head_sha === null ? "head_unavailable" : "governance_unknown");
   }
   if (validity === "superseded") {
-    return deny("head_changed");
+    return unmet("head_changed");
   }
   if (observation.pull_request_state !== "open") {
-    return deny("pull_request_not_open");
+    return unmet("pull_request_not_open");
   }
   if (observation.checks.items.length === 0) {
-    return deny("checks_missing");
+    return unmet("checks_missing");
   }
   if (observation.checks.items.some((check) => check.status !== "passed")) {
-    return deny("checks_not_passed");
+    return unmet("checks_not_passed");
   }
   if (
     observation.review_discussions.unresolved === null ||
     observation.review_discussions.unresolved > 0
   ) {
-    return deny("review_discussions_unresolved");
+    return unmet("review_discussions_unresolved");
   }
   if (!observation.approvals.satisfied) {
-    return deny("approvals_incomplete");
+    return unmet("approvals_incomplete");
   }
   return {
     ...observation,
     validity: "current",
     observations_valid: true,
-    merge_queue_eligible: true,
-    deny_reason: null,
+    conditions_satisfied: true,
+    unmet_condition: null,
   };
 }
 
 /**
  * Whether a previously served observation still describes `currentHeadSha`.
  * A different head invalidates every approval, check, and discussion
- * observation it carried: the caller must observe again. Eligibility is a
- * separate question (`merge_queue_eligible`) and is not implied by this.
+ * observation it carried: the caller must observe again. A satisfied
+ * observed-condition result is a separate question (`conditions_satisfied`)
+ * and is not implied by this.
  */
 export function observationStillCurrent(
   observation: PullRequestGovernanceObservation,
@@ -389,22 +423,43 @@ export class PullRequestGovernanceService {
       observed_at: observedAt,
       validity: "unknown",
       observations_valid: false,
-      merge_queue_eligible: false,
-      deny_reason: null,
-      checks: {
-        state: "observed",
-        reason: null,
-        observed_at: observedAt,
-        items: checks,
-      },
-      approvals: {
-        state: "observed",
-        reason: null,
-        observed_at: observedAt,
-        required: [...this.requiredApprovers],
-        satisfied: quorumSatisfied(approvals, this.requiredApprovers),
-        items: approvals,
-      },
+      conditions_satisfied: false,
+      not_evaluated: [...GOVERNANCE_NOT_EVALUATED],
+      unmet_condition: null,
+      checks:
+        snapshot.checks_complete === false
+          ? {
+              state: "unknown",
+              reason: "invalid_provider_response",
+              observed_at: null,
+              items: [],
+            }
+          : {
+              state: "observed",
+              reason: null,
+              observed_at: observedAt,
+              items: checks,
+            },
+      approvals:
+        snapshot.approvals_complete === false
+          ? {
+              // A partial review set could hide a newer rejection, so none of
+              // it is presented as this reviewer set's current decision.
+              state: "unknown",
+              reason: "invalid_provider_response",
+              observed_at: null,
+              required: [...this.requiredApprovers],
+              satisfied: false,
+              items: [],
+            }
+          : {
+              state: "observed",
+              reason: null,
+              observed_at: observedAt,
+              required: [...this.requiredApprovers],
+              satisfied: quorumSatisfied(approvals, this.requiredApprovers),
+              items: approvals,
+            },
       review_discussions: {
         state: "observed",
         reason: null,
@@ -437,8 +492,9 @@ export class PullRequestGovernanceService {
       observed_at: observedAt,
       validity: kind,
       observations_valid: false,
-      merge_queue_eligible: false,
-      deny_reason: null,
+      conditions_satisfied: false,
+      not_evaluated: [...GOVERNANCE_NOT_EVALUATED],
+      unmet_condition: null,
       checks: { state, reason, observed_at: null, items: [] },
       approvals: {
         state,

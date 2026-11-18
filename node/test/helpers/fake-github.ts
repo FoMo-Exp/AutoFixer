@@ -61,12 +61,8 @@ export interface FakeGitHubOptions {
       started_at?: string | null;
       completed_at?: string | null;
     }>;
-    reviews?: Array<{
-      user: { login: string };
-      state: string;
-      commit_id: string;
-      submitted_at: string | null;
-    }>;
+    /** Echoed verbatim, so a test can also serve a malformed review row. */
+    reviews?: unknown[];
     review_threads?: Array<{ isResolved: boolean }>;
     thread_page_has_next?: boolean;
   };

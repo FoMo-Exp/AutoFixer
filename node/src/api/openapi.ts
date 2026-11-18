@@ -24,8 +24,9 @@ import { GRANT_STATES, ROLES, TASK_STATES } from "../collab/types.js";
 import {
   GOVERNANCE_APPROVAL_DECISIONS,
   GOVERNANCE_CHECK_STATES,
-  GOVERNANCE_DENY_REASONS,
+  GOVERNANCE_NOT_EVALUATED,
   GOVERNANCE_OBSERVATION_STATES,
+  GOVERNANCE_UNMET_CONDITIONS,
   GOVERNANCE_UNAVAILABLE_REASONS,
   GOVERNANCE_VALIDITY,
 } from "../collab/pr-governance.js";
@@ -1928,12 +1929,15 @@ const governanceObservationSchema: JsonObject = {
     "One read-only observation of a pull request's current-head governance " +
     "(DAT-261, ADR-0007). Checks, approvals, and review discussions are " +
     "observations of one exact `head_sha` at one `observed_at`; a new head " +
-    "invalidates them all and an observation of an older head is `superseded` " +
-    "and never eligible. Missing configuration, permission denial, or an " +
-    "absent PR is `blocked`; a timeout/rate limit/5xx/incomplete answer is " +
-    "`unknown`; neither reuses the previous head's values. " +
-    "`merge_queue_eligible` reports GitHub merge-queue admission only: this " +
-    "surface never approves, dismisses a review, waives a check, or merges.",
+    "invalidates them all and an observation of an older head is `superseded`. " +
+    "Missing configuration, permission denial, or an absent PR is `blocked`; " +
+    "a timeout/rate limit/5xx/incomplete answer is `unknown`; neither reuses " +
+    "the previous head's values. `conditions_satisfied` covers only the " +
+    "conditions this read-only observation can verify; the gates this reader " +
+    "cannot observe (QA verdict, the branch-protection required check set, " +
+    "and merge-queue availability) are listed in `not_evaluated`, so this " +
+    "record makes no merge or merge-queue eligibility claim. The surface " +
+    "never approves, dismisses a review, waives a check, or merges.",
   required: [
     "observation_id",
     "issue_id",
@@ -1948,8 +1952,9 @@ const governanceObservationSchema: JsonObject = {
     "observed_at",
     "validity",
     "observations_valid",
-    "merge_queue_eligible",
-    "deny_reason",
+    "conditions_satisfied",
+    "not_evaluated",
+    "unmet_condition",
     "checks",
     "approvals",
     "review_discussions",
@@ -1987,16 +1992,29 @@ const governanceObservationSchema: JsonObject = {
       type: "boolean",
       description: "True only for a current-head observation with all dimensions observed.",
     },
-    merge_queue_eligible: {
+    conditions_satisfied: {
       type: "boolean",
       description:
-        "GitHub merge-queue admission eligibility. It never implies an " +
-        "approval or merge performed by this service.",
+        "Every condition this observation can verify holds: the current head " +
+        "equals the delivery head, the PR is open, at least one check was " +
+        "observed and all observed checks passed, there are no unresolved " +
+        "review conversations, and the approval quorum holds on this head. It " +
+        "is NOT a merge or merge-queue eligibility claim.",
     },
-    deny_reason: {
+    not_evaluated: {
+      type: "array",
+      items: { type: "string", enum: [...GOVERNANCE_NOT_EVALUATED] },
+      description:
+        "Gates this read-only reader cannot observe, so no consumer may infer " +
+        "them as satisfied from this record: the QA verdict, the " +
+        "branch-protection required check set, and merge-queue availability.",
+    },
+    unmet_condition: {
       type: ["string", "null"],
-      enum: [...GOVERNANCE_DENY_REASONS, null],
-      description: "Why this head is not eligible; null only when it is.",
+      enum: [...GOVERNANCE_UNMET_CONDITIONS, null],
+      description:
+        "The first observed condition that does not hold; null only when every " +
+        "observable condition holds.",
     },
     checks: { $ref: "#/components/schemas/GovernanceChecks" },
     approvals: { $ref: "#/components/schemas/GovernanceApprovals" },
@@ -4970,9 +4988,12 @@ export function buildOpenApiDocument(): OpenApiDocument {
           "credential, a permission denial, or an absent PR is `blocked`; a " +
           "timeout, rate limit, 5xx, or an incomplete/truncated provider answer " +
           "is `unknown`; neither reuses the last known values. " +
-          "`merge_queue_eligible` is a projection of GitHub's merge boundary " +
-          "only — this route never approves, dismisses a review, waives a " +
-          "check, or merges, and a reading never changes delivery state.",
+          "`conditions_satisfied` covers only what the reader can observe, " +
+          "and `not_evaluated` names the gates it cannot (QA verdict, the " +
+          "branch-protection required check set, merge-queue availability), " +
+          "so this route makes no merge or merge-queue eligibility claim. " +
+          "It never approves, dismisses a review, waives a check, or merges, " +
+          "and a reading never changes delivery state.",
         parameters: [
           WORKSPACE_ID_PARAMETER,
           ISSUE_ID_PARAMETER,

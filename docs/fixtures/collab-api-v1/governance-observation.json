@@ -12,8 +12,13 @@
   "observed_at": "2026-11-18T09:00:00Z",
   "validity": "current",
   "observations_valid": true,
-  "merge_queue_eligible": true,
-  "deny_reason": null,
+  "conditions_satisfied": true,
+  "not_evaluated": [
+    "qa_verdict",
+    "branch_protection_required_checks",
+    "merge_queue_availability"
+  ],
+  "unmet_condition": null,
   "checks": {
     "state": "observed",
     "reason": null,
