@@ -138,6 +138,11 @@ export function actionForRequest(method: string, segments: string[]): ActionKind
     if (tail.length === 3 && (method === "GET" || method === "HEAD")) {
       return "read";
     }
+    // Docker-style nested reads (the PR governance observation) carry one more
+    // segment; they are reads too and must never skip the authority gate.
+    if (tail.length === 4 && (method === "GET" || method === "HEAD")) {
+      return "read";
+    }
     if (tail.length === 4 && method === "POST") {
       if (tail[1] === "approvals" && tail[3] === "decision") return "approval";
       if (tail[1] === "deliveries" && tail[3] === "reconcile") return "delivery";

@@ -1323,6 +1323,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}/governance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Observe the pull request's current-head checks, approvals, and discussions
+         * @description A read-only observation of the delivered PR's current head, bound to that exact `head_sha` and the `observed_at` time. Required checks, decisive reviews, and unresolved review conversations are read from the provider; each item carries its own head binding, so a check or approval recorded against an older commit is absent from a new head, never inherited. A head change marks the previous observation `superseded` (and reports it in `supersedes`), and a new head starts with only what the provider reports for it. Missing integration or credential, a permission denial, or an absent PR is `blocked`; a timeout, rate limit, 5xx, or an incomplete/truncated provider answer is `unknown`; neither reuses the last known values. `conditions_satisfied` covers only what the reader can observe, and `not_evaluated` names the gates it cannot (QA verdict, the branch-protection required check set, merge-queue availability), so this route makes no merge or merge-queue eligibility claim. The head and PR state are re-read after all dimension reads: a push during the observation makes every dimension `unknown/head_changed_during_observation` and the record `superseded` (or `unknown` when the head returned to the delivery head). The final state is authoritative: closed/merged at the final read reports that state with `unmet_condition: pull_request_not_open`, a closed→open race makes every dimension `unknown/pull_request_state_changed_during_observation` with conditions unmet, and a failed final read is `blocked`/`unknown`. This is a final re-check observation, not an atomic snapshot. It never approves, dismisses a review, waives a check, or merges, and a reading never changes delivery state.
+         */
+        get: operations["observeIssueDeliveryGovernance"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/stream": {
         parameters: {
             query?: never;
@@ -2897,6 +2917,118 @@ export interface components {
              * @description When the latest unknown/partial outcome was reconciled against provider evidence.
              */
             reconciled_at: string | null;
+        };
+        /** @description One read-only observation of a pull request's current-head governance (DAT-261, ADR-0007). Checks, approvals, and review discussions are observations of one exact `head_sha` at one `observed_at`; a new head invalidates them all and an observation of an older head is `superseded`. Missing configuration, permission denial, or an absent PR is `blocked`; a timeout/rate limit/5xx/incomplete answer is `unknown`; neither reuses the previous head's values. `conditions_satisfied` covers only the conditions this read-only observation can verify; the gates this reader cannot observe (QA verdict, the branch-protection required check set, and merge-queue availability) are listed in `not_evaluated`, so this record makes no merge or merge-queue eligibility claim. The surface never approves, dismisses a review, waives a check, or merges. */
+        PullRequestGovernanceObservation: {
+            observation_id: string;
+            issue_id: string;
+            delivery_id: string;
+            repository_id: string;
+            /** @enum {string} */
+            provider: "github" | "gitlab";
+            pr_id: string;
+            pr_url: string;
+            /** @description The head the delivery published and the approval covered. */
+            delivery_head_sha: string;
+            /** @description The pull request's current head at observation time; null when it could not be read. Never assumed equal to `delivery_head_sha`. */
+            head_sha: string | null;
+            /** @enum {string|null} */
+            pull_request_state: "open" | "closed" | "merged" | null;
+            /** Format: date-time */
+            observed_at: string;
+            /**
+             * @description `current` only when the observed head equals the delivery head and every dimension was observed; `superseded` when the PR moved to another head; `blocked`/`unknown` when it could not be read.
+             * @enum {string}
+             */
+            validity: "current" | "superseded" | "unknown" | "blocked";
+            /** @description True only for a current-head observation with all dimensions observed. */
+            observations_valid: boolean;
+            /** @description Every condition this observation can verify holds: the current head equals the delivery head, the PR is open, at least one check was observed and all observed checks passed, there are no unresolved review conversations, and the approval quorum holds on this head. It is NOT a merge or merge-queue eligibility claim. */
+            conditions_satisfied: boolean;
+            /** @description Gates this read-only reader cannot observe, so no consumer may infer them as satisfied from this record: the QA verdict, the branch-protection required check set, and merge-queue availability. */
+            not_evaluated: ("qa_verdict" | "branch_protection_required_checks" | "merge_queue_availability")[];
+            /**
+             * @description The first observed condition that does not hold; null only when every observable condition holds.
+             * @enum {string|null}
+             */
+            unmet_condition: "head_unavailable" | "head_changed" | "governance_blocked" | "governance_unknown" | "pull_request_not_open" | "checks_missing" | "checks_not_passed" | "review_discussions_unresolved" | "approvals_incomplete" | null;
+            checks: components["schemas"]["GovernanceChecks"];
+            approvals: components["schemas"]["GovernanceApprovals"];
+            review_discussions: components["schemas"]["GovernanceDiscussions"];
+            /** @description The previous observation this record replaced because the PR head changed. The previous values are not carried into this record. */
+            supersedes: components["schemas"]["SupersededObservation"] | null;
+        };
+        GovernanceCheckObservation: {
+            name: string;
+            /**
+             * @description `passed` only for a completed successful conclusion; a neutral, skipped, stale, queued, or in-progress check is not passing.
+             * @enum {string}
+             */
+            status: "passed" | "failed" | "pending";
+            /** @description The commit this check result belongs to. A result for another commit is never counted toward this observation's head. */
+            head_sha: string;
+            /** Format: date-time */
+            observed_at: string;
+        };
+        GovernanceApprovalObservation: {
+            /** @description Provider review author (login). */
+            identity: string;
+            /** @enum {string} */
+            decision: "approved" | "changes_requested";
+            /** @description The commit the reviewer decided on (`commit_id`), never the PR head. An approval recorded before a new head is not evidence about it. */
+            head_sha: string;
+            /** Format: date-time */
+            submitted_at: string;
+        };
+        GovernanceChecks: {
+            /** @enum {string} */
+            state: "observed" | "unknown" | "blocked";
+            /**
+             * @description Why one observation dimension is not `observed`. `blocked` reasons are definite refusals (no integration or credential, permission denied, PR absent); `unknown` reasons are unreadable provider answers (transport, rate limit, timeout, truncated page, malformed body). Neither ever reuses an earlier head's facts.
+             * @enum {string|null}
+             */
+            reason: "integration_not_configured" | "credential_unavailable" | "permission_denied" | "pull_request_not_found" | "provider_unavailable" | "invalid_provider_response" | "head_changed_during_observation" | "pull_request_state_changed_during_observation" | null;
+            /** Format: date-time */
+            observed_at: string | null;
+            /** @description Only check results bound to this observation's `head_sha`. An empty list is `checks_missing`, never a passing gate. */
+            items: components["schemas"]["GovernanceCheckObservation"][];
+        };
+        GovernanceApprovals: {
+            /** @enum {string} */
+            state: "observed" | "unknown" | "blocked";
+            /**
+             * @description Why one observation dimension is not `observed`. `blocked` reasons are definite refusals (no integration or credential, permission denied, PR absent); `unknown` reasons are unreadable provider answers (transport, rate limit, timeout, truncated page, malformed body). Neither ever reuses an earlier head's facts.
+             * @enum {string|null}
+             */
+            reason: "integration_not_configured" | "credential_unavailable" | "permission_denied" | "pull_request_not_found" | "provider_unavailable" | "invalid_provider_response" | "head_changed_during_observation" | "pull_request_state_changed_during_observation" | null;
+            /** Format: date-time */
+            observed_at: string | null;
+            /** @description The approval quorum (`CONTEXT.md`): simultaneous approvals on the current head by both named owners. Default `Luthiel` and `Ludwig-Planck`; an observation never widens it. */
+            required: string[];
+            /** @description True only when every required approver's newest decisive review on this head is an approval. */
+            satisfied: boolean;
+            items: components["schemas"]["GovernanceApprovalObservation"][];
+        };
+        GovernanceDiscussions: {
+            /** @enum {string} */
+            state: "observed" | "unknown" | "blocked";
+            /**
+             * @description Why one observation dimension is not `observed`. `blocked` reasons are definite refusals (no integration or credential, permission denied, PR absent); `unknown` reasons are unreadable provider answers (transport, rate limit, timeout, truncated page, malformed body). Neither ever reuses an earlier head's facts.
+             * @enum {string|null}
+             */
+            reason: "integration_not_configured" | "credential_unavailable" | "permission_denied" | "pull_request_not_found" | "provider_unavailable" | "invalid_provider_response" | "head_changed_during_observation" | "pull_request_state_changed_during_observation" | null;
+            /** Format: date-time */
+            observed_at: string | null;
+            /** @description Open review conversations on the observed head; null when the provider answer was incomplete or unavailable (never treated as zero). */
+            unresolved: number | null;
+        };
+        SupersededObservation: {
+            observation_id: string;
+            head_sha: string;
+            /** Format: date-time */
+            observed_at: string;
+            /** @enum {string} */
+            invalidation_reason: "head_changed";
         };
         /** @description One issue event on the SSE stream: the projection of exactly one durable audit record. Replay semantics: a reconnect sends the last delivered `event_id` in `Last-Event-ID`; the service replays every later event in `sequence` order from the durable projection (including events written while no client was connected, and across orchestrator restarts), so no business event is duplicated or lost. Delivery is at least once: `event_id` is stable and idempotent across replays — replayed frames carry the same id and payload — so a consumer MUST deduplicate on `event_id` and treat `sequence` as the ordering cursor. An unknown `Last-Event-ID` replays from the start of the retained log. The stream closes after `issue.terminal` is replayed, and a terminal issue's stream always closes after its replay even when the anchor is already at `issue.terminal`. A 404 ISSUE_NOT_FOUND is returned before any event is sent when the issue is not visible to the caller. */
         IssueEvent: {
@@ -9815,6 +9947,57 @@ export interface operations {
             };
             /** @description PROVIDER_ERROR — retryable; no write was performed */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    observeIssueDeliveryGovernance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+                issue_id: string;
+                delivery_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current-head governance observation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PullRequestGovernanceObservation"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ISSUE_NOT_FOUND or DELIVERY_NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description GOVERNANCE_NOT_OBSERVABLE — the delivery has no pull request */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

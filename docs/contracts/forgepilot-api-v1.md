@@ -994,6 +994,7 @@ direct main write, merge, self-review, or check waiver.
 | `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries` | `{approval_id, grant_id}`; optional `Idempotency-Key` | `202 Delivery` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}` | none | `200 Delivery` |
 | `POST /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}/reconcile` | optional `note` | `202 Delivery` |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}/governance` | none | `200 PullRequestGovernanceObservation` |
 | `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/stream` | `Last-Event-ID` optional | `200 text/event-stream` |
 
 ### Candidate freeze and review card (DAT-219)
@@ -1158,6 +1159,35 @@ running in this process. If the provider cannot be read, the reconcile fails
 `503 PROVIDER_ERROR` (retryable) and the delivery stays unreconciled. Delivering
 an approval consumes it exactly once (`consumed_by_delivery_id`); every later
 request naming that approval is `409 APPROVAL_CONSUMED`.
+
+### PR current-head governance observation (DAT-261)
+
+`GET .../deliveries/{delivery_id}/governance` is a read-only observation of the
+delivered pull request's current head, bound to one exact `head_sha` and one
+`observed_at`. Checks, approvals, and review discussions are observed per head;
+a head change starts a fresh observation, marks the previous one `superseded`
+and reports it in `supersedes`, and never carries an older commit's check or
+approval forward. A missing integration/credential, permission denial, or an
+absent PR is `blocked`; a timeout, rate limit, 5xx, or truncated/uninterpretable
+answer is `unknown`; neither reuses the last known values. An unreadable
+decisive review makes the approval dimension `unknown` with no items rather
+than leaving an older approval in place, and an unreadable check row likewise
+makes the check dimension `unknown`. The head and PR state are re-read after all
+dimension reads: a push mid-observation makes every dimension
+`unknown/head_changed_during_observation` and the record `superseded` (or
+`unknown` if the head returned to the delivery head). The final state is
+authoritative: closed/merged at the final read reports that state with
+`unmet_condition: pull_request_not_open`, while a closed→open race makes every
+dimension `unknown/pull_request_state_changed_during_observation` with
+conditions unmet; a failed final read is `blocked`/`unknown`. This is a final
+re-check observation, not an atomic snapshot. `conditions_satisfied` covers only the
+conditions the reader can verify; `not_evaluated` names the gates it cannot
+(QA verdict, branch-protection required check set, merge-queue availability), so
+the record makes no merge or merge-queue eligibility claim. The route never
+approves, dismisses a review, waives a check, merges, or changes delivery state.
+A delivery without a PR is `409 GOVERNANCE_NOT_OBSERVABLE`. The full semantics,
+failure classification, and fixtures are in
+`docs/contracts/pr-governance-v1.md`.
 
 ### Issue events and replay
 

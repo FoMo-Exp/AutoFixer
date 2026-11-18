@@ -47,6 +47,35 @@ export interface FakeGitHubOptions {
     pull_head_sha?: string;
     pull_base_ref?: string;
   };
+  /**
+   * Read-only governance facts this repository serves (DAT-261). The rows are
+   * shaped like GitHub's REST/GraphQL answers so the adapter parses exactly
+   * what production returns.
+   */
+  /**
+   * Successive reads of one pull request, so a test can simulate a push or a
+   * state change between the adapter's first and final read. A `status`
+   * entry answers that read with an error instead.
+   */
+  pull_read_sequence?: Array<{
+    head_sha?: string;
+    state?: "open" | "closed" | "merged";
+    status?: number;
+  }>;
+  governance?: {
+    check_runs?: Array<{
+      name: string;
+      status: string;
+      conclusion: string | null;
+      head_sha: string;
+      started_at?: string | null;
+      completed_at?: string | null;
+    }>;
+    /** Echoed verbatim, so a test can also serve a malformed review row. */
+    reviews?: unknown[];
+    review_threads?: Array<{ isResolved: boolean }>;
+    thread_page_has_next?: boolean;
+  };
 }
 
 interface FakeCommit {
@@ -152,6 +181,7 @@ export async function startFakeGitHub(options: FakeGitHubOptions): Promise<FakeG
   const prefix = `/repos/${options.owner}/${options.repo}`;
   const writesList: string[] = [];
   let nextPullRequest = 1;
+  const pullReadSequence = [...(options.pull_read_sequence ?? [])];
 
   const service: FakeGitHubState = {
     refs,
@@ -489,6 +519,66 @@ export async function startFakeGitHub(options: FakeGitHubOptions): Promise<FakeG
         (bodyOut["base"] as Record<string, unknown>)["ref"] = options.override.pull_base_ref;
       }
       return { status: 201, body: bodyOut };
+    }
+
+    // ------------------------------------------------------- governance reads
+    const pullByNumber = new RegExp(`^${prefix}/pulls/([0-9]+)$`).exec(url);
+    if (method === "GET" && pullByNumber !== null) {
+      const pr = pullRequests.find((row) => row.number === Number(pullByNumber[1]));
+      if (pr === undefined) {
+        return { status: 404, body: { message: "Not Found" } };
+      }
+      const served = pullReadSequence.shift();
+      if (served?.status !== undefined) {
+        return { status: served.status, body: { message: "injected fault" } };
+      }
+      const body = prBody(pr);
+      if (served?.head_sha !== undefined) {
+        (body["head"] as Record<string, unknown>)["sha"] = served.head_sha;
+      }
+      if (served?.state !== undefined) {
+        const merged = served.state === "merged";
+        body["state"] = merged ? "closed" : served.state;
+        body["merged_at"] = merged ? "2026-11-18T09:30:00Z" : null;
+      }
+      return { status: 200, body };
+    }
+
+    const checkRunsMatch = new RegExp(`^${prefix}/commits/([0-9a-f]{40})/check-runs\\?`).exec(url);
+    if (method === "GET" && checkRunsMatch !== null) {
+      const head = checkRunsMatch[1] as string;
+      const rows = (options.governance?.check_runs ?? []).filter((row) => row.head_sha === head);
+      return { status: 200, body: { total_count: rows.length, check_runs: rows } };
+    }
+
+    const reviewsMatch = new RegExp(`^${prefix}/pulls/([0-9]+)/reviews\\?`).exec(url);
+    if (method === "GET" && reviewsMatch !== null) {
+      return { status: 200, body: options.governance?.reviews ?? [] };
+    }
+
+    if (method === "POST" && url === "/graphql") {
+      // The adapter sends a read-only reviewThreads query; anything about a
+      // mutation has no route here at all.
+      const body = parseJson(request);
+      const query = typeof body["query"] === "string" ? body["query"] : "";
+      if (!query.includes("reviewThreads")) {
+        return { status: 400, body: { errors: [{ message: "unsupported query" }] } };
+      }
+      return {
+        status: 200,
+        body: {
+          data: {
+            repository: {
+              pullRequest: {
+                reviewThreads: {
+                  pageInfo: { hasNextPage: options.governance?.thread_page_has_next === true },
+                  nodes: options.governance?.review_threads ?? [],
+                },
+              },
+            },
+          },
+        },
+      };
     }
 
     return { status: 599, body: { error: `unexpected request ${method} ${url}` } };

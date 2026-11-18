@@ -13,6 +13,9 @@ import { CandidateReviewService } from "./collab/candidate-service.js";
 import { DeliveryBroker } from "./collab/delivery-broker.js";
 import type { DeliveryProvider } from "./collab/delivery-broker.js";
 import { createGitHubDeliveryProvider } from "./collab/github-delivery.js";
+import { createGitHubGovernanceProvider } from "./collab/github-pr-governance.js";
+import { PullRequestGovernanceService } from "./collab/pr-governance.js";
+import type { PRGovernanceProvider } from "./collab/pr-governance.js";
 import { createApprovalDirectory, createDeliveryPermission } from "./api/collab-authority.js";
 import type { CollabHttpDeps } from "./api/collab-http.js";
 import { createInvitationAuthority } from "./api/invitation-authority.js";
@@ -163,6 +166,13 @@ export interface OrchestratorOptions {
    * never a delivery: production wiring supplies nothing by default.
    */
   deliveryProviders?: Partial<Record<"github" | "gitlab", DeliveryProvider>>;
+  /**
+   * Read-only pull-request governance reader (DAT-261). Unset uses the
+   * reviewed GitHub reader over the integration's read-only source
+   * credential; a repository without an active integration yields a blocked
+   * observation, never a borrowed credential. Tests inject a scripted reader.
+   */
+  prGovernanceProvider?: PRGovernanceProvider;
 }
 
 export interface OrchestratorHandle {
@@ -752,6 +762,35 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
           enterprise_id: config.enterpriseId,
         }),
         auditAvailable: () => collaboration.auditAvailable(),
+      }),
+      // Read-only governance observation (DAT-261). GitHub check runs,
+      // decisive reviews, and review-thread resolution are read through the
+      // integration's *source* credential; the adapter has no approve, merge,
+      // dismiss, or check-waiver operation, and a failed read is reported as
+      // blocked/unknown instead of reusing the last head's facts.
+      governance: new PullRequestGovernanceService({
+        provider:
+          options.prGovernanceProvider ??
+          createGitHubGovernanceProvider({
+            credentials: serviceCredentials,
+            resolve: (repository) => {
+              const integration = providerAccess.integrations.getByRepository(
+                {
+                  enterprise_id: config.enterpriseId,
+                  actor_id: "collab-governance-observer",
+                },
+                repository.repository_id,
+              );
+              if (integration === undefined || integration.install_status !== "active") {
+                return null;
+              }
+              return {
+                canonical_repository_id: integration.repository_id,
+                credential_ref: integration.source_credential_ref,
+              };
+            },
+            ...(providerApiBaseUrl !== undefined ? { api_base_url: providerApiBaseUrl } : {}),
+          }),
       }),
     };
     // The workspace-scoped task family resolves each locator against the

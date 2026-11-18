@@ -22,6 +22,15 @@ import {
 import { PRODUCT_STATES } from "../collab/states.js";
 import { GRANT_STATES, ROLES, TASK_STATES } from "../collab/types.js";
 import {
+  GOVERNANCE_APPROVAL_DECISIONS,
+  GOVERNANCE_CHECK_STATES,
+  GOVERNANCE_NOT_EVALUATED,
+  GOVERNANCE_OBSERVATION_STATES,
+  GOVERNANCE_UNMET_CONDITIONS,
+  GOVERNANCE_UNAVAILABLE_REASONS,
+  GOVERNANCE_VALIDITY,
+} from "../collab/pr-governance.js";
+import {
   ERROR_CATEGORIES,
   ERROR_ENVELOPE_VERSION,
   ERROR_NEXT_ACTIONS,
@@ -1788,6 +1797,233 @@ const deliverySchema: JsonObject = {
       format: "date-time",
       description:
         "When the latest unknown/partial outcome was reconciled against provider evidence.",
+    },
+  },
+};
+
+const governanceUnavailableReasonSchema: JsonObject = {
+  type: ["string", "null"],
+  enum: [...GOVERNANCE_UNAVAILABLE_REASONS, null],
+  description:
+    "Why one observation dimension is not `observed`. `blocked` reasons are " +
+    "definite refusals (no integration or credential, permission denied, PR " +
+    "absent); `unknown` reasons are unreadable provider answers (transport, " +
+    "rate limit, timeout, truncated page, malformed body). Neither ever " +
+    "reuses an earlier head's facts.",
+};
+
+const governanceCheckObservationSchema: JsonObject = {
+  type: "object",
+  required: ["name", "status", "head_sha", "observed_at"],
+  properties: {
+    name: { type: "string" },
+    status: {
+      type: "string",
+      enum: [...GOVERNANCE_CHECK_STATES],
+      description:
+        "`passed` only for a completed successful conclusion; a neutral, " +
+        "skipped, stale, queued, or in-progress check is not passing.",
+    },
+    head_sha: {
+      type: "string",
+      description:
+        "The commit this check result belongs to. A result for another commit " +
+        "is never counted toward this observation's head.",
+    },
+    observed_at: { type: "string", format: "date-time" },
+  },
+};
+
+const governanceApprovalObservationSchema: JsonObject = {
+  type: "object",
+  required: ["identity", "decision", "head_sha", "submitted_at"],
+  properties: {
+    identity: { type: "string", description: "Provider review author (login)." },
+    decision: { type: "string", enum: [...GOVERNANCE_APPROVAL_DECISIONS] },
+    head_sha: {
+      type: "string",
+      description:
+        "The commit the reviewer decided on (`commit_id`), never the PR head. " +
+        "An approval recorded before a new head is not evidence about it.",
+    },
+    submitted_at: { type: "string", format: "date-time" },
+  },
+};
+
+const governanceChecksSchema: JsonObject = {
+  type: "object",
+  required: ["state", "reason", "observed_at", "items"],
+  properties: {
+    state: { type: "string", enum: [...GOVERNANCE_OBSERVATION_STATES] },
+    reason: governanceUnavailableReasonSchema,
+    observed_at: { type: ["string", "null"], format: "date-time" },
+    items: {
+      type: "array",
+      description:
+        "Only check results bound to this observation's `head_sha`. An empty " +
+        "list is `checks_missing`, never a passing gate.",
+      items: { $ref: "#/components/schemas/GovernanceCheckObservation" },
+    },
+  },
+};
+
+const governanceApprovalsSchema: JsonObject = {
+  type: "object",
+  required: ["state", "reason", "observed_at", "required", "satisfied", "items"],
+  properties: {
+    state: { type: "string", enum: [...GOVERNANCE_OBSERVATION_STATES] },
+    reason: governanceUnavailableReasonSchema,
+    observed_at: { type: ["string", "null"], format: "date-time" },
+    required: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "The approval quorum (`CONTEXT.md`): simultaneous approvals on the " +
+        "current head by both named owners. Default `Luthiel` and " +
+        "`Ludwig-Planck`; an observation never widens it.",
+    },
+    satisfied: {
+      type: "boolean",
+      description:
+        "True only when every required approver's newest decisive review on " +
+        "this head is an approval.",
+    },
+    items: {
+      type: "array",
+      items: { $ref: "#/components/schemas/GovernanceApprovalObservation" },
+    },
+  },
+};
+
+const governanceDiscussionsSchema: JsonObject = {
+  type: "object",
+  required: ["state", "reason", "observed_at", "unresolved"],
+  properties: {
+    state: { type: "string", enum: [...GOVERNANCE_OBSERVATION_STATES] },
+    reason: governanceUnavailableReasonSchema,
+    observed_at: { type: ["string", "null"], format: "date-time" },
+    unresolved: {
+      type: ["integer", "null"],
+      minimum: 0,
+      description:
+        "Open review conversations on the observed head; null when the " +
+        "provider answer was incomplete or unavailable (never treated as zero).",
+    },
+  },
+};
+
+const supersededObservationSchema: JsonObject = {
+  type: "object",
+  required: ["observation_id", "head_sha", "observed_at", "invalidation_reason"],
+  properties: {
+    observation_id: { type: "string" },
+    head_sha: { type: "string" },
+    observed_at: { type: "string", format: "date-time" },
+    invalidation_reason: { type: "string", enum: ["head_changed"] },
+  },
+};
+
+const governanceObservationSchema: JsonObject = {
+  type: "object",
+  description:
+    "One read-only observation of a pull request's current-head governance " +
+    "(DAT-261, ADR-0007). Checks, approvals, and review discussions are " +
+    "observations of one exact `head_sha` at one `observed_at`; a new head " +
+    "invalidates them all and an observation of an older head is `superseded`. " +
+    "Missing configuration, permission denial, or an absent PR is `blocked`; " +
+    "a timeout/rate limit/5xx/incomplete answer is `unknown`; neither reuses " +
+    "the previous head's values. `conditions_satisfied` covers only the " +
+    "conditions this read-only observation can verify; the gates this reader " +
+    "cannot observe (QA verdict, the branch-protection required check set, " +
+    "and merge-queue availability) are listed in `not_evaluated`, so this " +
+    "record makes no merge or merge-queue eligibility claim. The surface " +
+    "never approves, dismisses a review, waives a check, or merges.",
+  required: [
+    "observation_id",
+    "issue_id",
+    "delivery_id",
+    "repository_id",
+    "provider",
+    "pr_id",
+    "pr_url",
+    "delivery_head_sha",
+    "head_sha",
+    "pull_request_state",
+    "observed_at",
+    "validity",
+    "observations_valid",
+    "conditions_satisfied",
+    "not_evaluated",
+    "unmet_condition",
+    "checks",
+    "approvals",
+    "review_discussions",
+    "supersedes",
+  ],
+  properties: {
+    observation_id: { type: "string" },
+    issue_id: { type: "string" },
+    delivery_id: { type: "string" },
+    repository_id: { type: "string" },
+    provider: { type: "string", enum: ["github", "gitlab"] },
+    pr_id: { type: "string" },
+    pr_url: { type: "string" },
+    delivery_head_sha: {
+      type: "string",
+      description: "The head the delivery published and the approval covered.",
+    },
+    head_sha: {
+      type: ["string", "null"],
+      description:
+        "The pull request's current head at observation time; null when it " +
+        "could not be read. Never assumed equal to `delivery_head_sha`.",
+    },
+    pull_request_state: { type: ["string", "null"], enum: ["open", "closed", "merged", null] },
+    observed_at: { type: "string", format: "date-time" },
+    validity: {
+      type: "string",
+      enum: [...GOVERNANCE_VALIDITY],
+      description:
+        "`current` only when the observed head equals the delivery head and " +
+        "every dimension was observed; `superseded` when the PR moved to " +
+        "another head; `blocked`/`unknown` when it could not be read.",
+    },
+    observations_valid: {
+      type: "boolean",
+      description: "True only for a current-head observation with all dimensions observed.",
+    },
+    conditions_satisfied: {
+      type: "boolean",
+      description:
+        "Every condition this observation can verify holds: the current head " +
+        "equals the delivery head, the PR is open, at least one check was " +
+        "observed and all observed checks passed, there are no unresolved " +
+        "review conversations, and the approval quorum holds on this head. It " +
+        "is NOT a merge or merge-queue eligibility claim.",
+    },
+    not_evaluated: {
+      type: "array",
+      items: { type: "string", enum: [...GOVERNANCE_NOT_EVALUATED] },
+      description:
+        "Gates this read-only reader cannot observe, so no consumer may infer " +
+        "them as satisfied from this record: the QA verdict, the " +
+        "branch-protection required check set, and merge-queue availability.",
+    },
+    unmet_condition: {
+      type: ["string", "null"],
+      enum: [...GOVERNANCE_UNMET_CONDITIONS, null],
+      description:
+        "The first observed condition that does not hold; null only when every " +
+        "observable condition holds.",
+    },
+    checks: { $ref: "#/components/schemas/GovernanceChecks" },
+    approvals: { $ref: "#/components/schemas/GovernanceApprovals" },
+    review_discussions: { $ref: "#/components/schemas/GovernanceDiscussions" },
+    supersedes: {
+      oneOf: [{ $ref: "#/components/schemas/SupersededObservation" }, { type: "null" }],
+      description:
+        "The previous observation this record replaced because the PR head " +
+        "changed. The previous values are not carried into this record.",
     },
   },
 };
@@ -4736,6 +4972,53 @@ export function buildOpenApiDocument(): OpenApiDocument {
         },
       },
     },
+    "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}/governance": {
+      get: {
+        operationId: "observeIssueDeliveryGovernance",
+        summary: "Observe the pull request's current-head checks, approvals, and discussions",
+        description:
+          "A read-only observation of the delivered PR's current head, bound to " +
+          "that exact `head_sha` and the `observed_at` time. Required checks, " +
+          "decisive reviews, and unresolved review conversations are read from " +
+          "the provider; each item carries its own head binding, so a check or " +
+          "approval recorded against an older commit is absent from a new head, " +
+          "never inherited. A head change marks the previous observation " +
+          "`superseded` (and reports it in `supersedes`), and a new head starts " +
+          "with only what the provider reports for it. Missing integration or " +
+          "credential, a permission denial, or an absent PR is `blocked`; a " +
+          "timeout, rate limit, 5xx, or an incomplete/truncated provider answer " +
+          "is `unknown`; neither reuses the last known values. " +
+          "`conditions_satisfied` covers only what the reader can observe, " +
+          "and `not_evaluated` names the gates it cannot (QA verdict, the " +
+          "branch-protection required check set, merge-queue availability), " +
+          "so this route makes no merge or merge-queue eligibility claim. " +
+          "The head and PR state are re-read after all dimension reads: a " +
+          "push during the observation makes every dimension " +
+          "`unknown/head_changed_during_observation` and the record " +
+          "`superseded` (or `unknown` when the head returned to the delivery " +
+          "head). The final state is authoritative: closed/merged at the final " +
+          "read reports that state with `unmet_condition: " +
+          "pull_request_not_open`, a closed→open race makes every dimension " +
+          "`unknown/pull_request_state_changed_during_observation` with " +
+          "conditions unmet, and a failed final read is `blocked`/`unknown`. " +
+          "This is a final re-check observation, not an atomic snapshot. It " +
+          "never approves, dismisses a review, waives a check, or merges, and " +
+          "a reading never changes delivery state.",
+        parameters: [
+          WORKSPACE_ID_PARAMETER,
+          ISSUE_ID_PARAMETER,
+          { name: "delivery_id", in: "path", required: true, schema: { type: "string" } },
+        ],
+        responses: {
+          200: {
+            description: "Current-head governance observation",
+            ...jsonRef("#/components/schemas/PullRequestGovernanceObservation"),
+          },
+          404: errorResponse("ISSUE_NOT_FOUND or DELIVERY_NOT_FOUND"),
+          409: errorResponse("GOVERNANCE_NOT_OBSERVABLE — the delivery has no pull request"),
+        },
+      },
+    },
     "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/stream": {
       get: {
         operationId: "streamIssueEvents",
@@ -4903,6 +5186,13 @@ export function buildOpenApiDocument(): OpenApiDocument {
         ApprovalDecision: approvalDecisionSchema,
         Approval: approvalSchema,
         Delivery: deliverySchema,
+        PullRequestGovernanceObservation: governanceObservationSchema,
+        GovernanceCheckObservation: governanceCheckObservationSchema,
+        GovernanceApprovalObservation: governanceApprovalObservationSchema,
+        GovernanceChecks: governanceChecksSchema,
+        GovernanceApprovals: governanceApprovalsSchema,
+        GovernanceDiscussions: governanceDiscussionsSchema,
+        SupersededObservation: supersededObservationSchema,
         IssueEvent: issueEventSchema,
         SessionInfo: sessionInfoSchema,
         LoginProvider: loginProviderSchema,

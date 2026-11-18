@@ -117,6 +117,22 @@ const FIXTURES: FixtureCase[] = [
   { file: "approval-page.json", pointer: responseSchema(`${ISSUE}/approvals`, "get") },
   { file: "delivery.json", pointer: COMPONENT("Delivery") },
   { file: "delivery-page.json", pointer: responseSchema(`${ISSUE}/deliveries`, "get") },
+  {
+    file: "governance-observation.json",
+    pointer: responseSchema(`${ISSUE}/deliveries/{delivery_id}/governance`, "get"),
+  },
+  {
+    file: "governance-observation-head-changed.json",
+    pointer: responseSchema(`${ISSUE}/deliveries/{delivery_id}/governance`, "get"),
+  },
+  {
+    file: "governance-observation-blocked.json",
+    pointer: responseSchema(`${ISSUE}/deliveries/{delivery_id}/governance`, "get"),
+  },
+  {
+    file: "governance-observation-unknown.json",
+    pointer: responseSchema(`${ISSUE}/deliveries/{delivery_id}/governance`, "get"),
+  },
   { file: "issue-event.json", pointer: COMPONENT("IssueEvent") },
 ];
 
