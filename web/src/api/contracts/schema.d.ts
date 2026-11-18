@@ -1332,7 +1332,7 @@ export interface paths {
         };
         /**
          * Observe the pull request's current-head checks, approvals, and discussions
-         * @description A read-only observation of the delivered PR's current head, bound to that exact `head_sha` and the `observed_at` time. Required checks, decisive reviews, and unresolved review conversations are read from the provider; each item carries its own head binding, so a check or approval recorded against an older commit is absent from a new head, never inherited. A head change marks the previous observation `superseded` (and reports it in `supersedes`), and a new head starts with only what the provider reports for it. Missing integration or credential, a permission denial, or an absent PR is `blocked`; a timeout, rate limit, 5xx, or an incomplete/truncated provider answer is `unknown`; neither reuses the last known values. `conditions_satisfied` covers only what the reader can observe, and `not_evaluated` names the gates it cannot (QA verdict, the branch-protection required check set, merge-queue availability), so this route makes no merge or merge-queue eligibility claim. It never approves, dismisses a review, waives a check, or merges, and a reading never changes delivery state.
+         * @description A read-only observation of the delivered PR's current head, bound to that exact `head_sha` and the `observed_at` time. Required checks, decisive reviews, and unresolved review conversations are read from the provider; each item carries its own head binding, so a check or approval recorded against an older commit is absent from a new head, never inherited. A head change marks the previous observation `superseded` (and reports it in `supersedes`), and a new head starts with only what the provider reports for it. Missing integration or credential, a permission denial, or an absent PR is `blocked`; a timeout, rate limit, 5xx, or an incomplete/truncated provider answer is `unknown`; neither reuses the last known values. `conditions_satisfied` covers only what the reader can observe, and `not_evaluated` names the gates it cannot (QA verdict, the branch-protection required check set, merge-queue availability), so this route makes no merge or merge-queue eligibility claim. The head is re-read after all dimension reads: a push during the observation makes every dimension `unknown/head_changed_during_observation` and the record `superseded` (or `unknown` when the head returned to the delivery head). It never approves, dismisses a review, waives a check, or merges, and a reading never changes delivery state.
          */
         get: operations["observeIssueDeliveryGovernance"];
         put?: never;
@@ -2987,7 +2987,7 @@ export interface components {
              * @description Why one observation dimension is not `observed`. `blocked` reasons are definite refusals (no integration or credential, permission denied, PR absent); `unknown` reasons are unreadable provider answers (transport, rate limit, timeout, truncated page, malformed body). Neither ever reuses an earlier head's facts.
              * @enum {string|null}
              */
-            reason: "integration_not_configured" | "credential_unavailable" | "permission_denied" | "pull_request_not_found" | "provider_unavailable" | "invalid_provider_response" | null;
+            reason: "integration_not_configured" | "credential_unavailable" | "permission_denied" | "pull_request_not_found" | "provider_unavailable" | "invalid_provider_response" | "head_changed_during_observation" | null;
             /** Format: date-time */
             observed_at: string | null;
             /** @description Only check results bound to this observation's `head_sha`. An empty list is `checks_missing`, never a passing gate. */
@@ -3000,7 +3000,7 @@ export interface components {
              * @description Why one observation dimension is not `observed`. `blocked` reasons are definite refusals (no integration or credential, permission denied, PR absent); `unknown` reasons are unreadable provider answers (transport, rate limit, timeout, truncated page, malformed body). Neither ever reuses an earlier head's facts.
              * @enum {string|null}
              */
-            reason: "integration_not_configured" | "credential_unavailable" | "permission_denied" | "pull_request_not_found" | "provider_unavailable" | "invalid_provider_response" | null;
+            reason: "integration_not_configured" | "credential_unavailable" | "permission_denied" | "pull_request_not_found" | "provider_unavailable" | "invalid_provider_response" | "head_changed_during_observation" | null;
             /** Format: date-time */
             observed_at: string | null;
             /** @description The approval quorum (`CONTEXT.md`): simultaneous approvals on the current head by both named owners. Default `Luthiel` and `Ludwig-Planck`; an observation never widens it. */
@@ -3016,7 +3016,7 @@ export interface components {
              * @description Why one observation dimension is not `observed`. `blocked` reasons are definite refusals (no integration or credential, permission denied, PR absent); `unknown` reasons are unreadable provider answers (transport, rate limit, timeout, truncated page, malformed body). Neither ever reuses an earlier head's facts.
              * @enum {string|null}
              */
-            reason: "integration_not_configured" | "credential_unavailable" | "permission_denied" | "pull_request_not_found" | "provider_unavailable" | "invalid_provider_response" | null;
+            reason: "integration_not_configured" | "credential_unavailable" | "permission_denied" | "pull_request_not_found" | "provider_unavailable" | "invalid_provider_response" | "head_changed_during_observation" | null;
             /** Format: date-time */
             observed_at: string | null;
             /** @description Open review conversations on the observed head; null when the provider answer was incomplete or unavailable (never treated as zero). */

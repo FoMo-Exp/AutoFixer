@@ -53,6 +53,18 @@ describes:
 | `blocked` | A definite refusal: no integration/credential, permission denied, or the pull request is absent. |
 | `unknown` | The provider answer was unreadable: timeout, rate limit, 5xx, truncated page, or malformed body. |
 
+The head is read once before the dimension reads and **again after all of
+them**. A push during the observation means the collected checks, reviews, and
+threads belong to a head that is no longer current: every dimension becomes
+`unknown` with reason `head_changed_during_observation` and no items, and the
+record is `superseded` when the final head differs from the delivery head
+(`unmet_condition: head_changed`), otherwise `unknown`.
+
+Decisive-review ordering uses parsed instants, not string comparison: a
+`submitted_at` that is not a valid RFC3339/ISO timestamp makes the approval
+dimension `unknown` with `invalid_provider_response` and no items, so an
+unparseable value can never sort an old approval ahead of a newer rejection.
+
 A new head never inherits the old QA/check/discussion/approval observations.
 The service holds no governance facts of its own, and the observation route
 does not persist a snapshot, so a later read cannot resurrect an earlier
@@ -102,6 +114,7 @@ merge remains a provider-side, human-governed action.
 | PR `404` | `blocked` | `pull_request_not_found` |
 | Timeout, rate limit, `5xx`, network | `unknown` | `provider_unavailable` |
 | Malformed/truncated container, thread page, or review-thread answer | `unknown` | `invalid_provider_response` |
+| The PR head moved between the first and final head read | `superseded` (or `unknown` if it returned to the delivery head) | `head_changed_during_observation` |
 
 A blocked or unknown observation has `head_sha: null`, empty check/approval
 items, `review_discussions.unresolved: null`, `conditions_satisfied: false`,

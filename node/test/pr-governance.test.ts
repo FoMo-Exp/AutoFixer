@@ -82,6 +82,7 @@ function snapshot(overrides: Partial<ProviderGovernanceSnapshot> = {}): Provider
     checks: [check("build", "passed"), check("test", "passed")],
     checks_complete: true,
     approvals_complete: true,
+    head_stable: true,
     approvals: [
       approval("Luthiel", "approved"),
       approval("Ludwig-Planck", "approved", HEAD, "2026-11-18T09:01:00.000Z"),
@@ -349,6 +350,60 @@ describe("missing or unreadable observations are explicit", () => {
       items: [],
     });
     expect(observation.approvals.state).toBe("observed");
+    expect(observation.conditions_satisfied).toBe(false);
+    expect(observation.unmet_condition).toBe("governance_unknown");
+  });
+
+  test("a head that moved during the read is discarded as unknown/superseded", async () => {
+    const moved = await service(
+      new ScriptedProvider(
+        snapshot({ head_sha: OTHER_HEAD, head_stable: false, checks: [], approvals: [] }),
+      ),
+    ).observe(DELIVERY);
+    expect(moved.head_sha).toBe(OTHER_HEAD);
+    expect(moved.validity).toBe("superseded");
+    expect(moved.conditions_satisfied).toBe(false);
+    expect(moved.unmet_condition).toBe("head_changed");
+    for (const dimension of [moved.checks, moved.approvals, moved.review_discussions]) {
+      expect(dimension).toMatchObject({
+        state: "unknown",
+        reason: "head_changed_during_observation",
+      });
+    }
+    expect(moved.checks.items).toEqual([]);
+    expect(moved.approvals.items).toEqual([]);
+    expect(moved.review_discussions.unresolved).toBeNull();
+  });
+
+  test("a head that moved and came back is unknown, never a passing read", async () => {
+    const raced = await service(
+      new ScriptedProvider(snapshot({ head_stable: false, checks: [], approvals: [] })),
+    ).observe(DELIVERY);
+    expect(raced.head_sha).toBe(HEAD);
+    expect(raced.validity).toBe("unknown");
+    expect(raced.conditions_satisfied).toBe(false);
+    expect(raced.unmet_condition).toBe("governance_unknown");
+    expect(raced.checks.reason).toBe("head_changed_during_observation");
+  });
+
+  test("an unparseable review timestamp makes approvals unknown", async () => {
+    const observation = await service(
+      new ScriptedProvider(
+        snapshot({
+          approvals: [
+            approval("Luthiel", "approved", HEAD, "zzzz"),
+            approval("Luthiel", "changes_requested", HEAD, "2026-11-18T09:30:00Z"),
+            approval("Ludwig-Planck", "approved"),
+          ],
+        }),
+      ),
+    ).observe(DELIVERY);
+    expect(observation.approvals).toMatchObject({
+      state: "unknown",
+      reason: "invalid_provider_response",
+      satisfied: false,
+      items: [],
+    });
     expect(observation.conditions_satisfied).toBe(false);
     expect(observation.unmet_condition).toBe("governance_unknown");
   });

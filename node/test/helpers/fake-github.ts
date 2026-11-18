@@ -52,6 +52,11 @@ export interface FakeGitHubOptions {
    * shaped like GitHub's REST/GraphQL answers so the adapter parses exactly
    * what production returns.
    */
+  /**
+   * Head SHAs served by successive reads of the pull request, so a test can
+   * simulate a push between the adapter's first and final head read.
+   */
+  pull_head_sequence?: string[];
   governance?: {
     check_runs?: Array<{
       name: string;
@@ -171,6 +176,7 @@ export async function startFakeGitHub(options: FakeGitHubOptions): Promise<FakeG
   const prefix = `/repos/${options.owner}/${options.repo}`;
   const writesList: string[] = [];
   let nextPullRequest = 1;
+  const headSequence = [...(options.pull_head_sequence ?? [])];
 
   const service: FakeGitHubState = {
     refs,
@@ -517,7 +523,12 @@ export async function startFakeGitHub(options: FakeGitHubOptions): Promise<FakeG
       if (pr === undefined) {
         return { status: 404, body: { message: "Not Found" } };
       }
-      return { status: 200, body: prBody(pr) };
+      const body = prBody(pr);
+      const served = headSequence.shift();
+      if (served !== undefined) {
+        (body["head"] as Record<string, unknown>)["sha"] = served;
+      }
+      return { status: 200, body };
     }
 
     const checkRunsMatch = new RegExp(`^${prefix}/commits/([0-9a-f]{40})/check-runs\\?`).exec(url);

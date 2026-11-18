@@ -1172,7 +1172,10 @@ absent PR is `blocked`; a timeout, rate limit, 5xx, or truncated/uninterpretable
 answer is `unknown`; neither reuses the last known values. An unreadable
 decisive review makes the approval dimension `unknown` with no items rather
 than leaving an older approval in place, and an unreadable check row likewise
-makes the check dimension `unknown`. `conditions_satisfied` covers only the
+makes the check dimension `unknown`. The head is re-read after all dimension
+reads: a push mid-observation makes every dimension
+`unknown/head_changed_during_observation` and the record `superseded` (or
+`unknown` if the head returned to the delivery head). `conditions_satisfied` covers only the
 conditions the reader can verify; `not_evaluated` names the gates it cannot
 (QA verdict, branch-protection required check set, merge-queue availability), so
 the record makes no merge or merge-queue eligibility claim. The route never

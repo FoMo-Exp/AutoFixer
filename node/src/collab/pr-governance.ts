@@ -51,6 +51,7 @@ export const GOVERNANCE_UNAVAILABLE_REASONS = [
   "pull_request_not_found",
   "provider_unavailable",
   "invalid_provider_response",
+  "head_changed_during_observation",
 ] as const;
 export type GovernanceUnavailableReason = (typeof GOVERNANCE_UNAVAILABLE_REASONS)[number];
 
@@ -204,6 +205,13 @@ export interface ProviderGovernanceSnapshot {
    */
   approvals_complete: boolean;
   unresolved_discussions: number;
+  /**
+   * False when the pull request's head read again *after* the dimension reads
+   * differs from the head those dimensions were read for. The snapshot then
+   * carries the newer head and no usable dimensions: a push during the
+   * observation invalidates what was read.
+   */
+  head_stable: boolean;
 }
 
 /**
@@ -246,15 +254,19 @@ export function finalizeGovernanceObservation(
     observation.approvals.state,
     observation.review_discussions.state,
   ];
+  const headMoved =
+    observation.head_sha !== null && observation.head_sha !== observation.delivery_head_sha;
   let validity: GovernanceValidity;
   if (dimensions.includes("blocked")) {
     validity = "blocked";
-  } else if (dimensions.includes("unknown")) {
-    validity = "unknown";
   } else if (observation.head_sha === null) {
     validity = "unknown";
-  } else if (observation.head_sha !== observation.delivery_head_sha) {
+  } else if (headMoved) {
+    // A known head that is not the delivered head invalidates the binding even
+    // when a dimension could not be read (for example a push mid-observation).
     validity = "superseded";
+  } else if (dimensions.includes("unknown")) {
+    validity = "unknown";
   } else {
     validity = "current";
   }
@@ -406,9 +418,14 @@ export class PullRequestGovernanceService {
     // another commit is not evidence about this head, so it is dropped rather
     // than carried over.
     const checks = snapshot.checks.filter((check) => check.head_sha === head);
+    const readableTimestamps = snapshot.approvals.every((approval) =>
+      isReadableInstant(approval.submitted_at),
+    );
     const approvals = latestDecisions(
       snapshot.approvals.filter((approval) => approval.head_sha === head),
     );
+    const headStable = snapshot.head_stable !== false;
+    const approvalsComplete = snapshot.approvals_complete !== false && readableTimestamps;
     const observation: PullRequestGovernanceObservation = {
       observation_id: this.observationId(),
       issue_id: delivery.issue_id,
@@ -427,10 +444,10 @@ export class PullRequestGovernanceService {
       not_evaluated: [...GOVERNANCE_NOT_EVALUATED],
       unmet_condition: null,
       checks:
-        snapshot.checks_complete === false
+        !headStable || snapshot.checks_complete === false
           ? {
               state: "unknown",
-              reason: "invalid_provider_response",
+              reason: headStable ? "invalid_provider_response" : "head_changed_during_observation",
               observed_at: null,
               items: [],
             }
@@ -441,12 +458,12 @@ export class PullRequestGovernanceService {
               items: checks,
             },
       approvals:
-        snapshot.approvals_complete === false
+        !headStable || !approvalsComplete
           ? {
               // A partial review set could hide a newer rejection, so none of
               // it is presented as this reviewer set's current decision.
               state: "unknown",
-              reason: "invalid_provider_response",
+              reason: headStable ? "invalid_provider_response" : "head_changed_during_observation",
               observed_at: null,
               required: [...this.requiredApprovers],
               satisfied: false,
@@ -460,12 +477,19 @@ export class PullRequestGovernanceService {
               satisfied: quorumSatisfied(approvals, this.requiredApprovers),
               items: approvals,
             },
-      review_discussions: {
-        state: "observed",
-        reason: null,
-        observed_at: observedAt,
-        unresolved: snapshot.unresolved_discussions,
-      },
+      review_discussions: headStable
+        ? {
+            state: "observed",
+            reason: null,
+            observed_at: observedAt,
+            unresolved: snapshot.unresolved_discussions,
+          }
+        : {
+            state: "unknown",
+            reason: "head_changed_during_observation",
+            observed_at: null,
+            unresolved: null,
+          },
       supersedes: null,
     };
     return finalizeGovernanceObservation(observation);
@@ -511,14 +535,28 @@ export class PullRequestGovernanceService {
   }
 }
 
-/** Keep the newest decision per reviewer; an older approval never overrides it. */
+/** A timestamp a review ordering can rely on: parseable RFC3339/ISO instant. */
+const INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+export function isReadableInstant(value: string): boolean {
+  return INSTANT_PATTERN.test(value) && Number.isFinite(Date.parse(value));
+}
+
+/**
+ * Keep the newest decision per reviewer; an older approval never overrides it.
+ * Ordering compares parsed instants, never strings: `"zzzz"` must not sort
+ * after a real timestamp.
+ */
 function latestDecisions(
   approvals: GovernanceApprovalObservation[],
 ): GovernanceApprovalObservation[] {
   const byIdentity = new Map<string, GovernanceApprovalObservation>();
   for (const approval of approvals) {
     const current = byIdentity.get(approval.identity);
-    if (current === undefined || approval.submitted_at > current.submitted_at) {
+    if (
+      current === undefined ||
+      Date.parse(approval.submitted_at) >= Date.parse(current.submitted_at)
+    ) {
       byIdentity.set(approval.identity, approval);
     }
   }

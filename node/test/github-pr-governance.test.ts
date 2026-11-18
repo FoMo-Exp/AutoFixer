@@ -127,6 +127,7 @@ async function setup(
     binding?: GitHubGovernanceBinding | null;
     credentials?: Record<string, string>;
     prHead?: string;
+    pull_head_sequence?: string[];
   } = {},
 ): Promise<Fixture> {
   const fake = await startFakeGitHub({
@@ -136,6 +137,9 @@ async function setup(
     token: TOKEN,
     governance: options.governance ?? baseGovernance(),
     ...(options.faults !== undefined ? { faults: options.faults } : {}),
+    ...(options.pull_head_sequence !== undefined
+      ? { pull_head_sequence: options.pull_head_sequence }
+      : {}),
   });
   open.push(fake);
   fake.addPullRequest({
@@ -343,6 +347,60 @@ describe("uninterpretable review rows are never silently dropped", () => {
     expect(observation.approvals.satisfied).toBe(false);
     expect(observation.approvals.state).toBe("unknown");
     expect(observation.conditions_satisfied).toBe(false);
+  });
+});
+
+describe("a head that moves during the read is never reported as passing", () => {
+  test("a push between the head read and the dimension reads is superseded", async () => {
+    const nextHead = "6".repeat(40);
+    // First head read serves HEAD (the delivered head); the final verification
+    // read serves nextHead.
+    const { provider } = await setup({ pull_head_sequence: [HEAD, nextHead] });
+    const observation = await new PullRequestGovernanceService({ provider }).observe(DELIVERY);
+    expect(observation.head_sha).toBe(nextHead);
+    expect(observation.validity).toBe("superseded");
+    expect(observation.conditions_satisfied).toBe(false);
+    expect(observation.unmet_condition).toBe("head_changed");
+    expect(observation.checks.items).toEqual([]);
+    expect(observation.approvals.items).toEqual([]);
+    expect(observation.approvals.satisfied).toBe(false);
+    expect(observation.checks.reason).toBe("head_changed_during_observation");
+    expect(observation.review_discussions.unresolved).toBeNull();
+  });
+
+  test("an unreadable review timestamp is unknown, not an old approval", async () => {
+    const governance = baseGovernance();
+    governance.reviews = [
+      {
+        user: { login: "Luthiel" },
+        state: "APPROVED",
+        commit_id: HEAD,
+        // Lexicographically after a real instant, but not a parseable one.
+        submitted_at: "zzzz",
+      },
+      {
+        user: { login: "Luthiel" },
+        state: "CHANGES_REQUESTED",
+        commit_id: HEAD,
+        submitted_at: "2026-11-18T09:30:00Z",
+      },
+      {
+        user: { login: "Ludwig-Planck" },
+        state: "APPROVED",
+        commit_id: HEAD,
+        submitted_at: "2026-11-18T09:13:00Z",
+      },
+    ];
+    const { provider } = await setup({ governance });
+    const observation = await new PullRequestGovernanceService({ provider }).observe(DELIVERY);
+    expect(observation.approvals).toMatchObject({
+      state: "unknown",
+      reason: "invalid_provider_response",
+      satisfied: false,
+      items: [],
+    });
+    expect(observation.conditions_satisfied).toBe(false);
+    expect(observation.unmet_condition).toBe("governance_unknown");
   });
 });
 

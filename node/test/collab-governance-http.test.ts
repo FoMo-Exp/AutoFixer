@@ -99,6 +99,7 @@ function passingSnapshot(
     ],
     checks_complete: true,
     approvals_complete: true,
+    head_stable: true,
     unresolved_discussions: 0,
     ...overrides,
   };

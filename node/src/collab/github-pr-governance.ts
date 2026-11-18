@@ -5,7 +5,7 @@ import type { ProviderHttpClient } from "../provider-access/provider-http.js";
 import { parseCanonicalRepositoryId } from "../provider-access/canonical-repository.js";
 import type { CanonicalRepositoryId } from "../provider-access/canonical-repository.js";
 import { isGitObjectId } from "./git-objects.js";
-import { GovernanceProviderError } from "./pr-governance.js";
+import { GovernanceProviderError, isReadableInstant } from "./pr-governance.js";
 import type {
   GovernanceApprovalObservation,
   GovernanceCheckObservation,
@@ -390,11 +390,14 @@ export function createGitHubGovernanceProvider(
         identity === null ||
         commitId === null ||
         !isGitObjectId(commitId) ||
-        submittedAt === null
+        submittedAt === null ||
+        !isReadableInstant(submittedAt)
       ) {
         // A decisive review that cannot be bound to reviewer/commit/time must
         // never be dropped: dropping a newer rejection would leave an older
-        // approval looking like the reviewer's latest decision.
+        // approval looking like the reviewer's latest decision. A timestamp
+        // that is not a parseable RFC3339 instant has no order, so the whole
+        // reviewer set is untrustworthy.
         complete = false;
         continue;
       }
@@ -463,6 +466,23 @@ export function createGitHubGovernanceProvider(
         const checks = await readChecks(secret, bound, pull.head_sha, observedAt);
         const reviews = await readApprovals(secret, bound, number);
         const unresolved = await readUnresolvedDiscussions(secret, bound.coords, number);
+        // Re-read the head after every dimension read. A push during the
+        // observation leaves the collected items bound to a head that is no
+        // longer current, so nothing read above may be attributed to the new
+        // head; the service decides unknown vs superseded from this snapshot.
+        const after = await readPullRequest(secret, bound, number);
+        if (after.head_sha !== pull.head_sha) {
+          return {
+            head_sha: after.head_sha,
+            pull_request_state: after.state,
+            checks: [],
+            checks_complete: false,
+            approvals: [],
+            approvals_complete: false,
+            unresolved_discussions: 0,
+            head_stable: false,
+          };
+        }
         return {
           head_sha: pull.head_sha,
           pull_request_state: pull.state,
@@ -471,6 +491,7 @@ export function createGitHubGovernanceProvider(
           approvals: reviews.approvals,
           approvals_complete: reviews.complete,
           unresolved_discussions: unresolved,
+          head_stable: true,
         };
       });
     },

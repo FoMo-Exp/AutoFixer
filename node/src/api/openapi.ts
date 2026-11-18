@@ -4992,8 +4992,12 @@ export function buildOpenApiDocument(): OpenApiDocument {
           "and `not_evaluated` names the gates it cannot (QA verdict, the " +
           "branch-protection required check set, merge-queue availability), " +
           "so this route makes no merge or merge-queue eligibility claim. " +
-          "It never approves, dismisses a review, waives a check, or merges, " +
-          "and a reading never changes delivery state.",
+          "The head is re-read after all dimension reads: a push during the " +
+          "observation makes every dimension " +
+          "`unknown/head_changed_during_observation` and the record " +
+          "`superseded` (or `unknown` when the head returned to the delivery " +
+          "head). It never approves, dismisses a review, waives a check, or " +
+          "merges, and a reading never changes delivery state.",
         parameters: [
           WORKSPACE_ID_PARAMETER,
           ISSUE_ID_PARAMETER,
