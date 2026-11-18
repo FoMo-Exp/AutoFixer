@@ -397,9 +397,14 @@ describe("pull requests", () => {
       title: "Fix iss_dat260",
       body: "body",
     });
-    expect(pr).toMatchObject({ branch: BRANCH, head_sha: HEAD, state: "open" });
+    expect(pr).toMatchObject({
+      branch: BRANCH,
+      head_sha: HEAD,
+      base_ref: "main",
+      state: "open",
+    });
     expect(fake.pullRequests).toHaveLength(1);
-    await expect(provider.findPullRequest(REPOSITORY, BRANCH, HEAD)).resolves.toEqual(pr);
+    await expect(provider.findPullRequest(REPOSITORY, BRANCH, HEAD, "main")).resolves.toEqual(pr);
   });
 
   test("never opens a duplicate PR for the same branch revision", async () => {
@@ -429,7 +434,7 @@ describe("pull requests", () => {
       state: "closed",
     });
     const open = fake.addPullRequest({ head_ref: BRANCH, head_sha: HEAD, base_ref: "main" });
-    const found = await provider.findPullRequest(REPOSITORY, BRANCH, HEAD);
+    const found = await provider.findPullRequest(REPOSITORY, BRANCH, HEAD, "main");
     expect(found?.pr_id).toBe(String(open.number));
     expect(found?.pr_id).toBe(String(open.number));
   });
@@ -437,7 +442,18 @@ describe("pull requests", () => {
   test("findPullRequest ignores a PR at another head", async () => {
     const { fake, provider } = await setup({ refs: { [BRANCH]: HEAD } });
     fake.addPullRequest({ head_ref: BRANCH, head_sha: OTHER_HEAD, base_ref: "main" });
-    await expect(provider.findPullRequest(REPOSITORY, BRANCH, HEAD)).resolves.toBeNull();
+    await expect(provider.findPullRequest(REPOSITORY, BRANCH, HEAD, "main")).resolves.toBeNull();
+  });
+
+  test("findPullRequest ignores a PR at the same head targeting another base", async () => {
+    const { fake, provider } = await setup({ refs: { [BRANCH]: HEAD } });
+    fake.addPullRequest({ head_ref: BRANCH, head_sha: HEAD, base_ref: "release" });
+    await expect(provider.findPullRequest(REPOSITORY, BRANCH, HEAD, "main")).resolves.toBeNull();
+  });
+
+  test("findPullRequest refuses a target other than the repository base", async () => {
+    const { provider } = await setup({ refs: { [BRANCH]: HEAD } });
+    await expectProviderError(() => provider.findPullRequest(REPOSITORY, BRANCH, HEAD, "release"));
   });
 
   test("refuses to target anything but the repository base branch", async () => {

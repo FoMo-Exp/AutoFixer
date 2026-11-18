@@ -50,6 +50,12 @@ export interface ProviderPullRequestEvidence {
   pr_url: string;
   branch: string;
   head_sha: string;
+  /**
+   * The PR's target branch. Reuse evidence binds the whole identity of the
+   * delivery — head *and* base — so a PR for the same revision against another
+   * branch can never be accepted as this delivery.
+   */
+  base_ref: string;
   state: "open" | "closed" | "merged";
 }
 
@@ -117,6 +123,7 @@ export interface DeliveryProvider {
     repository: RepositoryRef,
     branch: string,
     headSha: string,
+    targetBranch: string,
   ): Promise<ProviderPullRequestEvidence | null>;
   openPullRequest(input: OpenPullRequestInput): Promise<ProviderPullRequestEvidence>;
 }
@@ -322,7 +329,12 @@ export class DeliveryBroker {
     // an explicit reconcile may resolve it.
     let existingPr: ProviderPullRequestEvidence | null;
     try {
-      existingPr = await provider.findPullRequest(delivery.repository, branch, delivery.head_sha);
+      existingPr = await provider.findPullRequest(
+        delivery.repository,
+        branch,
+        delivery.head_sha,
+        delivery.target_branch,
+      );
     } catch {
       return deliveryView(
         this.recordState(delivery, options, "unknown", {
@@ -335,7 +347,8 @@ export class DeliveryBroker {
       existingPr !== null &&
       existingPr.state === "open" &&
       existingPr.head_sha === delivery.head_sha &&
-      existingPr.branch === branch
+      existingPr.branch === branch &&
+      existingPr.base_ref === delivery.target_branch
     ) {
       this.recordState(delivery, options, "pushing", {});
       // A PR alone is not proof of delivery: the provider branch must still
@@ -534,7 +547,12 @@ export class DeliveryBroker {
     let pr: ProviderPullRequestEvidence | null;
     try {
       branchEvidence = await provider.observeBranch(delivery.repository, branch);
-      pr = await provider.findPullRequest(delivery.repository, branch, delivery.head_sha);
+      pr = await provider.findPullRequest(
+        delivery.repository,
+        branch,
+        delivery.head_sha,
+        delivery.target_branch,
+      );
     } catch {
       throw new DeliveryProviderError();
     }
@@ -548,6 +566,7 @@ export class DeliveryBroker {
       pr.state === "open" &&
       pr.head_sha === delivery.head_sha &&
       pr.branch === branch &&
+      pr.base_ref === delivery.target_branch &&
       branchEvidence.head_sha === delivery.head_sha
     ) {
       return deliveryView(

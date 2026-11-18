@@ -472,7 +472,11 @@ export async function startFakeGitHub(options: FakeGitHubOptions): Promise<FakeG
       if (headSha === undefined) {
         return { status: 422, body: { message: "Head branch does not exist" } };
       }
-      const existing = pullRequests.find((pr) => pr.head_ref === head && pr.state === "open");
+      // GitHub identifies a conflicting pull request by its head *and* base:
+      // the same head may legitimately have open PRs against other branches.
+      const existing = pullRequests.find(
+        (pr) => pr.head_ref === head && pr.base_ref === base && pr.state === "open",
+      );
       if (existing !== undefined) {
         return { status: 422, body: { message: "A pull request already exists" } };
       }

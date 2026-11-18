@@ -397,6 +397,15 @@ export function applyFileChange(base: string | null, change: DiffFileChange): st
     if (base === null) {
       throw new PatchFormatError("context_mismatch", "deleted file is absent from the base tree");
     }
+    // A deletion is reproducible only when its hunks remove exactly the pinned
+    // base content. Skipping the hunks would accept a wrong or truncated
+    // deletion patch as evidence for a tree the approval never covered.
+    if (applyHunks(base, change) !== "") {
+      throw new PatchFormatError(
+        "context_mismatch",
+        "deletion patch does not remove the base content",
+      );
+    }
     return null;
   }
   if (change.kind === "add" && base !== null) {
@@ -405,8 +414,12 @@ export function applyFileChange(base: string | null, change: DiffFileChange): st
   if (change.kind === "modify" && base === null) {
     throw new PatchFormatError("context_mismatch", "modified file is absent from the base tree");
   }
+  return applyHunks(base ?? "", change);
+}
 
-  const original = contentLines(base ?? "");
+/** Apply a change's hunks to its base content, verifying every context line. */
+function applyHunks(base: string, change: DiffFileChange): string {
+  const original = contentLines(base);
   const output: ContentLine[] = [];
   let cursor = 0;
   for (const hunk of change.hunks) {

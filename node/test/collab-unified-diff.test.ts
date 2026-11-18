@@ -91,6 +91,47 @@ describe("parse and apply", () => {
     expect(codes(() => applyFileChange(null, changes[0]!))).toBe("context_mismatch");
   });
 
+  test("refuses a deletion whose removed content does not match the base", () => {
+    const diff = [
+      "diff --git a/old.txt b/old.txt",
+      "deleted file mode 100644",
+      "--- a/old.txt",
+      "+++ /dev/null",
+      "@@ -1,2 +0,0 @@",
+      "-one",
+      "-WRONG",
+      "",
+    ].join("\n");
+    const changes = parseUnifiedDiff(diff);
+    expect(codes(() => applyFileChange("one\ntwo\n", changes[0]!))).toBe("context_mismatch");
+  });
+
+  test("refuses a deletion that does not remove the whole base file", () => {
+    const diff = [
+      "diff --git a/old.txt b/old.txt",
+      "deleted file mode 100644",
+      "--- a/old.txt",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "-one",
+      "",
+    ].join("\n");
+    const changes = parseUnifiedDiff(diff);
+    expect(codes(() => applyFileChange("one\ntwo\n", changes[0]!))).toBe("context_mismatch");
+  });
+
+  test("applies the deletion of an empty file that carries no hunks", () => {
+    const diff = [
+      "diff --git a/empty.txt b/empty.txt",
+      "deleted file mode 100644",
+      "index e69de29..0000000",
+      "",
+    ].join("\n");
+    const changes = parseUnifiedDiff(diff);
+    expect(applyFileChange("", changes[0]!)).toBeNull();
+    expect(codes(() => applyFileChange("not empty\n", changes[0]!))).toBe("context_mismatch");
+  });
+
   test("records a mode-only change without touching content", () => {
     const diff = ["diff --git a/run.sh b/run.sh", "old mode 100644", "new mode 100755", ""].join(
       "\n",

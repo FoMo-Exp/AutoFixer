@@ -322,6 +322,33 @@ describe("end-to-end delivery", () => {
     expect(f.machine.getDelivery(delivery.delivery_id)?.state).toBe("delivered");
   });
 
+  test("an open PR for the same revision against another base is not adopted", async () => {
+    const f = await setup();
+    const branch = autofixerBranchFor(f.issue.issue_id);
+    // An open PR for the approved revision targets a release branch instead of
+    // the repository base. It is not evidence that this delivery happened.
+    const foreign = f.fake.addPullRequest({
+      head_ref: branch,
+      head_sha: f.candidate.head_sha,
+      base_ref: "release",
+    });
+
+    const delivery = requestDelivery(f);
+    const view = await f.broker.deliver(delivery.delivery_id, { actor: "broker:delivery" });
+
+    expect(view.state).toBe("delivered");
+    expect(f.fake.pullRequests).toHaveLength(2);
+    const created = f.fake.pullRequests.find((pr) => pr.number !== foreign.number);
+    expect(created).toMatchObject({
+      head_ref: branch,
+      head_sha: f.candidate.head_sha,
+      base_ref: "main",
+      state: "open",
+    });
+    expect(view.pr_id).toBe(String(created?.number));
+    expect(f.fake.refs.get(branch)).toBe(f.candidate.head_sha);
+  });
+
   test("an audit-unavailable sink writes nothing to the provider", async () => {
     const f = await setup({ auditAvailable: false });
     const delivery = requestDelivery(f);

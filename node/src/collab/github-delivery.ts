@@ -581,6 +581,7 @@ export function createGitHubDeliveryProvider(
       pr_url: pr.html_url,
       branch: pr.head_ref,
       head_sha: pr.head_sha,
+      base_ref: pr.base_ref,
       state: pr.merged ? "merged" : pr.state,
     };
   }
@@ -891,11 +892,20 @@ export function createGitHubDeliveryProvider(
     repository: RepositoryRef,
     branch: string,
     headSha: string,
+    targetBranch: string,
   ): Promise<ProviderPullRequestEvidence | null> {
     const bound = requireBinding(repository);
     const violation = branchViolation(repository, branch);
     if (violation !== null) {
       throw new DeliveryProviderError(violation);
+    }
+    // Reuse evidence must bind the whole identity of the delivery. A PR for
+    // the same head against another branch is a different delivery target and
+    // must never be accepted as this one.
+    if (targetBranch !== repository.base_ref) {
+      throw new DeliveryProviderError(
+        "a delivery pull request may only target the repository base branch",
+      );
     }
     try {
       return await secretFor(bound, async (secret) => {
@@ -906,7 +916,7 @@ export function createGitHubDeliveryProvider(
           callFailure(error, "read");
         }
         const matching = pullRequests.filter(
-          (pr) => pr.head_ref === branch && pr.head_sha === headSha,
+          (pr) => pr.head_ref === branch && pr.head_sha === headSha && pr.base_ref === targetBranch,
         );
         // An open PR is the one a retry must reuse; a closed one is evidence but
         // never a reason to open a duplicate for the same revision.
