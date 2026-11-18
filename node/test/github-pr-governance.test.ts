@@ -127,7 +127,7 @@ async function setup(
     binding?: GitHubGovernanceBinding | null;
     credentials?: Record<string, string>;
     prHead?: string;
-    pull_head_sequence?: string[];
+    pull_read_sequence?: NonNullable<FakeGitHubOptions["pull_read_sequence"]>;
   } = {},
 ): Promise<Fixture> {
   const fake = await startFakeGitHub({
@@ -137,8 +137,8 @@ async function setup(
     token: TOKEN,
     governance: options.governance ?? baseGovernance(),
     ...(options.faults !== undefined ? { faults: options.faults } : {}),
-    ...(options.pull_head_sequence !== undefined
-      ? { pull_head_sequence: options.pull_head_sequence }
+    ...(options.pull_read_sequence !== undefined
+      ? { pull_read_sequence: options.pull_read_sequence }
       : {}),
   });
   open.push(fake);
@@ -355,7 +355,9 @@ describe("a head that moves during the read is never reported as passing", () =>
     const nextHead = "6".repeat(40);
     // First head read serves HEAD (the delivered head); the final verification
     // read serves nextHead.
-    const { provider } = await setup({ pull_head_sequence: [HEAD, nextHead] });
+    const { provider } = await setup({
+      pull_read_sequence: [{ head_sha: HEAD }, { head_sha: nextHead }],
+    });
     const observation = await new PullRequestGovernanceService({ provider }).observe(DELIVERY);
     expect(observation.head_sha).toBe(nextHead);
     expect(observation.validity).toBe("superseded");
@@ -401,6 +403,61 @@ describe("a head that moves during the read is never reported as passing", () =>
     });
     expect(observation.conditions_satisfied).toBe(false);
     expect(observation.unmet_condition).toBe("governance_unknown");
+  });
+});
+
+describe("the final PR state read wins over the initial one", () => {
+  test("open→closed on the same head reports closed and the unmet condition", async () => {
+    const { provider } = await setup({
+      pull_read_sequence: [{ state: "open" }, { state: "closed" }],
+    });
+    const observation = await new PullRequestGovernanceService({ provider }).observe(DELIVERY);
+    expect(observation.head_sha).toBe(HEAD);
+    expect(observation.pull_request_state).toBe("closed");
+    expect(observation.checks.state).toBe("observed");
+    expect(observation.conditions_satisfied).toBe(false);
+    expect(observation.unmet_condition).toBe("pull_request_not_open");
+  });
+
+  test("open→merged on the same head reports merged and the unmet condition", async () => {
+    const { provider } = await setup({
+      pull_read_sequence: [{ state: "open" }, { state: "merged" }],
+    });
+    const observation = await new PullRequestGovernanceService({ provider }).observe(DELIVERY);
+    expect(observation.pull_request_state).toBe("merged");
+    expect(observation.conditions_satisfied).toBe(false);
+    expect(observation.unmet_condition).toBe("pull_request_not_open");
+  });
+
+  test("closed→open cannot claim dimensions read while closed", async () => {
+    const { provider } = await setup({
+      pull_read_sequence: [{ state: "closed" }, { state: "open" }],
+    });
+    const observation = await new PullRequestGovernanceService({ provider }).observe(DELIVERY);
+    expect(observation.pull_request_state).toBe("open");
+    expect(observation.validity).toBe("unknown");
+    expect(observation.conditions_satisfied).toBe(false);
+    expect(observation.unmet_condition).toBe("governance_unknown");
+    expect(observation.checks).toMatchObject({
+      state: "unknown",
+      reason: "pull_request_state_changed_during_observation",
+      items: [],
+    });
+    expect(observation.approvals.state).toBe("unknown");
+    expect(observation.review_discussions.unresolved).toBeNull();
+  });
+
+  test("a failed final state read is conservative, never the initial open", async () => {
+    const { provider } = await setup({
+      pull_read_sequence: [{ state: "open" }, { status: 500 }],
+    });
+    const observation = await new PullRequestGovernanceService({ provider }).observe(DELIVERY);
+    expect(observation.validity).toBe("unknown");
+    expect(observation.head_sha).toBeNull();
+    expect(observation.conditions_satisfied).toBe(false);
+    expect(observation.unmet_condition).toBe("head_unavailable");
+    expect(observation.checks.reason).toBe("provider_unavailable");
+    expect(observation.checks.items).toEqual([]);
   });
 });
 

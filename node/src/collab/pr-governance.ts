@@ -19,6 +19,10 @@ import type { DeliveryRecord, RepositoryRef } from "./types.js";
  * - when the provider cannot be read, the record says `unknown` (transport,
  *   rate limit, timeout) or `blocked` (no integration/credential, permission
  *   denied, PR absent) instead of reusing the last known values;
+ * - the head and PR state are re-read after every dimension read, and the
+ *   final state is authoritative: a PR that closed/merged mid-observation is
+ *   reported closed/merged, and a push or closed→open race discards the
+ *   collected dimensions instead of attributing them to the new state;
  * - a record produced for a different head than the delivery published is
  *   `superseded` and can never be eligible.
  *
@@ -52,6 +56,7 @@ export const GOVERNANCE_UNAVAILABLE_REASONS = [
   "provider_unavailable",
   "invalid_provider_response",
   "head_changed_during_observation",
+  "pull_request_state_changed_during_observation",
 ] as const;
 export type GovernanceUnavailableReason = (typeof GOVERNANCE_UNAVAILABLE_REASONS)[number];
 
@@ -212,6 +217,16 @@ export interface ProviderGovernanceSnapshot {
    * observation invalidates what was read.
    */
   head_stable: boolean;
+  /**
+   * False when the dimensions were read while the PR was not open and the
+   * final read is open (for example closed→open). The final state is carried,
+   * but the collected dimensions are not attributed to it. When the final
+   * state is closed/merged after an open read, the dimensions stay valid and
+   * the final state alone makes the observed conditions unmet
+   * (`pull_request_not_open`); that is reported via `pull_request_state`,
+   * not this flag.
+   */
+  state_stable: boolean;
 }
 
 /**
@@ -425,6 +440,14 @@ export class PullRequestGovernanceService {
       snapshot.approvals.filter((approval) => approval.head_sha === head),
     );
     const headStable = snapshot.head_stable !== false;
+    const stateStable = snapshot.state_stable !== false;
+    // A race that invalidates the collected dimensions: a push, or a PR that
+    // was closed/merged while the dimensions were read and is open again.
+    const dimensionsRace = !headStable
+      ? "head_changed_during_observation"
+      : !stateStable
+        ? "pull_request_state_changed_during_observation"
+        : null;
     const approvalsComplete = snapshot.approvals_complete !== false && readableTimestamps;
     const observation: PullRequestGovernanceObservation = {
       observation_id: this.observationId(),
@@ -444,10 +467,10 @@ export class PullRequestGovernanceService {
       not_evaluated: [...GOVERNANCE_NOT_EVALUATED],
       unmet_condition: null,
       checks:
-        !headStable || snapshot.checks_complete === false
+        dimensionsRace !== null || snapshot.checks_complete === false
           ? {
               state: "unknown",
-              reason: headStable ? "invalid_provider_response" : "head_changed_during_observation",
+              reason: dimensionsRace ?? "invalid_provider_response",
               observed_at: null,
               items: [],
             }
@@ -458,12 +481,12 @@ export class PullRequestGovernanceService {
               items: checks,
             },
       approvals:
-        !headStable || !approvalsComplete
+        dimensionsRace !== null || !approvalsComplete
           ? {
               // A partial review set could hide a newer rejection, so none of
               // it is presented as this reviewer set's current decision.
               state: "unknown",
-              reason: headStable ? "invalid_provider_response" : "head_changed_during_observation",
+              reason: dimensionsRace ?? "invalid_provider_response",
               observed_at: null,
               required: [...this.requiredApprovers],
               satisfied: false,
@@ -477,19 +500,20 @@ export class PullRequestGovernanceService {
               satisfied: quorumSatisfied(approvals, this.requiredApprovers),
               items: approvals,
             },
-      review_discussions: headStable
-        ? {
-            state: "observed",
-            reason: null,
-            observed_at: observedAt,
-            unresolved: snapshot.unresolved_discussions,
-          }
-        : {
-            state: "unknown",
-            reason: "head_changed_during_observation",
-            observed_at: null,
-            unresolved: null,
-          },
+      review_discussions:
+        dimensionsRace === null
+          ? {
+              state: "observed",
+              reason: null,
+              observed_at: observedAt,
+              unresolved: snapshot.unresolved_discussions,
+            }
+          : {
+              state: "unknown",
+              reason: dimensionsRace,
+              observed_at: null,
+              unresolved: null,
+            },
       supersedes: null,
     };
     return finalizeGovernanceObservation(observation);

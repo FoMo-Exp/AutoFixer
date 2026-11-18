@@ -238,13 +238,23 @@ export function createGitHubGovernanceProvider(
     if (headSha === null || !isGitObjectId(headSha)) {
       throw new GovernanceProviderError("unknown", "invalid_provider_response");
     }
-    const state =
-      response.json["merged_at"] !== null && response.json["merged_at"] !== undefined
-        ? "merged"
-        : stringField(response.json["state"]) === "closed"
-          ? "closed"
-          : "open";
-    return { head_sha: headSha, state };
+    const rawState = stringField(response.json["state"]);
+    if (rawState !== "open" && rawState !== "closed") {
+      // An unreadable state must never default to "open": that would let a
+      // closed/merged PR look eligible.
+      throw new GovernanceProviderError("unknown", "invalid_provider_response");
+    }
+    if (!Object.prototype.hasOwnProperty.call(response.json, "merged_at")) {
+      throw new GovernanceProviderError("unknown", "invalid_provider_response");
+    }
+    const mergedAt = response.json["merged_at"];
+    if (mergedAt !== null) {
+      if (typeof mergedAt !== "string" || !isReadableInstant(mergedAt)) {
+        throw new GovernanceProviderError("unknown", "invalid_provider_response");
+      }
+      return { head_sha: headSha, state: "merged" };
+    }
+    return { head_sha: headSha, state: rawState };
   }
 
   interface PageRead {
@@ -466,10 +476,13 @@ export function createGitHubGovernanceProvider(
         const checks = await readChecks(secret, bound, pull.head_sha, observedAt);
         const reviews = await readApprovals(secret, bound, number);
         const unresolved = await readUnresolvedDiscussions(secret, bound.coords, number);
-        // Re-read the head after every dimension read. A push during the
+        // Re-read the PR after every dimension read. A push during the
         // observation leaves the collected items bound to a head that is no
         // longer current, so nothing read above may be attributed to the new
         // head; the service decides unknown vs superseded from this snapshot.
+        // The final state is authoritative: a PR that closed/merged while we
+        // read must be reported as closed/merged, and a PR that became open
+        // after a non-open read cannot claim the dimensions read before.
         const after = await readPullRequest(secret, bound, number);
         if (after.head_sha !== pull.head_sha) {
           return {
@@ -481,17 +494,20 @@ export function createGitHubGovernanceProvider(
             approvals_complete: false,
             unresolved_discussions: 0,
             head_stable: false,
+            state_stable: true,
           };
         }
+        const stateStable = pull.state === "open" || after.state !== "open";
         return {
           head_sha: pull.head_sha,
-          pull_request_state: pull.state,
-          checks: checks.checks,
-          checks_complete: checks.complete,
-          approvals: reviews.approvals,
-          approvals_complete: reviews.complete,
-          unresolved_discussions: unresolved,
+          pull_request_state: after.state,
+          checks: stateStable ? checks.checks : [],
+          checks_complete: stateStable && checks.complete,
+          approvals: stateStable ? reviews.approvals : [],
+          approvals_complete: stateStable && reviews.complete,
+          unresolved_discussions: stateStable ? unresolved : 0,
           head_stable: true,
+          state_stable: stateStable,
         };
       });
     },

@@ -44,6 +44,20 @@ describes:
 - `review_discussions.unresolved` is read for the same head; `null` means the
   answer was incomplete or unavailable, never "zero".
 
+The PR state (open/closed/merged) is also read once before the dimension reads
+and **again at the end**. The final state is authoritative: if the PR closed or
+merged while the dimensions were read, the record reports that final state and
+`conditions_satisfied` is false with `unmet_condition: pull_request_not_open`
+(the dimension observations remain valid for the same head). If the PR was not
+open during the reads and the final read is open (for example closed→open), the
+collected dimensions are not attributed to it: every dimension becomes
+`unknown` with reason `pull_request_state_changed_during_observation`, and the
+record is `unknown` with `conditions_satisfied: false`. A failed or unparseable
+final state read yields `blocked`/`unknown` with no reuse of the initial state.
+
+This is the final re-check observation, not an atomic snapshot and not a
+guarantee about state after the response is returned.
+
 `validity` summarizes the binding:
 
 | Value | Meaning |
@@ -101,6 +115,9 @@ must never be inferred as satisfied:
 - `merge_queue_availability` — merge-queue configuration and mergeability /
   conflict state are not observed.
 
+`conditions_satisfied` requires the final observed state to be `open`; it never
+means merge eligibility.
+
 The service never approves, dismisses a review, waives a check, or merges; a
 merge remains a provider-side, human-governed action.
 
@@ -115,6 +132,7 @@ merge remains a provider-side, human-governed action.
 | Timeout, rate limit, `5xx`, network | `unknown` | `provider_unavailable` |
 | Malformed/truncated container, thread page, or review-thread answer | `unknown` | `invalid_provider_response` |
 | The PR head moved between the first and final head read | `superseded` (or `unknown` if it returned to the delivery head) | `head_changed_during_observation` |
+| The PR was closed/merged during the reads and open again at the final read | `unknown` | `pull_request_state_changed_during_observation` |
 
 A blocked or unknown observation has `head_sha: null`, empty check/approval
 items, `review_discussions.unresolved: null`, `conditions_satisfied: false`,

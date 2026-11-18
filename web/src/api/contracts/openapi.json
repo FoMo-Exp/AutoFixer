@@ -8678,7 +8678,7 @@
       "get": {
         "operationId": "observeIssueDeliveryGovernance",
         "summary": "Observe the pull request's current-head checks, approvals, and discussions",
-        "description": "A read-only observation of the delivered PR's current head, bound to that exact `head_sha` and the `observed_at` time. Required checks, decisive reviews, and unresolved review conversations are read from the provider; each item carries its own head binding, so a check or approval recorded against an older commit is absent from a new head, never inherited. A head change marks the previous observation `superseded` (and reports it in `supersedes`), and a new head starts with only what the provider reports for it. Missing integration or credential, a permission denial, or an absent PR is `blocked`; a timeout, rate limit, 5xx, or an incomplete/truncated provider answer is `unknown`; neither reuses the last known values. `conditions_satisfied` covers only what the reader can observe, and `not_evaluated` names the gates it cannot (QA verdict, the branch-protection required check set, merge-queue availability), so this route makes no merge or merge-queue eligibility claim. The head is re-read after all dimension reads: a push during the observation makes every dimension `unknown/head_changed_during_observation` and the record `superseded` (or `unknown` when the head returned to the delivery head). It never approves, dismisses a review, waives a check, or merges, and a reading never changes delivery state.",
+        "description": "A read-only observation of the delivered PR's current head, bound to that exact `head_sha` and the `observed_at` time. Required checks, decisive reviews, and unresolved review conversations are read from the provider; each item carries its own head binding, so a check or approval recorded against an older commit is absent from a new head, never inherited. A head change marks the previous observation `superseded` (and reports it in `supersedes`), and a new head starts with only what the provider reports for it. Missing integration or credential, a permission denial, or an absent PR is `blocked`; a timeout, rate limit, 5xx, or an incomplete/truncated provider answer is `unknown`; neither reuses the last known values. `conditions_satisfied` covers only what the reader can observe, and `not_evaluated` names the gates it cannot (QA verdict, the branch-protection required check set, merge-queue availability), so this route makes no merge or merge-queue eligibility claim. The head and PR state are re-read after all dimension reads: a push during the observation makes every dimension `unknown/head_changed_during_observation` and the record `superseded` (or `unknown` when the head returned to the delivery head). The final state is authoritative: closed/merged at the final read reports that state with `unmet_condition: pull_request_not_open`, a closed→open race makes every dimension `unknown/pull_request_state_changed_during_observation` with conditions unmet, and a failed final read is `blocked`/`unknown`. This is a final re-check observation, not an atomic snapshot. It never approves, dismisses a review, waives a check, or merges, and a reading never changes delivery state.",
         "parameters": [
           {
             "name": "workspace_id",
@@ -16683,6 +16683,7 @@
               "provider_unavailable",
               "invalid_provider_response",
               "head_changed_during_observation",
+              "pull_request_state_changed_during_observation",
               null
             ],
             "description": "Why one observation dimension is not `observed`. `blocked` reasons are definite refusals (no integration or credential, permission denied, PR absent); `unknown` reasons are unreadable provider answers (transport, rate limit, timeout, truncated page, malformed body). Neither ever reuses an earlier head's facts."
@@ -16735,6 +16736,7 @@
               "provider_unavailable",
               "invalid_provider_response",
               "head_changed_during_observation",
+              "pull_request_state_changed_during_observation",
               null
             ],
             "description": "Why one observation dimension is not `observed`. `blocked` reasons are definite refusals (no integration or credential, permission denied, PR absent); `unknown` reasons are unreadable provider answers (transport, rate limit, timeout, truncated page, malformed body). Neither ever reuses an earlier head's facts."
@@ -16795,6 +16797,7 @@
               "provider_unavailable",
               "invalid_provider_response",
               "head_changed_during_observation",
+              "pull_request_state_changed_during_observation",
               null
             ],
             "description": "Why one observation dimension is not `observed`. `blocked` reasons are definite refusals (no integration or credential, permission denied, PR absent); `unknown` reasons are unreadable provider answers (transport, rate limit, timeout, truncated page, malformed body). Neither ever reuses an earlier head's facts."

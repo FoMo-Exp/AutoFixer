@@ -572,4 +572,6 @@ UI behavior that follows the contract:
   and the workbench never offers an approve, dismiss, check-waiver, or merge
   action from it. `conditions_satisfied` covers only the observed conditions;
   `not_evaluated` (QA verdict, branch-protection required checks, merge-queue
-  availability) must be displayed as not evaluated, never as satisfied.
+  availability) must be displayed as not evaluated, never as satisfied. The
+  record reflects the final state read: a PR reported closed/merged at the
+  final read must not be shown as open or condition-satisfied.

@@ -53,10 +53,15 @@ export interface FakeGitHubOptions {
    * what production returns.
    */
   /**
-   * Head SHAs served by successive reads of the pull request, so a test can
-   * simulate a push between the adapter's first and final head read.
+   * Successive reads of one pull request, so a test can simulate a push or a
+   * state change between the adapter's first and final read. A `status`
+   * entry answers that read with an error instead.
    */
-  pull_head_sequence?: string[];
+  pull_read_sequence?: Array<{
+    head_sha?: string;
+    state?: "open" | "closed" | "merged";
+    status?: number;
+  }>;
   governance?: {
     check_runs?: Array<{
       name: string;
@@ -176,7 +181,7 @@ export async function startFakeGitHub(options: FakeGitHubOptions): Promise<FakeG
   const prefix = `/repos/${options.owner}/${options.repo}`;
   const writesList: string[] = [];
   let nextPullRequest = 1;
-  const headSequence = [...(options.pull_head_sequence ?? [])];
+  const pullReadSequence = [...(options.pull_read_sequence ?? [])];
 
   const service: FakeGitHubState = {
     refs,
@@ -523,10 +528,18 @@ export async function startFakeGitHub(options: FakeGitHubOptions): Promise<FakeG
       if (pr === undefined) {
         return { status: 404, body: { message: "Not Found" } };
       }
+      const served = pullReadSequence.shift();
+      if (served?.status !== undefined) {
+        return { status: served.status, body: { message: "injected fault" } };
+      }
       const body = prBody(pr);
-      const served = headSequence.shift();
-      if (served !== undefined) {
-        (body["head"] as Record<string, unknown>)["sha"] = served;
+      if (served?.head_sha !== undefined) {
+        (body["head"] as Record<string, unknown>)["sha"] = served.head_sha;
+      }
+      if (served?.state !== undefined) {
+        const merged = served.state === "merged";
+        body["state"] = merged ? "closed" : served.state;
+        body["merged_at"] = merged ? "2026-11-18T09:30:00Z" : null;
       }
       return { status: 200, body };
     }

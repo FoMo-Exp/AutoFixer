@@ -83,6 +83,7 @@ function snapshot(overrides: Partial<ProviderGovernanceSnapshot> = {}): Provider
     checks_complete: true,
     approvals_complete: true,
     head_stable: true,
+    state_stable: true,
     approvals: [
       approval("Luthiel", "approved"),
       approval("Ludwig-Planck", "approved", HEAD, "2026-11-18T09:01:00.000Z"),
@@ -261,6 +262,43 @@ describe("a new head inherits nothing", () => {
     expect(second.supersedes).toBeNull();
     expect(observationStillCurrent(second, HEAD)).toBe(true);
     expect(first.observation_id).not.toBe(second.observation_id);
+  });
+});
+
+describe("the final PR state is authoritative", () => {
+  test("a PR observed closed at the final read is reported closed and unmet", async () => {
+    for (const pull_request_state of ["closed", "merged"] as const) {
+      const observation = await service(
+        new ScriptedProvider(snapshot({ pull_request_state })),
+      ).observe(DELIVERY);
+      expect(observation.pull_request_state).toBe(pull_request_state);
+      expect(observation.checks.state).toBe("observed");
+      expect(observation.conditions_satisfied).toBe(false);
+      expect(observation.unmet_condition).toBe("pull_request_not_open");
+    }
+  });
+
+  test("a PR that became open after a non-open read cannot claim the old dimensions", async () => {
+    const observation = await service(
+      new ScriptedProvider(snapshot({ state_stable: false })),
+    ).observe(DELIVERY);
+    expect(observation.pull_request_state).toBe("open");
+    expect(observation.validity).toBe("unknown");
+    expect(observation.conditions_satisfied).toBe(false);
+    expect(observation.unmet_condition).toBe("governance_unknown");
+    for (const dimension of [
+      observation.checks,
+      observation.approvals,
+      observation.review_discussions,
+    ]) {
+      expect(dimension).toMatchObject({
+        state: "unknown",
+        reason: "pull_request_state_changed_during_observation",
+      });
+    }
+    expect(observation.checks.items).toEqual([]);
+    expect(observation.approvals.items).toEqual([]);
+    expect(observation.review_discussions.unresolved).toBeNull();
   });
 });
 
