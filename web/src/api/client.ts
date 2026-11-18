@@ -59,6 +59,10 @@ export type IssueApprovalDecision =
 export type IssueDeliveryReconcile = NonNullable<
   operations["reconcileIssueDelivery"]["requestBody"]
 >["content"]["application/json"];
+export type IssueDeliveryRequest =
+  operations["requestIssueDelivery"]["requestBody"]["content"]["application/json"];
+export type PullRequestGovernanceObservation =
+  components["schemas"]["PullRequestGovernanceObservation"];
 export type IssueCandidatePage =
   operations["listIssueCandidates"]["responses"][200]["content"]["application/json"];
 export type IssueApprovalPage =
@@ -862,6 +866,44 @@ export class ForgePilotClient extends ApiTransport {
   ): Promise<Delivery> {
     return this.request<Delivery>(
       `${issuePath(workspaceId, issueId, "deliveries")}/${encodeURIComponent(deliveryId)}`,
+    );
+  }
+
+  /**
+   * Ask the trusted broker to deliver one approved candidate. The approval is
+   * consumed by exactly this operation and the `grant_id` is a separate
+   * delivery-role capability; the workbench never mints either one. A 202 body
+   * is the broker's current state, which may already be `partial`, `unknown`,
+   * or `failed` — never assumed to be success.
+   */
+  async requestIssueDelivery(
+    workspaceId: string,
+    issueId: string,
+    input: IssueDeliveryRequest,
+    idempotencyKey?: string,
+  ): Promise<Delivery> {
+    return this.request<Delivery>(issuePath(workspaceId, issueId, "deliveries"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+      },
+      body: JSON.stringify(input),
+    });
+  }
+
+  /**
+   * Read the delivered PR's current-head governance. Read-only: there is no
+   * approve, merge, dismiss, or check-waiver call on this path. A provider that
+   * cannot be read is reported inside the observation as `blocked`/`unknown`.
+   */
+  async observeIssueDeliveryGovernance(
+    workspaceId: string,
+    issueId: string,
+    deliveryId: string,
+  ): Promise<PullRequestGovernanceObservation> {
+    return this.request<PullRequestGovernanceObservation>(
+      `${issuePath(workspaceId, issueId, "deliveries")}/${encodeURIComponent(deliveryId)}/governance`,
     );
   }
 

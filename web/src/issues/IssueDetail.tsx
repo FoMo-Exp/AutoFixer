@@ -439,6 +439,7 @@ export function IssueDetail({
               issueId={issueId}
               deliveries={deliveries}
               candidates={candidates}
+              approvals={approvals}
               loading={reviewLoading}
               error={reviewError}
               canMutate={canMutate}
