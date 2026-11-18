@@ -8,6 +8,7 @@ import {
   approvalStateLabel,
   approvalStateTone,
   approvalsForCandidate,
+  candidateInvalidationNote,
   digestLabel,
   invalidatedDetail,
   latestCandidate,
@@ -264,6 +265,7 @@ function CandidateSummary({
 }): ReactElement {
   const [expanded, setExpanded] = useState(true);
   const evidenceId = `candidate-evidence-${candidate.candidate_id}`;
+  const invalidationNote = candidateInvalidationNote(candidate);
   return (
     <article className="candidate-review" aria-labelledby="candidate-review-title">
       <div className="candidate-review-heading">
@@ -278,9 +280,21 @@ function CandidateSummary({
             {riskClassLabel(candidate.risk.class)}
           </span>
           {superseded && <span className="review-state-pill review-tone-danger">Superseded</span>}
+          {invalidationNote && (
+            <span className="review-state-pill review-tone-danger">Invalidated</span>
+          )}
         </div>
       </div>
       <p className="candidate-summary">{redactText(candidate.summary)}</p>
+      {invalidationNote && (
+        <div className="reason-card approval-invalidated" role="status">
+          <span className="reason-icon">!</span>
+          <div>
+            <strong>Candidate invalidated</strong>
+            <p>{invalidationNote}</p>
+          </div>
+        </div>
+      )}
       <div className="candidate-binding-facts">
         <div>
           <span className="metric-label">Base</span>

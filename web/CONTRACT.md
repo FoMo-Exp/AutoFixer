@@ -575,3 +575,57 @@ UI behavior that follows the contract:
   availability) must be displayed as not evaluated, never as satisfied. The
   record reflects the final state read: a PR reported closed/merged at the
   final read must not be shown as open or condition-satisfied.
+
+## Candidate review, controlled delivery, and PR governance (DAT-262)
+
+This surface targets `main` at `70e365e724dd637dcfbb7fa6e27d805da485894`
+(DAT-261 #90), carrying the DAT-260 delivery broker `e270bf1` (#89) and the
+DAT-259 review/delivery API `ef270bf` (#87). Fixtures are the merged captures
+under `docs/fixtures/collab-api-v1/`; no UI field is invented outside
+`src/api/contracts/openapi.json`.
+
+| Endpoint                                                             | Request fields                                                | Response type                       | Status |
+| -------------------------------------------------------------------- | ------------------------------------------------------------- | ----------------------------------- | ------ |
+| `GET /api/v1/workspaces/{workspace_id}/issues/{issue_id}/candidates` | path ids; optional `cursor` (every page is read)              | `{items: Candidate[], next_cursor}` | ✅     |
+| `GET …/issues/{issue_id}/candidates/{candidate_id}`                  | path ids                                                      | `Candidate`                         | ✅     |
+| `GET …/issues/{issue_id}/approvals`                                  | path ids; optional `cursor` (every page is read)              | `{items: Approval[], next_cursor}`  | ✅     |
+| `GET …/issues/{issue_id}/approvals/{approval_id}`                    | path ids                                                      | `Approval`                          | ✅     |
+| `POST …/issues/{issue_id}/approvals/{approval_id}/decision`          | `decision`, `diff_digest`; optional `note`; `Idempotency-Key` | `Approval`                          | ✅     |
+| `GET …/issues/{issue_id}/deliveries`                                 | path ids; optional `cursor` (every page is read)              | `{items: Delivery[], next_cursor}`  | ✅     |
+| `GET …/issues/{issue_id}/deliveries/{delivery_id}`                   | path ids                                                      | `Delivery`                          | ✅     |
+| `POST …/issues/{issue_id}/deliveries`                                | `approval_id`, `grant_id`; `Idempotency-Key`                  | `Delivery` (`202`)                  | ✅     |
+| `POST …/issues/{issue_id}/deliveries/{delivery_id}/reconcile`        | optional `note`; `Idempotency-Key`                            | `Delivery` (`202`)                  | ✅     |
+| `GET …/issues/{issue_id}/deliveries/{delivery_id}/governance`        | path ids                                                      | `PullRequestGovernanceObservation`  | ✅     |
+
+Surface boundaries:
+
+- **The frozen candidate is the review unit.** The card shows `summary`,
+  `base_sha`, `head_sha`, `diff` (digest, changed paths, size), `validation`
+  (environment, config digest, every attempt with exit status and output
+  digest), `risk`, `artifacts`, and `audit_refs`. An `invalidated_at` candidate
+  is rendered as invalidated with its reason and offers no decision or
+  delivery. A superseded candidate keeps its evidence but cannot receive a
+  decision.
+- **The approval is bound and human.** A decision sends the reviewed
+  `diff.digest`; the approver is the authenticated session, never a form field.
+  The UI only enables a decision for `pending`, the named approver, the newest
+  frozen candidate, and a matching binding. `409`/`404` closes the dialog,
+  re-reads the projection, and renders the envelope code.
+- **Delivery is broker-owned and consumes the approval.** `POST …/deliveries`
+  requires both the approved `approval_id` and a separate `grant_id`; the
+  workbench never mints, infers, or stores a grant. The `202` body is the
+  broker's current state and may already be `partial`, `unknown`, or `failed`.
+  `partial` and `unknown` are explicit non-success outcomes with their own
+  copy; only `unknown`/`partial` offer reconcile, and reconcile is never an
+  automatic retry.
+- **Governance is read-only and head-bound.** The newest delivery with a
+  confirmed `pr_url` is observed through
+  `GET …/deliveries/{delivery_id}/governance`, on load and on an explicit
+  refresh. The panel renders the observed `head_sha`, `pull_request_state`,
+  `validity`, `observations_valid`, `conditions_satisfied`,
+  `unmet_condition`, `supersedes`, per-dimension state/reason, checks,
+  decisive reviews, and unresolved conversations. `conditions_satisfied` is
+  never presented as a merge or merge-queue claim; `not_evaluated` is always
+  listed as a non-pass. `blocked` and `unknown` render as refusals, and an
+  unreadable unresolved count is never shown as zero. There is no approve,
+  merge, dismiss, or check-waiver control on this surface.

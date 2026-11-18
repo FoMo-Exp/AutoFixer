@@ -305,4 +305,21 @@ describe("change review card", () => {
 
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });
+
+  it("renders an invalidated candidate as non-deliverable and refuses a decision", () => {
+    renderCard(makeClient(), {
+      candidates: [
+        {
+          ...candidate,
+          invalidated_at: "2026-11-02T13:00:00Z",
+          invalidated_reason: "base_advanced",
+        },
+      ],
+    });
+
+    expect(screen.getByText("Invalidated")).toBeTruthy();
+    expect(screen.getByText(/repository base branch advanced/)).toBeTruthy();
+    expect(screen.getAllByText(/no longer authorizes delivery/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Approve candidate" })).toBeNull();
+  });
 });

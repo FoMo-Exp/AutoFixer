@@ -1,13 +1,30 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
 import { ApiError } from "../api/client";
-import type { Candidate, Delivery, ForgePilotClient, IssueDeliveryReconcile } from "../api/client";
+import type {
+  Approval,
+  Candidate,
+  Delivery,
+  ForgePilotClient,
+  IssueDeliveryReconcile,
+  IssueDeliveryRequest,
+  PullRequestGovernanceObservation,
+} from "../api/client";
 import { CreateIdempotencyKeys } from "../api/idempotency";
 import {
+  GOVERNANCE_APPROVAL_LABELS,
+  GOVERNANCE_CHECK_LABELS,
+  GOVERNANCE_NOT_EVALUATED_LABELS,
+  GOVERNANCE_UNMET_CONDITION_LABELS,
+  GOVERNANCE_VALIDITY_LABELS,
   deliveryNeedsReconcile,
   deliveryOutcomeNote,
+  deliveryRequestGate,
   deliveryStateLabel,
   deliveryStateTone,
+  governanceDimensionLabel,
+  governanceHeadline,
+  governanceValidityTone,
 } from "../ui/change-review";
 import { formatDate, shortId } from "../ui/format";
 import { redactText } from "../ui/redaction";
@@ -20,6 +37,7 @@ interface DeliveryStatusCardProps {
   issueId: string;
   deliveries: Delivery[];
   candidates: Candidate[];
+  approvals: Approval[];
   loading: boolean;
   error: IssueError | undefined;
   canMutate: boolean;
@@ -34,6 +52,7 @@ export function DeliveryStatusCard({
   issueId,
   deliveries,
   candidates,
+  approvals,
   loading,
   error,
   canMutate,
@@ -44,13 +63,87 @@ export function DeliveryStatusCard({
   const [reconcileTarget, setReconcileTarget] = useState<Delivery | undefined>(undefined);
   const [reconcileBusy, setReconcileBusy] = useState(false);
   const [reconcileError, setReconcileError] = useState<IssueError | undefined>(undefined);
+  const [requestTarget, setRequestTarget] = useState<Approval | undefined>(undefined);
+  const [requestBusy, setRequestBusy] = useState(false);
+  const [requestError, setRequestError] = useState<IssueError | undefined>(undefined);
+  const [observation, setObservation] = useState<PullRequestGovernanceObservation | undefined>(
+    undefined,
+  );
+  const [observing, setObserving] = useState(false);
+  const [observationError, setObservationError] = useState<IssueError | undefined>(undefined);
+  const [observeToken, setObserveToken] = useState(0);
   const [cardError, setCardError] = useState<string | undefined>(undefined);
   const reconcileKeys = useRef(new CreateIdempotencyKeys());
+  const requestKeys = useRef(new CreateIdempotencyKeys());
 
   const ordered = [...deliveries].sort(
     (left, right) => Date.parse(right.created_at) - Date.parse(left.created_at),
   );
   const candidateIds = new Set(candidates.map((candidate) => candidate.candidate_id));
+  const requestGate = deliveryRequestGate({ approvals, candidates, deliveries, canMutate });
+  // The newest delivery with a confirmed PR is the one whose head governs the
+  // next merge decision. Older operations are history, not a second status.
+  const governanceDelivery = ordered.find((delivery) => delivery.pr_url !== null);
+  const governanceDeliveryId = governanceDelivery?.delivery_id;
+
+  useEffect(() => {
+    if (!governanceDeliveryId) {
+      setObservation(undefined);
+      setObservationError(undefined);
+      return;
+    }
+    let active = true;
+    setObserving(true);
+    setObservation(undefined);
+    setObservationError(undefined);
+    void client
+      .observeIssueDeliveryGovernance(workspaceId, issueId, governanceDeliveryId)
+      .then((next) => {
+        if (active) setObservation(next);
+      })
+      .catch((caught: unknown) => {
+        if (active) setObservationError(describeIssueError(caught));
+      })
+      .finally(() => {
+        if (active) setObserving(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [client, workspaceId, issueId, governanceDeliveryId, observeToken]);
+
+  async function submitRequest(grantId: string): Promise<void> {
+    if (!requestTarget) return;
+    const input: IssueDeliveryRequest = {
+      approval_id: requestTarget.approval_id,
+      grant_id: grantId.trim(),
+    };
+    const signature = { ...input };
+    setRequestBusy(true);
+    setRequestError(undefined);
+    try {
+      const key = requestKeys.current.forInput(signature);
+      const updated = await client.requestIssueDelivery(workspaceId, issueId, input, key);
+      requestKeys.current.complete(signature);
+      onDeliveryUpdated(updated);
+      setRequestTarget(undefined);
+      onRetry();
+      onChanged();
+    } catch (caught) {
+      const described = describeIssueError(caught);
+      setRequestError(described);
+      // A conflict or a missing approval means this projection is stale. Re-read
+      // rather than leaving a submit button the broker must refuse again.
+      if (caught instanceof ApiError && (caught.status === 409 || caught.status === 404)) {
+        setCardError(errorLabel(described));
+        setRequestTarget(undefined);
+        onRetry();
+        onChanged();
+      }
+    } finally {
+      setRequestBusy(false);
+    }
+  }
 
   async function submitReconcile(note: string): Promise<void> {
     if (!reconcileTarget) return;
@@ -139,6 +232,58 @@ export function DeliveryStatusCard({
         <div className="card-empty">
           No delivery operation exists yet. Delivery requires a current candidate-bound human
           approval; nothing is pushed or opened before it.
+        </div>
+      )}
+
+      {requestGate.approval && (
+        <div className="delivery-request" role="group" aria-labelledby="delivery-request-heading">
+          <div className="delivery-heading">
+            <div>
+              <span className="eyebrow">Approved candidate</span>
+              <h4 id="delivery-request-heading">Delivery is available</h4>
+            </div>
+            <span className="review-state-pill review-tone-done">Approved</span>
+          </div>
+          <div className="info-row">
+            <span>Approval</span>
+            <strong className="mono">{redactText(requestGate.approval.approval_id)}</strong>
+          </div>
+          <div className="info-row">
+            <span>Candidate</span>
+            <strong className="mono">
+              {shortId(
+                requestGate.candidate?.candidate_id ?? requestGate.approval.candidate_id,
+                22,
+              )}
+            </strong>
+          </div>
+          <div className="info-row">
+            <span>Head</span>
+            <strong className="mono">{shortId(requestGate.approval.binding.head_sha, 16)}</strong>
+          </div>
+          <div className="info-row">
+            <span>Target branch</span>
+            <strong className="mono">
+              {redactText(requestGate.approval.binding.target_branch)}
+            </strong>
+          </div>
+          {requestGate.canRequest ? (
+            <div className="approval-actions">
+              <button
+                type="button"
+                className="button button-primary button-small"
+                onClick={() => {
+                  setCardError(undefined);
+                  setRequestError(undefined);
+                  setRequestTarget(requestGate.approval);
+                }}
+              >
+                Request controlled delivery
+              </button>
+            </div>
+          ) : (
+            <p className="review-gate-note">{requestGate.reason}</p>
+          )}
         </div>
       )}
 
@@ -258,6 +403,30 @@ export function DeliveryStatusCard({
         </ul>
       )}
 
+      {governanceDelivery && (
+        <GovernancePanel
+          delivery={governanceDelivery}
+          observation={observation}
+          observing={observing}
+          error={observationError}
+          onRefresh={() => setObserveToken((value) => value + 1)}
+        />
+      )}
+
+      {requestTarget && (
+        <RequestDeliveryDialog
+          approval={requestTarget}
+          candidate={requestGate.candidate}
+          busy={requestBusy}
+          error={requestError}
+          onCancel={() => {
+            setRequestTarget(undefined);
+            setRequestError(undefined);
+          }}
+          onSubmit={(grantId) => void submitRequest(grantId)}
+        />
+      )}
+
       {reconcileTarget && (
         <ReconcileDialog
           delivery={reconcileTarget}
@@ -270,6 +439,406 @@ export function DeliveryStatusCard({
           onSubmit={(note) => void submitReconcile(note)}
         />
       )}
+    </section>
+  );
+}
+
+function RequestDeliveryDialog({
+  approval,
+  candidate,
+  busy,
+  error,
+  onCancel,
+  onSubmit,
+}: {
+  approval: Approval;
+  candidate: Candidate | undefined;
+  busy: boolean;
+  error: IssueError | undefined;
+  onCancel: () => void;
+  onSubmit: (grantId: string) => void;
+}): ReactElement {
+  const [grantId, setGrantId] = useState("");
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const invalid = grantId.trim().length === 0;
+
+  useEffect(() => {
+    cancelRef.current?.focus();
+  }, []);
+
+  function submit(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    if (invalid || busy) return;
+    onSubmit(grantId);
+  }
+
+  return (
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !busy) onCancel();
+      }}
+    >
+      <form
+        className="modal delivery-request-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="delivery-request-title"
+        aria-describedby="delivery-request-description"
+        onSubmit={submit}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !busy) {
+            event.preventDefault();
+            onCancel();
+          }
+        }}
+      >
+        <span className="eyebrow">Broker delivery · {approval.approval_id}</span>
+        <h2 id="delivery-request-title">Request controlled delivery</h2>
+        <p id="delivery-request-description">
+          The broker pushes only this issue&apos;s autofixer branch and opens a pull request. It
+          never writes the base branch, merges, self-reviews, or waives a check. This approval is
+          consumed by exactly this operation.
+        </p>
+        <div className="approval-dialog-facts">
+          <div className="info-row">
+            <span>Candidate</span>
+            <strong className="mono">
+              {redactText(candidate?.candidate_id ?? approval.candidate_id)}
+            </strong>
+          </div>
+          <div className="info-row">
+            <span>Approved head</span>
+            <strong className="mono">{approval.binding.head_sha}</strong>
+          </div>
+          <div className="info-row">
+            <span>Target branch</span>
+            <strong className="mono">{redactText(approval.binding.target_branch)}</strong>
+          </div>
+        </div>
+        <label className="field-block">
+          <span className="label-text">
+            Delivery grant ID<span className="required-dot">*</span>
+          </span>
+          <input
+            type="text"
+            value={grantId}
+            onChange={(event) => setGrantId(event.target.value)}
+            required
+            disabled={busy}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder="grant_…"
+          />
+        </label>
+        <p className="muted-copy">
+          The grant is a separate delivery-role capability bound to this approved head. The
+          workbench neither mints nor infers one; a missing, expired, revoked, or wrong-head grant
+          leaves delivery blocked and no write is attempted.
+        </p>
+        {error && (
+          <div className="inline-error delivery-request-error" role="alert">
+            <span>{errorLabel(error)}</span>
+          </div>
+        )}
+        <div className="modal-actions">
+          <button
+            ref={cancelRef}
+            type="button"
+            className="button button-secondary"
+            onClick={onCancel}
+            disabled={busy}
+          >
+            Cancel
+          </button>
+          <button type="submit" className="button button-primary" disabled={invalid || busy}>
+            {busy ? "Requesting delivery…" : "Request delivery"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function GovernancePanel({
+  delivery,
+  observation,
+  observing,
+  error,
+  onRefresh,
+}: {
+  delivery: Delivery;
+  observation: PullRequestGovernanceObservation | undefined;
+  observing: boolean;
+  error: IssueError | undefined;
+  onRefresh: () => void;
+}): ReactElement {
+  return (
+    <section className="governance-panel" aria-labelledby="governance-heading">
+      <div className="delivery-heading">
+        <div>
+          <span className="eyebrow">Read-only observation</span>
+          <h4 id="governance-heading">PR current-head governance</h4>
+        </div>
+        {observation ? (
+          <span
+            className={`review-state-pill review-tone-${governanceValidityTone(observation.validity)}`}
+          >
+            {GOVERNANCE_VALIDITY_LABELS[observation.validity]}
+          </span>
+        ) : (
+          observing && <span className="review-state-pill review-tone-active">Observing</span>
+        )}
+      </div>
+      <p className="stage-description">
+        Checks, decisive reviews, and review conversations are read from the provider for one exact
+        commit. This record never approves, merges, dismisses a review, or waives a check, and an
+        unreadable answer is never treated as satisfied.
+      </p>
+      <div className="info-row">
+        <span>Pull request</span>
+        <strong className="mono">
+          {delivery.pr_url
+            ? redactText(delivery.pr_url)
+            : delivery.pr_id
+              ? `#${redactText(delivery.pr_id)}`
+              : "None confirmed"}
+        </strong>
+      </div>
+      <div className="info-row">
+        <span>Delivered head</span>
+        <strong className="mono">{shortId(delivery.head_sha, 16)}</strong>
+      </div>
+
+      {error && (
+        <div className="connection-banner" role="alert">
+          <span className="banner-dot" />
+          <div>
+            <strong>Governance observation failed</strong>
+            <span>{errorLabel(error)}</span>
+          </div>
+          <button
+            type="button"
+            className="button button-quiet button-small"
+            onClick={onRefresh}
+            disabled={observing}
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {!observation && observing && !error && (
+        <div className="card-empty compact">Reading the pull request head…</div>
+      )}
+
+      {observation && (
+        <>
+          <p
+            className={`governance-headline governance-tone-${governanceValidityTone(
+              observation.validity,
+            )}`}
+            role="status"
+          >
+            {governanceHeadline(observation)}
+          </p>
+          <div className="governance-facts">
+            <div>
+              <span className="metric-label">Observed head</span>
+              <strong className="mono">
+                {observation.head_sha ? shortId(observation.head_sha, 16) : "Not read"}
+              </strong>
+            </div>
+            <div>
+              <span className="metric-label">PR state</span>
+              <strong>{observation.pull_request_state ?? "Not read"}</strong>
+            </div>
+            <div>
+              <span className="metric-label">Observed at</span>
+              <strong>{formatDate(observation.observed_at)}</strong>
+            </div>
+            <div>
+              <span className="metric-label">Observable conditions</span>
+              <strong>{observation.conditions_satisfied ? "All hold" : "Not satisfied"}</strong>
+            </div>
+          </div>
+          {observation.head_sha && observation.head_sha !== observation.delivery_head_sha && (
+            <div className="reason-card approval-invalidated" role="status">
+              <span className="reason-icon">!</span>
+              <div>
+                <strong>PR head differs from the delivered commit</strong>
+                <p>
+                  Delivered {shortId(observation.delivery_head_sha, 16)}, observed{" "}
+                  {shortId(observation.head_sha, 16)}. Every dimension below applies to the observed
+                  head only; the delivered approval covers another commit.
+                </p>
+              </div>
+            </div>
+          )}
+          {observation.unmet_condition && (
+            <div className="info-row">
+              <span>First unmet condition</span>
+              <strong>
+                {GOVERNANCE_UNMET_CONDITION_LABELS[observation.unmet_condition] ??
+                  observation.unmet_condition}
+              </strong>
+            </div>
+          )}
+          {observation.supersedes && (
+            <p className="muted-copy">
+              Supersedes observation {redactText(observation.supersedes.observation_id)} of head{" "}
+              {shortId(observation.supersedes.head_sha, 12)} because the PR head changed. Its values
+              are not carried into this observation.
+            </p>
+          )}
+
+          <div className="governance-dimensions">
+            <section aria-labelledby="governance-checks-heading">
+              <div className="governance-dimension-heading">
+                <h5 id="governance-checks-heading">Checks</h5>
+                <span className="governance-dimension-state">
+                  {governanceDimensionLabel(observation.checks)}
+                </span>
+              </div>
+              {observation.checks.state === "observed" &&
+                (observation.checks.items.length === 0 ? (
+                  <p className="muted-copy">
+                    No check result was observed on this head. An empty list is never a passing
+                    gate.
+                  </p>
+                ) : (
+                  <div className="review-table-scroll">
+                    <table className="review-table">
+                      <caption>Check results bound to the observed head</caption>
+                      <thead>
+                        <tr>
+                          <th scope="col">Check</th>
+                          <th scope="col">Status</th>
+                          <th scope="col">Head</th>
+                          <th scope="col">Observed</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {observation.checks.items.map((check) => (
+                          <tr key={`${check.name}:${check.head_sha}:${check.observed_at}`}>
+                            <td>{redactText(check.name)}</td>
+                            <td>
+                              <span
+                                className={`review-exit ${
+                                  check.status === "passed"
+                                    ? "review-exit-pass"
+                                    : check.status === "failed"
+                                      ? "review-exit-fail"
+                                      : "review-exit-unknown"
+                                }`}
+                              >
+                                {GOVERNANCE_CHECK_LABELS[check.status] ?? check.status}
+                              </span>
+                            </td>
+                            <td className="mono">{shortId(check.head_sha, 12)}</td>
+                            <td>{formatDate(check.observed_at)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+            </section>
+
+            <section aria-labelledby="governance-approvals-heading">
+              <div className="governance-dimension-heading">
+                <h5 id="governance-approvals-heading">Decisive reviews</h5>
+                <span className="governance-dimension-state">
+                  {governanceDimensionLabel(observation.approvals)}
+                </span>
+              </div>
+              {observation.approvals.state === "observed" && (
+                <>
+                  <div className="info-row">
+                    <span>Required approvers</span>
+                    <strong>{observation.approvals.required.join(", ")}</strong>
+                  </div>
+                  <div className="info-row">
+                    <span>Quorum on this head</span>
+                    <strong>
+                      {observation.approvals.satisfied
+                        ? "Satisfied by newest decisive reviews"
+                        : "Not satisfied"}
+                    </strong>
+                  </div>
+                  {observation.approvals.items.length === 0 ? (
+                    <p className="muted-copy">No decisive review was observed on this head.</p>
+                  ) : (
+                    <ul className="governance-items">
+                      {observation.approvals.items.map((item) => (
+                        <li key={`${item.identity}:${item.submitted_at}`}>
+                          <strong>{redactText(item.identity)}</strong>
+                          <span
+                            className={`review-state-pill review-tone-${
+                              item.decision === "approved" ? "done" : "danger"
+                            }`}
+                          >
+                            {GOVERNANCE_APPROVAL_LABELS[item.decision] ?? item.decision}
+                          </span>
+                          <span className="mono">head {shortId(item.head_sha, 12)}</span>
+                          <span>{formatDate(item.submitted_at)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              )}
+            </section>
+
+            <section aria-labelledby="governance-discussions-heading">
+              <div className="governance-dimension-heading">
+                <h5 id="governance-discussions-heading">Review conversations</h5>
+                <span className="governance-dimension-state">
+                  {governanceDimensionLabel(observation.review_discussions)}
+                </span>
+              </div>
+              {observation.review_discussions.state === "observed" ? (
+                <div className="info-row">
+                  <span>Unresolved</span>
+                  <strong>
+                    {observation.review_discussions.unresolved === null
+                      ? "Not readable — never treated as zero"
+                      : observation.review_discussions.unresolved}
+                  </strong>
+                </div>
+              ) : (
+                <div className="info-row">
+                  <span>Unresolved</span>
+                  <strong>Not observed — never treated as zero</strong>
+                </div>
+              )}
+            </section>
+          </div>
+
+          <div className="governance-not-evaluated">
+            <span className="field-label">Not evaluated by this observation</span>
+            <p className="muted-copy">
+              {observation.not_evaluated.length === 0
+                ? "The observation reports no unevaluated gate."
+                : `${observation.not_evaluated
+                    .map((item) => GOVERNANCE_NOT_EVALUATED_LABELS[item] ?? item)
+                    .join(", ")}. Their absence from this record is not a pass.`}
+            </p>
+          </div>
+        </>
+      )}
+
+      <div className="approval-actions">
+        <button
+          type="button"
+          className="button button-secondary button-small"
+          onClick={onRefresh}
+          disabled={observing}
+        >
+          {observing ? "Observing…" : "Refresh observation"}
+        </button>
+      </div>
     </section>
   );
 }
