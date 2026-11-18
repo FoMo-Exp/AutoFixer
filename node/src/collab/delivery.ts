@@ -19,9 +19,15 @@ import { AUTOFIXER_BRANCH_PREFIX, autofixerBranchFor } from "./types.js";
  * Delivery state edges. `unknown` and `partial` leave only through
  * `reconcile_delivery` (a separate command), so a retry can never smuggle a
  * second write past an unresolved outcome.
+ *
+ * `pending -> unknown` exists for the pre-write provider probe: an operation
+ * whose intention is recorded, but whose provider evidence (branch/PR) cannot
+ * be read, has no determined outcome and must not fall through to a write. The
+ * alternative — treating an unreadable probe as "nothing exists" — could open a
+ * duplicate PR beside one the service cannot see.
  */
 export const DELIVERY_TRANSITIONS: Record<DeliveryState, readonly DeliveryState[]> = {
-  pending: ["pushing", "failed", "cancelled"],
+  pending: ["pushing", "unknown", "failed", "cancelled"],
   pushing: ["opening_pr", "partial", "unknown", "failed", "cancelled"],
   opening_pr: ["delivered", "partial", "unknown", "failed", "cancelled"],
   delivered: [],
@@ -31,8 +37,22 @@ export const DELIVERY_TRANSITIONS: Record<DeliveryState, readonly DeliveryState[
   cancelled: [],
 };
 
-/** States a reconcile command may leave; never `delivered` from nothing. */
-export const RECONCILABLE_STATES: readonly DeliveryState[] = ["unknown", "partial"];
+/**
+ * States a reconcile command may leave. Beyond the unresolved outcomes
+ * (`unknown`, `partial`), the in-flight states `pushing` and `opening_pr` are
+ * included: they are persisted *before* the provider write they describe, so a
+ * process that dies during that write leaves one behind with no live writer.
+ * Evidence-based reconciliation is the only safe convergence path for such a
+ * crash orphan — it never writes to the provider and never re-enters the write
+ * path. A live writer in this process is refused by the broker's in-flight
+ * guard before this list is consulted.
+ */
+export const RECONCILABLE_STATES: readonly DeliveryState[] = [
+  "pushing",
+  "opening_pr",
+  "unknown",
+  "partial",
+];
 
 export function canTransitionDelivery(from: DeliveryState, to: DeliveryState): boolean {
   return DELIVERY_TRANSITIONS[from].includes(to);

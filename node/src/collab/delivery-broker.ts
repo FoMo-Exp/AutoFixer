@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { bindingMismatch } from "./approval.js";
 import type { ApprovalDirectory } from "./approval-service.js";
 import { isEligibleApprover } from "./approval-service.js";
-import { deliveryBranchProblem, deliveryView } from "./delivery.js";
+import { RECONCILABLE_STATES, deliveryBranchProblem, deliveryView } from "./delivery.js";
 import type { DeliveryView } from "./delivery.js";
 import { CollabError } from "./errors.js";
 import type { CollabMachine } from "./machine.js";
@@ -291,8 +291,21 @@ export class DeliveryBroker {
 
     // A crashed earlier attempt may already have published this exact commit
     // and PR while its state write was lost. Read provider evidence first so a
-    // retry reconciles instead of opening a duplicate PR.
-    const existingPr = await this.safeFindPullRequest(provider, delivery, branch);
+    // retry reconciles instead of opening a duplicate PR. A failed read is not
+    // evidence of absence: proceeding to push/open here could create a second
+    // PR beside one we cannot see, so the operation stops as `unknown` and only
+    // an explicit reconcile may resolve it.
+    let existingPr: ProviderPullRequestEvidence | null;
+    try {
+      existingPr = await provider.findPullRequest(delivery.repository, branch, delivery.head_sha);
+    } catch {
+      return deliveryView(
+        this.recordState(delivery, options, "unknown", {
+          branch: null,
+          error_code: "PROVIDER_UNAVAILABLE",
+        }),
+      );
+    }
     if (
       existingPr !== null &&
       existingPr.state === "open" &&
@@ -427,20 +440,44 @@ export class DeliveryBroker {
   }
 
   /**
-   * Reconcile an ambiguous/partial outcome against provider evidence. This is
-   * the only way out of `unknown`, and it performs no provider write: a safe
-   * retry reconciles the same operation, never a new candidate or PR.
+   * Reconcile an ambiguous, partial, or crash-orphaned in-flight outcome
+   * against provider evidence. This is the only way out of `unknown`/`partial`
+   * and the only convergence path for a `pushing`/`opening_pr` state left
+   * behind when the process died during a provider write. It performs no
+   * provider write: a safe retry reconciles the same operation, never a new
+   * candidate or PR.
    */
   async reconcile(deliveryId: string, options: ReconcileOptions): Promise<DeliveryView> {
-    const { machine } = this.options;
+    if (this.inFlight.has(deliveryId)) {
+      // A live write is still running in this process; reading provider
+      // evidence now could record a premature partial/delivered outcome.
+      throw new CollabError(
+        "DELIVERY_STATE_CONFLICT",
+        "a delivery write is still in progress for this operation",
+        { delivery_id: deliveryId },
+      );
+    }
     const delivery = this.requireDelivery(deliveryId);
-    if (delivery.state !== "unknown" && delivery.state !== "partial") {
+    if (!RECONCILABLE_STATES.includes(delivery.state)) {
       throw new CollabError(
         "DELIVERY_STATE_CONFLICT",
         `delivery state ${delivery.state} has nothing to reconcile`,
         { delivery_id: delivery.delivery_id, state: delivery.state },
       );
     }
+    this.inFlight.add(deliveryId);
+    try {
+      return await this.reconcileOnce(delivery, options);
+    } finally {
+      this.inFlight.delete(deliveryId);
+    }
+  }
+
+  private async reconcileOnce(
+    delivery: DeliveryRecord,
+    options: ReconcileOptions,
+  ): Promise<DeliveryView> {
+    const { machine } = this.options;
     const provider = this.providerFor(delivery);
     const branch = delivery.branch ?? autofixerBranchFor(delivery.issue_id);
     let branchEvidence: ProviderBranchEvidence;
@@ -724,19 +761,5 @@ export class DeliveryBroker {
       error_code: fields.error_code ?? null,
       authority: this.authorityFacts(delivery),
     });
-  }
-
-  private async safeFindPullRequest(
-    provider: DeliveryProvider,
-    delivery: DeliveryRecord,
-    branch: string,
-  ): Promise<ProviderPullRequestEvidence | null> {
-    try {
-      return await provider.findPullRequest(delivery.repository, branch, delivery.head_sha);
-    } catch {
-      // A failed read is not evidence of absence; the push/PR path proceeds,
-      // and an ambiguous creation outcome is recorded as unknown/partial.
-      return null;
-    }
   }
 }

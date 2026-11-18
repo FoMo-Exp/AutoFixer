@@ -74,6 +74,9 @@ class FakeProvider {
     repository_governance: "github_branch_protection" as const,
   };
   pushMode: "ok" | "ambiguous" | "failed" = "ok";
+  findMode: "ok" | "throw" = "ok";
+  /** When set, the PR probe waits for it (tests hold a write in flight). */
+  findGate: Promise<void> | null = null;
   branchHead: string | null = null;
   pr: ProviderPullRequestEvidence | null = null;
   pushCalls: PushBranchInput[] = [];
@@ -96,6 +99,12 @@ class FakeProvider {
   }
 
   async findPullRequest(): Promise<ProviderPullRequestEvidence | null> {
+    if (this.findGate !== null) {
+      await this.findGate;
+    }
+    if (this.findMode === "throw") {
+      throw new Error("provider evidence unavailable");
+    }
     return this.pr;
   }
 
@@ -434,6 +443,84 @@ async function approve(f: Fixture, approvalId: string): Promise<void> {
   expect(response.status).toBe(200);
 }
 
+/** A second machine/services instance over the same persisted state (restart). */
+function restartedServices(f: Fixture): { machine: CollabMachine; deps: CollabHttpDeps } {
+  const machine = new CollabMachine({
+    candidateStore: f.store,
+    persistencePath: path.join(f.root, "collaboration.json"),
+    now: f.clock.now,
+  });
+  const directory = createApprovalDirectory({
+    enterprise_id: f.issue.workspace.enterprise_id,
+    memberships: f.repos.memberships,
+    users: f.identity.users,
+    identities: f.identity.identities,
+    access: f.access,
+    clock: f.clock.now,
+  });
+  return {
+    machine,
+    deps: {
+      machine,
+      candidates: new CandidateReviewService(machine, f.store),
+      approvals: new ApprovalService(machine, directory),
+      deliveries: new DeliveryBroker({
+        machine,
+        providers: { github: f.provider },
+        approvalDirectory: directory,
+        deliveryAuthorized: createDeliveryPermission({
+          machine,
+          access: f.access,
+          workspaces: f.repos.workspaces,
+          enterprise_id: f.issue.workspace.enterprise_id,
+        }),
+        auditAvailable: () => machine.auditAvailable(),
+      }),
+    },
+  };
+}
+
+/** Record the delivery intent without starting a write (as the API route does). */
+function recordDeliveryIntent(f: Fixture, approvalId: string, operationId: string) {
+  return f.deps.deliveries.request({
+    operation_id: operationId,
+    actor: `user:${f.ownerId}`,
+    issue_id: f.issue.issue_id,
+    candidate_id: f.candidate.candidate_id,
+    approval_id: approvalId,
+    grant_id: f.grantId,
+    requester_authorized: true,
+  });
+}
+
+/**
+ * Persist the pre-write state transition the broker records, then stop: this is
+ * exactly the audit state a process leaves behind when it dies during a
+ * provider write.
+ */
+function recordPreWriteState(
+  f: Fixture,
+  deliveryId: string,
+  operationId: string,
+  to: "pushing" | "opening_pr",
+) {
+  return f.machine.recordDeliveryState({
+    operation_id: `${operationId}:${to}`,
+    actor: `user:${f.ownerId}`,
+    delivery_id: deliveryId,
+    to,
+    branch: to === "opening_pr" ? `autofixer/${f.issue.issue_id}` : null,
+    pr_id: null,
+    pr_url: null,
+    error_code: null,
+    authority: {
+      approver_authorized: true,
+      delivery_authorized: true,
+      audit_available: true,
+    },
+  });
+}
+
 describe("candidate review reads are workspace-scoped", () => {
   test("list and card are served for the issue in the path workspace", async () => {
     const f = fixture!;
@@ -590,44 +677,15 @@ describe("approvals use live membership and repository authority", () => {
 
     // Restart: a new machine rebuilt from the persisted audit log, with new
     // services over the same control-plane facts.
-    const restarted = new CollabMachine({
-      candidateStore: f.store,
-      persistencePath: path.join(f.root, "collaboration.json"),
-      now: f.clock.now,
-    });
-    expect(restarted.snapshotDigest()).toBe(f.machine.snapshotDigest());
-    const directory = createApprovalDirectory({
-      enterprise_id: f.issue.workspace.enterprise_id,
-      memberships: f.repos.memberships,
-      users: f.identity.users,
-      identities: f.identity.identities,
-      access: f.access,
-      clock: f.clock.now,
-    });
-    const restartedDeps: CollabHttpDeps = {
-      machine: restarted,
-      candidates: new CandidateReviewService(restarted, f.store),
-      approvals: new ApprovalService(restarted, directory),
-      deliveries: new DeliveryBroker({
-        machine: restarted,
-        providers: { github: f.provider },
-        approvalDirectory: directory,
-        deliveryAuthorized: createDeliveryPermission({
-          machine: restarted,
-          access: f.access,
-          workspaces: f.repos.workspaces,
-          enterprise_id: f.issue.workspace.enterprise_id,
-        }),
-        auditAvailable: () => restarted.auditAvailable(),
-      }),
-    };
+    const restarted = restartedServices(f);
+    expect(restarted.machine.snapshotDigest()).toBe(f.machine.snapshotDigest());
     const replayed = await call(f, {
       method: "POST",
       tail: ["approvals"],
       body: { candidate_id: f.candidate.candidate_id },
       idempotencyKey: "restart-key",
       actor: OWNER(f),
-      deps: restartedDeps,
+      deps: restarted.deps,
     });
     expect(replayed.status).toBe(201);
     expect(replayed.body["approval_id"]).toBe(first);
@@ -639,18 +697,20 @@ describe("approvals use live membership and repository authority", () => {
       body: { decision: "approve", diff_digest: diffBody(f) },
       idempotencyKey: "decision-key",
       actor: OWNER(f),
-      deps: restartedDeps,
+      deps: restarted.deps,
     });
     expect(replayDecision.status).toBe(200);
     expect(replayDecision.body["state"]).toBe("approved");
     // Exactly one request and one decision were recorded: the replays returned
     // them, they did not ask for a second approval.
     expect(
-      restarted
+      restarted.machine
         .listApprovals(f.issue.issue_id)
         .filter((item) => item.candidate_id === f.candidate.candidate_id),
     ).toHaveLength(1);
-    expect(restarted.listApprovals(f.issue.issue_id)[0]?.decision?.decision).toBe("approve");
+    expect(restarted.machine.listApprovals(f.issue.issue_id)[0]?.decision?.decision).toBe(
+      "approve",
+    );
   });
 
   test("reusing a key with a different payload is an idempotency conflict", async () => {
@@ -804,6 +864,157 @@ describe("broker-controlled delivery", () => {
     const settled = await attempt();
     expect(settled.status).toBe(202);
     expect(settled.body["state"]).toBe("delivered");
+    expect(f.provider.pushCalls).toHaveLength(1);
+  });
+
+  test("a failed pre-write PR probe stops at unknown and never pushes", async () => {
+    const f = fixture!;
+    const approvalId = await requestApproval(f);
+    await approve(f, approvalId);
+    f.provider.findMode = "throw";
+    const response = await call(f, {
+      method: "POST",
+      tail: ["deliveries"],
+      body: { approval_id: approvalId, grant_id: f.grantId },
+      idempotencyKey: "probe-failed",
+      actor: OWNER(f),
+    });
+    expect(response.status).toBe(202);
+    expect(response.body["state"]).toBe("unknown");
+    expect(response.body["error_code"]).toBe("PROVIDER_UNAVAILABLE");
+    // An unreadable PR probe is never "no PR exists": no push, no PR.
+    expect(f.provider.pushCalls).toHaveLength(0);
+    expect(f.provider.openCalls).toHaveLength(0);
+
+    // Only an explicit reconcile, once evidence is readable, converges.
+    f.provider.findMode = "ok";
+    f.provider.branchHead = f.candidateHead;
+    f.provider.pr = {
+      pr_id: "pr_1",
+      pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
+      branch: `autofixer/${f.issue.issue_id}`,
+      head_sha: f.candidateHead,
+      state: "open",
+    };
+    const reconciled = await call(f, {
+      method: "POST",
+      tail: ["deliveries", String(response.body["delivery_id"]), "reconcile"],
+      idempotencyKey: "probe-failed-reconcile",
+      actor: OWNER(f),
+    });
+    expect(reconciled.status).toBe(202);
+    expect(reconciled.body["state"]).toBe("delivered");
+    expect(f.provider.pushCalls).toHaveLength(0);
+  });
+
+  test("a crash-orphaned pushing state converges after restart without a new write", async () => {
+    const f = fixture!;
+    const approvalId = await requestApproval(f);
+    await approve(f, approvalId);
+    const intent = recordDeliveryIntent(f, approvalId, "op_crash_push");
+    recordPreWriteState(f, intent.delivery_id, "op_crash_push", "pushing");
+    expect(f.machine.getDelivery(intent.delivery_id)?.state).toBe("pushing");
+
+    // The process died after the push but before recording its result: the
+    // restarted service still sees the in-flight state.
+    const restarted = restartedServices(f);
+    expect(restarted.machine.getDelivery(intent.delivery_id)?.state).toBe("pushing");
+    f.provider.branchHead = f.candidateHead;
+
+    const reconciled = await call(f, {
+      method: "POST",
+      tail: ["deliveries", intent.delivery_id, "reconcile"],
+      idempotencyKey: "crash-push-reconcile",
+      actor: OWNER(f),
+      deps: restarted.deps,
+    });
+    expect(reconciled.status).toBe(202);
+    expect(reconciled.body["state"]).toBe("partial");
+    expect(reconciled.body["error_code"]).toBe("PR_NOT_OBSERVED");
+    expect(f.provider.pushCalls).toHaveLength(0);
+    expect(f.provider.openCalls).toHaveLength(0);
+  });
+
+  test("a crash-orphaned pushing state with no provider side effect converges to failed", async () => {
+    const f = fixture!;
+    const approvalId = await requestApproval(f);
+    await approve(f, approvalId);
+    const intent = recordDeliveryIntent(f, approvalId, "op_crash_empty");
+    recordPreWriteState(f, intent.delivery_id, "op_crash_empty", "pushing");
+    const restarted = restartedServices(f);
+    const reconciled = await call(f, {
+      method: "POST",
+      tail: ["deliveries", intent.delivery_id, "reconcile"],
+      idempotencyKey: "crash-empty-reconcile",
+      actor: OWNER(f),
+      deps: restarted.deps,
+    });
+    expect(reconciled.status).toBe(202);
+    expect(reconciled.body["state"]).toBe("failed");
+    expect(reconciled.body["error_code"]).toBe("NO_PROVIDER_SIDE_EFFECT");
+    expect(f.provider.pushCalls).toHaveLength(0);
+  });
+
+  test("a crash-orphaned opening_pr state reconciles to delivered from PR evidence", async () => {
+    const f = fixture!;
+    const approvalId = await requestApproval(f);
+    await approve(f, approvalId);
+    const intent = recordDeliveryIntent(f, approvalId, "op_crash_open");
+    recordPreWriteState(f, intent.delivery_id, "op_crash_open", "pushing");
+    recordPreWriteState(f, intent.delivery_id, "op_crash_open", "opening_pr");
+    expect(f.machine.getDelivery(intent.delivery_id)?.state).toBe("opening_pr");
+
+    const restarted = restartedServices(f);
+    f.provider.branchHead = f.candidateHead;
+    const pr = {
+      pr_id: "pr_1",
+      pr_url: "https://github.com/FoMo-Exp/AutoFixer/pull/1",
+      branch: `autofixer/${f.issue.issue_id}`,
+      head_sha: f.candidateHead,
+      state: "open" as const,
+    };
+    f.provider.pr = pr;
+
+    const reconciled = await call(f, {
+      method: "POST",
+      tail: ["deliveries", intent.delivery_id, "reconcile"],
+      idempotencyKey: "crash-open-reconcile",
+      actor: OWNER(f),
+      deps: restarted.deps,
+    });
+    expect(reconciled.status).toBe(202);
+    expect(reconciled.body["state"]).toBe("delivered");
+    expect(reconciled.body["pr_url"]).toBe(pr.pr_url);
+    // The PR was adopted, never opened a second time.
+    expect(f.provider.pushCalls).toHaveLength(0);
+    expect(f.provider.openCalls).toHaveLength(0);
+  });
+
+  test("reconcile is refused while the same operation's write is still running", async () => {
+    const f = fixture!;
+    const approvalId = await requestApproval(f);
+    await approve(f, approvalId);
+    const intent = recordDeliveryIntent(f, approvalId, "op_live_write");
+    let release!: () => void;
+    f.provider.findGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const attempt = f.deps.deliveries.deliver(intent.delivery_id, {
+      actor: `user:${f.ownerId}`,
+    });
+    await expectApiCode(
+      call(f, {
+        method: "POST",
+        tail: ["deliveries", intent.delivery_id, "reconcile"],
+        idempotencyKey: "live-write-reconcile",
+        actor: OWNER(f),
+      }),
+      409,
+      "DELIVERY_STATE_CONFLICT",
+    );
+    release();
+    const view = await attempt;
+    expect(view.state).toBe("delivered");
     expect(f.provider.pushCalls).toHaveLength(1);
   });
 

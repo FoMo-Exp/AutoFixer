@@ -1138,13 +1138,23 @@ is `pending`, `pushing`, `opening_pr`, `delivered`, `partial`, `unknown`,
   duplicate.
 - `partial` means one write is confirmed and the other is not; it is never
   reported as success.
-- `unknown` means the provider outcome could not be determined. `partial` and
-  `unknown` leave only through an explicit reconcile; a retry cannot start a
-  second write from them.
+- `unknown` means the provider outcome could not be determined, including a
+  case where the pre-write pull-request probe could not be read: a failed probe
+  is never treated as "no PR exists", so the broker records `unknown` and does
+  not push or open anything. `partial` and `unknown` leave only through an
+  explicit reconcile; a retry cannot start a second write from them.
+
+`pushing` and `opening_pr` are persisted **before** the provider write they
+describe. If the process dies before recording the write's result, that record
+is a crash orphan with no live writer; the broker's in-process guard refuses a
+second writer, and evidence-based reconciliation is the only convergence path.
 
 `POST .../deliveries/{delivery_id}/reconcile` reads provider branch and PR
 evidence and records `delivered`, `partial`, `failed`, or `unknown` without
-performing a provider write. If the provider cannot be read, the reconcile fails
+performing a provider write. It accepts `unknown`, `partial`, and the in-flight
+states `pushing` / `opening_pr`; any other state has nothing to reconcile
+(`409 DELIVERY_STATE_CONFLICT`), as does an attempt while a live write is still
+running in this process. If the provider cannot be read, the reconcile fails
 `503 PROVIDER_ERROR` (retryable) and the delivery stays unreconciled. Delivering
 an approval consumes it exactly once (`consumed_by_delivery_id`); every later
 request naming that approval is `409 APPROVAL_CONSUMED`.

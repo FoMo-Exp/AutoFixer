@@ -4696,15 +4696,18 @@ export function buildOpenApiDocument(): OpenApiDocument {
     "/api/v1/workspaces/{workspace_id}/issues/{issue_id}/deliveries/{delivery_id}/reconcile": {
       post: {
         operationId: "reconcileIssueDelivery",
-        summary: "Reconcile an ambiguous delivery outcome against provider evidence",
+        summary:
+          "Reconcile an ambiguous or crash-orphaned delivery outcome against provider evidence",
         description:
-          "The only path out of `unknown` (and a supported retry out of " +
-          "`partial`): the service re-reads branch and provider operation " +
-          "evidence for this operation and records the reconciled state before " +
-          "any further write, so retries never duplicate a PR. Reconciliation " +
-          "is an `unknown`-outcome remedy, not a bounded retry: the request is " +
-          "never automatically retried. A delivery with nothing to reconcile is " +
-          "409 DELIVERY_STATE_CONFLICT.",
+          "The only path out of `unknown` and `partial`, and the only convergence " +
+          "path for an in-flight `pushing` / `opening_pr` state left behind by a " +
+          "process that died during a provider write: the service re-reads branch " +
+          "and provider operation evidence for this operation and records the " +
+          "reconciled state before any further write, so retries never duplicate a " +
+          "PR. It performs no provider write and is never automatically retried. A " +
+          "live write already in progress in this process is refused; a delivery " +
+          "that has nothing to reconcile (`pending`, `delivered`, `failed`, " +
+          "`cancelled`) is 409 DELIVERY_STATE_CONFLICT.",
         parameters: [
           WORKSPACE_ID_PARAMETER,
           ISSUE_ID_PARAMETER,
