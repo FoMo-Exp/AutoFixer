@@ -822,6 +822,19 @@ export class CollabMachine {
     return delivery ? structuredClone(delivery) : undefined;
   }
 
+  /**
+   * Every recorded delivery, oldest first (DAT-266). The outcome watcher reads
+   * only this projection; it never accepts a delivery id from a client.
+   */
+  listAllDeliveries(): DeliveryRecord[] {
+    return [...this.state.deliveries.values()]
+      .sort(
+        (a, b) =>
+          a.created_at.localeCompare(b.created_at) || a.delivery_id.localeCompare(b.delivery_id),
+      )
+      .map((delivery) => structuredClone(delivery));
+  }
+
   /** Delivery operations in creation order (oldest first). */
   listDeliveries(issueId: string): DeliveryRecord[] {
     return [...this.state.deliveries.values()]

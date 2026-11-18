@@ -31,6 +31,7 @@ import type { WorkspaceScope } from "../control-plane/types.js";
 import type { MemoryRepositories } from "../memory/index.js";
 import { createHash } from "node:crypto";
 import { captureOutcome } from "./capture.js";
+import type { DeliveryOutcomeEvidence } from "./delivery-outcome.js";
 import { createCaptureJobStore } from "./capture-store.js";
 import type { CaptureJob, CaptureJobStore } from "./capture-store.js";
 import {
@@ -53,10 +54,20 @@ export const DEFAULT_CAPTURE_INTERVAL_MS = 60_000;
 /** Bound on one drain pass so a large backlog cannot starve the process. */
 export const DEFAULT_CAPTURE_BATCH = 100;
 
+/**
+ * The provider-observed delivery merge source (DAT-266). Optional so a
+ * deployment without a readable delivery provider keeps the dsh-state path and
+ * refuses delivery jobs instead of inventing a merge.
+ */
+export interface DeliveryOutcomeSource {
+  read(deliveryId: string): Promise<DeliveryOutcomeEvidence>;
+}
+
 export interface OutcomeCaptureSchedulerOptions {
   db: ControlPlaneDb;
   memory: MemoryRepositories;
   dsh: RunEvidenceSource;
+  deliveryOutcomes?: DeliveryOutcomeSource;
   /** Actor recorded on the captured episode (the deployment operator). */
   actorId: string;
   now?: () => Date;
@@ -81,6 +92,15 @@ export interface TerminalRunRegistration {
   state: string;
 }
 
+/** One provider-observed merged delivery (DAT-266). */
+export interface DeliveryTerminalRegistration {
+  enterprise_id: string;
+  workspace_id: string;
+  task_id: string;
+  run_id: string;
+  delivery_id: string;
+}
+
 export interface CaptureDrainReport {
   claimed: number;
   captured: number;
@@ -91,6 +111,8 @@ export interface CaptureDrainReport {
 export interface OutcomeCaptureScheduler {
   /** Enqueue one terminal snapshot; non-terminal states are ignored. */
   enqueue(run: TerminalRunRegistration): CaptureJob | null;
+  /** Enqueue one provider-observed merged delivery; idempotent per delivery. */
+  enqueueDelivery(delivery: DeliveryTerminalRegistration): CaptureJob | null;
   /** Enqueue recovered terminal runs, then drain the outbox. */
   recover(runs: readonly TerminalRunRegistration[]): Promise<CaptureDrainReport>;
   /** Process every due job in bounded batches. */
@@ -135,7 +157,37 @@ export function createOutcomeCaptureScheduler(
   let timer: NodeJS.Timeout | undefined;
   let active: Promise<CaptureDrainReport> | undefined;
 
-  const captureOne = async (job: CaptureJob): Promise<CapturedOutcome> => {
+  /**
+   * Resolve one job's authoritative evidence. A job with a delivery id is a
+   * provider-observed merge (DAT-266): it is built from the delivery's own
+   * records and a live provider read, never from a dsh state. The returned
+   * scope must equal the job's persisted scope, so a retargeted row cannot
+   * move an outcome into another workspace.
+   */
+  const resolveEnvelope = async (
+    job: CaptureJob,
+  ): Promise<{ envelope: ReturnType<typeof buildOutcomeEnvelope> }> => {
+    if (job.delivery_id !== null) {
+      if (options.deliveryOutcomes === undefined) {
+        throw new CaptureEvidenceError(
+          "DELIVERY_OUTCOME_UNAVAILABLE",
+          `delivery ${job.delivery_id} cannot be observed by this deployment`,
+        );
+      }
+      const evidence = await options.deliveryOutcomes.read(job.delivery_id);
+      if (
+        evidence.enterprise_id !== job.enterprise_id ||
+        evidence.workspace_id !== job.workspace_id ||
+        evidence.task_id !== job.task_id ||
+        evidence.run_id !== job.run_id
+      ) {
+        throw new CaptureEvidenceError(
+          "SCOPE_MISMATCH",
+          `delivery ${job.delivery_id} does not belong to the capture job's scope`,
+        );
+      }
+      return { envelope: evidence.envelope };
+    }
     const evidence = await readTerminalRunEvidence(options.dsh, job.run_id);
     if (evidence.run.task_id !== job.task_id) {
       // A run can belong to exactly one task. A mismatch means the job and
@@ -146,7 +198,11 @@ export function createOutcomeCaptureScheduler(
         `run ${job.run_id} belongs to task ${evidence.run.task_id}, not ${job.task_id}`,
       );
     }
-    const envelope = buildOutcomeEnvelope(evidence);
+    return { envelope: buildOutcomeEnvelope(evidence) };
+  };
+
+  const captureOne = async (job: CaptureJob): Promise<CapturedOutcome> => {
+    const { envelope } = await resolveEnvelope(job);
     const scope: WorkspaceScope = {
       // The persisted job scope is the only workspace authority here.
       enterprise_id: job.enterprise_id,
@@ -207,6 +263,22 @@ export function createOutcomeCaptureScheduler(
     return report;
   };
 
+  const enqueueDelivery = (delivery: DeliveryTerminalRegistration): CaptureJob | null => {
+    try {
+      return jobs.enqueue({
+        enterprise_id: delivery.enterprise_id,
+        workspace_id: delivery.workspace_id,
+        task_id: delivery.task_id,
+        run_id: delivery.run_id,
+        terminal_state: "merged",
+        delivery_id: delivery.delivery_id,
+      });
+    } catch (error) {
+      options.onError?.(error);
+      return null;
+    }
+  };
+
   const enqueue = (run: TerminalRunRegistration): CaptureJob | null => {
     if (!isCaptureTerminalState(run.state)) {
       return null;
@@ -240,6 +312,7 @@ export function createOutcomeCaptureScheduler(
   return {
     jobs,
     enqueue,
+    enqueueDelivery,
     async recover(runs) {
       for (const run of runs) {
         enqueue(run);

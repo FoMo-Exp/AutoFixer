@@ -291,13 +291,19 @@ matches is refused with `ENVELOPE_DIGEST_MISMATCH` before any model call.
    poisoned candidate is discarded with its reason codes recorded.
 6. Persist the items and the row's completion in one transaction.
 
-### 9.3 Nothing is promoted
+### 9.3 Nothing is activated
 
-A distilled candidate is persisted as a **`proposed`** item even when the gate
-would admit it. The pipeline passes the admission gate's no-promotion mode, so
-`proposed -> candidate -> active` remains the human-gated lifecycle path
-(§5, DAT-235). Retrieval already excludes `proposed` items, so an agent cannot
-read back its own un-reviewed output as fact.
+An item the admission gate admits is persisted as a **`candidate`** (DAT-266):
+the gate's schema, evidence, redaction, dedupe, contradiction, and poisoning
+checks *are* ADR-0009's `proposed -> candidate` step. A rejected or held
+candidate stays `proposed`. The pipeline never writes `active`: only the
+named-human governance path (DAT-251, promoted through DAT-235's
+`approveAndPromote`) can do that, and it stamps the approver on the exact
+version.
+
+A candidate is retrievable at reduced weight, capped per bundle, and labelled
+unapproved (DAT-236). It is never factual injection, and it still cannot
+authorize a tool, approval, or grant.
 
 ### 9.4 Traceability
 
@@ -320,3 +326,54 @@ admission decision row for the candidate hash completes the audit chain.
 - Attempts are bounded; exhausting them marks the row `failed` with a stable
   error code, visible to operators, instead of retrying forever or reporting a
   success that never happened.
+
+## 10. Delivery terminal state (DAT-266)
+
+A real remediation ends when a human merges the delivered pull request. That
+merge is not a dsh state: dsh finalized the local preparation as
+`prepared_no_pr` and cannot see the provider. Capture therefore has a second,
+delivery-keyed source in addition to the dsh-state source.
+
+### 10.1 Identity
+
+One capture row exists per `(workspace_id, delivery_id)`; rows captured from a
+dsh state keep `delivery_id = NULL` and are unchanged. The delivery source is
+eligible only when **all** of these hold, read from the product's own records
+plus a live provider read:
+
+| Fact | Requirement |
+| --- | --- |
+| Delivery | `state = delivered`, with `pr_id`, `pr_url`, branch, target branch, and exact `head_sha` |
+| Candidate | exists, not invalidated, `head_sha` equals the delivery head |
+| Run | the candidate's run is bound to a task (`task_id` non-null) |
+| Approval | consumed by *this* delivery, bound to the delivered head, with a named approver |
+| Validation | at least one retained attempt with a tool and event reference |
+| Provider read | the PR is `merged`, with the same PR id, head, branch, and base as the delivery |
+
+Any mismatch refuses with a stable code (`PR_NOT_MERGED`,
+`PR_IDENTITY_MISMATCH`, `DELIVERY_APPROVAL_MISMATCH`,
+`CANDIDATE_INVALIDATED`, `DELIVERY_PROVIDER_UNAVAILABLE`, …). An open, closed,
+moved, or unreadable PR is **never** captured as `accepted`; an outage is
+retryable and an exhausted attempt is marked `failed`.
+
+### 10.2 Discovery
+
+A bounded watcher observes delivered PRs on a fixed cadence. It performs no
+provider write (the delivery seam has no merge operation) and enqueues exactly
+one job on a merge. A delivery that already has a capture row is not observed
+again, and the outbox's unique delivery key makes a duplicate enqueue a no-op.
+
+Each scan reads at most one batch of deliveries, and the next scan continues
+after the last delivery it read (wrapping at the end). The rotation is
+process-local: a restart begins a fresh cycle. Without it, a prefix of
+unmerged deliveries would consume every batch and a later merge would never be
+observed.
+
+### 10.3 Effect on the rest of the pipeline
+
+The captured envelope is a normal `merged` outcome: the episode is classified
+`accepted`, its evidence ledger cites the PR, the exact head commit, the
+retained validation attempts (typed `test`), and the consumed approval (typed
+`reviewer_decision`). Distillation, admission, human governance, and
+next-run retrieval proceed exactly as in §9. The delivery read never touches
+dsh and cannot change a run's capability grant.

@@ -264,6 +264,8 @@ export function stoppedPreparation(
   overrides: {
     worktreePath?: string;
     worktreeId?: string;
+    /** Bind the preparation run to this task (DAT-266 delivery capture). */
+    taskId?: string;
     recordPlan?: boolean;
     policyId?: string;
     /** The repository the issue is bound to (defaults to REPOSITORY). */
@@ -278,6 +280,7 @@ export function stoppedPreparation(
   const repository = overrides.repository ?? REPOSITORY;
   const run = openRun(machine, issueId, {
     repository,
+    ...(overrides.taskId !== undefined ? { task_id: overrides.taskId } : {}),
     worktree: {
       worktree_id: worktreeId,
       path: overrides.worktreePath ?? `/tmp/worktrees/${worktreeId}`,

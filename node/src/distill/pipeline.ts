@@ -1,11 +1,11 @@
 /**
- * Recoverable distillation of captured outcomes into `proposed` memory
- * (DAT-265).
+ * Recoverable distillation of captured outcomes into reviewable memory
+ * (DAT-265, DAT-266).
  *
  * This is the write path between DAT-264's capture outbox and the DAT-233/234
  * distillation + admission machinery. A captured snapshot is distilled at
  * most once per pass, through the ADR-0005 gateway only, and every accepted
- * candidate is persisted as a `proposed` item with its resolved evidence.
+ * candidate is persisted with its resolved evidence.
  *
  * Invariants:
  *
@@ -19,8 +19,11 @@
  *   (DAT-234), not here: an exact/near duplicate merges its evidence into the
  *   existing item, a contradicting candidate keeps a `contradicts` link, and a
  *   poisoned candidate is discarded with its reason code recorded.
- * - Nothing is promoted. Accepted candidates stay `proposed`; reaching
- *   `candidate`/`active` is the human-gated lifecycle path (DAT-235).
+ * - Nothing is activated. An admitted item lands as `candidate` — ADR-0009's
+ *   `proposed -> candidate` step, reached by the admission checks — so the
+ *   named-human governance surface can review and promote it. Only that path
+ *   (DAT-235/DAT-251) produces `active`. Retrieval labels a candidate as
+ *   unapproved and caps candidates per bundle.
  * - A failed gateway call, schema violation, or a crash between the model call
  *   and persistence leaves the row retryable; re-running is idempotent because
  *   admission keys on the canonical candidate hash.
@@ -380,9 +383,13 @@ export function createMemoryDistillationRunner(
           options.admission,
           scope,
           admissionCandidateFor(validated, provenance, envelope.run_id),
-          // Nothing is promoted: accepted candidates stay `proposed` for the
-          // human-gated lifecycle path.
-          { evidence: resolver, run_id: envelope.run_id, promote: false },
+          // The admission checks passing *is* ADR-0009's `proposed ->
+          // candidate` step, so an admitted item becomes a `candidate` and is
+          // reachable by the human governance surface. It is never `active`:
+          // activation still requires the named-human promote path, and
+          // retrieval labels an unapproved candidate and caps how many enter a
+          // bundle (DAT-236).
+          { evidence: resolver, run_id: envelope.run_id },
         );
         if (admissionOutcome.item === null) {
           dropped += 1;

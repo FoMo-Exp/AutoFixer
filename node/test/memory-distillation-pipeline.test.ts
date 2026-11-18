@@ -40,9 +40,9 @@ import type { DshServerHandle } from "./helpers/dsh-server.js";
 import type { DshCreateRunResponse, DshProposedWork } from "../src/dsh/types.js";
 
 /**
- * DAT-265: captured known outcomes are distilled, validated, gated, and
- * persisted as `proposed` items — never promoted, never fabricated, never
- * duplicated by a retry or a crash.
+ * DAT-265/DAT-266: captured known outcomes are distilled, validated, gated,
+ * and persisted as `candidate` items — never activated, never fabricated,
+ * never duplicated by a retry or a crash.
  *
  * The pipeline reads its work from the DAT-264 capture outbox snapshot, so
  * these cases seed real captured snapshots (and one real local dsh terminal
@@ -276,11 +276,11 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Known outcome → traceable proposed candidate
+// Known outcome → traceable reviewable candidate
 // ---------------------------------------------------------------------------
 
 describe("distillation of a captured known outcome", () => {
-  test("persists one proposed, evidence-cited candidate with pipeline provenance", async () => {
+  test("persists one candidate, evidence-cited item with pipeline provenance", async () => {
     const { captureJobId } = seedCapture(mergedEnvelope());
     const scripted = scriptedStream([
       {
@@ -302,8 +302,9 @@ describe("distillation of a captured known outcome", () => {
     const items = lessons();
     expect(items).toHaveLength(1);
     const item = items[0]!;
-    // Nothing is promoted: the human-gated lifecycle path owns that.
-    expect(item.item.status).toBe("proposed");
+    // Admitted checks passed, so it is reviewable; only the named-human
+    // governance path may activate it (DAT-251).
+    expect(item.item.status).toBe("candidate");
     expect(item.current.provenance).toMatchObject({
       author_type: "agent",
       agent_model: "scripted",
@@ -502,7 +503,7 @@ describe("negative paths never become remembered success", () => {
     expect(job.last_error).toBe("POLICY_VIOLATION_BATCH");
   });
 
-  test("a contradiction stays proposed, links the conflict, and blocks factual injection", async () => {
+  test("a contradiction stays unapproved, links the conflict, and blocks factual injection", async () => {
     const existing = memory.items.create(scope, {
       kind: "lesson",
       scope: {},
@@ -527,7 +528,7 @@ describe("negative paths never become remembered success", () => {
     const items = lessons();
     expect(items).toHaveLength(2);
     const fresh = items.find((item) => item.item.id !== existing.item.id)!;
-    expect(fresh.item.status).toBe("proposed");
+    expect(fresh.item.status).toBe("candidate");
     // The contradicted item is not retired by the pipeline; a human decides.
     expect(memory.items.getById(scope, existing.item.id)?.item.status).toBe("proposed");
     const links = memory.links.listByItem(scope, fresh.item.id);
@@ -561,7 +562,7 @@ describe("negative paths never become remembered success", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Real local dsh terminal state → captured snapshot → proposed candidate
+// Real local dsh terminal state → captured snapshot → candidate
 // ---------------------------------------------------------------------------
 
 function neutralProposedWork(): DshProposedWork {
@@ -624,7 +625,7 @@ describe("real dsh terminal state", () => {
     await dsh?.stop();
   });
 
-  test("a cancelled local run becomes one proposed, evidence-cited lesson", async () => {
+  test("a cancelled local run becomes one candidate, evidence-cited lesson", async () => {
     const server = dsh!;
     const { runId, taskId } = await createRun(server);
     await server.client.cancelRun(runId, {
@@ -669,7 +670,7 @@ describe("real dsh terminal state", () => {
 
     const items = lessons();
     expect(items).toHaveLength(1);
-    expect(items[0]!.item.status).toBe("proposed");
+    expect(items[0]!.item.status).toBe("candidate");
     expect(items[0]!.current.source_run_id).toBe(runId);
     const evidence = memory.evidence.listByItem(scope, items[0]!.item.id);
     expect(evidence.map((entry) => entry.reference)).toContain(runId);

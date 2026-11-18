@@ -28,6 +28,8 @@ export interface CaptureJob {
   task_id: string;
   run_id: string;
   terminal_state: string;
+  /** Set only for a provider-observed delivery merge (DAT-266); null otherwise. */
+  delivery_id: string | null;
   state: CaptureJobState;
   attempts: number;
   lease_until: string | null;
@@ -64,11 +66,13 @@ export interface EnqueueCaptureInput {
   task_id: string;
   run_id: string;
   terminal_state: string;
+  delivery_id?: string | null;
 }
 
 export interface CaptureJobFilter {
   workspace_id?: string;
   run_id?: string;
+  delivery_id?: string;
   state?: CaptureJobState;
 }
 
@@ -102,6 +106,7 @@ interface CaptureJobRow {
   task_id: string;
   run_id: string;
   terminal_state: string;
+  delivery_id: string | null;
   state: string;
   attempts: number;
   lease_until: string | null;
@@ -123,6 +128,7 @@ function toJob(row: CaptureJobRow): CaptureJob {
     task_id: row.task_id,
     run_id: row.run_id,
     terminal_state: row.terminal_state,
+    delivery_id: row.delivery_id,
     state: row.state as CaptureJobState,
     attempts: row.attempts,
     lease_until: row.lease_until,
@@ -179,14 +185,28 @@ export function createCaptureJobStore(db: ControlPlaneDb): CaptureJobStore {
       const taskId = requireToken(input.task_id, "task_id");
       const runId = requireToken(input.run_id, "run_id");
       const terminalState = requireToken(input.terminal_state, "terminal_state");
+      const deliveryId =
+        input.delivery_id === undefined || input.delivery_id === null
+          ? null
+          : requireToken(input.delivery_id, "delivery_id");
       const now = nowIso();
       db.prepare(
         `INSERT INTO memory_outcome_capture
-           (id, enterprise_id, workspace_id, task_id, run_id, terminal_state, state, attempts,
-            lease_until, retry_after, last_error, item_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, NULL, NULL, ?, ?)
+           (id, enterprise_id, workspace_id, task_id, run_id, terminal_state, delivery_id, state,
+            attempts, lease_until, retry_after, last_error, item_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, NULL, NULL, ?, ?)
          ON CONFLICT(workspace_id, run_id, terminal_state) DO NOTHING`,
-      ).run(newId("mcp"), enterpriseId, workspaceId, taskId, runId, terminalState, now, now);
+      ).run(
+        newId("mcp"),
+        enterpriseId,
+        workspaceId,
+        taskId,
+        runId,
+        terminalState,
+        deliveryId,
+        now,
+        now,
+      );
       const row = db
         .prepare(
           `SELECT * FROM memory_outcome_capture
@@ -278,6 +298,10 @@ export function createCaptureJobStore(db: ControlPlaneDb): CaptureJobStore {
       if (filter.run_id !== undefined) {
         clauses.push("run_id = ?");
         values.push(filter.run_id);
+      }
+      if (filter.delivery_id !== undefined) {
+        clauses.push("delivery_id = ?");
+        values.push(filter.delivery_id);
       }
       if (filter.state !== undefined) {
         clauses.push("state = ?");
