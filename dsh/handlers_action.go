@@ -177,6 +177,12 @@ func (s *Server) handleSubmitAction(w http.ResponseWriter, r *http.Request) {
 	dispatchSpec := s.dispatchSpec(spec, req, validated)
 
 	result, execErr := executor.Execute(ctx, dispatchSpec)
+	// Pin the exact tree a completed test ran against before the teardown
+	// below can freeze the change: validation only counts for the revision
+	// whose content it actually executed.
+	if execErr == nil && dispatchSpec.Tool == "test.run" {
+		rec.recordTestTreeLocked(executor, dispatchSpec.Tool, result.ExitStatus)
+	}
 	s.store.releaseTask(rec, harness.IsTerminal(rec.run.State))
 	closeErr := rec.closeRunnerLocked()
 

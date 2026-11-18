@@ -64,6 +64,11 @@ export type ScriptedTurn =
       activities: string[];
       outcome: string;
     }
+  /**
+   * One `complete_local_preparation` tool call (DAT-258), with an optional
+   * preamble text in the same assistant message.
+   */
+  | { kind: "complete"; text?: string }
   /** Never completes on its own; finishes only when the session is aborted. */
   | { kind: "hang" }
   /** Completes when the gate is released; lets tests interleave API calls. */
@@ -205,7 +210,8 @@ export function scriptedStream(turns: ScriptedTurn[]): ScriptedStream {
     }
 
     // Tool turn: optional preamble text, then one tool call — the dsh
-    // action intent, or the structured summary report (DAT-193).
+    // action intent, the structured summary report (DAT-193), or the
+    // preparation-completion signal (DAT-258).
     const toolCall: ToolCall =
       turn.kind === "report"
         ? {
@@ -218,17 +224,24 @@ export function scriptedStream(turns: ScriptedTurn[]): ScriptedStream {
               outcome: turn.outcome,
             },
           }
-        : {
-            type: "toolCall",
-            id: `call_${index}`,
-            name: "dsh_request_action",
-            arguments: {
-              tool_id: turn.toolId,
-              arguments: turn.args,
-              path_scope: turn.pathScope,
-              rationale: turn.rationale ?? "scripted request",
-            },
-          };
+        : turn.kind === "complete"
+          ? {
+              type: "toolCall",
+              id: `call_${index}`,
+              name: "complete_local_preparation",
+              arguments: {},
+            }
+          : {
+              type: "toolCall",
+              id: `call_${index}`,
+              name: "dsh_request_action",
+              arguments: {
+                tool_id: turn.toolId,
+                arguments: turn.args,
+                path_scope: turn.pathScope,
+                rationale: turn.rationale ?? "scripted request",
+              },
+            };
     const finalContent: (TextContent | ToolCall)[] = [];
     if (turn.text) {
       finalContent.push({ type: "text", text: turn.text });

@@ -28,6 +28,15 @@ const (
 
 	StopCodeOutOfGrant   = "stop_out_of_grant"
 	StopCodeGrantExpired = "stop_grant_expired"
+	// StopCodePreparationCompleted records a normal end of local
+	// preparation: the orchestrator declares the work finished while the run
+	// is still quiescent, so the grant is revoked and the prepared change can
+	// be frozen. It is not a failure and not a cancellation.
+	StopCodePreparationCompleted = "stop_preparation_completed"
+	// StopCodePreparationEmpty records that preparation finished without any
+	// dispatched action, so there is nothing to freeze and the run is
+	// cancelled rather than pretending it ran.
+	StopCodePreparationEmpty = "stop_preparation_empty"
 )
 
 // BranchPrefix is the only branch namespace a run may write, per FP-01.

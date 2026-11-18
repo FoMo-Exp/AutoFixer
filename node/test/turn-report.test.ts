@@ -11,6 +11,7 @@ import {
   validateTurnReport,
 } from "../src/pi/turn-report.js";
 import { createTurnSummaryReportTool } from "../src/pi/turn-report-tool.js";
+import { createCompletePreparationTool } from "../src/pi/completion-tool.js";
 import type { TurnReport, TurnReportParams } from "../src/pi/turn-report.js";
 import { evaluateTurnReport, firstSafetyViolation } from "../src/api/pi-summary.js";
 import { piSystemPrompt, taskPrompt } from "../src/pi/prompts.js";
@@ -197,6 +198,9 @@ describe("model-facing text composition (DAT-193)", () => {
       scope_digest: "sha256:0",
     } satisfies DshGrantSummary;
     const reportTool = createTurnSummaryReportTool({ onReport: () => undefined });
+    const completionTool = createCompletePreparationTool({
+      complete: async () => ({ state: "stopped", stopped: true, prepared: true }),
+    });
     const dshTool = createDshRequestActionTool({
       client: {} as DshClient,
       runId: "run_x",
@@ -213,7 +217,13 @@ describe("model-facing text composition (DAT-193)", () => {
       baseSha: "abc123",
       grant,
     });
-    const composed = [piSystemPrompt(), task, reportTool.description, dshTool.description];
+    const composed = [
+      piSystemPrompt(),
+      task,
+      reportTool.description,
+      completionTool.description,
+      dshTool.description,
+    ];
     for (const text of composed) {
       // A leftover unary `+` in a string concatenation would surface as a
       // literal "NaN" in model-facing text (a bug this suite already hit).
@@ -221,6 +231,8 @@ describe("model-facing text composition (DAT-193)", () => {
       expect(text.length).toBeGreaterThan(50);
     }
     expect(piSystemPrompt()).toContain("report_turn_summary");
+    expect(piSystemPrompt()).toContain("complete_local_preparation");
     expect(task).toContain("report_turn_summary");
+    expect(task).toContain("complete_local_preparation");
   });
 });

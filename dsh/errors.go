@@ -45,6 +45,7 @@ const (
 	CodeEvidenceStoreUnavailable   = "DSH_EVIDENCE_STORE_UNAVAILABLE"
 	CodeSandboxUnavailable         = "DSH_SANDBOX_UNAVAILABLE"
 	CodeCancellationControlFailure = "DSH_CANCELLATION_CONTROL_FAILURE"
+	CodeStopControlFailure         = "DSH_STOP_CONTROL_FAILURE"
 	CodeEvidenceRetentionExpired   = "EVIDENCE_RETENTION_EXPIRED"
 	CodeEvidenceRetained           = "EVIDENCE_RETAINED"
 )

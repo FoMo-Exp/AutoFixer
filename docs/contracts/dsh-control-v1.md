@@ -162,6 +162,46 @@ terminal run returns `200` with that existing terminal state. Errors: `404
 RUN_NOT_FOUND`, `403 DSH_CANCELLER_NOT_AUTHORIZED`, `409
 TASK_STATE_CONFLICT`, `503 DSH_CANCELLATION_CONTROL_FAILURE`.
 
+## Complete a preparation run
+
+`POST /v1/runs/{run_id}/stop`
+
+```json
+{"requested_by":{"actor_id":"usr_01J...","identity":"github:aphrodite"},"reason":"Local preparation completed."}
+```
+
+The orchestrator signals that local preparation finished. dsh refuses while a
+tool execution is in flight (`429 DSH_RUN_BUSY`) and reports any existing
+terminal state unchanged. Otherwise it revokes the grant, freezes the prepared
+change from the still-live isolated checkout, and moves a running run to
+`stopped` with `stop_preparation_completed`. Freezing is local only: dsh stages
+the working tree, writes a git tree and a dangling commit object, and retains
+the exact diff, changed paths, stats, and digest — it creates no branch, ref,
+remote, or provider resource.
+
+A run whose preparation dispatched nothing has no revision to preserve, so it
+moves to `cancelled` with `stop_preparation_empty`. A run that prepared a
+change but has no completed validation evidence of that exact tree stays
+`stopped` with no reviewable patch: the evidence contract has no
+"prepared but unvalidated" status, so its patch report is `not_created` and no
+`patch_diff`, `validation_summary`, or `candidate` artifact exists.
+
+Returns `200`:
+
+```json
+{"state":"stopped","stopped":true,"prepared":true,"audit_event_reference":"evidence://events/run_01.../9"}
+```
+
+`prepared` is true only when the frozen revision also has passing validation
+evidence for that exact tree; its branch name and head SHA appear in the patch
+report. Repeating the stop against an already `stopped` run returns the same
+body. Errors: `400 INVALID_REQUEST`, `403 DSH_APPROVER_NOT_AUTHORIZED`, `404
+RUN_NOT_FOUND`, `409 TASK_STATE_CONFLICT`, `429 DSH_RUN_BUSY`, `503
+DSH_STOP_CONTROL_FAILURE`.
+
+Cancellation, timeout, rejection, and failure are not completions: they keep
+their truthful terminal state, and no candidate is frozen from them.
+
 ## Read run, events, evidence, and artifacts
 
 | Request | Successful response | Errors |
@@ -169,7 +209,17 @@ TASK_STATE_CONFLICT`, `503 DSH_CANCELLATION_CONTROL_FAILURE`.
 | `GET /v1/runs/{run_id}` | `200` run state, risk assessment, grant status and scope digest, execution counts, patch report, approval snapshot, bundle availability | `404 RUN_NOT_FOUND`; `503 DSH_EVIDENCE_STORE_UNAVAILABLE` |
 | `GET /v1/runs/{run_id}/events?after_sequence=0&limit=100` | `200` ordered, redacted immutable events with `next_after_sequence` and `has_more` | `400 INVALID_EVENT_CURSOR|INVALID_LIMIT`; `404 RUN_NOT_FOUND`; `410 EVIDENCE_RETENTION_EXPIRED`; `503 DSH_EVIDENCE_STORE_UNAVAILABLE` |
 | `GET /v1/runs/{run_id}/evidence-bundle` | `200` complete task/risk/grant/events/patch/approval evidence bundle | `404 RUN_NOT_FOUND`; `409 EVIDENCE_BUNDLE_NOT_FINALIZED`; `410 EVIDENCE_RETENTION_EXPIRED`; `503 DSH_EVIDENCE_STORE_UNAVAILABLE` |
-| `GET /v1/runs/{run_id}/artifacts/{artifact_id}` | `200` authorised redacted `patch_diff`, `patch_report`, `validation_summary`, `redacted_execution_log`, or `evidence_bundle`, each with digest | `403 ARTIFACT_ACCESS_DENIED|ARTIFACT_SENSITIVE_CONTENT`; `404 RUN_NOT_FOUND|ARTIFACT_NOT_FOUND`; `409 ARTIFACT_NOT_FINALIZED`; `410 ARTIFACT_EXPIRED` |
+| `GET /v1/runs/{run_id}/artifacts/{artifact_id}` | `200` authorised redacted `patch_diff`, `patch_report`, `validation_summary`, `candidate`, `redacted_execution_log`, or `evidence_bundle`, each with digest | `403 ARTIFACT_ACCESS_DENIED\|ARTIFACT_SENSITIVE_CONTENT`; `404 RUN_NOT_FOUND\|ARTIFACT_NOT_FOUND`; `409 ARTIFACT_NOT_FINALIZED`; `410 ARTIFACT_EXPIRED` |
+
+`patch_diff` carries the exact frozen base/head/tree identity, diff digest,
+changed paths, stats, and unified diff. `validation_summary` lists every
+completed test attempt of that tree with its exit status, output digest, and
+event reference. `candidate` is the immutable manifest the Node delivery layer
+retains when it freezes a product-level candidate: workspace, repository,
+base/tree/head, branch name, diff digest, summary, risk class, validation, and
+evidence references. The three artifacts exist only for a `stopped` run whose
+frozen revision has validation evidence; any other finalized run answers
+`404 ARTIFACT_NOT_FOUND`.
 
 An execution event includes its sequence, immutable state transition, redacted
 tool identity/arguments, redacted output digest, decision/stop code, and

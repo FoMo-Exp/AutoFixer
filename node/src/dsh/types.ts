@@ -220,6 +220,81 @@ export interface DshCancelResponse {
 }
 
 /**
+ * Complete a local preparation run (DAT-258). Distinct from cancellation:
+ * completion freezes the prepared change as a candidate revision, while
+ * cancellation keeps the truthful `cancelled` state and freezes nothing.
+ */
+export interface DshStopRequest {
+  requested_by: { actor_id: string; identity: string };
+  reason: string;
+}
+
+export interface DshStopResponse {
+  state: DshState;
+  stopped: boolean;
+  /**
+   * True only when a validated revision was frozen: the run has a branch
+   * name, head SHA, diff, and test evidence for that exact tree.
+   */
+  prepared: boolean;
+  audit_event_reference: string;
+}
+
+/** One artifact response envelope: content digest plus the exact content. */
+export interface DshArtifactEnvelope<T> {
+  run_id: string;
+  artifact_type: string;
+  digest: { algorithm: string; value: string };
+  content: T;
+}
+
+/** The frozen patch artifact (`patch_diff`). */
+export interface DshPatchDiffArtifact {
+  base_sha: string;
+  head_sha: string;
+  tree_sha: string;
+  diff_digest: string;
+  changed_paths: string[];
+  insertions: number;
+  deletions: number;
+  diff: string;
+}
+
+/** The per-attempt validation artifact (`validation_summary`). */
+export interface DshValidationSummaryArtifact {
+  run_id: string;
+  state: DshState;
+  base_sha: string;
+  head_sha: string | null;
+  branch: string | null;
+  validation: DshValidationEvidence[];
+}
+
+/**
+ * The immutable candidate manifest (`candidate`) the Node delivery layer
+ * retains when it freezes a product-level candidate. It creates nothing on
+ * its own: the branch is a prospective name, not a provider ref.
+ */
+export interface DshCandidateArtifact {
+  run_id: string;
+  task_id: string;
+  issue_id: string;
+  repository_url: string;
+  base_sha: string;
+  tree_sha: string;
+  head_sha: string;
+  branch: string;
+  diff_digest: string;
+  changed_paths: string[];
+  insertions: number;
+  deletions: number;
+  summary: string;
+  risk_class: "low" | "elevated" | "prohibited";
+  validation: DshValidationEvidence[];
+  evidence_references: string[];
+}
+
+/**
  * The subset of dsh's patch report Node projects onto the task resource.
  * Only a finalized (stopped or terminal) run carries one, and its `head_sha`
  * is the authoritative revision the run produced — null for the local

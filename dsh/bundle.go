@@ -9,34 +9,74 @@ import (
 	"github.com/Luthiel/AutoFixer/harness"
 )
 
-// buildPatchReport binds the local no-patch outcome to the run's terminal
-// event. The control plane performs no repository or GitHub writes in M1, so
-// every terminal run reports `not_created` with the evidence reference of the
-// event that ended it.
+// buildPatchReport binds the run's outcome to its evidence. A run that
+// prepared a change and validated that exact revision reports
+// `prepared_no_pr` with the frozen branch/head — a local revision only, with
+// no PR. Every other outcome is `not_created`: the control plane performs no
+// repository or GitHub writes, and a change without validation evidence for
+// the frozen tree is not a reviewable patch.
 func buildPatchReport(rec *runRecord, events []harness.ExecutionEvent, now time.Time) (delivery.PatchReport, error) {
 	if len(events) == 0 {
 		return delivery.PatchReport{}, fmt.Errorf("dsh: run has no evidence events")
 	}
 	terminal := events[len(events)-1]
 	terminalRef := fmt.Sprintf("evidence://events/%s/%d", terminal.RunID, terminal.Sequence)
+	change := rec.change
+	if change == nil || !rec.prepared {
+		summary := rec.summary
+		if change != nil {
+			summary = rec.summary + " A change was prepared, but no test evidence validates the frozen revision, so no reviewable patch exists."
+		}
+		return delivery.NewPatchReport(delivery.PatchReport{
+			TaskID:        rec.run.TaskID,
+			RunID:         rec.run.RunID,
+			IssuedAt:      now,
+			RepositoryURL: rec.run.RepositoryURL,
+			BaseSHA:       rec.run.BaseSHA,
+			PatchStatus:   delivery.PatchNotCreated,
+			ChangeSummary: summary,
+			EvidenceReferences: []string{
+				terminalRef,
+			},
+		})
+	}
+	validation := validationEvidence(rec, events, change.TreeSHA)
+	if len(validation) == 0 {
+		return delivery.PatchReport{}, fmt.Errorf("dsh: prepared patch has no validation evidence for its frozen tree")
+	}
+	branch := rec.branch
+	head := change.HeadSHA
+	references := []string{terminalRef}
+	for _, event := range events {
+		if event.DecisionOrStopCode != nil && *event.DecisionOrStopCode == harness.DecisionRevisionPrepared {
+			reference := fmt.Sprintf("evidence://events/%s/%d", event.RunID, event.Sequence)
+			if reference != terminalRef {
+				references = append(references, reference)
+			}
+		}
+	}
 	return delivery.NewPatchReport(delivery.PatchReport{
-		TaskID:        rec.run.TaskID,
-		RunID:         rec.run.RunID,
-		IssuedAt:      now,
-		RepositoryURL: rec.run.RepositoryURL,
-		BaseSHA:       rec.run.BaseSHA,
-		PatchStatus:   delivery.PatchNotCreated,
-		ChangeSummary: rec.summary,
-		EvidenceReferences: []string{
-			terminalRef,
-		},
+		TaskID:             rec.run.TaskID,
+		RunID:              rec.run.RunID,
+		IssuedAt:           now,
+		RepositoryURL:      rec.run.RepositoryURL,
+		BaseSHA:            rec.run.BaseSHA,
+		PatchStatus:        delivery.PatchPreparedNoPR,
+		Branch:             &branch,
+		HeadSHA:            &head,
+		ChangeSummary:      rec.summary,
+		Validation:         validation,
+		EvidenceReferences: references,
 	})
 }
 
-// buildApprovalSnapshot records that no pull request was observed, which is
-// the only truthful snapshot for a run the local control plane never bound
-// to a revision.
-func buildApprovalSnapshot(run *harness.Run, now time.Time) harness.ApprovalSnapshot {
+// buildApprovalSnapshot records the merge-boundary observations for the exact
+// head the run is bound to. A prepared change has a head to bind every
+// observation to, but no PR exists, so no QA, check, discussion, or quorum
+// observation has passed. A run that prepared nothing keeps all head bindings
+// null, as the contract's not_created shape requires.
+func buildApprovalSnapshot(rec *runRecord, now time.Time) harness.ApprovalSnapshot {
+	run := rec.run
 	snapshot := harness.ApprovalSnapshot{
 		ContractVersion: harness.ContractVersion,
 		TaskID:          run.TaskID,
@@ -50,6 +90,14 @@ func buildApprovalSnapshot(run *harness.Run, now time.Time) harness.ApprovalSnap
 		ApprovalQuorum:      harness.QuorumObservation{Status: "not_requested"},
 		EvidenceReference:   fmt.Sprintf("evidence://approvals/%s/no-pr", run.RunID),
 		MergeQueueAvailable: false,
+	}
+	if rec.change != nil && rec.prepared {
+		head := rec.change.HeadSHA
+		snapshot.HeadSHA = &head
+		snapshot.QA.HeadSHA = &head
+		snapshot.ReviewDiscussions.HeadSHA = &head
+		snapshot.ApprovalQuorum.HeadSHA = &head
+		snapshot.EvidenceReference = fmt.Sprintf("evidence://approvals/%s/%s", run.RunID, head)
 	}
 	snapshot.Evaluate()
 	return snapshot
@@ -67,7 +115,7 @@ func buildEvidenceBundle(rec *runRecord, events []harness.ExecutionEvent, now ti
 	if err != nil {
 		return nil, err
 	}
-	snapshot := buildApprovalSnapshot(rec.run, now)
+	snapshot := buildApprovalSnapshot(rec, now)
 
 	var grant *harness.CapabilityGrant
 	if rec.run.Grant != nil {

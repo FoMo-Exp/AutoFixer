@@ -15,6 +15,8 @@ import { ProviderOAuth, readOAuthCredentialsFile } from "./api/oauth.js";
 import { createApiServer } from "./api/server.js";
 import { createTaskRunOutcomes } from "./api/run-outcomes.js";
 import { CollabMachine } from "./collab/machine.js";
+import { CandidateContentStore } from "./collab/candidate-store.js";
+import { PreparationBridge } from "./collab/preparation.js";
 import { createRequestAuthority } from "./api/request-authority.js";
 import type { RequestAuthority } from "./api/request-authority.js";
 import { TaskService } from "./api/task-service.js";
@@ -472,6 +474,30 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     socketPath: config.dshSocketPath,
     ...(config.dshTokenFile ? { tokenFile: config.dshTokenFile } : {}),
   });
+  // Durable collaboration record (DAT-215/218/219). Constructed unconditionally:
+  // a completed local preparation must produce its immutable candidate even in
+  // the local-operator deployment, where the identity/control-plane surface is
+  // off. Retained candidate content lives outside every ephemeral worktree.
+  const collaborationPath = config.controlPlaneFile
+    ? `${config.controlPlaneFile}.collaboration.json`
+    : defaultSecurityStatePath("collaboration-state.json");
+  const candidateStore = new CandidateContentStore(
+    config.candidateStoreRoot ?? defaultSecurityStatePath("candidate-content"),
+  );
+  const collaboration = new CollabMachine({
+    persistencePath: collaborationPath,
+    candidateStore,
+  });
+  const preparation = new PreparationBridge({
+    machine: collaboration,
+    dsh,
+    actor: config.actorId,
+    policy: {
+      checks: config.testChecks ?? ["go.test"],
+      environment: config.testEnvironment ?? "dsh-isolated-v1",
+      ...(config.testConfigDigest !== undefined ? { configDigest: config.testConfigDigest } : {}),
+    },
+  });
   const model = options.model ?? resolveConfiguredModel(config);
   const deploymentStores: DeploymentStores = {};
   const gateway = options.gateway ?? deploymentGateway(config, deploymentStores);
@@ -618,10 +644,6 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       (config.providerServiceCredentialFile !== undefined
         ? readServiceCredentialFile(config.providerServiceCredentialFile)
         : createStaticServiceCredentialStore({}));
-    const collaborationPath = config.controlPlaneFile
-      ? `${config.controlPlaneFile}.collaboration.json`
-      : defaultSecurityStatePath("collaboration-state.json");
-    const collaboration = new CollabMachine({ persistencePath: collaborationPath });
     issues = new IssueSyncService({
       enterprise_id: config.enterpriseId,
       actor_id: config.actorId,
@@ -691,6 +713,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     workspaceBindings,
     ...(model ? { model } : {}),
     runScope: options.runScope ?? deploymentRunScope(requestScopeDeps),
+    preparation,
     ...(memory !== undefined && rsi !== undefined ? { memory: { memory, rsi } } : {}),
     ...(memoryCapture !== undefined ? { capture: memoryCapture } : {}),
   });
