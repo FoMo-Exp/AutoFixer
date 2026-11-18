@@ -363,6 +363,12 @@ provider write (the delivery seam has no merge operation) and enqueues exactly
 one job on a merge. A delivery that already has a capture row is not observed
 again, and the outbox's unique delivery key makes a duplicate enqueue a no-op.
 
+Each scan reads at most one batch of deliveries, and the next scan continues
+after the last delivery it read (wrapping at the end). The rotation is
+process-local: a restart begins a fresh cycle. Without it, a prefix of
+unmerged deliveries would consume every batch and a later merge would never be
+observed.
+
 ### 10.3 Effect on the rest of the pipeline
 
 The captured envelope is a normal `merged` outcome: the episode is classified

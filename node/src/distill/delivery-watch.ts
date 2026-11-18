@@ -16,7 +16,10 @@
  *   re-verifies the whole identity before capturing, and an unknown answer is
  *   never success;
  * - a delivery that already has a capture row is never observed again, and the
- *   outbox's unique delivery key makes a duplicate enqueue a no-op.
+ *   outbox's unique delivery key makes a duplicate enqueue a no-op;
+ * - observation is round-robin: the next scan continues after the last
+ *   delivery it read, so a long prefix of unmerged PRs can never starve a
+ *   merge that sits later in the list.
  */
 
 import type { DeliveryProvider } from "../collab/delivery-broker.js";
@@ -68,12 +71,31 @@ export function createDeliveryMergeWatcher(
   const batchSize = options.batchSize ?? DEFAULT_DELIVERY_WATCH_BATCH;
   let timer: NodeJS.Timeout | undefined;
   let active: Promise<DeliveryWatchReport> | undefined;
+  /**
+   * Last delivery whose provider read completed. The next scan starts after
+   * it (wrapping), so the batch bound rotates through the whole list instead
+   * of re-reading the same oldest prefix forever. It is process-local: a
+   * restart simply starts the rotation over, and the outbox still decides
+   * what was already captured.
+   */
+  let cursor: string | null = null;
 
   const scanOnce = async (): Promise<DeliveryWatchReport> => {
     const report = emptyReport();
-    for (const delivery of options.machine.listAllDeliveries()) {
+    const deliveries = options.machine.listAllDeliveries();
+    if (deliveries.length === 0) {
+      return report;
+    }
+    const cursorIndex =
+      cursor === null ? -1 : deliveries.findIndex((entry) => entry.delivery_id === cursor);
+    const start = cursorIndex + 1;
+    for (let offset = 0; offset < deliveries.length; offset += 1) {
       if (report.scanned >= batchSize) {
         break;
+      }
+      const delivery = deliveries[(start + offset) % deliveries.length];
+      if (delivery === undefined) {
+        continue;
       }
       // Only a completed provider write has a PR to observe. `partial`,
       // `unknown`, and `failed` deliveries are not merge candidates.
@@ -93,7 +115,10 @@ export function createDeliveryMergeWatcher(
         report.skipped += 1;
         continue;
       }
+      // An observation attempt advances the rotation even when it cannot be
+      // read: an unreadable delivery must not pin the cursor in place.
       report.scanned += 1;
+      cursor = delivery.delivery_id;
       const provider: DeliveryProvider | undefined = options.providerFor(delivery.provider);
       if (provider === undefined) {
         report.unreadable += 1;

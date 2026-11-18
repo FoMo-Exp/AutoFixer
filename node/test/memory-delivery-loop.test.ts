@@ -55,8 +55,11 @@ import {
   securityStubs,
   testPolicyFor,
 } from "./helpers/test-gateway.js";
-import { createDeliveryMergeFixture } from "./support/delivery-merge.js";
-import type { DeliveryMergeFixture } from "./support/delivery-merge.js";
+import {
+  createDeliveryFixtureContext,
+  createDeliveryMergeFixture,
+} from "./support/delivery-merge.js";
+import type { DeliveryFixtureContext, DeliveryMergeFixture } from "./support/delivery-merge.js";
 
 /**
  * DAT-266: the closed memory loop over a real delivery terminal state.
@@ -243,7 +246,7 @@ describe("delivery merge evidence", () => {
     expect(evidence.envelope.terminal_state).toBe("merged");
     expect(evidence.envelope.delivery).toMatchObject({
       patch_status: "merged",
-      pr_id: "pr_266",
+      pr_id: fixture.delivery.pr_id,
       head_sha: fixture.candidate.head_sha,
     });
     expect(evidence.envelope.delivery.validation[0]?.event_reference).toBe(
@@ -266,8 +269,11 @@ describe("delivery merge evidence", () => {
     fixture.merge();
     await expect(read()).rejects.toMatchObject({ code: "DELIVERY_PROVIDER_UNAVAILABLE" });
     fixture.provider.unreadable = false;
-    if (fixture.provider.pr === null) throw new Error("fixture PR missing");
-    fixture.provider.pr = { ...fixture.provider.pr, head_sha: "f".repeat(40) };
+    const branch = fixture.delivery.branch;
+    if (branch === null) throw new Error("fixture delivery has no branch");
+    const current = fixture.provider.prs.get(branch);
+    if (current === undefined) throw new Error("fixture PR missing");
+    fixture.provider.prs.set(branch, { ...current, head_sha: "f".repeat(40) });
     await expect(read()).rejects.toMatchObject({ code: "PR_IDENTITY_MISMATCH" });
     await expect(
       readDeliveryOutcome(fixture.machine, () => undefined, fixture.delivery.delivery_id),
@@ -305,6 +311,30 @@ describe("delivery merge watch", () => {
     // Re-observing a captured job never creates a second one.
     expect(await watcher.scan()).toMatchObject({ enqueued: 0 });
     expect(capture.jobs.list()).toHaveLength(1);
+  });
+
+  test("a merge behind more open deliveries than the batch is still reached", async () => {
+    // Regression: a scan that always restarted at the oldest deliveries would
+    // re-spend its whole batch on the open prefix and never observe the merge.
+    const context: DeliveryFixtureContext = createDeliveryFixtureContext();
+    const fixtures: DeliveryMergeFixture[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      fixtures.push(await createDeliveryMergeFixture(scope, context));
+    }
+    fixtures[3]!.merge();
+    const capture = captureScheduler(fixtures[0]!);
+    const watcher = createDeliveryMergeWatcher({
+      machine: context.machine,
+      providerFor: () => context.provider,
+      capture,
+      batchSize: 2,
+    });
+
+    expect(await watcher.scan()).toMatchObject({ scanned: 2, enqueued: 0 });
+    expect(await watcher.scan()).toMatchObject({ scanned: 2, enqueued: 1 });
+    expect(capture.jobs.list({ delivery_id: fixtures[3]!.delivery.delivery_id })).toHaveLength(1);
+    // The rotation wraps: every earlier open delivery is still observable.
+    expect(await watcher.scan()).toMatchObject({ scanned: 2, enqueued: 0 });
   });
 
   test("an unreadable provider is unknown, not a capture", async () => {

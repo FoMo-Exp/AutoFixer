@@ -6,6 +6,9 @@
  * candidate, approval, and evidence references are the same records production
  * writes. Only the provider is fake: its PR can be flipped to `merged` to model
  * the human merge, or made unreadable to model an outage.
+ *
+ * One context can own several deliveries, each on its own issue branch, so a
+ * test can prove the watcher reaches a merge behind other open deliveries.
  */
 
 import fs from "node:fs";
@@ -15,7 +18,6 @@ import path from "node:path";
 import { ApprovalService } from "../../src/collab/approval-service.js";
 import type { ApprovalDirectory, ApprovalMemberFact } from "../../src/collab/approval-service.js";
 import { CandidateContentStore } from "../../src/collab/candidate-store.js";
-import { CollabMachine } from "../../src/collab/machine.js";
 import { DeliveryBroker } from "../../src/collab/delivery-broker.js";
 import type {
   DeliveryProvider,
@@ -26,6 +28,7 @@ import type {
   PushBranchInput,
   PushBranchOutcome,
 } from "../../src/collab/delivery-broker.js";
+import { CollabMachine } from "../../src/collab/machine.js";
 import type { CandidateRecord, DeliveryRecord, IssueRecord } from "../../src/collab/types.js";
 import type { WorkspaceScope } from "../../src/control-plane/types.js";
 import {
@@ -42,6 +45,7 @@ import {
 } from "../helpers/collab.js";
 
 const APPROVER = "usr_approver";
+const BASE_TIME = Date.parse("2026-11-03T00:00:10.000Z");
 
 export class FakeDeliveryProvider implements DeliveryProvider {
   readonly provider = "github" as const;
@@ -51,6 +55,9 @@ export class FakeDeliveryProvider implements DeliveryProvider {
     repository_governance: "github_branch_protection",
   };
   branchHead: string | null = null;
+  /** PRs by branch, so one context can hold several deliveries. */
+  prs = new Map<string, ProviderPullRequestEvidence>();
+  /** The most recently created PR, for single-delivery tests. */
   pr: ProviderPullRequestEvidence | null = null;
   /** Set to make every read fail, as a revoked credential or outage would. */
   unreadable = false;
@@ -68,22 +75,28 @@ export class FakeDeliveryProvider implements DeliveryProvider {
     return { status: "pushed", head_sha: input.head_sha };
   }
 
-  async findPullRequest(): Promise<ProviderPullRequestEvidence | null> {
+  async findPullRequest(
+    _repository: unknown,
+    branch: string,
+  ): Promise<ProviderPullRequestEvidence | null> {
     if (this.unreadable) throw new Error("provider unavailable");
-    return this.pr === null ? null : { ...this.pr };
+    const pr = this.prs.get(branch) ?? this.pr;
+    return pr === null || pr === undefined ? null : { ...pr };
   }
 
   async openPullRequest(input: OpenPullRequestInput): Promise<ProviderPullRequestEvidence> {
     this.openCalls.push({ ...input });
-    this.pr = {
-      pr_id: "pr_266",
-      pr_url: "https://github.com/FoMo-Exp/autofixer-delivery-test/pull/266",
+    const pr: ProviderPullRequestEvidence = {
+      pr_id: `pr_${this.openCalls.length}`,
+      pr_url: `https://github.com/FoMo-Exp/autofixer-delivery-test/pull/${this.openCalls.length}`,
       branch: input.branch,
       head_sha: input.head_sha,
       base_ref: input.target_branch,
       state: "open",
     };
-    return { ...this.pr };
+    this.prs.set(input.branch, pr);
+    this.pr = pr;
+    return { ...pr };
   }
 }
 
@@ -112,6 +125,18 @@ class FixtureDirectory implements ApprovalDirectory {
   }
 }
 
+/** Shared state for one or more deliveries on the same collab machine. */
+export interface DeliveryFixtureContext {
+  machine: CollabMachine;
+  provider: FakeDeliveryProvider;
+  broker: DeliveryBroker;
+  /** One registered policy version per workspace + repository. */
+  policies: Map<string, string>;
+  /** Advance the fixture clock so delivery order is deterministic. */
+  tick(): void;
+  close(): void;
+}
+
 export interface DeliveryMergeFixture {
   machine: CollabMachine;
   provider: FakeDeliveryProvider;
@@ -119,26 +144,58 @@ export interface DeliveryMergeFixture {
   issue: IssueRecord;
   candidate: CandidateRecord;
   delivery: DeliveryRecord;
-  /** Flip the provider's PR to merged; the human act this path observes. */
+  /** Flip this delivery's provider PR to merged; the human act observed. */
   merge(): void;
   close(): void;
+}
+
+export function createDeliveryFixtureContext(): DeliveryFixtureContext {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "autofixer-dat266-"));
+  const store = new CandidateContentStore(path.join(root, "candidates"));
+  // A fixed, slowly advancing clock inside the fixture grant's validity
+  // window: the records are the product's, but their times are deterministic.
+  let clock = BASE_TIME;
+  const machine = new CollabMachine({
+    candidateStore: store,
+    now: () => new Date(clock),
+  });
+  const provider = new FakeDeliveryProvider();
+  const directory = new FixtureDirectory();
+  const broker = new DeliveryBroker({
+    machine,
+    providers: { github: provider },
+    approvalDirectory: directory,
+    candidateContent: { read: (digest) => store.read(digest) },
+    deliveryAuthorized: () => true,
+    auditAvailable: () => true,
+  });
+  return {
+    machine,
+    provider,
+    broker,
+    policies: new Map(),
+    tick() {
+      clock += 1000;
+    },
+    close() {
+      fs.rmSync(root, { recursive: true, force: true });
+    },
+  };
 }
 
 /**
  * Create one issue → stopped preparation → frozen candidate → approved →
  * delivered PR bound to `scope`. The provider's PR starts `open`.
+ *
+ * Pass the same `context` to create several deliveries; each gets a later
+ * created_at and its own issue-scoped branch.
  */
 export async function createDeliveryMergeFixture(
   scope: WorkspaceScope,
-): Promise<DeliveryMergeFixture> {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "autofixer-dat266-"));
-  const store = new CandidateContentStore(path.join(root, "candidates"));
-  // A fixed clock inside the fixture grant's validity window: the record is
-  // the product's, but its times are deterministic.
-  const machine = new CollabMachine({
-    candidateStore: store,
-    now: () => new Date("2026-11-03T00:00:10.000Z"),
-  });
+  context: DeliveryFixtureContext = createDeliveryFixtureContext(),
+): Promise<DeliveryMergeFixture & { context: DeliveryFixtureContext }> {
+  context.tick();
+  const { machine, provider, broker } = context;
   const directory = new FixtureDirectory();
   const approvalService = new ApprovalService(machine, directory);
   const issue = planningIssue(machine, {
@@ -147,19 +204,28 @@ export async function createDeliveryMergeFixture(
       workspace_id: scope.workspace_id,
     },
     repository: REPOSITORY,
+    // Each fixture is a distinct issue; the dedupe key is the issue identity.
+    dedupe_key: op(),
   });
-  const policy = registerTestPolicy(machine, { workspace: issue.workspace });
+  const policyKey = `${scope.enterprise_id}/${scope.workspace_id}/${REPOSITORY.repository_id}`;
+  const existingPolicy = context.policies.get(policyKey);
+  const policyId =
+    existingPolicy ?? registerTestPolicy(machine, { workspace: issue.workspace }).policy_id;
+  context.policies.set(policyKey, policyId);
   const task = machine.addTask({
     operation_id: op(),
     actor: "orchestrator:planner",
     issue_id: issue.issue_id,
     role: "implementation",
   });
-  const context = stoppedPreparation(machine, issue.issue_id, {
-    policyId: policy.policy_id,
+  const worktreeId = op();
+  const preparation = stoppedPreparation(machine, issue.issue_id, {
+    policyId,
     taskId: task.task_id,
+    worktreeId,
+    worktreePath: `/tmp/worktrees/${worktreeId}`,
   });
-  const candidate = machine.freezeCandidate(freezeCandidateInput(context));
+  const candidate = machine.freezeCandidate(freezeCandidateInput(preparation));
   machine.transitionIssue({
     operation_id: op(),
     actor: "human:operator",
@@ -207,15 +273,6 @@ export async function createDeliveryMergeFixture(
     lease,
     grant: grantInput({ may_create_or_update_pr: true }),
   });
-  const provider = new FakeDeliveryProvider();
-  const broker = new DeliveryBroker({
-    machine,
-    providers: { github: provider },
-    approvalDirectory: directory,
-    candidateContent: { read: (digest) => store.read(digest) },
-    deliveryAuthorized: () => true,
-    auditAvailable: () => true,
-  });
   const requested = broker.request({
     operation_id: op(),
     actor: "orchestrator:delivery",
@@ -231,6 +288,7 @@ export async function createDeliveryMergeFixture(
     throw new Error("fixture delivery was not recorded");
   }
   return {
+    context,
     machine,
     provider,
     broker,
@@ -238,10 +296,14 @@ export async function createDeliveryMergeFixture(
     candidate,
     delivery,
     merge() {
-      if (provider.pr !== null) provider.pr = { ...provider.pr, state: "merged" };
+      const branch = delivery.branch;
+      if (branch === null) return;
+      const pr = provider.prs.get(branch);
+      if (pr !== undefined) provider.prs.set(branch, { ...pr, state: "merged" });
+      if (provider.pr?.branch === branch) provider.pr = { ...provider.pr, state: "merged" };
     },
     close() {
-      fs.rmSync(root, { recursive: true, force: true });
+      context.close();
     },
   };
 }
