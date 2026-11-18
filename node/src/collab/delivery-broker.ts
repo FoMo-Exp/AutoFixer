@@ -193,6 +193,16 @@ function pullRequestCopy(
 
 export class DeliveryBroker {
   private readonly options: DeliveryBrokerOptions;
+  /**
+   * Deliveries whose write attempt is in progress in this process.
+   *
+   * The machine records `pushing` only after the first provider *read*, so two
+   * concurrent callers can both observe a `pending` record; the in-process
+   * guard makes the second one a state conflict instead of a second push. Once
+   * a write has begun, later callers see the recorded `pushing`/terminal state
+   * and never start another write.
+   */
+  private readonly inFlight = new Set<string>();
 
   constructor(options: DeliveryBrokerOptions) {
     this.options = options;
@@ -245,6 +255,22 @@ export class DeliveryBroker {
    * identity. No step writes to the repository base or merges anything.
    */
   async deliver(deliveryId: string, options: DeliverOptions): Promise<DeliveryView> {
+    if (this.inFlight.has(deliveryId)) {
+      throw new CollabError(
+        "DELIVERY_STATE_CONFLICT",
+        "a delivery write is already in progress for this operation",
+        { delivery_id: deliveryId },
+      );
+    }
+    this.inFlight.add(deliveryId);
+    try {
+      return await this.deliverOnce(deliveryId, options);
+    } finally {
+      this.inFlight.delete(deliveryId);
+    }
+  }
+
+  private async deliverOnce(deliveryId: string, options: DeliverOptions): Promise<DeliveryView> {
     const delivery = this.requireDelivery(deliveryId);
     if (delivery.state !== "pending") {
       throw new CollabError(

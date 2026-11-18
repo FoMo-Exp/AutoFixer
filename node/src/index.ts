@@ -8,6 +8,12 @@ import { buildOpenApiDocument } from "./api/openapi.js";
 import { BudgetAuthority, createBudgetStore, loadBudgetPolicyFile } from "./budget/index.js";
 import { readOrCreateApiToken } from "./api/auth.js";
 import { AuthService } from "./api/auth-service.js";
+import { ApprovalService } from "./collab/approval-service.js";
+import { CandidateReviewService } from "./collab/candidate-service.js";
+import { DeliveryBroker } from "./collab/delivery-broker.js";
+import type { DeliveryProvider } from "./collab/delivery-broker.js";
+import { createApprovalDirectory, createDeliveryPermission } from "./api/collab-authority.js";
+import type { CollabHttpDeps } from "./api/collab-http.js";
 import { createInvitationAuthority } from "./api/invitation-authority.js";
 import { InvitationService, readOrCreateInvitationDigestKey } from "./api/invitation-service.js";
 import type { InvitationRateLimits } from "./api/invitation-service.js";
@@ -140,6 +146,13 @@ export interface OrchestratorOptions {
    * reported as `missing_source`, never as zero.
    */
   dashboardSources?: Partial<DashboardSources>;
+  /**
+   * Provider write seam for the delivery broker (ADR-0007). The deployment
+   * ships no provider adapter here yet, so delivery is blocked; DAT-260 adds
+   * the real GitHub adapter and tests inject a scripted fake. A test double is
+   * never a delivery: production wiring supplies nothing by default.
+   */
+  deliveryProviders?: Partial<Record<"github" | "gitlab", DeliveryProvider>>;
 }
 
 export interface OrchestratorHandle {
@@ -181,6 +194,19 @@ export interface OrchestratorHandle {
   rsiStore: RsiStore | undefined;
   /** Workspace dashboard read model (DAT-230); set with the identity surface. */
   dashboard: DashboardService | undefined;
+  /**
+   * Durable collaboration record (DAT-215/219/220): issues, runs, immutable
+   * candidates, approvals, and deliveries. Constructed unconditionally.
+   */
+  collaboration: CollabMachine;
+  /** Retained candidate content outside every ephemeral worktree. */
+  candidateStore: CandidateContentStore;
+  /**
+   * Candidate review, approval, and delivery API wiring (DAT-259); set with
+   * the identity surface. Exposed so tests drive the same objects the server
+   * serves instead of rebuilding them.
+   */
+  collab: CollabHttpDeps | undefined;
   /** Per-process bearer token callers must present on every API request. */
   apiToken: string;
   /** Redacted configuration/readiness report (DAT-257). */
@@ -526,6 +552,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let rsi: RsiService | undefined;
   let rsiStore: RsiStore | undefined;
   let issues: IssueSyncService | undefined;
+  let collab: CollabHttpDeps | undefined;
   if (config.oauthClientsFile !== undefined) {
     controlPlane = openControlPlaneDb({ path: config.controlPlaneFile ?? ":memory:" });
     const repos = createRepositories(controlPlane);
@@ -619,6 +646,35 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       enterpriseId: config.enterpriseId,
       workspaceId: config.workspaceId,
     });
+    // Candidate review, candidate-bound human approval, and broker-controlled
+    // delivery (DAT-259). Constructed with the identity surface, because every
+    // route is membership-scoped and approval eligibility is a live
+    // control-plane + provider-roster fact. The broker holds no provider adapter
+    // by default: delivery stays blocked until DAT-260 supplies a reviewed one.
+    const approvalDirectory = createApprovalDirectory({
+      enterprise_id: config.enterpriseId,
+      memberships: repos.memberships,
+      users: identity.users,
+      identities: identity.identities,
+      access: providerAccess,
+    });
+    collab = {
+      machine: collaboration,
+      candidates: new CandidateReviewService(collaboration, candidateStore),
+      approvals: new ApprovalService(collaboration, approvalDirectory),
+      deliveries: new DeliveryBroker({
+        machine: collaboration,
+        providers: options.deliveryProviders ?? {},
+        approvalDirectory,
+        deliveryAuthorized: createDeliveryPermission({
+          machine: collaboration,
+          access: providerAccess,
+          workspaces: repos.workspaces,
+          enterprise_id: config.enterpriseId,
+        }),
+        auditAvailable: () => collaboration.auditAvailable(),
+      }),
+    };
     // The workspace-scoped task family resolves each locator against the
     // authenticated control plane, not against process config (DAT-245).
     workspaceBindings = createWorkspaceRunBindingResolver({
@@ -768,6 +824,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
     ...(invitations !== undefined ? { invitations } : {}),
     ...(issues !== undefined ? { issues } : {}),
+    ...(collab !== undefined ? { collab } : {}),
     ...(memory !== undefined && auth !== undefined
       ? {
           memory: {
@@ -803,6 +860,9 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     rsi,
     rsiStore,
     dashboard,
+    collaboration,
+    candidateStore,
+    collab,
     apiToken,
     diagnostics,
     start: () => {

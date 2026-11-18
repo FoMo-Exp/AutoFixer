@@ -144,6 +144,7 @@ describe("periodic reconciliation", () => {
       "stream",
       "artifact_read",
       "approval",
+      "delivery",
       "write",
     ]);
 

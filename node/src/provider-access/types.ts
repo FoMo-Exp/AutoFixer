@@ -199,9 +199,16 @@ export interface ProviderAdapter {
 
 /**
  * The action classes revocation must stop. One gate decision covers each of
- * them; a revoked subject loses all five at once.
+ * them; a revoked subject loses all of them at once.
+ *
+ * `delivery` is the collaboration delivery surface (DAT-259): requesting a
+ * candidate-bound approval or a broker-controlled delivery, and reconciling an
+ * ambiguous outcome. It is a sensitive member action — a repository write still
+ * requires the narrow, expiring delivery capability grant the broker checks
+ * separately, so this class deliberately carries no capability requirement.
  */
-export type ActionKind = "read" | "stream" | "artifact_read" | "approval" | "write" | "issue_sync";
+export type ActionKind =
+  "read" | "stream" | "artifact_read" | "approval" | "delivery" | "write" | "issue_sync";
 
 /** All action kinds, in request-path order (used by revocation effects). */
 export const ACTION_KINDS: readonly ActionKind[] = [
@@ -209,6 +216,7 @@ export const ACTION_KINDS: readonly ActionKind[] = [
   "stream",
   "artifact_read",
   "approval",
+  "delivery",
   "write",
 ];
 
@@ -241,6 +249,7 @@ export const DEFAULT_ACTION_POLICY: Readonly<Record<ActionKind, ActionPolicy>> =
   stream: { min_role: "viewer", sensitivity: "ordinary" },
   artifact_read: { min_role: "viewer", sensitivity: "ordinary" },
   approval: { min_role: "admin", sensitivity: "sensitive" },
+  delivery: { min_role: "member", sensitivity: "sensitive" },
   write: { min_role: "member", sensitivity: "sensitive", requires_capability: "delivery_write" },
   issue_sync: { min_role: "member", sensitivity: "sensitive" },
 });

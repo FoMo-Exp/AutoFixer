@@ -50,8 +50,11 @@ import { ApiError } from "./errors.js";
  * default except `write`: an API write is task-plane mutation (create task,
  * steer, cancel, archive), not a repository delivery write — delivery
  * writes demand the narrow expiring capability grants in the delivery
- * broker. Revocation still denies all five action classes and revokes the
- * grants in the same call.
+ * broker. The collaboration delivery surface uses the additive `delivery`
+ * class: a sensitive member action whose separate delivery grant and
+ * candidate-bound approval the broker re-checks before every provider write.
+ * Revocation still denies every action class and revokes the grants in the
+ * same call.
  */
 export const HTTP_ACTION_POLICY: Readonly<Record<ActionKind, ActionPolicy>> = Object.freeze({
   ...DEFAULT_ACTION_POLICY,
@@ -124,12 +127,21 @@ export function actionForRequest(method: string, segments: string[]): ActionKind
       if (tail[1] === "stream") return "stream";
       return "read";
     }
-    if (
-      tail.length === 2 &&
-      method === "POST" &&
-      (tail[1] === "rollback" || tail[1] === "comments")
-    ) {
-      return "issue_sync";
+    if (tail.length === 2 && method === "POST") {
+      if (tail[1] === "rollback" || tail[1] === "comments") return "issue_sync";
+      // Candidate-bound approval requests and broker-controlled deliveries are
+      // sensitive member actions; the approval gate itself is `approval`
+      // (admin + fresh repository authority) below.
+      if (tail[1] === "approvals" || tail[1] === "deliveries") return "delivery";
+      return null;
+    }
+    if (tail.length === 3 && (method === "GET" || method === "HEAD")) {
+      return "read";
+    }
+    if (tail.length === 4 && method === "POST") {
+      if (tail[1] === "approvals" && tail[3] === "decision") return "approval";
+      if (tail[1] === "deliveries" && tail[3] === "reconcile") return "delivery";
+      return null;
     }
     if (tail.length === 1 && method === "PATCH") return "issue_sync";
     return null;

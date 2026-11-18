@@ -921,14 +921,30 @@ bearer token.
 
 ## Collaboration v1 (DAT-221)
 
-Status: implementation contract whose durable issue/task/run/approval/delivery
-domain is implemented in the collaboration domain (DAT-219 candidate freeze,
-DAT-220 candidate-bound approval and broker delivery); the HTTP/SSE serving
-wiring remains a separate landing surface. It defines the durable
-issue/task/run/candidate/approval/delivery resources and their event stream of
-ADR-0007 so dependent web work is built against a merged contract; it claims no
-running HTTP control until that serving code lands, and dsh remains the
-execution gate.
+Status: the durable issue/task/run/approval/delivery domain is implemented in
+the collaboration domain (DAT-219 candidate freeze, DAT-220 candidate-bound
+approval and broker delivery), and DAT-259 serves the candidate review,
+approval, and delivery routes below under the product API. The issue family is
+served by provider issue synchronization; the stage/task/run routes and the
+issue event stream are still a separate landing surface and are not served
+yet. dsh remains the execution gate.
+
+The delivery routes are served with a **single broker attempt inside the
+request**: the operation identity and intent are recorded first, then the
+broker re-checks approval, delivery permission, the recorded delivery grant,
+audit availability, branch constraint, and exact candidate identity before each
+write. A `202` therefore reports the delivery's recorded state, which may be
+`delivered`, `partial`, `unknown`, or `failed` — never an inferred success. A
+replay with the same `Idempotency-Key` returns the same operation's current
+state instead of starting a second write. No provider adapter is registered by
+default, so a deployment without one refuses delivery with `403
+DELIVERY_FORBIDDEN` (DAT-260 lands the reviewed GitHub adapter).
+
+Approval eligibility is a live fact: an active workspace membership with role
+`owner`/`admin` (the explicit approval authority) **and** current repository
+access from the provider roster (not `removed`, not `unknown`, verified inside
+the staleness bound). The deployment bearer is not a human and can never decide
+an approval.
 
 Product stages and harness run states are separate vocabularies. An issue's
 `product_state` is the product lifecycle (`triage`, `planning`, `implementing`,
@@ -1098,7 +1114,9 @@ has no merge, close, delete, force-push, or review operation, so the broker
 cannot merge, self-review, or waive a check.
 
 `POST .../deliveries` takes `{approval_id, grant_id}` and is a no-op duplicate
-only for the same operation identity. The broker requires a current `approved`
+only for the same operation identity. The broker records the operation and then
+performs at most one push/PR attempt for it in the same request. The broker
+requires a current `approved`
 approval bound to a valid frozen candidate and an **active, unexpired,
 delivery-role capability grant** whose head binding matches the candidate
 (`grant_id` is a separate delivery grant — a preparation grant is not enough).

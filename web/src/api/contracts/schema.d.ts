@@ -1274,7 +1274,7 @@ export interface paths {
         put?: never;
         /**
          * Request broker-controlled delivery for an approved candidate
-         * @description Records the delivery operation (identity and intention) before any provider write and returns it in state `pending`; the trusted broker performs the push/PR. Delivery requires a current, valid candidate-bound approval (409 APPROVAL_NOT_APPROVED) — an assignee, blame author, or team leader is never sufficient — and consumes that approval: reusing a consumed approval is 409 APPROVAL_CONSUMED. A safe retry with the same Idempotency-Key reconciles the same operation instead of creating a second branch/PR. No direct main write, merge, self-review, or check waiver exists.
+         * @description Records the delivery operation (identity and intention) before any provider write; the trusted broker then performs at most one push/PR attempt for this operation in the same request, and the response reports the recorded state. Delivery requires a current, valid candidate-bound approval (409 APPROVAL_NOT_APPROVED) — an assignee, blame author, or team leader is never sufficient — and consumes that approval: reusing a consumed approval is 409 APPROVAL_CONSUMED. A safe retry with the same Idempotency-Key reconciles the same operation instead of creating a second branch/PR. `partial` and `unknown` are explicit outcomes, never success; they leave only through the reconcile route. No direct main write, merge, self-review, or check waiver exists.
          */
         post: operations["requestIssueDelivery"];
         delete?: never;
@@ -9814,7 +9814,7 @@ export interface operations {
                 };
             };
             /** @description PROVIDER_ERROR — retryable; no write was performed */
-            502: {
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
