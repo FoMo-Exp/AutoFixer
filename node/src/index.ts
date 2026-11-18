@@ -85,11 +85,14 @@ import type {
   RsiStore,
 } from "./memory/index.js";
 import {
+  createDeliveryMergeWatcher,
   createMemoryDistillationRunner,
   createOutcomeCaptureScheduler,
   isCaptureTerminalState,
+  readDeliveryOutcome,
 } from "./distill/index.js";
 import type {
+  DeliveryMergeWatcher,
   MemoryDistillationRunner,
   OutcomeCaptureScheduler,
   TerminalRunRegistration,
@@ -574,6 +577,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let memory: MemoryRetrievalService | undefined;
   let memoryRepositories: MemoryRepositories | undefined;
   let memoryCapture: OutcomeCaptureScheduler | undefined;
+  let deliveryWatcher: DeliveryMergeWatcher | undefined;
   let memoryDistillation: MemoryDistillationRunner | undefined;
   let memoryGovernance: MemoryGovernanceService | undefined;
   let rsi: RsiService | undefined;
@@ -623,19 +627,6 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     // service is read-only over memory: it assembles bounded, cited bundles and
     // records audit rows; it cannot promote, edit, or grant anything.
     memoryRepositories = createMemoryRepositories(controlPlane);
-    // Terminal-outcome capture (DAT-264): a durable outbox over the same
-    // control-plane database. The enqueue comes from the task projection's
-    // server-side enterprise/workspace; the worker re-reads authoritative dsh
-    // evidence and writes exactly one episode per terminal snapshot.
-    memoryCapture = createOutcomeCaptureScheduler({
-      db: controlPlane,
-      memory: memoryRepositories,
-      dsh,
-      actorId: config.actorId,
-      onError: (error) => {
-        console.error("memory outcome capture:", error);
-      },
-    });
     // Distillation of captured known outcomes (DAT-265): derived from the
     // capture outbox's snapshots, dispatched through the ADR-0005 gateway under
     // the job's server-side workspace, and persisted as `proposed` only after
@@ -719,38 +710,75 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       identities: identity.identities,
       access: providerAccess,
     });
+    // The delivery provider is the only write path to a repository, and the
+    // read-only observer of the human merge (DAT-266). Both use the same
+    // adapter and the same per-call credential resolution.
+    const deliveryProviders: Partial<Record<"github" | "gitlab", DeliveryProvider>> =
+      options.deliveryProviders ?? {
+        github: createGitHubDeliveryProvider({
+          credentials: serviceCredentials,
+          resolve: (repository) => {
+            const integration = providerAccess.integrations.getByRepository(
+              {
+                enterprise_id: config.enterpriseId,
+                actor_id: "collab-delivery-provider",
+              },
+              repository.repository_id,
+            );
+            if (
+              integration === undefined ||
+              integration.install_status !== "active" ||
+              integration.delivery_credential_ref === null
+            ) {
+              return null;
+            }
+            return {
+              canonical_repository_id: integration.repository_id,
+              credential_ref: integration.delivery_credential_ref,
+            };
+          },
+          ...(providerApiBaseUrl !== undefined ? { api_base_url: providerApiBaseUrl } : {}),
+        }),
+      };
+    const deliveryProviderFor = (provider: "github" | "gitlab"): DeliveryProvider | undefined =>
+      deliveryProviders[provider];
+    // Terminal-outcome capture (DAT-264): a durable outbox over the same
+    // control-plane database. The enqueue comes from the task projection's
+    // server-side enterprise/workspace; the worker re-reads authoritative dsh
+    // evidence and writes exactly one episode per terminal snapshot. A
+    // provider-observed merge (DAT-266) is a second, delivery-keyed source:
+    // it is built from the delivery record, its candidate, and a live provider
+    // read, never from a dsh state.
+    memoryCapture = createOutcomeCaptureScheduler({
+      db: controlPlane,
+      memory: memoryRepositories,
+      dsh,
+      actorId: config.actorId,
+      deliveryOutcomes: {
+        read: (deliveryId) => readDeliveryOutcome(collaboration, deliveryProviderFor, deliveryId),
+      },
+      onError: (error) => {
+        console.error("memory outcome capture:", error);
+      },
+    });
+    // The human merge is never announced to the service. This bounded watcher
+    // observes delivered PRs and enqueues exactly one capture per merge; an
+    // unreadable or unmerged PR enqueues nothing.
+    deliveryWatcher = createDeliveryMergeWatcher({
+      machine: collaboration,
+      providerFor: deliveryProviderFor,
+      capture: memoryCapture,
+      onError: (error) => {
+        console.error("delivery merge watch:", error);
+      },
+    });
     collab = {
       machine: collaboration,
       candidates: new CandidateReviewService(collaboration, candidateStore),
       approvals: new ApprovalService(collaboration, approvalDirectory),
       deliveries: new DeliveryBroker({
         machine: collaboration,
-        providers: options.deliveryProviders ?? {
-          github: createGitHubDeliveryProvider({
-            credentials: serviceCredentials,
-            resolve: (repository) => {
-              const integration = providerAccess.integrations.getByRepository(
-                {
-                  enterprise_id: config.enterpriseId,
-                  actor_id: "collab-delivery-provider",
-                },
-                repository.repository_id,
-              );
-              if (
-                integration === undefined ||
-                integration.install_status !== "active" ||
-                integration.delivery_credential_ref === null
-              ) {
-                return null;
-              }
-              return {
-                canonical_repository_id: integration.repository_id,
-                credential_ref: integration.delivery_credential_ref,
-              };
-            },
-            ...(providerApiBaseUrl !== undefined ? { api_base_url: providerApiBaseUrl } : {}),
-          }),
-        },
+        providers: deliveryProviders,
         approvalDirectory,
         // The exact retained patch the approval covered. `read` re-hashes the
         // bytes, so a corrupted or substituted blob can never be pushed.
@@ -1019,6 +1047,13 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
           });
         }
         memoryCapture?.start();
+        // Observe already-open deliveries once at startup, then on the watch
+        // cadence: a merge that happened while the service was down is picked
+        // up without waiting for a fresh delivery.
+        deliveryWatcher?.start();
+        void deliveryWatcher?.scan().catch((error: unknown) => {
+          console.error("delivery merge watch skipped:", error);
+        });
         // Distillation derives its work from the capture outbox before the API
         // serves reads (a DB-only step), then processes rows on its retry
         // cadence plus one immediate pass: snapshots captured while this
@@ -1044,6 +1079,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       });
     },
     stop: () => {
+      deliveryWatcher?.stop();
       memoryConsolidation?.stop();
       memoryDistillation?.stop();
       memoryCapture?.stop();

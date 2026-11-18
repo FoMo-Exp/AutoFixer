@@ -6,7 +6,7 @@
  * dsh evidence/delivery envelope as episodes with evidence, redact and
  * minimize everything before persistence, distill structured candidates
  * through the ADR-0005 gateway, and validate them against the captured
- * evidence ledger before they become `proposed` memory items.
+ * evidence ledger before they become `candidate` memory items (DAT-266).
  *
  * Invariants this module enforces:
  *
@@ -94,10 +94,26 @@ export {
 } from "./scheduler.js";
 export type {
   CaptureDrainReport,
+  DeliveryOutcomeSource,
+  DeliveryTerminalRegistration,
   OutcomeCaptureScheduler,
   OutcomeCaptureSchedulerOptions,
   TerminalRunRegistration,
 } from "./scheduler.js";
+
+export { readDeliveryOutcome } from "./delivery-outcome.js";
+export type { DeliveryOutcomeEvidence, DeliveryProviderLookup } from "./delivery-outcome.js";
+
+export {
+  createDeliveryMergeWatcher,
+  DEFAULT_DELIVERY_WATCH_BATCH,
+  DEFAULT_DELIVERY_WATCH_INTERVAL_MS,
+} from "./delivery-watch.js";
+export type {
+  DeliveryMergeWatcher,
+  DeliveryMergeWatcherOptions,
+  DeliveryWatchReport,
+} from "./delivery-watch.js";
 
 export {
   assertNoSecretOrPii,

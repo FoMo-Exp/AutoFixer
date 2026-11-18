@@ -1445,6 +1445,24 @@ const MIGRATIONS: Migration[] = [
         ON memory_distillation(enterprise_id, workspace_id, run_id)`,
     ],
   },
+  {
+    // Delivery terminal capture (DAT-266). A real remediation ends with the
+    // provider merging the delivered PR, which dsh never observes: the merge
+    // is an external fact read back from the delivery provider. A delivery
+    // job is therefore keyed by its delivery id, not only by its dsh run, and
+    // exactly one terminal capture may exist per delivery.
+    //
+    // The column is nullable: every pre-DAT-266 row is a dsh-state capture,
+    // and that path is unchanged. No row is back-filled with a reconstructed
+    // merge.
+    version: 18,
+    statements: [
+      `ALTER TABLE memory_outcome_capture ADD COLUMN delivery_id TEXT`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_outcome_capture_delivery
+        ON memory_outcome_capture(workspace_id, delivery_id)
+        WHERE delivery_id IS NOT NULL`,
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
