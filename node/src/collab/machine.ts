@@ -28,6 +28,7 @@ import {
 import type {
   ApprovalRecord,
   ArtifactRef,
+  CandidateCommit,
   CandidateDiff,
   CandidateRecord,
   CandidateValidation,
@@ -247,6 +248,11 @@ export type FreezeCandidateInput = CommandBase & {
   base_sha: string;
   head_sha: string;
   tree_sha: string;
+  /**
+   * The exact commit identity behind `head_sha` (DAT-260). Recorded with the
+   * candidate so delivery reproduces the approved commit object itself.
+   */
+  commit: CandidateCommit;
   diff: CandidateDiff;
   diff_content: string;
   validation: CandidateValidation;

@@ -157,6 +157,7 @@ interface Fixture {
   root: string;
   clock: Clock;
   machine: CollabMachine;
+  store: CandidateContentStore;
   directory: FakeDirectory;
   approvalService: ApprovalService;
   provider: FakeProvider;
@@ -191,8 +192,9 @@ let root = "";
 function setup(options: SetupOptions = {}): Fixture {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "autofixer-delivery-"));
   const clock = new Clock();
+  const store = new CandidateContentStore(path.join(root, "candidates"));
   const machine = new CollabMachine({
-    candidateStore: new CandidateContentStore(path.join(root, "candidates")),
+    candidateStore: store,
     now: clock.now,
     ...(options.ttlSeconds !== undefined ? { approvalTtlSeconds: options.ttlSeconds } : {}),
   });
@@ -269,6 +271,7 @@ function setup(options: SetupOptions = {}): Fixture {
     machine,
     providers: { github: provider },
     approvalDirectory: directory,
+    candidateContent: { read: (digest) => store.read(digest) },
     deliveryAuthorized: () => options.deliveryAuthorized ?? true,
     auditAvailable: () => options.auditAvailable ?? true,
   });
@@ -278,6 +281,7 @@ function setup(options: SetupOptions = {}): Fixture {
     clock,
     machine,
     directory,
+    store,
     approvalService,
     provider,
     broker,
@@ -758,6 +762,7 @@ describe("pre-write authority, grant, audit, and branch checks", () => {
       machine: f.machine,
       providers: { github: f.provider },
       approvalDirectory: f.directory,
+      candidateContent: { read: (digest) => f.store.read(digest) },
       deliveryAuthorized: () => true,
     });
     const delivery = requestDelivery(f);

@@ -7,7 +7,13 @@ import { RECONCILABLE_STATES, deliveryBranchProblem, deliveryView } from "./deli
 import type { DeliveryView } from "./delivery.js";
 import { CollabError } from "./errors.js";
 import type { CollabMachine } from "./machine.js";
-import type { CandidateRecord, DeliveryRecord, RepositoryRef, UserRef } from "./types.js";
+import type {
+  CandidateCommit,
+  CandidateRecord,
+  DeliveryRecord,
+  RepositoryRef,
+  UserRef,
+} from "./types.js";
 import { autofixerBranchFor } from "./types.js";
 
 /**
@@ -68,6 +74,18 @@ export interface PushBranchInput {
   tree_sha: string;
   /** Diff digest the pushed commit must reproduce. */
   diff_digest: string;
+  /**
+   * The exact retained patch the approved candidate froze. A provider that
+   * rebuilds the tree from base blobs applies this content; it is the same
+   * bytes a reviewer read and the same digest the approval bound.
+   */
+  diff_content: string;
+  /**
+   * The exact commit identity the candidate head names. A provider must
+   * reproduce this object (same tree, parent, message, author, committer) so
+   * the branch it writes carries the approved commit itself.
+   */
+  commit: CandidateCommit;
 }
 
 export type PushBranchOutcome =
@@ -131,6 +149,13 @@ export interface DeliveryBrokerOptions {
   }) => boolean;
   /** Audit sink availability; a missing/closed sink blocks every write. */
   auditAvailable?: () => boolean;
+  /**
+   * The retained candidate content the approval's `diff.digest` names. A
+   * provider that reconstructs the approved tree from the patch needs the
+   * exact retained bytes; without a store the broker refuses the write rather
+   * than pushing an unverifiable tree.
+   */
+  candidateContent?: { read(digest: string): string };
 }
 
 export interface RequestDeliveryOptions {
@@ -345,6 +370,29 @@ export class DeliveryBroker {
       );
     }
 
+    // The push must publish exactly the approved commit. Both the recorded
+    // commit identity and the retained patch are required before the intention
+    // to write is recorded; a missing piece leaves the operation pending.
+    const commit = candidate.commit;
+    if (commit === null) {
+      throw new CollabError(
+        "DELIVERY_FORBIDDEN",
+        "the candidate records no commit identity, so the approved head cannot be reproduced",
+        { delivery_id: delivery.delivery_id, candidate_id: candidate.candidate_id },
+      );
+    }
+    if (this.options.candidateContent === undefined) {
+      throw new CollabError(
+        "DELIVERY_FORBIDDEN",
+        "candidate content is not available to the broker",
+        { delivery_id: delivery.delivery_id },
+      );
+    }
+    // Read (and re-verify) the retained patch before any write. A missing or
+    // corrupted blob leaves the operation pending: nothing was published, and
+    // the same operation may be retried once the content boundary is restored.
+    const diffContent = this.options.candidateContent.read(candidate.diff.digest);
+
     this.recordState(delivery, options, "pushing", {});
     let outcome: PushBranchOutcome;
     try {
@@ -355,6 +403,8 @@ export class DeliveryBroker {
         head_sha: delivery.head_sha,
         tree_sha: candidate.tree_sha,
         diff_digest: candidate.diff.digest,
+        diff_content: diffContent,
+        commit,
       });
     } catch {
       return deliveryView(

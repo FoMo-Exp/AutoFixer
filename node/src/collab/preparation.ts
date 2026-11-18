@@ -10,6 +10,7 @@ import type {
 import { diffDigest } from "./candidate-store.js";
 import { CollabError } from "./errors.js";
 import { artifactEvidenceRef, grantEvidenceRef, planEvidenceRef } from "./evidence.js";
+import { commitObjectSha } from "./git-objects.js";
 import type {
   ArtifactInput,
   CollabMachine,
@@ -313,6 +314,43 @@ export class PreparationBridge {
         diff_digest: diff.diff_digest,
       });
     }
+    // The head must be exactly the commit its recorded identity describes, and
+    // the message must name this task and this dsh run. A delivery adapter
+    // reproduces that object; an identity that does not reproduce the head
+    // could only ever publish something the approval did not cover.
+    const identity = candidate.commit;
+    if (identity === undefined || identity === null) {
+      fail("the candidate artifact carries no commit identity", {
+        head_sha: candidate.head_sha,
+      });
+    }
+    const expectedMessage = `autofixer candidate for ${observation.taskId}\n\nrun: ${run.run_id}\n`;
+    if (identity.message !== expectedMessage) {
+      fail("candidate commit message does not name this task and run", {
+        run_id: run.run_id,
+      });
+    }
+    let reproduced: string | null = null;
+    try {
+      reproduced = commitObjectSha({
+        tree_sha: candidate.tree_sha,
+        parent_shas: [candidate.base_sha],
+        identity,
+      });
+    } catch {
+      reproduced = null;
+    }
+    if (reproduced === null) {
+      fail("candidate commit identity is not a reproducible git commit", {
+        head_sha: candidate.head_sha,
+      });
+    }
+    if (reproduced !== candidate.head_sha) {
+      fail("candidate head is not the commit its identity describes", {
+        head_sha: candidate.head_sha,
+        reproduced,
+      });
+    }
     if (candidate.repository_url !== grant.repositoryUrl) {
       fail("candidate names another repository", {
         candidate_url: candidate.repository_url,
@@ -505,6 +543,11 @@ export class PreparationBridge {
       base_sha: baseSha,
       head_sha: headSha,
       tree_sha: diff.tree_sha,
+      commit: {
+        message: candidate.commit.message,
+        author: { ...candidate.commit.author },
+        committer: { ...candidate.commit.committer },
+      },
       diff: {
         digest_algorithm: "sha256",
         digest: diff.diff_digest,

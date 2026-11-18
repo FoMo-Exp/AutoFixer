@@ -29,6 +29,7 @@ import {
   WORKSPACE,
   Clock,
   acquireLease,
+  candidateCommit,
   ensureTestPolicy,
   freezeCandidateInput,
   leaseRef,
@@ -268,6 +269,7 @@ describe("immutable candidate freeze (DAT-219)", () => {
       base_sha: REPOSITORY.base_sha,
       head_sha: "deadbeef",
       tree_sha: "deadbeef",
+      commit: candidateCommit(issue.issue_id, run.run_id),
       diff: {
         digest_algorithm: "sha256",
         digest: diffDigest(CANDIDATE_DIFF),

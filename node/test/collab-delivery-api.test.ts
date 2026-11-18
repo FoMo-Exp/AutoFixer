@@ -252,6 +252,7 @@ function setup(): Fixture {
     machine,
     providers: { github: provider },
     approvalDirectory: directory,
+    candidateContent: { read: (digest) => store.read(digest) },
     deliveryAuthorized: createDeliveryPermission({
       machine,
       access,
@@ -468,6 +469,7 @@ function restartedServices(f: Fixture): { machine: CollabMachine; deps: CollabHt
         machine,
         providers: { github: f.provider },
         approvalDirectory: directory,
+        candidateContent: { read: (digest) => f.store.read(digest) },
         deliveryAuthorized: createDeliveryPermission({
           machine,
           access: f.access,
@@ -756,6 +758,7 @@ describe("broker-controlled delivery", () => {
         machine: f.machine,
         providers: {},
         approvalDirectory: directory,
+        candidateContent: { read: (digest) => f.store.read(digest) },
         deliveryAuthorized: () => true,
         auditAvailable: () => true,
       }),

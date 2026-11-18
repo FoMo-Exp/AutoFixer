@@ -333,6 +333,32 @@ export interface ChangeRisk {
   requires_human_approval: boolean;
 }
 
+/** One author/committer identity exactly as the candidate commit stores it. */
+export interface CandidateCommitPerson {
+  name: string;
+  email: string;
+  /**
+   * The recorded date: git's own object form (`"<unix> <tz>"`) or the ISO form
+   * the sandbox constant uses (`"1970-01-01T00:00:00 +0000"`).
+   */
+  date: string;
+}
+
+/**
+ * The exact commit object a frozen candidate head names (DAT-260).
+ *
+ * The sandbox creates the candidate head deterministically from the approved
+ * tree, the pinned base, the run-bound message, and a fixed captive identity.
+ * A delivery adapter reproduces this identity byte for byte so the branch it
+ * pushes is the approved commit itself, not an equivalent commit with a new
+ * hash. The record is provenance only: it grants nothing.
+ */
+export interface CandidateCommit {
+  message: string;
+  author: CandidateCommitPerson;
+  committer: CandidateCommitPerson;
+}
+
 /**
  * An immutable frozen candidate (DAT-219, ADR-0007).
  *
@@ -357,6 +383,12 @@ export interface CandidateRecord {
   base_sha: string;
   head_sha: string;
   tree_sha: string;
+  /**
+   * The exact commit identity behind `head_sha`. Null only for a candidate
+   * frozen before DAT-260 or replayed from an older audit record; such a
+   * candidate cannot be delivered and is refused rather than recomposed.
+   */
+  commit: CandidateCommit | null;
   diff: CandidateDiff;
   summary: string;
   validation: CandidateValidation;

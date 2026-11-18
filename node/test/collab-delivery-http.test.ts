@@ -131,6 +131,7 @@ beforeAll(async () => {
         machine,
         providers: {},
         approvalDirectory: EMPTY_DIRECTORY,
+        candidateContent: { read: (digest) => store.read(digest) },
         auditAvailable: () => false,
       }),
     },
