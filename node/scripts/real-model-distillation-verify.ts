@@ -15,11 +15,15 @@
  *   server inside this process. It proves the harness and every gateway
  *   boundary work, and it is labelled `fixture_local_provider` in the evidence.
  *   It is NOT real-model evidence and the script refuses to claim otherwise.
- * - `real`: requires explicit authorization (`--authorization-ref`), a real
- *   captured outcome (`--envelope-file`), the protected gateway policy and
- *   credential files, an approved Pi model, and a budget policy. Ambient
- *   provider credential variables are refused. Only then is the deployment's
- *   approved endpoint called, and only through the gateway.
+ * - `real`: requires explicit authorization (`--authorization-ref`), a
+ *   capture row read from a trusted control-plane outbox (`--capture-db` plus
+ *   `--capture-id` or `--run-id`), the protected gateway policy and credential
+ *   files, an approved Pi model, and a budget policy. Ambient provider
+ *   credential variables are refused. The source row must be `captured`, its
+ *   stored envelope must match its stored digest, and its task/run/terminal
+ *   state must agree with the envelope; the selected policy scope must be the
+ *   capturing workspace. Only then is the deployment's approved endpoint
+ *   called, and only through the gateway.
  *
  * The output is a redacted evidence document: identifiers, versions, counts,
  * digests, and stable reason codes. It never contains a statement, a change
@@ -37,6 +41,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 
 import type { Api, Context, Model } from "@mariozechner/pi-ai";
@@ -70,7 +75,11 @@ import {
   assertNoSecretOrPii,
   DISTILL_PROMPT_VERSION,
 } from "../src/distill/index.js";
-import type { CapturedOutcome } from "../src/distill/index.js";
+import type {
+  CapturedOutcome,
+  OutcomeClassification,
+  OutcomeEnvelope,
+} from "../src/distill/index.js";
 import {
   DATA_CLASSES,
   ModelEgressDeniedError,
@@ -162,8 +171,12 @@ export interface VerificationArgs {
   mode: VerificationMode;
   /** Non-secret reference to the human authorization, e.g. an issue comment. */
   authorizationRef: string | null;
-  /** Real captured outcome envelope; required in real mode. */
-  envelopeFile: string | null;
+  /** Control-plane DB holding the trusted capture outbox; real mode. */
+  captureDb: string | null;
+  /** Selects one captured snapshot by capture job id (real mode). */
+  captureId: string | null;
+  /** Selects one captured snapshot by run id (real mode). */
+  runId: string | null;
   evidenceOut: string;
   stateDir: string | null;
   keepState: boolean;
@@ -176,12 +189,17 @@ const USAGE = `Usage: node dist/scripts/real-model-distillation-verify.js [optio
 
   --fixture                     Run with the in-process loopback fixture provider (default).
   --real                        Call the deployment's approved provider via the gateway.
-                                Requires --authorization-ref, --envelope-file, gateway
-                                policy/credential files, an approved Pi model, and a
-                                budget policy. Ambient provider credentials are refused.
+                                Requires --authorization-ref, --capture-db plus
+                                --capture-id or --run-id, gateway policy/credential
+                                files, an approved Pi model, and a budget policy.
+                                Ambient provider credentials are refused.
   --authorization-ref <ref>     Non-secret human authorization reference (real mode).
-  --envelope-file <path>        Redacted envelope captured from a trusted terminal outcome.
-  --policy-scope <ent>/<ws>     Pick one policy binding when the file has several.
+  --capture-db <path>           Control-plane DB holding the trusted capture outbox.
+                                Opened read-only; no migration or repair is performed.
+  --capture-id <id>             Capture job id to verify (exactly one selector).
+  --run-id <id>                 Run id of a captured snapshot (exactly one selector).
+  --policy-scope <ent>/<ws>     Must equal the capturing workspace in real mode;
+                                selects a policy binding when the file has several.
   --evidence-out <path>         Where to write the redacted evidence JSON (required).
   --state-dir <path>            Durable isolated state directory (default: temp dir).
   --keep-state                  Keep the isolated database after the run.
@@ -202,7 +220,9 @@ export function parseVerificationArgs(argv: readonly string[]): VerificationArgs
   const args: VerificationArgs = {
     mode: "fixture",
     authorizationRef: null,
-    envelopeFile: null,
+    captureDb: null,
+    captureId: null,
+    runId: null,
     evidenceOut: "",
     stateDir: null,
     keepState: false,
@@ -227,8 +247,16 @@ export function parseVerificationArgs(argv: readonly string[]): VerificationArgs
         args.authorizationRef = takeValue(argv, index, flag);
         index += 1;
         break;
-      case "--envelope-file":
-        args.envelopeFile = takeValue(argv, index, flag);
+      case "--capture-db":
+        args.captureDb = takeValue(argv, index, flag);
+        index += 1;
+        break;
+      case "--capture-id":
+        args.captureId = takeValue(argv, index, flag);
+        index += 1;
+        break;
+      case "--run-id":
+        args.runId = takeValue(argv, index, flag);
         index += 1;
         break;
       case "--policy-scope":
@@ -266,7 +294,7 @@ export function parseVerificationArgs(argv: readonly string[]): VerificationArgs
  * the only condition under which real mode may dispatch.
  */
 export function realModeBlockers(
-  args: Pick<VerificationArgs, "authorizationRef" | "envelopeFile">,
+  args: Pick<VerificationArgs, "authorizationRef" | "captureDb" | "captureId" | "runId">,
   env: NodeJS.ProcessEnv = process.env,
 ): string[] {
   const blockers: string[] = [];
@@ -277,10 +305,15 @@ export function realModeBlockers(
   if ((args.authorizationRef ?? "").trim().length === 0) {
     blockers.push("AUTHORIZATION_REFERENCE_MISSING");
   }
-  if ((args.envelopeFile ?? "").trim() === "") {
-    blockers.push("TRUSTED_OUTCOME_ENVELOPE_MISSING");
-  } else if (!fs.existsSync(args.envelopeFile as string)) {
-    blockers.push("TRUSTED_OUTCOME_ENVELOPE_UNREADABLE");
+  if ((args.captureDb ?? "").trim() === "") {
+    blockers.push("TRUSTED_CAPTURE_DB_MISSING");
+  } else if (!fs.existsSync(args.captureDb as string)) {
+    blockers.push("TRUSTED_CAPTURE_DB_UNREADABLE");
+  }
+  const hasCaptureId = (args.captureId ?? "").trim().length > 0;
+  const hasRunId = (args.runId ?? "").trim().length > 0;
+  if (hasCaptureId === hasRunId) {
+    blockers.push("CAPTURE_SELECTOR_INVALID");
   }
   for (const [name, value] of Object.entries(VERIFICATION_ENV)) {
     if (name === "modelBaseUrl") {
@@ -470,8 +503,16 @@ export interface VerificationEvidence {
     policy_binding: "deployment_policy_rebound_to_isolated_scope" | "fixture_policy";
   };
   outcome: {
-    source: "supplied_envelope" | "synthetic_fixture";
+    source: "trusted_capture_outbox" | "synthetic_fixture";
+    /** Digest of the envelope re-captured into the isolated workspace. */
     envelope_digest: string;
+    /** Where the outcome came from, verified before any dispatch. */
+    provenance: {
+      source_capture_job_id: string;
+      source_enterprise_id: string;
+      source_workspace_id: string;
+      source_digest_verified: true;
+    } | null;
     terminal_state: string;
     outcome_class: string;
     run_id: string;
@@ -533,6 +574,160 @@ function sha256(value: string): string {
 function safeErrorName(error: unknown): string {
   const name = error instanceof Error ? error.name : "";
   return name === "" ? "UNKNOWN" : name;
+}
+
+/**
+ * A capture row that failed provenance verification. The code is stable and
+ * content-free; the message is for the operator and never contains envelope
+ * text, so it must not be written into evidence.
+ */
+export class CaptureProvenanceError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "CaptureProvenanceError";
+    this.code = code;
+  }
+}
+
+export interface TrustedCaptureSnapshot {
+  capture_job_id: string;
+  enterprise_id: string;
+  workspace_id: string;
+  task_id: string;
+  run_id: string;
+  terminal_state: string;
+  outcome_class: string;
+  envelope: string;
+  envelope_digest: string;
+}
+
+/**
+ * Open a control-plane database read-only. The verification harness never
+ * migrates, repairs, or writes the deployment's outbox; a missing or
+ * unreadable file is a blocked run, not a fallback to an envelope file.
+ */
+export function openSourceCaptureDb(file: string): ControlPlaneDb {
+  if (!fs.existsSync(file)) {
+    throw new CaptureProvenanceError("CAPTURE_DB_UNREADABLE", "capture database does not exist");
+  }
+  try {
+    return new DatabaseSync(file, { readOnly: true });
+  } catch {
+    throw new CaptureProvenanceError("CAPTURE_DB_UNREADABLE", "capture database cannot be opened");
+  }
+}
+
+/**
+ * Read and verify one trusted capture snapshot before anything is distilled.
+ *
+ * This is the provenance gate the bare-envelope design lacked. A structurally
+ * valid envelope is not evidence: the row must exist in the trusted capture
+ * outbox, be `captured`, carry the exact stored digest, and agree with the row
+ * on task, run, terminal state, and derived outcome class. Only a learnable
+ * (known, non-episode) outcome passes. Any mismatch blocks before a model
+ * dispatch; nothing is re-derived from a caller-supplied file.
+ */
+export function readTrustedCaptureSnapshot(input: {
+  db: ControlPlaneDb;
+  captureId: string | null;
+  runId: string | null;
+}): {
+  snapshot: TrustedCaptureSnapshot;
+  envelope: OutcomeEnvelope;
+  classification: OutcomeClassification;
+} {
+  if ((input.captureId === null) === (input.runId === null)) {
+    throw new CaptureProvenanceError(
+      "CAPTURE_SELECTOR_INVALID",
+      "exactly one of capture id or run id is required",
+    );
+  }
+  const jobs = createCaptureJobStore(input.db);
+  let row;
+  if (input.captureId !== null) {
+    row = jobs.get(input.captureId);
+  } else {
+    const candidates = jobs.list({ run_id: input.runId as string });
+    if (candidates.length > 1) {
+      throw new CaptureProvenanceError(
+        "CAPTURE_SELECTOR_AMBIGUOUS",
+        "more than one capture row matches the run",
+      );
+    }
+    row = candidates[0];
+  }
+  if (row === undefined) {
+    throw new CaptureProvenanceError("CAPTURE_RECORD_NOT_FOUND", "no capture row matches");
+  }
+  if (row.state !== "captured") {
+    throw new CaptureProvenanceError("CAPTURE_NOT_COMPLETED", "capture row is not captured");
+  }
+  if (row.envelope === null || row.envelope_digest === null) {
+    throw new CaptureProvenanceError("CAPTURE_SNAPSHOT_MISSING", "capture row stores no envelope");
+  }
+  if (sha256(row.envelope) !== row.envelope_digest) {
+    throw new CaptureProvenanceError(
+      "CAPTURE_ENVELOPE_DIGEST_MISMATCH",
+      "stored envelope no longer matches its digest",
+    );
+  }
+  let envelope: OutcomeEnvelope;
+  try {
+    envelope = parseOutcomeEnvelope(JSON.parse(row.envelope));
+  } catch {
+    throw new CaptureProvenanceError(
+      "CAPTURE_ENVELOPE_INVALID",
+      "stored envelope violates the outcome contract",
+    );
+  }
+  if (
+    envelope.task_id !== row.task_id ||
+    envelope.run_id !== row.run_id ||
+    envelope.terminal_state !== row.terminal_state
+  ) {
+    throw new CaptureProvenanceError(
+      "CAPTURE_BINDING_MISMATCH",
+      "envelope identities disagree with the capture row",
+    );
+  }
+  const classification = classifyOutcome(envelope);
+  if (!classification.known || classification.episode_only) {
+    throw new CaptureProvenanceError(
+      "CAPTURE_NOT_LEARNABLE",
+      "capture row is not a known, learnable outcome",
+    );
+  }
+  if (row.outcome_class !== null && row.outcome_class !== classification.class) {
+    throw new CaptureProvenanceError(
+      "CAPTURE_OUTCOME_CLASS_MISMATCH",
+      "capture row class disagrees with the envelope",
+    );
+  }
+  return {
+    snapshot: {
+      capture_job_id: row.id,
+      enterprise_id: row.enterprise_id,
+      workspace_id: row.workspace_id,
+      task_id: row.task_id,
+      run_id: row.run_id,
+      terminal_state: row.terminal_state,
+      outcome_class: row.outcome_class ?? classification.class,
+      envelope: row.envelope,
+      envelope_digest: row.envelope_digest,
+    },
+    envelope,
+    classification,
+  };
+}
+
+/** Automated real-model chain success; never a claim of full acceptance. */
+export function acceptedAsRealModelEvidence(
+  mode: VerificationMode,
+  status: VerificationEvidence["status"],
+): boolean {
+  return mode === "real" && status === "verified";
 }
 
 /**
@@ -1012,6 +1207,7 @@ export async function runVerification(
     path: path.join(stateDir, "verification.sqlite"),
   });
   let fixture: FixtureProvider | null = null;
+  let sourceDb: ControlPlaneDb | null = null;
   try {
     const { enterprise, admin_scope } = seedEnterprise(db, {
       enterprise_name: "DAT-270 Verification Enterprise",
@@ -1049,6 +1245,41 @@ export async function runVerification(
       store: createRetrievalStore(db),
     });
 
+    // Provenance gate: real mode distills only a capture row read from the
+    // trusted outbox, never a caller-supplied envelope. A structurally valid
+    // but unproven envelope cannot reach a model dispatch.
+    let trusted: ReturnType<typeof readTrustedCaptureSnapshot> | null = null;
+    let selectedPolicyScope = args.policyScope;
+    if (args.mode === "real") {
+      try {
+        sourceDb = openSourceCaptureDb(args.captureDb as string);
+        trusted = readTrustedCaptureSnapshot({
+          db: sourceDb,
+          captureId: args.captureId,
+          runId: args.runId,
+        });
+      } catch (error) {
+        return {
+          ...base,
+          status: "blocked",
+          blockers: [
+            error instanceof CaptureProvenanceError
+              ? error.code
+              : `CAPTURE_PROVENANCE_INVALID:${safeErrorName(error)}`,
+          ],
+        };
+      }
+      const sourceScope = `${trusted.snapshot.enterprise_id}/${trusted.snapshot.workspace_id}`;
+      if (args.policyScope !== null && args.policyScope !== sourceScope) {
+        return {
+          ...base,
+          status: "blocked",
+          blockers: ["SOURCE_SCOPE_MISMATCH"],
+        };
+      }
+      selectedPolicyScope = sourceScope;
+    }
+
     let fixtureBaseUrl: string | null = null;
     if (args.mode === "fixture") {
       const start = deps.fixtureProvider ?? startFixtureProvider;
@@ -1062,7 +1293,7 @@ export async function runVerification(
         env,
         isolatedScope: { enterpriseId: scope.enterprise_id, workspaceId: scope.workspace_id },
         stateDir,
-        policyScope: args.policyScope,
+        policyScope: selectedPolicyScope,
         fixtureBaseUrl,
       });
     } catch (error) {
@@ -1073,21 +1304,9 @@ export async function runVerification(
       };
     }
 
-    let rawEnvelope: unknown;
-    let storedEnvelope: string;
-    try {
-      rawEnvelope =
-        args.mode === "real"
-          ? (JSON.parse(fs.readFileSync(args.envelopeFile as string, "utf8")) as unknown)
-          : fixtureEnvelope();
-      storedEnvelope = JSON.stringify(parseOutcomeEnvelope(rawEnvelope));
-    } catch (error) {
-      return {
-        ...base,
-        status: "blocked",
-        blockers: [`TRUSTED_OUTCOME_ENVELOPE_INVALID:${safeErrorName(error)}`],
-      };
-    }
+    const rawEnvelope: unknown =
+      trusted === null ? fixtureEnvelope() : (JSON.parse(trusted.snapshot.envelope) as unknown);
+    const storedEnvelope = JSON.stringify(parseOutcomeEnvelope(rawEnvelope));
 
     const captured = captureOutcome(memory, scope, rawEnvelope);
     const captureJobs = createCaptureJobStore(db);
@@ -1178,8 +1397,17 @@ export async function runVerification(
         args.mode === "real" ? "deployment_policy_rebound_to_isolated_scope" : "fixture_policy",
     };
     base.outcome = {
-      source: args.mode === "real" ? "supplied_envelope" : "synthetic_fixture",
+      source: trusted === null ? "synthetic_fixture" : "trusted_capture_outbox",
       envelope_digest: sha256(storedEnvelope),
+      provenance:
+        trusted === null
+          ? null
+          : {
+              source_capture_job_id: trusted.snapshot.capture_job_id,
+              source_enterprise_id: trusted.snapshot.enterprise_id,
+              source_workspace_id: trusted.snapshot.workspace_id,
+              source_digest_verified: true,
+            },
       terminal_state: captured.envelope.terminal_state,
       outcome_class: captured.classification.class,
       run_id: captured.envelope.run_id,
@@ -1300,9 +1528,10 @@ export async function runVerification(
     const failed = scenarios.filter((scenario) => scenario.status === "failed");
     base.scenarios = scenarios;
     base.status = failed.length === 0 ? "verified" : "failed";
-    // Real-model acceptance also needs the human review to happen later; the
-    // harness can only certify the automated half.
-    base.accepted_as_real_model_evidence = false;
+    // The flag describes the real-mode automated chain only. It is true when
+    // that chain verified and false for fixture runs, failures, and blocked
+    // runs; full acceptance still needs the named-human review below.
+    base.accepted_as_real_model_evidence = acceptedAsRealModelEvidence(args.mode, base.status);
     if (args.mode === "real" && failed.length === 0) {
       base.blockers = [
         "HUMAN_REVIEW_REQUIRED: a named human must promote the candidate before the chain is accepted",
@@ -1313,6 +1542,7 @@ export async function runVerification(
     if (fixture !== null) {
       await fixture.close();
     }
+    sourceDb?.close();
     db.close();
     if (!args.keepState && args.stateDir === null) {
       fs.rmSync(stateDir, { recursive: true, force: true });

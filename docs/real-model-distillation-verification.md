@@ -87,7 +87,8 @@ export FORGEPILOT_BUDGET_POLICY_FILE=/protected/budget-policy.json
 node dist/scripts/real-model-distillation-verify.js \
   --real \
   --authorization-ref "DAT-270#comment-<id>" \
-  --envelope-file /protected/envelope.json \
+  --capture-db /protected/control-plane.sqlite \
+  --capture-id <capture-job-id> \
   --policy-scope "<enterpriseId>/<workspaceId>" \
   --state-dir /protected/state/dat270 \
   --evidence-out /protected/evidence/dat270-real.json
@@ -96,16 +97,19 @@ node dist/scripts/real-model-distillation-verify.js \
 Exit codes: `0` the automated chain verified, `1` an assertion failed, `2`
 blocked before any dispatch. A blocked run still writes the evidence document
 with the stable blocker codes, so the blockage is recorded rather than implied.
-Invalid gateway configuration or an invalid envelope also lands as `blocked`
-(`CONFIGURATION_INVALID:<error class>`, `TRUSTED_OUTCOME_ENVELOPE_INVALID:<error
-class>`); the error class is recorded, never a message that could carry request
-content.
+Invalid gateway configuration also lands as `blocked`
+(`CONFIGURATION_INVALID:<error class>`); the error class is recorded, never a
+message that could carry request content. A capture row that fails provenance
+is blocked with its stable code (`CAPTURE_RECORD_NOT_FOUND`,
+`CAPTURE_NOT_COMPLETED`, `CAPTURE_ENVELOPE_DIGEST_MISMATCH`,
+`CAPTURE_BINDING_MISMATCH`, `CAPTURE_NOT_LEARNABLE`,
+`CAPTURE_OUTCOME_CLASS_MISMATCH`, `SOURCE_SCOPE_MISMATCH`, …).
 
 ## 4. Real-mode prerequisites
 
 All of these are required; any missing item blocks the run before a byte is
-sent (`--authorization-ref`, `--envelope-file`, and the environment variables
-below).
+sent (`--authorization-ref`, the capture DB and selector, and the environment
+variables below).
 
 | Requirement                                               | Why                                                                                                                                                                                                |
 | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -114,8 +118,8 @@ below).
 | `FORGEPILOT_GATEWAY_CREDENTIALS_FILE` (0600)              | Provider secret by reference. Ambient credential variables must be unset.                                                                                                                          |
 | `FORGEPILOT_PI_PROVIDER` + `FORGEPILOT_PI_MODEL`          | The model the gateway will match against the policy allow-list.                                                                                                                                    |
 | `FORGEPILOT_BUDGET_POLICY_FILE`                           | Token and/or monetary bound; the gateway reserves before dispatch. The per-invocation ceiling must exceed the conservative context + output bound, or the gateway denies `TOKEN_CEILING_EXCEEDED`. |
-| `--envelope-file`                                         | A redacted envelope captured from a real trusted terminal outcome (merged, rejected, cancelled, or classified failed). The fixture envelope is never accepted as real evidence.                    |
-| `--policy-scope` when the policy file has several entries | Selects the policy to copy.                                                                                                                                                                        |
+| `--capture-db` + exactly one of `--capture-id`/`--run-id` | A capture outbox row in the trusted control-plane database, written by the DAT-264/266 capture path from dsh/provider evidence. Opened read-only; never migrated or repaired.                      |
+| `--policy-scope`                                          | Must equal the capturing workspace (enterprise/workspace) of the selected row; it also selects the policy binding when the file has several.                                                       |
 
 The policy and budget documents are validated, then **re-bound to the
 isolated verification scope** so the temporary SQLite database does not need
@@ -125,29 +129,48 @@ the gateway still performs scope resolution, scan, credential, budget, and
 audit checks. The evidence records this as
 `policy_binding: deployment_policy_rebound_to_isolated_scope`.
 
-The envelope is parsed against the DAT-233 outcome contract before capture. A
-malformed envelope, a non-terminal state, or a merged state without a delivery
-record is refused with a stable error; nothing is distilled.
+### Capture provenance gate
+
+A structurally valid envelope is not evidence. Real mode does not accept an
+envelope file at all; the only accepted source is a row in the trusted capture
+outbox. Before any dispatch the harness verifies:
+
+1. the row exists and is `captured` (not pending, processing, or failed);
+2. its stored envelope is present and its SHA-256 equals the stored digest;
+3. the envelope parses under the DAT-233 outcome contract and its `task_id`,
+   `run_id`, and `terminal_state` equal the row's;
+4. the derived outcome is known and learnable (not timeout/unknown/infra);
+5. the row's recorded outcome class agrees with the derived class;
+6. the selected policy scope is the row's capturing enterprise/workspace.
+
+Any mismatch blocks before gateway construction or a model call. The evidence
+records the source capture id, source enterprise/workspace, and
+`source_digest_verified: true`. A forged but structurally valid envelope —
+whether placed in a tampered row or bound to another run — is refused with zero
+dispatch (regression tests cover both).
+
+The verified envelope is then re-captured into the isolated workspace, so the
+source outbox row is never mutated or re-derived from caller input.
 
 ## 5. Evidence document
 
 Top-level fields (schema version 1):
 
-| Field                                                  | Contents                                                                                                                                                                                                                              |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `verification_mode`, `accepted_as_real_model_evidence` | `fixture_local_provider` or `real_model`; the latter is only ever `true` for a real run whose automated chain passed — and even then the human-review blocker remains.                                                                |
-| `status`                                               | `verified`, `failed`, or `blocked`.                                                                                                                                                                                                   |
-| `baseline`                                             | Repository commit and Node version.                                                                                                                                                                                                   |
-| `authorization`                                        | Whether a reference was supplied, and the reference itself (non-secret).                                                                                                                                                              |
-| `configuration`                                        | Model provider/id, endpoint origin, policy revision, endpoint id, credential reference, budget revision, policy binding mode.                                                                                                         |
-| `outcome`                                              | Envelope digest, terminal state, derived outcome class, run/task/issue ids, capture job id.                                                                                                                                           |
-| `distillation`                                         | Job id/state, prompt-template version, model id, accepted/dropped counts, stable last error code.                                                                                                                                     |
-| `candidate`                                            | Item id/version/status/kind, captured evidence references, admission candidate hash and disposition.                                                                                                                                  |
-| `human_review`                                         | Always `required` for a produced candidate; names the exact item/version for the human.                                                                                                                                               |
-| `next_run_reference`                                   | Retrieval bundle id and the served item's status, tier, `approved`, and `candidate` flags.                                                                                                                                            |
-| `usage`                                                | Per-attempt finish status, completeness (`known`/`estimated`/`unknown`), total tokens, returned model, provider request id. Cost is never zero-filled: `cost_semantics` states that reported estimates and unknowns stay as reported. |
-| `scenarios`                                            | Probe id, pass/fail, and a content-free detail string.                                                                                                                                                                                |
-| `blockers`                                             | Stable codes for anything that prevents acceptance.                                                                                                                                                                                   |
+| Field                                                  | Contents                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `verification_mode`, `accepted_as_real_model_evidence` | `fixture_local_provider` or `real_model`. The flag is `true` only when real mode's automated chain verified (`status: verified`) and is always `false` for fixture, failed, and blocked runs. A `true` value still carries the `HUMAN_REVIEW_REQUIRED` blocker: it means the automated half passed, not that the chain is accepted. |
+| `status`                                               | `verified`, `failed`, or `blocked`.                                                                                                                                                                                                                                                                                                 |
+| `baseline`                                             | Repository commit and Node version.                                                                                                                                                                                                                                                                                                 |
+| `authorization`                                        | Whether a reference was supplied, and the reference itself (non-secret).                                                                                                                                                                                                                                                            |
+| `configuration`                                        | Model provider/id, endpoint origin, policy revision, endpoint id, credential reference, budget revision, policy binding mode.                                                                                                                                                                                                       |
+| `outcome`                                              | Source (`trusted_capture_outbox`/`synthetic_fixture`), verified provenance (source capture id, enterprise/workspace, digest verified), envelope digest, terminal state, outcome class, run/task/issue ids, isolated capture job id.                                                                                                 |
+| `distillation`                                         | Job id/state, prompt-template version, model id, accepted/dropped counts, stable last error code.                                                                                                                                                                                                                                   |
+| `candidate`                                            | Item id/version/status/kind, captured evidence references, admission candidate hash and disposition.                                                                                                                                                                                                                                |
+| `human_review`                                         | Always `required` for a produced candidate; names the exact item/version for the human.                                                                                                                                                                                                                                             |
+| `next_run_reference`                                   | Retrieval bundle id and the served item's status, tier, `approved`, and `candidate` flags.                                                                                                                                                                                                                                          |
+| `usage`                                                | Per-attempt finish status, completeness (`known`/`estimated`/`unknown`), total tokens, returned model, provider request id. Cost is never zero-filled: `cost_semantics` states that reported estimates and unknowns stay as reported.                                                                                               |
+| `scenarios`                                            | Probe id, pass/fail, and a content-free detail string.                                                                                                                                                                                                                                                                              |
+| `blockers`                                             | Stable codes for anything that prevents acceptance.                                                                                                                                                                                                                                                                                 |
 
 Before writing, the harness runs the memory redaction gate over the serialized
 document. Anything secret- or personal-shaped aborts the write.
@@ -235,3 +258,6 @@ The harness itself was also run against the offline fixture:
 - The isolated database is removed unless `--state-dir`/`--keep-state` is
   used. Preserve the state directory before a handoff if the capture and
   admission rows are needed for audit.
+- `--capture-db` is opened read-only. Point it at a stable snapshot or backup
+  of the control-plane database; a live WAL database may need a consistent
+  copy so the selected row and its digest are visible.
