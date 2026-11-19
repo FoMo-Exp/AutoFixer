@@ -215,6 +215,36 @@ const ERROR_SEMANTICS: Record<string, ErrorSemantics> = {
     retryable: false,
     next_action: null,
   },
+  WORKSPACE_ARCHIVED: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  SERVICE_INTEGRATION_NOT_FOUND: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: null,
+  },
+  SERVICE_INTEGRATION_EXISTS: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  SERVICE_INTEGRATION_BINDING_INVALID: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  SERVICE_INTEGRATION_AUDIT_UNAVAILABLE: {
+    stage: "execution",
+    category: "stop",
+    retryable: false,
+    next_action: "contact_admin",
+  },
   MEMBERSHIP_CONFLICT: {
     stage: "validation",
     category: "stop",

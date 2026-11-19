@@ -58,6 +58,11 @@ export {
   rosterVisibility,
 } from "./reconcile.js";
 
+export {
+  PROVIDER_PERMISSION_VISIBILITY,
+  permissionVisibilityForProvider,
+} from "./permission-visibility.js";
+
 export type { CapabilityHandle, ServiceCredentialStore } from "./credentials.js";
 export {
   createStaticServiceCredentialStore,

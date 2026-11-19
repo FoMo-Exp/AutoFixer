@@ -105,7 +105,7 @@ export function optionalSessionActor(
   return presented !== undefined ? auth.resolveSession(presented.token) : undefined;
 }
 
-function adminActorOf(auth: AuthService, req: http.IncomingMessage): AdminActor {
+export function adminActorOf(auth: AuthService, req: http.IncomingMessage): AdminActor {
   const header = req.headers[BOOTSTRAP_HEADER];
   const value = Array.isArray(header) ? header[0] : header;
   if (value !== undefined && value.length > 0) {

@@ -577,6 +577,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/service-integration": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the workspace's active repository service integration
+         * @description Administrator-only. Returns the active integration's binding, status, and which credential capabilities are configured. Credential references and secret values are never returned. After deactivation the active integration is gone (404) while the uninstalled row keeps the workspace failing closed.
+         */
+        get: operations["getServiceIntegration"];
+        /**
+         * Initialize the workspace's repository service integration
+         * @description Administrator-only, replay-safe. The provider instance, canonical repository id, repository name, and permission visibility come from the workspace binding and its approved provider instance; the body carries credential *references* only, and each must already resolve in the server credential boundary. An identical retry returns 200 with the existing integration; a different configuration for an already-active integration is 409, so a retry can never silently replace installed credentials. The audit record and the row commit in one transaction; an audit failure returns 503 and changes nothing.
+         */
+        put: operations["initializeServiceIntegration"];
+        post?: never;
+        /**
+         * Deactivate the workspace's service integration
+         * @description Administrator-only and idempotent. Sets the active integration to `uninstalled`, which keeps the workspace's authority marker in place: every ordinary workspace request fails closed pending re-initialization. The audit record and the status change commit together; an audit failure returns 503 and leaves the integration active.
+         */
+        delete: operations["deactivateServiceIntegration"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}": {
         parameters: {
             query?: never;
@@ -3080,6 +3108,35 @@ export interface components {
             /** @description Administrator-approved provider origin. Registration enforces HTTPS, no credentials/path/query/fragment, the default port, and a public hostname or IP literal that resolves to public addresses only — internal-network origins are refused. */
             origin_url: string;
             version: number;
+        };
+        ServiceIntegration: {
+            id: string;
+            enterprise_id: string;
+            workspace_id: string;
+            /** @description Copied from the workspace binding; never supplied by the request. */
+            provider_instance_id: string;
+            /** @description Immutable canonical repository id from the workspace binding (e.g. `github:FoMo-Exp/AutoFixer`); never supplied by the request. */
+            repository_id: string;
+            /** @description Display name derived from the canonical repository binding. */
+            repository_name: string;
+            /** @enum {string} */
+            install_status: "active" | "suspended" | "uninstalled";
+            /**
+             * @description Derived from the provider adapter's declared capability; an administrator cannot claim broader visibility than the adapter proves.
+             * @enum {string}
+             */
+            permission_visibility: "full" | "partial" | "none";
+            /** @description Which capabilities have a credential reference configured. The references themselves and their secret values are never returned. */
+            credentials: {
+                source: boolean;
+                checkout: boolean;
+                delivery: boolean;
+            };
+            version: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
         };
         DesktopFlow: {
             flow_id: string;
@@ -6622,6 +6679,225 @@ export interface operations {
             };
             /** @description FORBIDDEN: administrator authority required */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getServiceIntegration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                enterprise_id: string;
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The active integration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceIntegration"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: administrator authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description SERVICE_INTEGRATION_NOT_FOUND or unknown workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    initializeServiceIntegration: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                enterprise_id: string;
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Reference into the server credential boundary for the read-only installation identity. It must already resolve in the server credential boundary. A secret value is rejected, never stored. */
+                    source_credential_ref: string;
+                    /** @description Optional checkout read capability; must resolve in the server credential boundary. */
+                    checkout_credential_ref?: string;
+                    /** @description Optional narrowly scoped, expiring write capability for the delivery broker; must resolve in the server credential boundary. */
+                    delivery_credential_ref?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Identical replay of an existing active integration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceIntegration"];
+                };
+            };
+            /** @description Integration initialized */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceIntegration"];
+                };
+            };
+            /** @description INVALID_REQUEST: missing/invalid credential reference, a reference the credential boundary cannot resolve, a secret-looking value, or a client-supplied binding field */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: administrator authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unknown workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description SERVICE_INTEGRATION_EXISTS (different active configuration), SERVICE_INTEGRATION_BINDING_INVALID (workspace binding cannot carry an integration), or WORKSPACE_ARCHIVED */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description SERVICE_INTEGRATION_AUDIT_UNAVAILABLE: audit write failed, no change applied */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deactivateServiceIntegration: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                enterprise_id: string;
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No active integration remains (idempotent) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: administrator authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unknown workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description WORKSPACE_ARCHIVED */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description SERVICE_INTEGRATION_AUDIT_UNAVAILABLE: audit write failed, integration unchanged */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

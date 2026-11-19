@@ -28,6 +28,11 @@ import { actionForRequest } from "./request-authority.js";
 import type { RequestAuthority } from "./request-authority.js";
 import type { IssueSyncService } from "../issue-sync/service.js";
 import type { RuntimeDiagnostics } from "../diagnostics/runtime.js";
+import {
+  handleServiceIntegrationRequest,
+  isServiceIntegrationRoute,
+} from "./service-integration-http.js";
+import type { ServiceIntegrationService } from "./service-integration-service.js";
 
 export interface ApiServerDeps {
   service: TaskService;
@@ -70,6 +75,13 @@ export interface ApiServerDeps {
    * every request is membership-scoped; unset keeps those routes nonexistent.
    */
   collab?: CollabHttpDeps;
+  /**
+   * Administrator-controlled service integrations (DAT-267). Served in the
+   * `/api/v1/admin` family and outside the provider authority gate, so an
+   * administrator can install or replace the workspace's integration even
+   * after deactivation made every ordinary workspace request fail closed.
+   */
+  serviceIntegrations?: ServiceIntegrationService;
   /** External origin override for OAuth redirects; loopback derives per request. */
   publicOrigin?: string;
   /**
@@ -448,6 +460,22 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
         throw new ApiError(404, "NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
       }
       checkRequestBasics(req, res.socket?.localPort);
+
+      // Administrator-controlled service integration (DAT-267). This is the
+      // surface that installs the workspace's authority marker, so it is
+      // dispatched ahead of the generic admin family and outside the provider
+      // authority gate: after deactivation every ordinary workspace request
+      // fails closed, and an administrator must still be able to reinstall.
+      if (isServiceIntegrationRoute(segments)) {
+        if (deps.serviceIntegrations === undefined || deps.auth === undefined) {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+        }
+        await handleServiceIntegrationRequest(
+          { auth: deps.auth, service: deps.serviceIntegrations },
+          { req, res, url, segments },
+        );
+        return;
+      }
 
       // Identity, session, and administrator surfaces authenticate themselves.
       if (segments[2] === "auth" || segments[2] === "admin") {

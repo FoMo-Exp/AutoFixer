@@ -16,6 +16,7 @@ import {
 } from "../../src/control-plane/index.js";
 import type { ServiceIntegration } from "../../src/control-plane/index.js";
 import { createStaticServiceCredentialStore } from "../../src/provider-access/credentials.js";
+import type { ServiceCredentialStore } from "../../src/provider-access/credentials.js";
 import type { DshServerHandle } from "./dsh-server.js";
 import { scriptedStream, TEST_MODEL } from "./scripted-stream.js";
 import { scriptedGateway } from "./test-gateway.js";
@@ -118,6 +119,12 @@ export interface AuthAppOptions {
   /** Provider API base override for the point refresh (fake provider). */
   providerApiBaseUrl?: string;
   /**
+   * Service credential boundary contents. Administrator initialization
+   * (DAT-267) refuses a reference this store cannot resolve; the default
+   * (with `repositoryIntegration`) holds only the source credential.
+   */
+  providerServiceCredentials?: ServiceCredentialStore;
+  /**
    * Dashboard sources seeded with the ids this app generated. The dashboard
    * is only readable through a live workspace membership (DAT-230).
    */
@@ -219,13 +226,15 @@ export async function startAuthApp(options: AuthAppOptions): Promise<AuthApp> {
     ...(options.invitationRateLimits !== undefined
       ? { invitationRateLimits: options.invitationRateLimits }
       : {}),
-    ...(options.repositoryIntegration
-      ? {
-          providerServiceCredentials: createStaticServiceCredentialStore({
-            [SERVICE_CREDENTIAL_REF]: SERVICE_CREDENTIAL,
-          }),
-        }
-      : {}),
+    ...(options.providerServiceCredentials !== undefined
+      ? { providerServiceCredentials: options.providerServiceCredentials }
+      : options.repositoryIntegration
+        ? {
+            providerServiceCredentials: createStaticServiceCredentialStore({
+              [SERVICE_CREDENTIAL_REF]: SERVICE_CREDENTIAL,
+            }),
+          }
+        : {}),
     ...(options.providerApiBaseUrl !== undefined
       ? { providerApiBaseUrl: options.providerApiBaseUrl }
       : {}),
