@@ -13,6 +13,7 @@ import {
 } from "./identity-format";
 import { InvitationsPanel } from "./InvitationsPanel";
 import { MembersPanel } from "./MembersPanel";
+import { ServiceIntegrationPanel } from "./ServiceIntegrationPanel";
 import { TeamsPanel } from "./TeamsPanel";
 
 interface WorkspaceAdminDialogProps {
@@ -22,7 +23,7 @@ interface WorkspaceAdminDialogProps {
   initialTab?: AdminTab;
 }
 
-type AdminTab = "members" | "teams" | "invitations" | "audit";
+type AdminTab = "members" | "teams" | "invitations" | "audit" | "integration";
 
 export function WorkspaceAdminDialog({
   client,
@@ -111,9 +112,12 @@ export function WorkspaceAdminDialog({
 
   const workspace = workspaces.find((item) => item.id === selectedId);
   const canManage = canManageWorkspace(workspace, session);
-  const auditAllowed = workspace ? isEnterpriseAdmin(session, workspace.enterprise_id) : false;
+  const enterpriseAdmin = workspace ? isEnterpriseAdmin(session, workspace.enterprise_id) : false;
+
   const visibleTab: AdminTab =
-    (activeTab === "invitations" && !canManage) || (activeTab === "audit" && !auditAllowed)
+    (activeTab === "invitations" && !canManage) ||
+    (activeTab === "audit" && !enterpriseAdmin) ||
+    (activeTab === "integration" && !enterpriseAdmin)
       ? "members"
       : activeTab;
 
@@ -213,7 +217,7 @@ export function WorkspaceAdminDialog({
                       Invitations
                     </button>
                   )}
-                  {auditAllowed && (
+                  {enterpriseAdmin && (
                     <button
                       id="admin-tab-audit"
                       type="button"
@@ -223,6 +227,18 @@ export function WorkspaceAdminDialog({
                       onClick={() => setActiveTab("audit")}
                     >
                       Audit
+                    </button>
+                  )}
+                  {enterpriseAdmin && (
+                    <button
+                      id="admin-tab-integration"
+                      type="button"
+                      role="tab"
+                      className={`settings-tab${visibleTab === "integration" ? " active" : ""}`}
+                      aria-selected={visibleTab === "integration"}
+                      onClick={() => setActiveTab("integration")}
+                    >
+                      Integration
                     </button>
                   )}
                 </div>
@@ -255,11 +271,19 @@ export function WorkspaceAdminDialog({
                       workspace={workspace}
                     />
                   )}
-                  {visibleTab === "audit" && auditAllowed && (
+                  {visibleTab === "audit" && enterpriseAdmin && (
                     <AuditPanel
                       key={`audit-${workspace.id}`}
                       client={client}
                       workspace={workspace}
+                    />
+                  )}
+                  {visibleTab === "integration" && enterpriseAdmin && (
+                    <ServiceIntegrationPanel
+                      key={`integration-${workspace.id}`}
+                      client={client}
+                      workspace={workspace}
+                      canConfigure={enterpriseAdmin}
                     />
                   )}
                 </div>

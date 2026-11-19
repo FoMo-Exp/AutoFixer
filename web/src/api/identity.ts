@@ -25,6 +25,9 @@ export type InvitationPreview = components["schemas"]["InvitationPreview"];
 export type InvitationRedemption = components["schemas"]["InvitationRedemption"];
 export type AuthAuditRecord = components["schemas"]["AuthAuditRecord"];
 export type LoginProvider = components["schemas"]["LoginProvider"];
+export type ServiceIntegration = components["schemas"]["ServiceIntegration"];
+export type ServiceIntegrationStatus = ServiceIntegration["install_status"];
+export type ServicePermissionVisibility = ServiceIntegration["permission_visibility"];
 export type WorkspaceRole = Workspace["role"];
 export type MembershipRole = Membership["role"];
 export type InvitationStatus = Invitation["status"];
@@ -50,6 +53,8 @@ export type UpdateTeamBody =
   operations["updateWorkspaceTeam"]["requestBody"]["content"]["application/json"];
 export type UpdateMemberBody =
   operations["updateWorkspaceMember"]["requestBody"]["content"]["application/json"];
+export type InitializeServiceIntegrationBody =
+  operations["initializeServiceIntegration"]["requestBody"]["content"]["application/json"];
 
 interface RequestOptions {
   signal?: AbortSignal;
@@ -287,6 +292,48 @@ export class IdentityClient extends ApiTransport {
   }
 
   /**
+   * The workspace's active integration. A 404 `SERVICE_INTEGRATION_NOT_FOUND`
+   * means no active integration — after deactivation the uninstalled row keeps
+   * the workspace failing closed but is not readable here.
+   */
+  async getServiceIntegration(
+    enterpriseId: string,
+    workspaceId: string,
+    options: RequestOptions = {},
+  ): Promise<ServiceIntegration> {
+    return this.request<ServiceIntegration>(serviceIntegrationPath(enterpriseId, workspaceId), {
+      signal: options.signal,
+    });
+  }
+
+  /** Administrator-only, replay-safe: an identical retry returns the same row. */
+  async initializeServiceIntegration(
+    enterpriseId: string,
+    workspaceId: string,
+    body: InitializeServiceIntegrationBody,
+    options: RequestOptions = {},
+  ): Promise<ServiceIntegration> {
+    return this.request<ServiceIntegration>(serviceIntegrationPath(enterpriseId, workspaceId), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: options.signal,
+    });
+  }
+
+  /** Idempotent; leaves the fail-closed authority marker in place. */
+  async deactivateServiceIntegration(
+    enterpriseId: string,
+    workspaceId: string,
+    options: RequestOptions = {},
+  ): Promise<void> {
+    return this.requestNoContent(serviceIntegrationPath(enterpriseId, workspaceId), {
+      method: "DELETE",
+      signal: options.signal,
+    });
+  }
+
+  /**
    * Absolute sign-in URL on the configured API origin. The workbench and a
    * loopback API may live on different origins; a relative `/api/v1/auth/login`
    * would navigate the renderer's origin and never reach the auth service.
@@ -303,4 +350,8 @@ export class IdentityClient extends ApiTransport {
 
 function cursorQuery(cursor?: string): string {
   return cursor ? `?${new URLSearchParams({ cursor })}` : "";
+}
+
+function serviceIntegrationPath(enterpriseId: string, workspaceId: string): string {
+  return `/api/v1/admin/enterprises/${encodeURIComponent(enterpriseId)}/workspaces/${encodeURIComponent(workspaceId)}/service-integration`;
 }

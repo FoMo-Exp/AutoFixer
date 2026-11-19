@@ -37,6 +37,7 @@ import { SettingsDialog } from "./settings/SettingsDialog";
 import { captureInviteToken } from "./workspaces/invite-token";
 import { InviteJoin } from "./workspaces/InviteJoin";
 import { WorkspaceAdminDialog } from "./workspaces/WorkspaceAdminDialog";
+import { isEnterpriseAdmin } from "./workspaces/identity-format";
 import {
   approvalScopeDigest,
   buildTimelineRows,
@@ -653,7 +654,7 @@ function Workbench({
   const [showSettings, setShowSettings] = useState(false);
   const [showWorkspaces, setShowWorkspaces] = useState(false);
   const [adminInitialTab, setAdminInitialTab] = useState<
-    "members" | "teams" | "invitations" | "audit"
+    "members" | "teams" | "invitations" | "audit" | "integration"
   >("members");
   // Bumped whenever the settings dialog closes so open pickers re-run
   // discovery against the (possibly changed) account set.
@@ -1226,6 +1227,26 @@ function Workbench({
                     }}
                   >
                     Manage workspace
+                  </button>
+                </div>
+              </section>
+            )}
+            {auth.session && isEnterpriseAdmin(auth.session, workspace.enterprise_id) && (
+              <section
+                className="workspace-home-card"
+                aria-labelledby="workspace-integration-title"
+              >
+                <span className="eyebrow">Service integration</span>
+                <h2 id="workspace-integration-title">Repository connection</h2>
+                <div className="workspace-home-actions">
+                  <button
+                    className="button button-secondary"
+                    onClick={() => {
+                      setAdminInitialTab("integration");
+                      setShowWorkspaces(true);
+                    }}
+                  >
+                    Configure service integration
                   </button>
                 </div>
               </section>

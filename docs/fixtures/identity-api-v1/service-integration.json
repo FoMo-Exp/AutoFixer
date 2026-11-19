@@ -1,0 +1,18 @@
+{
+  "id": "sin_01J9Z8K4M2",
+  "enterprise_id": "ent_01J8Y0A1B2",
+  "workspace_id": "ws_01J8Z1C3D4",
+  "provider_instance_id": "pi_github_main",
+  "repository_id": "github:FoMo-Exp/AutoFixer",
+  "repository_name": "FoMo-Exp/AutoFixer",
+  "install_status": "active",
+  "permission_visibility": "full",
+  "credentials": {
+    "source": true,
+    "checkout": true,
+    "delivery": false
+  },
+  "version": 1,
+  "created_at": "2026-11-18T10:00:00Z",
+  "updated_at": "2026-11-18T10:00:00Z"
+}

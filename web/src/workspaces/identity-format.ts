@@ -59,6 +59,14 @@ const ERROR_COPY: Record<string, string> = {
   NOT_FOUND: "The requested resource was not found in your visible scope.",
   PROVIDER_ROSTER_INCOMPLETE: "The provider roster is incomplete. Retry after reconciliation.",
   CSRF_TOKEN_INVALID: "Your session changed. Reload the page and try again.",
+  SERVICE_INTEGRATION_NOT_FOUND: "This workspace has no active service integration.",
+  SERVICE_INTEGRATION_EXISTS:
+    "This workspace already has a service integration with a different configuration. Deactivate it before installing another.",
+  SERVICE_INTEGRATION_BINDING_INVALID:
+    "This workspace's repository binding cannot carry a service integration. Ask an enterprise administrator to fix the provider binding.",
+  SERVICE_INTEGRATION_AUDIT_UNAVAILABLE:
+    "The audit trail is unavailable, so nothing changed. Retry when it recovers.",
+  WORKSPACE_ARCHIVED: "Archived workspaces cannot carry a service integration.",
 };
 
 export function describeError(caught: unknown): ErrorDescription {
