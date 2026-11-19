@@ -198,6 +198,32 @@ describe("ServiceIntegrationPanel", () => {
     expect(screen.queryByRole("button", { name: "Deactivate" })).toBeNull();
   });
 
+  it("re-reads the active row when a different configuration already exists", async () => {
+    const client = fakeClient();
+    client.getServiceIntegration
+      .mockRejectedValueOnce(apiError(404, "SERVICE_INTEGRATION_NOT_FOUND"))
+      .mockResolvedValue(integration);
+    client.initializeServiceIntegration.mockRejectedValue(
+      apiError(409, "SERVICE_INTEGRATION_EXISTS"),
+    );
+    renderPanel(client);
+
+    await screen.findByText(/No active service integration/);
+    await userEvent.type(
+      screen.getByRole("textbox", { name: /Source credential reference/ }),
+      "svc-other",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Initialize integration" }));
+
+    expect(
+      await screen.findByText(
+        "This workspace already has a service integration with a different configuration. Deactivate it before installing another.",
+      ),
+    ).toBeTruthy();
+    await waitFor(() => expect(client.getServiceIntegration).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "Deactivate" })).toBeTruthy();
+  });
+
   it("re-reads the integration when the selected workspace changes", async () => {
     const client = fakeClient();
     const { rerender } = renderPanel(client);

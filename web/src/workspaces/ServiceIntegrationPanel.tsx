@@ -234,11 +234,12 @@ export function ServiceIntegrationPanel({
       setNotice("Service integration is active for this workspace.");
     } catch (caught) {
       const described = describeError(caught);
+      // A different active configuration exists; show the server's row so the
+      // operator can deactivate it instead of retrying blindly. The reload
+      // clears the error, so the conflict message is restored after it.
+      if (described.code === "SERVICE_INTEGRATION_EXISTS") await load();
       setError(described);
       if (described.code === "FORBIDDEN") setDenied(true);
-      // A different active configuration exists; show the server's row so the
-      // operator can deactivate it instead of retrying blindly.
-      if (described.code === "SERVICE_INTEGRATION_EXISTS") await load();
     } finally {
       setBusy(false);
     }
