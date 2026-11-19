@@ -635,6 +635,21 @@ describe("kill switch and run pins", () => {
     expect(() => rsi.setKillSwitch(scope, true, null, ACTOR)).toThrow(/requires a reason/);
   });
 
+  test("the kill switch refuses approvals until it is released", () => {
+    const fixture = seedFixture();
+    const proposal = rsi.createProposal(scope, proposalInput(fixture));
+    evaluate(proposal);
+    rsi.setKillSwitch(scope, true, "security incident", ACTOR);
+
+    expect(() => approveAsOwner(proposal)).toThrow(/kill switch/);
+    expect(store.listApprovals(scope, proposal.proposal_id)).toHaveLength(0);
+
+    rsi.setKillSwitch(scope, false, null, ACTOR);
+    const approved = approveAsOwner(proposal);
+    expect(approved.gate.approvals_satisfied).toBe(1);
+    expect(approved.status).toBe("ready");
+  });
+
   test("a run pin is stable, is reproducible, and never flips when the canary rolls back", () => {
     const fixture = seedFixture();
     const proposal = rsi.createProposal(scope, proposalInput(fixture));

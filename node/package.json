@@ -16,6 +16,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "export:openapi": "npm run build && node dist/scripts/export-openapi.js",
+    "drill:rsi": "npm run build && node dist/scripts/rsi-drill.js",
     "doctor": "npm run build && node dist/src/doctor.js",
     "doctor:json": "npm run build && node dist/src/doctor.js --json"
   },
