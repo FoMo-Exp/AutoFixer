@@ -241,6 +241,7 @@ is [ADR-0001](docs/adr/0001-forgepilot-governance-and-threat-model.md).
 | [dsh control contract](docs/contracts/dsh-control-v1.md) | Local Node-to-dsh protocol |
 | [Product API contract](docs/contracts/forgepilot-api-v1.md) | UI-to-Node API, errors, idempotency, workspace scope |
 | [First-run and controlled-delivery runbook](docs/first-run-controlled-delivery.md) | Operator setup, diagnostics, reviewed delivery, reconciliation, and PR observation |
+| [Real-model distillation verification pack](docs/real-model-distillation-verification.md) | Isolated trusted-outcome → gateway → candidate verification, evidence document, and the blocked real-provider prerequisites |
 | [RSI offline drill](docs/rsi-offline-drill.md) | Synthetic holdout, named approval, canary pins, rollback, and kill-switch rehearsal |
 | [Architecture decisions](docs/adr) | Governance, prototype composition, Pi orchestration, credentials, egress, memory |
 | [Node orchestrator](node/README.md) | Authority boundary, gateway, budgets, authentication, durability |

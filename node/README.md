@@ -220,6 +220,15 @@ Deployment configuration migration (DAT-242):
 The `openai-compatible` provider uses `openai-completions` against the
 registered base URL and accepts any model ID approved for that endpoint.
 
+Real-model distillation verification (DAT-270) is an operator harness, not a
+runtime path: `scripts/real-model-distillation-verify.ts` runs a captured
+trusted outcome through the real distillation pipeline and gateway, records a
+redacted evidence document, and refuses real-provider egress without explicit
+authorization, protected policy/credential files, an approved model, and a
+budget. The fixture mode exercises the same boundaries against an in-process
+loopback provider and is labelled as such. See
+[`docs/real-model-distillation-verification.md`](../docs/real-model-distillation-verification.md).
+
 ## Model cost accounting (ADR-0008)
 
 `src/cost` prices model usage against immutable, effective-dated rate-card
