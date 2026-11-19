@@ -53,13 +53,16 @@ function parseEndpoints(markdown: string): Array<[method: string, path: string]>
   const securityTable =
     /## Model egress, security cases, and audit \(DAT-213\)([\s\S]*?)\n## /.exec(markdown)?.[1];
   const runtimeTable = /## Runtime diagnostics \(DAT-257\)([\s\S]*?)\n## /.exec(markdown)?.[1];
+  const serviceIntegrationTable =
+    /## Repository service integration \(DAT-267\)([\s\S]*?)\n## /.exec(markdown)?.[1];
   if (
     !taskTable ||
     !identityTable ||
     !collaborationTable ||
     !dashboardTable ||
     !securityTable ||
-    !runtimeTable
+    !runtimeTable ||
+    !serviceIntegrationTable
   ) {
     throw new Error("could not locate the endpoints tables in the contract");
   }
@@ -70,6 +73,7 @@ function parseEndpoints(markdown: string): Array<[method: string, path: string]>
     ...parseTableEndpoints(dashboardTable),
     ...parseTableEndpoints(securityTable),
     ...parseTableEndpoints(runtimeTable),
+    ...parseTableEndpoints(serviceIntegrationTable),
   ];
 }
 
@@ -298,9 +302,10 @@ describe("independent conformance to the normative contract", () => {
     // dashboard operations (DAT-230), the candidate-bound approval operation
     // (DAT-220), the eighteen ADR-0005 security operations (DAT-213), and
     // five provider issue synchronization operations (ADR-0010), the
-    // operator runtime-diagnostics read (DAT-257), and the read-only PR
-    // governance observation (DAT-261).
-    expect(checked).toBe(124);
+    // operator runtime-diagnostics read (DAT-257), the read-only PR
+    // governance observation (DAT-261), and the three administrator
+    // service-integration operations (DAT-267).
+    expect(checked).toBe(127);
   });
 
   test("the committed openapi.json also carries the auth scheme", () => {

@@ -430,6 +430,10 @@ class RsiGovernanceService implements RsiService {
   ): RsiProposalView {
     const proposal = this.requireProposal(scope, proposalId);
     requireReviewer(actor);
+    // The kill switch refuses every RSI state change, approvals included: an
+    // approval recorded during an incident must not survive into the released
+    // workspace as pre-authorized progress.
+    this.requireLive(scope);
     if (actor.id === proposal.proposer.id) {
       throw new ValidationError("a proposer cannot approve its own proposal");
     }

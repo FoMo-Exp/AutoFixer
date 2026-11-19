@@ -3122,6 +3122,341 @@
         }
       }
     },
+    "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/service-integration": {
+      "get": {
+        "operationId": "getServiceIntegration",
+        "summary": "Read the workspace's active repository service integration",
+        "description": "Administrator-only. Returns the active integration's binding, status, and which credential capabilities are configured. Credential references and secret values are never returned. After deactivation the active integration is gone (404) while the uninstalled row keeps the workspace failing closed.",
+        "security": [
+          {
+            "bootstrapToken": []
+          },
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "enterprise_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The active integration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceIntegration"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN: administrator authority required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SERVICE_INTEGRATION_NOT_FOUND or unknown workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "initializeServiceIntegration",
+        "summary": "Initialize the workspace's repository service integration",
+        "description": "Administrator-only, replay-safe. The provider instance, canonical repository id, repository name, and permission visibility come from the workspace binding and its approved provider instance; the body carries credential *references* only, and each must already resolve in the server credential boundary. An identical retry returns 200 with the existing integration; a different configuration for an already-active integration is 409, so a retry can never silently replace installed credentials. The audit record and the row commit in one transaction; an audit failure returns 503 and changes nothing.",
+        "security": [
+          {
+            "bootstrapToken": []
+          },
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "enterprise_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "source_credential_ref"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "source_credential_ref": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                    "description": "Reference into the server credential boundary for the read-only installation identity. It must already resolve in the server credential boundary. A secret value is rejected, never stored."
+                  },
+                  "checkout_credential_ref": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                    "description": "Optional checkout read capability; must resolve in the server credential boundary."
+                  },
+                  "delivery_credential_ref": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                    "description": "Optional narrowly scoped, expiring write capability for the delivery broker; must resolve in the server credential boundary."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Identical replay of an existing active integration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceIntegration"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Integration initialized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceIntegration"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST: missing/invalid credential reference, a reference the credential boundary cannot resolve, a secret-looking value, or a client-supplied binding field",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN: administrator authority required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "SERVICE_INTEGRATION_EXISTS (different active configuration), SERVICE_INTEGRATION_BINDING_INVALID (workspace binding cannot carry an integration), or WORKSPACE_ARCHIVED",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "SERVICE_INTEGRATION_AUDIT_UNAVAILABLE: audit write failed, no change applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deactivateServiceIntegration",
+        "summary": "Deactivate the workspace's service integration",
+        "description": "Administrator-only and idempotent. Sets the active integration to `uninstalled`, which keeps the workspace's authority marker in place: every ordinary workspace request fails closed pending re-initialization. The audit record and the status change commit together; an audit failure returns 503 and leaves the integration active.",
+        "security": [
+          {
+            "bootstrapToken": []
+          },
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "enterprise_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No active integration remains (idempotent)"
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN: administrator authority required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "WORKSPACE_ARCHIVED",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "SERVICE_INTEGRATION_AUDIT_UNAVAILABLE: audit write failed, integration unchanged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}": {
       "put": {
         "operationId": "grantMembership",
@@ -17039,6 +17374,96 @@
             "type": "number"
           }
         }
+      },
+      "ServiceIntegration": {
+        "type": "object",
+        "required": [
+          "id",
+          "enterprise_id",
+          "workspace_id",
+          "provider_instance_id",
+          "repository_id",
+          "repository_name",
+          "install_status",
+          "permission_visibility",
+          "credentials",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "enterprise_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          },
+          "provider_instance_id": {
+            "type": "string",
+            "description": "Copied from the workspace binding; never supplied by the request."
+          },
+          "repository_id": {
+            "type": "string",
+            "description": "Immutable canonical repository id from the workspace binding (e.g. `github:FoMo-Exp/AutoFixer`); never supplied by the request."
+          },
+          "repository_name": {
+            "type": "string",
+            "description": "Display name derived from the canonical repository binding."
+          },
+          "install_status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "suspended",
+              "uninstalled"
+            ]
+          },
+          "permission_visibility": {
+            "type": "string",
+            "enum": [
+              "full",
+              "partial",
+              "none"
+            ],
+            "description": "Derived from the provider adapter's declared capability; an administrator cannot claim broader visibility than the adapter proves."
+          },
+          "credentials": {
+            "type": "object",
+            "description": "Which capabilities have a credential reference configured. The references themselves and their secret values are never returned.",
+            "required": [
+              "source",
+              "checkout",
+              "delivery"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "source": {
+                "type": "boolean"
+              },
+              "checkout": {
+                "type": "boolean"
+              },
+              "delivery": {
+                "type": "boolean"
+              }
+            }
+          },
+          "version": {
+            "type": "number"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
       },
       "DesktopFlow": {
         "type": "object",

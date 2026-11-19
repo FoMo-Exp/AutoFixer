@@ -67,6 +67,18 @@ const AUTH_ENDPOINTS: Array<[method: string, path: string]> = [
   ["post", "/api/v1/admin/enterprises/{enterprise_id}/bootstrap"],
   ["post", "/api/v1/admin/enterprises/{enterprise_id}/provider-instances"],
   ["get", "/api/v1/admin/enterprises/{enterprise_id}/auth-audit"],
+  [
+    "get",
+    "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/service-integration",
+  ],
+  [
+    "put",
+    "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/service-integration",
+  ],
+  [
+    "delete",
+    "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/service-integration",
+  ],
   ["put", "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}"],
   [
     "delete",

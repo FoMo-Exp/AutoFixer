@@ -1495,6 +1495,31 @@ export function openControlPlaneDb(options: OpenOptions = {}): ControlPlaneDb {
 }
 
 /**
+ * Run `fn` in one write transaction: either everything it writes commits or
+ * nothing does. `BEGIN IMMEDIATE` takes the write lock up front, so two
+ * processes cannot interleave a check-then-insert and both pass the check.
+ *
+ * Callers must not nest: the repositories that manage their own transaction
+ * are separate operations, and SQLite does not support nested BEGIN.
+ */
+export function runInTransaction<T>(db: ControlPlaneDb, fn: () => T): T {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = fn();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // The transaction may already be gone (connection failure); the
+      // original error is the one the caller must see.
+    }
+    throw error;
+  }
+}
+
+/**
  * Apply all pending migrations. Idempotent: already-applied versions are
  * skipped, so calling this on an up-to-date database is a no-op and calling it
  * on an older database applies only the missing versions.

@@ -29,6 +29,12 @@ import type { CapabilityKind, ServiceIntegration } from "../control-plane/provid
 export interface ServiceCredentialStore {
   /** Resolve a credential reference to its secret. Reference only in, value only out. */
   get(credentialRef: string): string | undefined;
+  /**
+   * Whether a reference resolves, without materializing its value. Used by
+   * administrator initialization to refuse a reference the deployment cannot
+   * serve; it is an existence check, never a read.
+   */
+  has(credentialRef: string): boolean;
 }
 
 /** In-memory store for tests and programmatic service-side injection. */
@@ -39,6 +45,9 @@ export function createStaticServiceCredentialStore(
   return {
     get(credentialRef: string): string | undefined {
       return byRef.get(credentialRef);
+    },
+    has(credentialRef: string): boolean {
+      return byRef.has(credentialRef);
     },
   };
 }
