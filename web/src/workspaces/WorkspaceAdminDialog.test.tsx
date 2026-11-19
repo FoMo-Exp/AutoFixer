@@ -32,6 +32,9 @@ const memberPage = fixture<{ items: Membership[]; next_cursor: string | null }>(
   "membership-page.json",
 );
 const team = fixture<components["schemas"]["Team"]>("team.json");
+const serviceIntegration = fixture<components["schemas"]["ServiceIntegration"]>(
+  "service-integration.json",
+);
 const createdInvitation = fixture<CreatedInvitation>("invitation-created.json");
 const invitation = createdInvitation.invitation;
 
@@ -65,6 +68,9 @@ interface FakeClient {
   createInvitation: Mock;
   revokeInvitation: Mock;
   listAuthAudit: Mock;
+  getServiceIntegration: Mock;
+  initializeServiceIntegration: Mock;
+  deactivateServiceIntegration: Mock;
 }
 
 function fakeClient(): FakeClient {
@@ -95,6 +101,9 @@ function fakeClient(): FakeClient {
         },
       ],
     }),
+    getServiceIntegration: vi.fn().mockResolvedValue(serviceIntegration),
+    initializeServiceIntegration: vi.fn().mockResolvedValue(serviceIntegration),
+    deactivateServiceIntegration: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -126,6 +135,7 @@ describe("WorkspaceAdminDialog", () => {
     expect(screen.getAllByRole("combobox")).toHaveLength(2);
     expect(screen.getByRole("tab", { name: "Invitations" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Audit" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Integration" })).toBeTruthy();
     expect(client.listWorkspaceMembers).toHaveBeenCalledWith(workspace.id, undefined);
   });
 
@@ -191,6 +201,7 @@ describe("WorkspaceAdminDialog", () => {
     expect(await screen.findByText("Read-only roster")).toBeTruthy();
     expect(screen.queryByRole("tab", { name: "Invitations" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Audit" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Integration" })).toBeNull();
     expect(screen.queryAllByRole("combobox")).toHaveLength(0);
     expect(client.listInvitations).not.toHaveBeenCalled();
 
@@ -317,5 +328,17 @@ describe("WorkspaceAdminDialog", () => {
     await userEvent.click(await screen.findByRole("tab", { name: "Audit" }));
     expect(await screen.findByText("membership.granted")).toBeTruthy();
     expect(client.listAuthAudit).toHaveBeenCalledWith(workspace.enterprise_id, 50);
+  });
+
+  it("opens the service integration for the selected workspace", async () => {
+    const client = fakeClient();
+    renderDialog(client);
+
+    await userEvent.click(await screen.findByRole("tab", { name: "Integration" }));
+    expect(await screen.findByText("FoMo-Exp/AutoFixer")).toBeTruthy();
+    expect(client.getServiceIntegration).toHaveBeenCalledWith(
+      workspace.enterprise_id,
+      workspace.id,
+    );
   });
 });

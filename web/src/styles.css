@@ -3545,6 +3545,12 @@ p {
   margin: 0;
 }
 
+.identity-field-error {
+  color: var(--red);
+  font-size: var(--fs-meta);
+  font-weight: 500;
+}
+
 .identity-list {
   display: flex;
   flex-direction: column;

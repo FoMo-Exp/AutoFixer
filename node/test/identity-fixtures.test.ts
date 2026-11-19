@@ -107,6 +107,13 @@ const FIXTURES: FixtureCase[] = [
   },
   { file: "member-candidate.json", pointer: COMPONENT("MemberCandidate") },
   { file: "team.json", pointer: COMPONENT("Team") },
+  {
+    file: "service-integration.json",
+    pointer: responseSchema(
+      "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/service-integration",
+      "get",
+    ),
+  },
   { file: "invitation-created.json", pointer: COMPONENT("CreatedInvitation") },
   { file: "invitation-preview.json", pointer: COMPONENT("InvitationPreview") },
   { file: "invitation-redeem.json", pointer: COMPONENT("InvitationRedemption") },

@@ -107,6 +107,45 @@ UI behavior that follows the contract:
 - Stale or `unknown` provider-role provenance renders a `Stale` badge, and
   version conflicts reload the roster before the next write.
 
+### Service integration surface (DAT-267 baseline)
+
+Baseline `a25bc47` (DAT-267 #95, OpenAPI `0.10.0`). The fixture
+`docs/fixtures/identity-api-v1/service-integration.json` is validated against
+the generated OpenAPI schema with closed objects
+(`node/test/identity-fixtures.test.ts`); no field is invented.
+
+| Endpoint                                                                                         | Request fields                                                                                                  | Response type        | Status |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- | -------------------- | ------ |
+| `GET /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/service-integration`    | path ids                                                                                                        | `ServiceIntegration` | ✅     |
+| `PUT /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/service-integration`    | `source_credential_ref`; optional `checkout_credential_ref`, `delivery_credential_ref`; optional `X-CSRF-Token` | `ServiceIntegration` | ✅     |
+| `DELETE /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/service-integration` | path ids; optional `X-CSRF-Token`                                                                               | `204`                | ✅     |
+
+UI behavior that follows the contract:
+
+- Every call is enterprise-administrator only. The tab and the home quick
+  action appear only for an enterprise admin; the panel also hides every
+  action after a server `403 FORBIDDEN`, so a stale projection cannot leave a
+  usable control behind.
+- The form accepts only the three credential reference fields. The repository
+  binding, provider instance, and permission visibility are read back from the
+  server and never sent. References are trimmed, checked against the
+  published shape (`^[A-Za-z0-9][A-Za-z0-9._:/-]*$`, 1–200 characters), and
+  refused locally when they carry a known provider token prefix. The view
+  renders only the boolean `credentials` capabilities, never a reference or a
+  secret.
+- `GET` `404 SERVICE_INTEGRATION_NOT_FOUND` is the unconfigured state, not an
+  error. A successful `DELETE` renders the deactivated state and states that
+  ordinary workspace requests fail closed until re-initialization. A
+  non-active `install_status` is rendered defensively with its badge and no
+  deactivate action.
+- Archived workspaces and `409 SERVICE_INTEGRATION_BINDING_INVALID` render the
+  contract error and offer no write. `403 FORBIDDEN`,
+  `409 SERVICE_INTEGRATION_EXISTS`, `409 WORKSPACE_ARCHIVED`, and
+  `503 SERVICE_INTEGRATION_AUDIT_UNAVAILABLE` all render their fixed copy;
+  `INVALID_REQUEST` falls back to the server's own safe message.
+- Switching the selected workspace remounts the panel with the new
+  `enterprise_id`/`workspace_id` and re-reads the integration.
+
 The Electron main process discovers an existing loopback service from launch
 configuration or a discovery file, or starts the local Node entrypoint with a
 Node executable and parses its loopback startup address. Renderer API calls
