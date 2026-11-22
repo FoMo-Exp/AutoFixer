@@ -603,6 +603,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       users: identity.users,
       memberships: repos.memberships,
       workspaces: repos.workspaces,
+      enterpriseUsers: identity.enterpriseUsers,
     };
     auth = new AuthService({
       repos,
@@ -687,6 +688,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       workspaces: repos.workspaces,
       users: identity.users,
       identities: identity.identities,
+      enterpriseUsers: identity.enterpriseUsers,
       enterpriseId: config.enterpriseId,
       workspaceId: config.workspaceId,
     });
@@ -708,6 +710,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       workspaces: repos.workspaces,
       providerInstances: repos.providerInstances,
       enterpriseRoles: identity.enterpriseRoles,
+      enterpriseUsers: identity.enterpriseUsers,
       integrations: providerAccess.integrations,
       credentials: serviceCredentials,
       audit: identity.authAudit,

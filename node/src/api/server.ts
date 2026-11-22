@@ -3,7 +3,7 @@ import http from "node:http";
 
 import { isAuthorizedBearer } from "./auth.js";
 import type { AuthService, SessionContext } from "./auth-service.js";
-import { handleAuthRequest, requireSessionActor } from "./auth-http.js";
+import { handleAuthRequest, requireEnterpriseSessionActor } from "./auth-http.js";
 import { handleDashboardRequest } from "./dashboard-http.js";
 import type { DashboardHttpDeps } from "./dashboard-http.js";
 import { handleMemoryRequest } from "./memory-http.js";
@@ -121,7 +121,7 @@ function authenticateRequest(req: http.IncomingMessage, deps: ApiServerDeps): Re
     return { kind: "local_operator" };
   }
   if (deps.auth !== undefined) {
-    return { kind: "session", ctx: requireSessionActor(deps.auth, req) };
+    return { kind: "session", ctx: requireEnterpriseSessionActor(deps.auth, req) };
   }
   throw new ApiError(
     401,
@@ -375,6 +375,10 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
           (event.type === "membership.revoked" &&
             event.user_id === sessionCtx.user.id &&
             event.workspace_id === workspaceId &&
+            auth.workspaceAccess(sessionCtx.user.id, workspaceId) === undefined) ||
+          (event.type === "enterprise_user.status_changed" &&
+            event.user_id === sessionCtx.user.id &&
+            event.status !== "active" &&
             auth.workspaceAccess(sessionCtx.user.id, workspaceId) === undefined);
         if (losesAccess) {
           res.end();
@@ -523,7 +527,7 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
           if (deps.auth === undefined) {
             throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
           }
-          const session = requireSessionActor(deps.auth, req);
+          const session = requireEnterpriseSessionActor(deps.auth, req);
           const body = await readJsonBody(req);
           if (
             typeof body !== "object" ||

@@ -22,7 +22,7 @@
 import type http from "node:http";
 
 import type { AuthService, SessionContext } from "./auth-service.js";
-import { requireSessionActor } from "./auth-http.js";
+import { requireEnterpriseSessionActor } from "./auth-http.js";
 import { ApiError } from "./errors.js";
 import { writeJson } from "./http-util.js";
 import {
@@ -285,7 +285,7 @@ export async function handleDashboardRequest(
   if (route === null) {
     throw new ApiError(404, "NOT_FOUND", `No route for ${ctx.req.method} ${ctx.url.pathname}`);
   }
-  const session = requireSessionActor(deps.auth, ctx.req);
+  const session = requireEnterpriseSessionActor(deps.auth, ctx.req);
   const scope = resolveScope(deps, session);
   requirePathWorkspace(ctx, scope);
 

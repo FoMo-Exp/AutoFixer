@@ -69,6 +69,12 @@ export interface RedemptionFacts {
   invitee_membership_id: string | null;
   repository_access: RepositoryAccessFact | null;
   workspace_status: "active" | "archived" | "missing";
+  /**
+   * The invitee's enterprise-scoped membership status. `absent` is a fresh
+   * login that redemption may enroll; `suspended` denies — an invitation can
+   * never reactivate an enterprise suspension.
+   */
+  enterprise_membership_status: "active" | "suspended" | "absent";
   now: string;
 }
 
@@ -129,6 +135,9 @@ export function evaluateRedemption(
   }
   if (facts.workspace_status !== "active") {
     return { kind: "deny", reason: "workspace_archived" };
+  }
+  if (facts.enterprise_membership_status === "suspended") {
+    return { kind: "deny", reason: "enterprise_suspended" };
   }
   if (!hasCurrentRepositoryAccess(facts.repository_access)) {
     return { kind: "deny", reason: "ineligible" };
@@ -356,6 +365,82 @@ class SqliteInvitationRepository implements InvitationRepository {
       return { status: "replayed", invitation, membership_id: decision.membership_id };
     }
 
+    // Redemption is an explicit authenticated join, so it establishes the
+    // enterprise membership the workspace grant depends on — but only when the
+    // invitee has none (a suspended one was denied above and is never lifted
+    // by an invitation). The write, its audit row, the membership, and the
+    // consume all commit or roll back together.
+    const existingEnterpriseUser = this.db
+      .prepare("SELECT id FROM enterprise_user WHERE enterprise_id = ? AND user_id = ?")
+      .get(invitation.enterprise_id, input.invitee_user_id) as { id: string } | undefined;
+    if (existingEnterpriseUser === undefined) {
+      const enterpriseUserId = newId("eum");
+      this.db
+        .prepare(
+          `INSERT INTO enterprise_user
+             (id, enterprise_id, user_id, status, version, claimed_at, suspended_at,
+              created_at, updated_at, created_by, updated_by)
+           VALUES (?, ?, ?, 'active', 1, ?, NULL, ?, ?, ?, ?)`,
+        )
+        .run(
+          enterpriseUserId,
+          invitation.enterprise_id,
+          input.invitee_user_id,
+          at,
+          at,
+          at,
+          input.invitee_user_id,
+          input.invitee_user_id,
+        );
+      const workspaceProvider = this.db
+        .prepare("SELECT provider_instance_id FROM workspace WHERE id = ?")
+        .get(invitation.workspace_id) as { provider_instance_id: string } | undefined;
+      if (workspaceProvider !== undefined) {
+        const inviteeSubject = this.db
+          .prepare(
+            `SELECT subject FROM user_identity
+             WHERE user_id = ? AND provider_instance_id = ?
+             ORDER BY created_at LIMIT 1`,
+          )
+          .get(input.invitee_user_id, workspaceProvider.provider_instance_id) as
+          { subject: string } | undefined;
+        if (inviteeSubject !== undefined) {
+          this.db
+            .prepare(
+              `INSERT OR IGNORE INTO enterprise_user_identity
+                 (id, enterprise_id, enterprise_user_id, provider_instance_id, subject,
+                  created_at, created_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              newId("eui"),
+              invitation.enterprise_id,
+              enterpriseUserId,
+              workspaceProvider.provider_instance_id,
+              inviteeSubject.subject,
+              at,
+              input.invitee_user_id,
+            );
+        }
+      }
+      this.db
+        .prepare(
+          `INSERT INTO auth_audit
+             (id, at, event, enterprise_id, actor_kind, actor_user_id, subject_user_id,
+              provider_instance_id, details)
+           VALUES (?, ?, 'enterprise_user.added', ?, 'user', ?, ?, ?, ?)`,
+        )
+        .run(
+          newId("aud"),
+          at,
+          invitation.enterprise_id,
+          input.invitee_user_id,
+          input.invitee_user_id,
+          workspaceProvider?.provider_instance_id ?? null,
+          JSON.stringify({ enterprise_user_id: enterpriseUserId, reason: "invitation_redeem" }),
+        );
+    }
+
     // Membership insert and invitation consume commit or roll back together.
     try {
       this.db
@@ -424,6 +509,9 @@ class SqliteInvitationRepository implements InvitationRepository {
     const inviteeMembership = this.db
       .prepare("SELECT id FROM membership WHERE workspace_id = ? AND user_id = ?")
       .get(invitation.workspace_id, inviteeUserId) as { id: string } | undefined;
+    const enterpriseMembership = this.db
+      .prepare("SELECT status FROM enterprise_user WHERE enterprise_id = ? AND user_id = ?")
+      .get(invitation.enterprise_id, inviteeUserId) as { status: string } | undefined;
     const inviterMembership = this.db
       .prepare("SELECT role FROM membership WHERE workspace_id = ? AND user_id = ?")
       .get(invitation.workspace_id, invitation.created_by) as { role: string } | undefined;
@@ -468,6 +556,12 @@ class SqliteInvitationRepository implements InvitationRepository {
       repository_access: access !== undefined ? { current: access.current } : null,
       workspace_status:
         workspace === undefined ? "missing" : workspace.status === "active" ? "active" : "archived",
+      enterprise_membership_status:
+        enterpriseMembership === undefined
+          ? "absent"
+          : enterpriseMembership.status === "suspended"
+            ? "suspended"
+            : "active",
       now,
     };
   }

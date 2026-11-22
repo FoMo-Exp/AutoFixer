@@ -36,6 +36,8 @@ import type {
   UserStatus,
 } from "./identity-types.js";
 import type { EnterpriseId, ProviderInstanceId, UserId } from "./types.js";
+import type { EnterpriseUserRepository } from "./enterprise-user-repositories.js";
+import { createEnterpriseUserRepository } from "./enterprise-user-repositories.js";
 
 // ---------------------------------------------------------------------------
 // Repository interfaces
@@ -56,11 +58,6 @@ export interface IdentityRepository {
     subject: string,
   ): UserIdentity | undefined;
   listByUser(userId: UserId): UserIdentity[];
-  /**
-   * Enterprise ids where this user holds a provider identity — used to scope
-   * who may administer (e.g. suspend) the user.
-   */
-  enterprisesOf(userId: UserId): EnterpriseId[];
 }
 
 export interface EnterpriseRoleRepository {
@@ -119,6 +116,8 @@ export interface IdentityRepositories {
   users: UserRepository;
   identities: IdentityRepository;
   enterpriseRoles: EnterpriseRoleRepository;
+  /** Enterprise-scoped membership, status, and identity bindings (DAT-275). */
+  enterpriseUsers: EnterpriseUserRepository;
   sessions: SessionRepository;
   oauthFlows: OauthFlowRepository;
   desktopFlows: DesktopFlowRepository;
@@ -441,18 +440,6 @@ class SqliteIdentityRepository implements IdentityRepository {
       .prepare("SELECT * FROM user_identity WHERE user_id = ? ORDER BY created_at")
       .all(userId) as unknown as IdentityRow[];
     return rows.map(toIdentity);
-  }
-
-  enterprisesOf(userId: UserId): EnterpriseId[] {
-    const rows = this.db
-      .prepare(
-        `SELECT DISTINCT pi.enterprise_id AS enterprise_id
-         FROM user_identity ui
-         JOIN provider_instance pi ON pi.id = ui.provider_instance_id
-         WHERE ui.user_id = ?`,
-      )
-      .all(userId) as Array<{ enterprise_id: string }>;
-    return rows.map((row) => row.enterprise_id);
   }
 }
 
@@ -782,6 +769,7 @@ export function createIdentityRepositories(db: ControlPlaneDb): IdentityReposito
     users: new SqliteUserRepository(db),
     identities: new SqliteIdentityRepository(db),
     enterpriseRoles: new SqliteEnterpriseRoleRepository(db),
+    enterpriseUsers: createEnterpriseUserRepository(db),
     sessions: new SqliteSessionRepository(db),
     oauthFlows: new SqliteOauthFlowRepository(db),
     desktopFlows: new SqliteDesktopFlowRepository(db),

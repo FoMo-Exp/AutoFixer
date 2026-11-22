@@ -31,6 +31,7 @@
 
 import type { ProviderAccessRepositories } from "../control-plane/provider-access-repositories.js";
 import type { IdentityRepository, UserRepository } from "../control-plane/identity-repositories.js";
+import type { EnterpriseUserRepository } from "../control-plane/enterprise-user-repositories.js";
 import type { MembershipRepository, WorkspaceRepository } from "../control-plane/repositories.js";
 import type { EnterpriseId, WorkspaceId, WorkspaceScope } from "../control-plane/types.js";
 import {
@@ -68,6 +69,8 @@ export interface RequestAuthorityDeps {
   workspaces: WorkspaceRepository;
   users: UserRepository;
   identities: IdentityRepository;
+  /** Enterprise membership/status gate evaluated before provider authority. */
+  enterpriseUsers: EnterpriseUserRepository;
   enterpriseId: EnterpriseId;
   workspaceId: WorkspaceId;
   clock?: () => Date;
@@ -216,6 +219,7 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
     workspaces: deps.workspaces,
     users: deps.users,
     identities: deps.identities,
+    enterpriseUsers: deps.enterpriseUsers,
     epoch,
     policy: HTTP_ACTION_POLICY,
     ...(deps.clock ? { clock: deps.clock } : {}),
@@ -243,6 +247,21 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
   }
 
   function check(userId: string, action: ActionKind, workspaceId?: WorkspaceId): AccessDecision {
+    // Enterprise status is the outer boundary: a missing or suspended
+    // membership fails closed for every action, including workspaces with no
+    // provider integration (local-prototype mode is not an enterprise
+    // suspension bypass).
+    const enterpriseUser = deps.enterpriseUsers.getByUser(deps.enterpriseId, userId);
+    if (enterpriseUser === undefined || enterpriseUser.status !== "active") {
+      return {
+        allowed: false,
+        action,
+        subject: null,
+        reason: enterpriseUser?.status === "suspended" ? "user_suspended" : "enterprise_membership",
+        authority_verified_at: null,
+        checked_at: (deps.clock ? deps.clock() : new Date()).toISOString(),
+      };
+    }
     if (!authorityInPlay(workspaceId)) {
       // Zero integration rows: no provider roster exists anywhere for this
       // workspace, so the request stays bounded by the session-role checks.

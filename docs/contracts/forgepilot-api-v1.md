@@ -89,10 +89,21 @@ authenticate with a server-side session:
   deployment-owned bootstrap (`POST …/bootstrap`, `X-Bootstrap-Token`,
   audited, at most once per enterprise, naming the provider identity
   explicitly). The first ordinary login never becomes an administrator.
-- Logout, suspension, and membership revocation invalidate sessions
-  immediately: reads, writes, and live SSE subscriptions all fail or close.
-  Session-authenticated task access additionally requires an active workspace
-  membership (`viewer` is read-only).
+- Enterprise users are enterprise-scoped (ADR-0011, DAT-275). An administrator
+  adds an approved `(provider_instance_id, stable subject)` pair; a subject
+  that has not signed in is `pending_claim`, and the matching OAuth login
+  claims it exactly once. Login alone never creates enterprise membership,
+  and email/login are never match keys. `EnterpriseUser.status` is the
+  authoritative enterprise-access fact for tasks, memory, dashboard,
+  collaboration, streams, and executable steps: a suspended membership fails
+  closed without changing another enterprise or the global account. A global
+  account suspension is a deployment-operator action and cannot be performed
+  by an enterprise administrator.
+- Logout, global suspension, enterprise membership suspension, and membership
+  revocation invalidate sessions or live SSE subscriptions immediately: reads,
+  writes, and streams fail or close on the next check. Session-authenticated
+  task access additionally requires an active workspace membership (`viewer`
+  is read-only).
 - Authentication secrets (OAuth client secrets, session tokens, desktop
   secrets, states, verifiers) never appear in renderer responses, logs, audit
   records, callback URLs, or analytics.
@@ -113,8 +124,14 @@ Endpoints (details in the OpenAPI document):
 | `GET /api/v1/admin/enterprises/{enterprise_id}/auth-audit?limit=` | none | `200 {items: AuthAuditRecord[]}` |
 | `PUT /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}` | `{role}` | `200 Membership` |
 | `DELETE /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}` | none | `204` |
-| `POST /api/v1/admin/users/{user_id}/suspend` | optional `enterprise_id` | `200 User` |
-| `POST /api/v1/admin/users/{user_id}/activate` | optional `enterprise_id` | `200 User` |
+| `GET /api/v1/admin/enterprises/{enterprise_id}/users?status=&cursor=` | none | `200 {items: EnterpriseUser[], next_cursor}` |
+| `POST /api/v1/admin/enterprises/{enterprise_id}/users` | `provider_instance_id`, `subject` | `201 {enterprise_user, created}`; idempotent replay `created:false` |
+| `GET /api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}` | none | `200 EnterpriseUser` |
+| `POST /api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}/suspend` | `{version}` | `200 EnterpriseUser`; `409 VERSION_CONFLICT`/`LAST_ENTERPRISE_ADMIN` |
+| `POST /api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}/restore` | `{version}` | `200 EnterpriseUser` |
+| `PUT /api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}/role` | `{role, version}` | `200 EnterpriseUser`; `409 VERSION_CONFLICT`/`LAST_ENTERPRISE_ADMIN`/`USER_NOT_CLAIMED` |
+| `POST /api/v1/admin/users/{user_id}/suspend` | none | `200 User`; deployment operator only |
+| `POST /api/v1/admin/users/{user_id}/activate` | none | `200 User`; deployment operator only |
 
 ## Repository service integration (DAT-267)
 
@@ -807,6 +824,10 @@ Stable codes and their default envelope semantics:
 | `INVALID_CURSOR` | 400 | validation | stop | no | `resubmit` |
 | `UNAUTHENTICATED` | 401 | auth | denial | no | `reauthenticate` |
 | `FORBIDDEN` | 403 | authorization | denial | no | `contact_admin` |
+| `ENTERPRISE_MEMBERSHIP_REQUIRED` | 403 | authorization | denial | no | `contact_admin` |
+| `ENTERPRISE_MEMBERSHIP_SUSPENDED` | 403 | authorization | denial | no | `contact_admin` |
+| `LAST_ENTERPRISE_ADMIN` | 409 | policy | stop | no | `contact_admin` |
+| `USER_NOT_CLAIMED` | 409 | policy | stop | no | `refresh` |
 | `CSRF_TOKEN_INVALID` | 403 | auth | stop | no | `refresh` |
 | `NOT_FOUND` | 404 | validation | stop | no | — |
 | `TASK_NOT_FOUND` | 404 | validation | stop | no | — |

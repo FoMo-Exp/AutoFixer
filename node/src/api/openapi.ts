@@ -215,6 +215,102 @@ const membershipSchema: JsonObject = {
   },
 };
 
+const enterpriseUserSchema: JsonObject = {
+  type: "object",
+  description:
+    "One enterprise-scoped user (DAT-275, ADR-0011). The only identity match " +
+    "key is (provider_instance_id, subject); email and login are display-only " +
+    "and never merge accounts. `pending_claim` means an administrator added " +
+    "the subject and no matching OAuth login has proved it yet; it carries no " +
+    "login secret. `suspended` is enterprise-scoped and never changes another " +
+    "enterprise or the global account.",
+  required: [
+    "id",
+    "enterprise_id",
+    "user_id",
+    "status",
+    "role",
+    "provider_instance_id",
+    "provider_type",
+    "subject",
+    "display_name",
+    "login",
+    "claimed_at",
+    "suspended_at",
+    "created_at",
+    "updated_at",
+    "version",
+  ],
+  properties: {
+    id: { type: "string" },
+    enterprise_id: { type: "string" },
+    user_id: {
+      type: ["string", "null"],
+      description: "Null until a matching OAuth login claims the membership.",
+    },
+    status: { type: "string", enum: ["pending_claim", "active", "suspended"] },
+    role: { type: "string", enum: ["admin", "member"] },
+    provider_instance_id: {
+      type: "string",
+      description: "The approved enterprise provider instance the subject belongs to.",
+    },
+    provider_type: { type: "string", enum: ["github", "gitlab"] },
+    subject: {
+      type: "string",
+      description: "Stable provider subject; the only identity match key.",
+    },
+    display_name: { type: ["string", "null"] },
+    login: { type: ["string", "null"], description: "Provider handle; display-only." },
+    claimed_at: { type: ["string", "null"], format: "date-time" },
+    suspended_at: { type: ["string", "null"], format: "date-time" },
+    created_at: { type: "string", format: "date-time" },
+    updated_at: { type: "string", format: "date-time" },
+    version: { type: "integer", description: "Optimistic-concurrency token." },
+  },
+  additionalProperties: false,
+};
+
+const createdEnterpriseUserSchema: JsonObject = {
+  type: "object",
+  required: ["enterprise_user", "created"],
+  properties: {
+    enterprise_user: { $ref: "#/components/schemas/EnterpriseUser" },
+    created: {
+      type: "boolean",
+      description:
+        "False when the same provider instance + subject was already present (idempotent).",
+    },
+  },
+  additionalProperties: false,
+};
+
+const addEnterpriseUserSchema: JsonObject = {
+  type: "object",
+  required: ["provider_instance_id", "subject"],
+  properties: {
+    provider_instance_id: { type: "string" },
+    subject: {
+      type: "string",
+      description:
+        "Stable provider-assigned subject (e.g. the numeric GitHub user id). " +
+        "Never an email, login, or display name.",
+    },
+  },
+  additionalProperties: false,
+};
+
+const enterpriseMembershipSchema: JsonObject = {
+  type: "object",
+  required: ["enterprise_id", "status", "role", "version"],
+  properties: {
+    enterprise_id: { type: "string" },
+    status: { type: "string", enum: ["pending_claim", "active", "suspended"] },
+    role: { type: "string", enum: ["admin", "member"] },
+    version: { type: "integer" },
+  },
+  additionalProperties: false,
+};
+
 const sessionInfoSchema: JsonObject = {
   type: "object",
   required: ["user", "kind", "csrf_token", "expires_at", "enterprise_roles", "memberships"],
@@ -253,7 +349,18 @@ const sessionInfoSchema: JsonObject = {
         },
       },
     },
+    enterprise_membership: {
+      description:
+        "The deployment enterprise's membership for this session, or null " +
+        "when the account has no enterprise membership (login alone never " +
+        "creates one). A suspended membership is reported here so the client " +
+        "can explain the denial without gaining access. Optional in the " +
+        "contract so a client generated before DAT-275 still type-checks; this " +
+        "server always serves it.",
+      anyOf: [{ $ref: "#/components/schemas/EnterpriseMembership" }, { type: "null" }],
+    },
   },
+  additionalProperties: false,
 };
 
 const loginProviderSchema: JsonObject = {
@@ -3630,22 +3737,137 @@ export function buildOpenApiDocument(): OpenApiDocument {
         },
       },
     },
-    "/api/v1/admin/users/{user_id}/suspend": {
-      post: {
-        operationId: "suspendUser",
-        summary: "Suspend a user: all sessions, SSE streams, and logins die",
+    "/api/v1/admin/enterprises/{enterprise_id}/users": {
+      get: {
+        operationId: "listEnterpriseUsers",
+        summary: "List enterprise users, including pending identity claims",
+        description:
+          "Enterprise administrator only, scoped to the path enterprise; a " +
+          "row from another enterprise is never returned. Opaque cursors and " +
+          "an optional status filter. The status column is scanned from the " +
+          "same enterprise_user rows every authorization decision reads.",
         security: ADMIN_SECURITY,
-        parameters: [{ name: "user_id", in: "path", required: true, schema: { type: "string" } }],
+        parameters: [
+          { name: "enterprise_id", in: "path", required: true, schema: { type: "string" } },
+          {
+            name: "status",
+            in: "query",
+            required: false,
+            schema: { type: "string", enum: ["pending_claim", "active", "suspended"] },
+          },
+          CURSOR_PARAMETER,
+        ],
+        responses: {
+          200: {
+            description: "Enterprise user page",
+            content: {
+              "application/json": {
+                schema: pageSchema("#/components/schemas/EnterpriseUser"),
+              },
+            },
+          },
+          400: errorResponse("INVALID_CURSOR or INVALID_REQUEST"),
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN or ENTERPRISE_MEMBERSHIP_SUSPENDED"),
+        },
+      },
+      post: {
+        operationId: "addEnterpriseUser",
+        summary: "Add an approved provider subject to the enterprise",
+        description:
+          "Enterprise administrator only. The subject is identified solely by " +
+          "(provider_instance_id, stable subject) on an approved provider " +
+          "instance of this enterprise. Idempotent: re-adding the same pair " +
+          "returns the existing row with `created: false`, and never " +
+          "reactivates a suspended membership. A subject that has not signed " +
+          "in is `pending_claim`; the matching OAuth login binds it once. No " +
+          "email or login is an input, so equal emails never merge accounts. " +
+          "Workspace enrollment is deliberately out of scope here.",
+        security: ADMIN_SECURITY,
+        parameters: [
+          { name: "enterprise_id", in: "path", required: true, schema: { type: "string" } },
+        ],
         requestBody: {
-          required: false,
+          required: true,
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/AddEnterpriseUser" } },
+          },
+        },
+        responses: {
+          201: {
+            description: "Enterprise user added or already present",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/CreatedEnterpriseUser" },
+              },
+            },
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN or ENTERPRISE_MEMBERSHIP_SUSPENDED"),
+          404: errorResponse("NOT_FOUND: provider instance not in this enterprise"),
+        },
+      },
+    },
+    "/api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}": {
+      get: {
+        operationId: "getEnterpriseUser",
+        summary: "Read one enterprise user",
+        description:
+          "Administrator only, enterprise-scoped. Unknown ids and rows from " +
+          "another enterprise are one indistinguishable 404.",
+        security: ADMIN_SECURITY,
+        parameters: [
+          { name: "enterprise_id", in: "path", required: true, schema: { type: "string" } },
+          {
+            name: "enterprise_user_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        responses: {
+          200: {
+            description: "Enterprise user",
+            ...jsonRef("#/components/schemas/EnterpriseUser"),
+          },
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN or ENTERPRISE_MEMBERSHIP_SUSPENDED"),
+          404: errorResponse("NOT_FOUND"),
+        },
+      },
+    },
+    "/api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}/suspend": {
+      post: {
+        operationId: "suspendEnterpriseUser",
+        summary: "Suspend one enterprise membership",
+        description:
+          "Enterprise-scoped suspension (ADR-0011): other enterprises and the " +
+          "global account are unchanged. New requests, streams, and executable " +
+          "steps authorized by this enterprise fail closed on the next check. " +
+          "The last active enterprise administrator cannot be suspended; the " +
+          "check and the status write plus its audit row are one transaction.",
+        security: ADMIN_SECURITY,
+        parameters: [
+          { name: "enterprise_id", in: "path", required: true, schema: { type: "string" } },
+          {
+            name: "enterprise_user_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        requestBody: {
+          required: true,
           content: {
             "application/json": {
               schema: {
                 type: "object",
+                required: ["version"],
                 properties: {
-                  enterprise_id: {
-                    type: "string",
-                    description: "Optional locator for deployment actors.",
+                  version: {
+                    type: "integer",
+                    description: "The version read from the detail/list response.",
                   },
                 },
               },
@@ -3654,11 +3876,130 @@ export function buildOpenApiDocument(): OpenApiDocument {
         },
         responses: {
           200: {
+            description: "Enterprise user suspended",
+            ...jsonRef("#/components/schemas/EnterpriseUser"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN or ENTERPRISE_MEMBERSHIP_SUSPENDED"),
+          404: errorResponse("NOT_FOUND"),
+          409: errorResponse("VERSION_CONFLICT or LAST_ENTERPRISE_ADMIN"),
+        },
+      },
+    },
+    "/api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}/restore": {
+      post: {
+        operationId: "restoreEnterpriseUser",
+        summary: "Restore one enterprise membership",
+        description:
+          "Restores enterprise access only; workspace permissions revoked " +
+          "under repository reapproval are not revived, and a pending " +
+          "membership returns to `pending_claim`.",
+        security: ADMIN_SECURITY,
+        parameters: [
+          { name: "enterprise_id", in: "path", required: true, schema: { type: "string" } },
+          {
+            name: "enterprise_user_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["version"],
+                properties: { version: { type: "integer" } },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Enterprise user restored",
+            ...jsonRef("#/components/schemas/EnterpriseUser"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN or ENTERPRISE_MEMBERSHIP_SUSPENDED"),
+          404: errorResponse("NOT_FOUND"),
+          409: errorResponse("VERSION_CONFLICT"),
+        },
+      },
+    },
+    "/api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}/role": {
+      put: {
+        operationId: "setEnterpriseUserRole",
+        summary: "Grant or revoke enterprise administration",
+        description:
+          "Administrator only. `admin` requires a claimed membership " +
+          "(USER_NOT_CLAIMED otherwise, because administration needs an " +
+          "account). Demoting the last active administrator is " +
+          "LAST_ENTERPRISE_ADMIN; the count, the role write, and the audit row " +
+          "are one transaction. Enterprise administration never grants " +
+          "repository data access.",
+        security: ADMIN_SECURITY,
+        parameters: [
+          { name: "enterprise_id", in: "path", required: true, schema: { type: "string" } },
+          {
+            name: "enterprise_user_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["role", "version"],
+                properties: {
+                  role: { type: "string", enum: ["admin", "member"] },
+                  version: { type: "integer" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "Enterprise role updated",
+            ...jsonRef("#/components/schemas/EnterpriseUser"),
+          },
+          400: errorResponse("INVALID_REQUEST"),
+          401: unauthorizedResponse(),
+          403: errorResponse("FORBIDDEN or ENTERPRISE_MEMBERSHIP_SUSPENDED"),
+          404: errorResponse("NOT_FOUND"),
+          409: errorResponse("VERSION_CONFLICT, LAST_ENTERPRISE_ADMIN, or USER_NOT_CLAIMED"),
+        },
+      },
+    },
+    "/api/v1/admin/users/{user_id}/suspend": {
+      post: {
+        operationId: "suspendUser",
+        summary: "Deployment-wide account suspension (operator only)",
+        description:
+          "Deployment-wide, not enterprise-scoped: it revokes every session " +
+          "and login of the account across enterprises. Only the deployment " +
+          "operator may perform it — an enterprise administrator cannot reach " +
+          "another enterprise this way and must use the enterprise user " +
+          "suspend route instead (ADR-0011).",
+        security: ADMIN_SECURITY,
+        parameters: [{ name: "user_id", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          200: {
             description: "User suspended",
             ...jsonRef("#/components/schemas/User"),
           },
           401: unauthorizedResponse(),
-          403: errorResponse("FORBIDDEN: administrator authority over this user required"),
+          403: errorResponse(
+            "FORBIDDEN: deployment operator authority required for a global suspension",
+          ),
           404: errorResponse("User not found"),
         },
       },
@@ -3666,27 +4007,22 @@ export function buildOpenApiDocument(): OpenApiDocument {
     "/api/v1/admin/users/{user_id}/activate": {
       post: {
         operationId: "activateUser",
-        summary: "Reactivate a suspended user",
+        summary: "Reactivate a deployment-wide suspended account (operator only)",
+        description:
+          "Deployment operator only. Restoring a global suspension does not " +
+          "restore an enterprise suspension; that requires the enterprise " +
+          "restore route.",
         security: ADMIN_SECURITY,
         parameters: [{ name: "user_id", in: "path", required: true, schema: { type: "string" } }],
-        requestBody: {
-          required: false,
-          content: {
-            "application/json": {
-              schema: {
-                type: "object",
-                properties: { enterprise_id: { type: "string" } },
-              },
-            },
-          },
-        },
         responses: {
           200: {
             description: "User activated",
             ...jsonRef("#/components/schemas/User"),
           },
           401: unauthorizedResponse(),
-          403: errorResponse("FORBIDDEN: administrator authority over this user required"),
+          403: errorResponse(
+            "FORBIDDEN: deployment operator authority required for a global suspension",
+          ),
           404: errorResponse("User not found"),
         },
       },
@@ -5425,6 +5761,10 @@ export function buildOpenApiDocument(): OpenApiDocument {
         SupersededObservation: supersededObservationSchema,
         IssueEvent: issueEventSchema,
         SessionInfo: sessionInfoSchema,
+        EnterpriseUser: enterpriseUserSchema,
+        CreatedEnterpriseUser: createdEnterpriseUserSchema,
+        AddEnterpriseUser: addEnterpriseUserSchema,
+        EnterpriseMembership: enterpriseMembershipSchema,
         LoginProvider: loginProviderSchema,
         ProviderInstance: providerInstanceSchema,
         ServiceIntegration: serviceIntegrationSchema,

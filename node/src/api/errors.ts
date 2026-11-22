@@ -158,6 +158,30 @@ const ERROR_SEMANTICS: Record<string, ErrorSemantics> = {
     retryable: false,
     next_action: "contact_admin",
   },
+  ENTERPRISE_MEMBERSHIP_REQUIRED: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  ENTERPRISE_MEMBERSHIP_SUSPENDED: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  LAST_ENTERPRISE_ADMIN: {
+    stage: "policy",
+    category: "stop",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  USER_NOT_CLAIMED: {
+    stage: "policy",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
   SCOPE_MISSING: {
     stage: "authorization",
     category: "denial",

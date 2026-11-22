@@ -242,6 +242,57 @@ describe("atomic redemption", () => {
     w.db.close();
   });
 
+  test("redemption establishes an active enterprise membership when the invitee has none", () => {
+    const w = world();
+    const invitee = w.makeUser("2101");
+    w.verifyAccess("2101");
+    const outcome = w.redeem(invitee, mint(w).token);
+    expect(outcome.status).toBe("joined");
+    const enterprise = w.identity.enterpriseUsers.getByUser(w.scope.enterprise_id, invitee);
+    expect(enterprise?.status).toBe("active");
+    expect(enterprise?.claimed_at).not.toBeNull();
+    const audit = w.identity.authAudit.list({
+      enterprise_id: w.scope.enterprise_id,
+      event: "enterprise_user.added",
+    });
+    expect(audit.some((row) => row.subject_user_id === invitee)).toBe(true);
+    w.db.close();
+  });
+
+  test("an enterprise-suspended invitee is denied and never reactivated", () => {
+    const w = world();
+    const invitee = w.makeUser("2102");
+    w.verifyAccess("2102");
+    const ensured = w.identity.enterpriseUsers.ensureActive(
+      w.scope.enterprise_id,
+      invitee,
+      { kind: "user", user_id: ACTOR },
+      {
+        provider_instance_id: w.providerInstanceId,
+        subject: "2102",
+      },
+    );
+    const suspended = w.identity.enterpriseUsers.setStatus(
+      w.scope.enterprise_id,
+      ensured.user.id,
+      "suspended",
+      ensured.user.version,
+      { kind: "user", user_id: ACTOR },
+    );
+    expect(suspended.status).toBe("ok");
+
+    const { token, invitation } = mint(w);
+    expectDenied(w.redeem(invitee, token), "enterprise_suspended");
+    expect(w.invitations.getById(w.scope, invitation.id)?.redeemed_at).toBeNull();
+    expect(
+      w.repos.memberships.getByUser({ ...w.scope, actor_id: invitee }, invitee),
+    ).toBeUndefined();
+    expect(w.identity.enterpriseUsers.getByUser(w.scope.enterprise_id, invitee)?.status).toBe(
+      "suspended",
+    );
+    w.db.close();
+  });
+
   test("concurrent redeemers: the one-time use admits exactly one join", () => {
     const w = world();
     const { token } = mint(w);
@@ -469,6 +520,7 @@ describe("denial reasons", () => {
       inviter_role: null,
       repository_access: { current: false },
       workspace_status: "archived",
+      enterprise_membership_status: "absent",
       now: new Date().toISOString(),
     };
     const replayed = evaluateRedemption(
