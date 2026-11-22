@@ -1,11 +1,15 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 
 import { hashToken, secretEquals } from "../control-plane/identity-repositories.js";
+import { SYSTEM_ACTOR } from "../control-plane/db.js";
 import type {
   AppUser,
   AuthAuditRecord,
   AuthSession,
   CreateSessionInput,
+  EnterpriseUser,
+  EnterpriseUserActor,
+  EnterpriseUserStatus,
   IdentityRepositories,
   LoginProvider,
   SessionKind,
@@ -50,12 +54,18 @@ import {
  *   deployment-owned bootstrap token, named by provider identity, audited,
  *   and only once — an ordinary login never becomes an administrator and the
  *   bootstrap cannot be captured by whoever signs in first.
- * - Logout, suspension, and membership revocation revoke sessions and emit
- *   invalidation events so live SSE subscriptions close immediately.
+ * - Enterprise membership is its own enterprise-scoped fact (DAT-275): an
+ *   administrator adds an approved (provider instance, stable subject) and a
+ *   matching login claims it once. Login alone never enrolls anyone, and a
+ *   suspended membership blocks every enterprise-scoped request and stream
+ *   without affecting another enterprise or the global account.
+ * - Logout, global suspension, enterprise membership suspension, and
+ *   membership revocation revoke sessions or emit invalidation events so live
+ *   SSE subscriptions close immediately.
  */
 
-/** Recorded as the actor for system provisioning rows. */
-export const SYSTEM_ACTOR = "usr_auth_system";
+/** Re-exported for the administrator surfaces that share the deployment actor. */
+export { SYSTEM_ACTOR };
 
 export interface AuthServiceConfig {
   /** Enterprise and workspace the task API surface is scoped to. */
@@ -86,7 +96,14 @@ export interface AuthServiceDeps {
 export type AuthInvalidation =
   | { type: "session.revoked"; session_id: string; user_id: string }
   | { type: "user.suspended"; user_id: string }
-  | { type: "membership.revoked"; user_id: string; workspace_id: string };
+  | { type: "membership.revoked"; user_id: string; workspace_id: string }
+  | {
+      /** Enterprise-scoped suspension/restoration; other enterprises unchanged. */
+      type: "enterprise_user.status_changed";
+      enterprise_id: string;
+      user_id: string;
+      status: EnterpriseUserStatus;
+    };
 
 export type AuthInvalidationListener = (event: AuthInvalidation) => void;
 
@@ -170,6 +187,13 @@ export type DesktopExchange =
   | { status: "expired" }
   | { status: "consumed" };
 
+export interface EnterpriseMembershipView {
+  enterprise_id: string;
+  status: EnterpriseUserStatus;
+  role: "admin" | "member";
+  version: number;
+}
+
 export interface SessionInfo {
   user: UserView;
   kind: SessionKind;
@@ -177,6 +201,38 @@ export interface SessionInfo {
   expires_at: string;
   enterprise_roles: Array<{ enterprise_id: string; role: string }>;
   memberships: Array<{ enterprise_id: string; workspace_id: string; role: string }>;
+  /** The deployment enterprise's membership; null for a pure login. */
+  enterprise_membership: EnterpriseMembershipView | null;
+}
+
+/** Administrator view of one enterprise user (DAT-275). */
+export interface EnterpriseUserView {
+  id: string;
+  enterprise_id: string;
+  user_id: string | null;
+  status: EnterpriseUserStatus;
+  role: "admin" | "member";
+  provider_instance_id: string;
+  provider_type: ProviderType;
+  subject: string;
+  display_name: string | null;
+  login: string | null;
+  claimed_at: string | null;
+  suspended_at: string | null;
+  created_at: string;
+  updated_at: string;
+  version: number;
+}
+
+export interface EnterpriseUserPageView {
+  items: EnterpriseUserView[];
+  next_cursor: string | null;
+}
+
+export interface AddEnterpriseUserRequest {
+  enterprise_id: EnterpriseId;
+  provider_instance_id: string;
+  subject: string;
 }
 
 export interface SessionContext {
@@ -387,6 +443,12 @@ export class AuthService {
       throw new ApiError(403, "FORBIDDEN", "this account is suspended");
     }
 
+    // Claim any administrator-added membership whose binding matches this
+    // exact (provider instance, stable subject). Login proves the identity; it
+    // never creates enterprise membership on its own, and a suspended
+    // membership is claimed but stays suspended.
+    this.#identity.enterpriseUsers.claim(provider.id, profile.subject, user.id);
+
     if (flow.kind === "desktop") {
       const desktopFlowId = flow.desktop_flow_id ?? "";
       try {
@@ -547,6 +609,7 @@ export class AuthService {
       { enterprise_id: this.#config.enterpriseId, actor_id: ctx.user.id },
       ctx.user.id,
     );
+    const enterpriseMembership = this.#enterpriseMembershipView(ctx.user.id);
     return {
       user: { id: ctx.user.id, display_name: ctx.user.display_name, status: ctx.user.status },
       kind: ctx.session.kind,
@@ -561,7 +624,43 @@ export class AuthService {
         workspace_id: membership.workspace_id,
         role: membership.role,
       })),
+      enterprise_membership: enterpriseMembership,
     };
+  }
+
+  /**
+   * Authoritative enterprise membership for one person, if any. The row's
+   * status (not a login, identity, or role) is the enterprise-access fact.
+   */
+  enterpriseMembership(userId: UserId, enterpriseId: EnterpriseId = this.#config.enterpriseId) {
+    return this.#identity.enterpriseUsers.getByUser(enterpriseId, userId);
+  }
+
+  /**
+   * Enterprise-authorization gate for an authenticated session. A missing or
+   * suspended membership fails closed with distinct safe codes so the client
+   * can explain the state without learning another tenant's data.
+   */
+  assertEnterpriseActive(
+    userId: UserId,
+    enterpriseId: EnterpriseId = this.#config.enterpriseId,
+  ): EnterpriseUser {
+    const membership = this.#identity.enterpriseUsers.getByUser(enterpriseId, userId);
+    if (membership === undefined) {
+      throw new ApiError(
+        403,
+        "ENTERPRISE_MEMBERSHIP_REQUIRED",
+        "an active enterprise membership is required",
+      );
+    }
+    if (membership.status !== "active") {
+      throw new ApiError(
+        403,
+        "ENTERPRISE_MEMBERSHIP_SUSPENDED",
+        "this enterprise membership is suspended",
+      );
+    }
+    return membership;
   }
 
   logout(sessionId: string, userId: string): void {
@@ -601,6 +700,10 @@ export class AuthService {
     userId: UserId,
     workspaceId: WorkspaceId,
   ): { membership: Membership; workspace: Workspace } | undefined {
+    const enterprise = this.#identity.enterpriseUsers.getByUser(this.#config.enterpriseId, userId);
+    if (enterprise === undefined || enterprise.status !== "active") {
+      return undefined;
+    }
     const enterpriseScope = {
       enterprise_id: this.#config.enterpriseId,
       actor_id: userId,
@@ -686,17 +789,7 @@ export class AuthService {
   /** Create a workspace only for a bootstrap-provisioned enterprise admin. */
   createWorkspace(userId: UserId, input: CreateWorkspaceInput): WorkspaceView {
     const enterpriseId = this.#config.enterpriseId;
-    const role = this.#identity.enterpriseRoles.getByUser(enterpriseId, userId);
-    if (role?.role !== "admin") {
-      this.#audit({
-        event: "admin.denied",
-        enterprise_id: enterpriseId,
-        actor_kind: "user",
-        actor_user_id: userId,
-        details: { action: "workspace.create" },
-      });
-      throw new ApiError(403, "FORBIDDEN", "enterprise administrator authority is required");
-    }
+    this.#assertActiveEnterpriseAdmin(userId, enterpriseId, "workspace.create");
     const name = input.name.trim();
     const repositoryId = input.repository_id.trim();
     if (!name || !repositoryId) {
@@ -801,11 +894,14 @@ export class AuthService {
       });
       throw new ApiError(404, "NOT_FOUND", "provider identity has not signed in yet");
     }
-    const existing = this.#identity.enterpriseRoles.listByEnterprise(enterprise.id);
-    if (existing.length > 0) {
-      if (existing[0]?.user_id === identity.user_id) {
-        return { enterprise_id: enterprise.id, user_id: identity.user_id, role: "admin" };
-      }
+    // Membership, administrator grant, and the `admin.bootstrap` audit are
+    // one transaction: a failed required audit leaves no administrator.
+    const outcome = this.#identity.enterpriseUsers.bootstrapAdmin({
+      enterprise_id: enterprise.id,
+      user_id: identity.user_id,
+      provider_instance_id: provider.id,
+    });
+    if (outcome.status === "conflict") {
       this.#audit({
         event: "admin.bootstrap",
         enterprise_id: enterprise.id,
@@ -815,20 +911,20 @@ export class AuthService {
       });
       throw new ApiError(409, "BOOTSTRAP_CONFLICT", "an enterprise administrator already exists");
     }
-    this.#identity.enterpriseRoles.grant({
-      enterprise_id: enterprise.id,
-      user_id: identity.user_id,
-      role: "admin",
-      actor_id: SYSTEM_ACTOR,
-    });
-    this.#audit({
-      event: "admin.bootstrap",
-      enterprise_id: enterprise.id,
-      actor_kind: "deployment",
-      subject_user_id: identity.user_id,
-      provider_instance_id: provider.id,
-      details: { result: "granted" },
-    });
+    if (outcome.status === "suspended") {
+      this.#audit({
+        event: "admin.bootstrap",
+        enterprise_id: enterprise.id,
+        actor_kind: "deployment",
+        subject_user_id: identity.user_id,
+        details: { result: "denied", reason: "enterprise_membership_suspended" },
+      });
+      throw new ApiError(
+        409,
+        "ENTERPRISE_MEMBERSHIP_SUSPENDED",
+        "the enterprise user is suspended; deployment bootstrap does not lift it",
+      );
+    }
     return { enterprise_id: enterprise.id, user_id: identity.user_id, role: "admin" };
   }
 
@@ -862,30 +958,30 @@ export class AuthService {
     return instance;
   }
 
-  setUserStatus(
-    actor: AdminActor,
-    input: { user_id: UserId; status: UserStatus; enterprise_id?: EnterpriseId },
-  ): AppUser {
+  /**
+   * Deployment-wide account suspension. This is an operator action by design:
+   * an enterprise administrator never suspends an account that may belong to
+   * another enterprise. Enterprise administrators use
+   * {@link setEnterpriseUserStatus}, which is scoped to their own enterprise.
+   */
+  setUserStatus(actor: AdminActor, input: { user_id: UserId; status: UserStatus }): AppUser {
     const target = this.#identity.users.getById(input.user_id);
     if (target === undefined) {
       throw new ApiError(404, "NOT_FOUND", "user not found");
     }
-    if (actor.kind === "user") {
-      const targetEnterprises = this.#identity.identities.enterprisesOf(input.user_id);
-      const adminOf = new Set(
-        this.#identity.enterpriseRoles.listByUser(actor.user_id).map((role) => role.enterprise_id),
+    if (actor.kind !== "deployment") {
+      this.#audit({
+        event: "admin.denied",
+        actor_kind: "user",
+        actor_user_id: actor.user_id,
+        subject_user_id: input.user_id,
+        details: { action: "setUserStatus", reason: "deployment_only" },
+      });
+      throw new ApiError(
+        403,
+        "FORBIDDEN",
+        "deployment operator authority is required for a global account suspension",
       );
-      const authorized = targetEnterprises.some((enterpriseId) => adminOf.has(enterpriseId));
-      if (!authorized) {
-        this.#audit({
-          event: "admin.denied",
-          actor_kind: "user",
-          actor_user_id: actor.user_id,
-          subject_user_id: input.user_id,
-          details: { action: "setUserStatus" },
-        });
-        throw new ApiError(403, "FORBIDDEN", "administrator authority over this user is required");
-      }
     }
     const updated = this.#identity.users.setStatus(input.user_id, input.status, actorIdOf(actor));
     if (input.status === "suspended") {
@@ -893,16 +989,14 @@ export class AuthService {
       this.hub.emit({ type: "user.suspended", user_id: input.user_id });
       this.#audit({
         event: "user.suspended",
-        actor_kind: actor.kind,
-        ...(actor.kind === "user" ? { actor_user_id: actor.user_id } : {}),
+        actor_kind: "deployment",
         subject_user_id: input.user_id,
         details: { revoked_sessions: revoked },
       });
     } else {
       this.#audit({
         event: "user.activated",
-        actor_kind: actor.kind,
-        ...(actor.kind === "user" ? { actor_user_id: actor.user_id } : {}),
+        actor_kind: "deployment",
         subject_user_id: input.user_id,
       });
     }
@@ -923,6 +1017,21 @@ export class AuthService {
     this.#repos.workspaces.getById(scope, input.workspace_id);
     if (this.#identity.users.getById(input.user_id) === undefined) {
       throw new ApiError(404, "NOT_FOUND", "user not found");
+    }
+    // A workspace grant is an explicit administrator act, so it establishes the
+    // enterprise membership it depends on — but never reactivates a suspended
+    // one (that would bypass the enterprise suspension boundary).
+    const ensured = this.#identity.enterpriseUsers.ensureActive(
+      input.enterprise_id,
+      input.user_id,
+      enterpriseActorOf(actor),
+    );
+    if (ensured.suspended) {
+      throw new ApiError(
+        409,
+        "ENTERPRISE_MEMBERSHIP_SUSPENDED",
+        "the target enterprise user is suspended; restore the membership first",
+      );
     }
     const membership = this.#repos.memberships.create(
       { ...scope, workspace_id: input.workspace_id },
@@ -975,6 +1084,214 @@ export class AuthService {
   ): AuthAuditRecord[] {
     this.#assertAdmin(actor, filter.enterprise_id);
     return this.#identity.authAudit.list(filter);
+  }
+
+  // -------------------------------------------------------------------------
+  // Enterprise users (DAT-275)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Enterprise directory, newest first, cursor-paginated. The path enterprise
+   * is a scope filter validated by the caller's administrator standing; it can
+   * never return a row from another enterprise.
+   */
+  listEnterpriseUsers(
+    actor: AdminActor,
+    input: { enterprise_id: EnterpriseId; status?: string; cursor?: string | null },
+  ): EnterpriseUserPageView {
+    this.#assertAdmin(actor, input.enterprise_id);
+    const status = input.status;
+    if (
+      status !== undefined &&
+      status !== "pending_claim" &&
+      status !== "active" &&
+      status !== "suspended"
+    ) {
+      throw new ApiError(
+        400,
+        "INVALID_REQUEST",
+        "status must be pending_claim, active, or suspended",
+      );
+    }
+    const page = this.#identity.enterpriseUsers.list(input.enterprise_id, {
+      ...(status !== undefined ? { status } : {}),
+      cursor: input.cursor ?? null,
+    });
+    if (page.invalid_cursor === true) {
+      throw new ApiError(400, "INVALID_CURSOR", "unknown enterprise user cursor");
+    }
+    return {
+      items: page.items.map((row) => this.#enterpriseUserView(row)),
+      next_cursor: page.next_cursor,
+    };
+  }
+
+  getEnterpriseUser(
+    actor: AdminActor,
+    input: { enterprise_id: EnterpriseId; id: string },
+  ): EnterpriseUserView {
+    this.#assertAdmin(actor, input.enterprise_id);
+    const row = this.#identity.enterpriseUsers.getById(input.enterprise_id, input.id);
+    if (row === undefined) {
+      throw new ApiError(404, "NOT_FOUND", "enterprise user not found");
+    }
+    return this.#enterpriseUserView(row);
+  }
+
+  /**
+   * Add an approved provider subject to the enterprise. Idempotent for the
+   * same (provider instance, stable subject); a subject that has not signed in
+   * is recorded as `pending_claim` and no credential or login secret is
+   * stored. Email is never an input, so two subjects sharing an email can
+   * never merge.
+   */
+  addEnterpriseUser(
+    actor: AdminActor,
+    input: AddEnterpriseUserRequest,
+  ): { enterprise_user: EnterpriseUserView; created: boolean } {
+    this.#assertAdmin(actor, input.enterprise_id);
+    const subject = input.subject.trim();
+    if (subject.length === 0 || subject.length > 256) {
+      throw new ApiError(400, "INVALID_REQUEST", "subject must be 1-256 characters");
+    }
+    const scope = { enterprise_id: input.enterprise_id, actor_id: actorIdOf(actor) };
+    const provider = this.#repos.providerInstances.getById(scope, input.provider_instance_id);
+    if (provider === undefined) {
+      throw new ApiError(404, "NOT_FOUND", "provider instance not found in this enterprise");
+    }
+    const result = this.#identity.enterpriseUsers.add({
+      enterprise_id: input.enterprise_id,
+      provider_instance_id: provider.id,
+      subject,
+      actor: enterpriseActorOf(actor),
+    });
+    return {
+      enterprise_user: this.#enterpriseUserView(result.user),
+      created: result.created,
+    };
+  }
+
+  /** Suspend or restore one enterprise membership; other enterprises unchanged. */
+  setEnterpriseUserStatus(
+    actor: AdminActor,
+    input: {
+      enterprise_id: EnterpriseId;
+      id: string;
+      status: "active" | "suspended";
+      version: number;
+    },
+  ): EnterpriseUserView {
+    this.#assertAdmin(actor, input.enterprise_id);
+    const result = this.#identity.enterpriseUsers.setStatus(
+      input.enterprise_id,
+      input.id,
+      input.status,
+      input.version,
+      enterpriseActorOf(actor),
+    );
+    const row = this.#enterpriseUserUpdateResult(result, input.id);
+    if (row.user_id !== null) {
+      this.hub.emit({
+        type: "enterprise_user.status_changed",
+        enterprise_id: input.enterprise_id,
+        user_id: row.user_id,
+        status: row.status,
+      });
+    }
+    return this.#enterpriseUserView(row);
+  }
+
+  /** Grant or revoke enterprise administration; last admin is protected. */
+  setEnterpriseUserRole(
+    actor: AdminActor,
+    input: {
+      enterprise_id: EnterpriseId;
+      id: string;
+      role: "admin" | "member";
+      version: number;
+    },
+  ): EnterpriseUserView {
+    this.#assertAdmin(actor, input.enterprise_id);
+    const result = this.#identity.enterpriseUsers.setRole(
+      input.enterprise_id,
+      input.id,
+      input.role,
+      input.version,
+      enterpriseActorOf(actor),
+    );
+    const row = this.#enterpriseUserUpdateResult(result, input.id);
+    return this.#enterpriseUserView(row);
+  }
+
+  #enterpriseUserUpdateResult(
+    result: Awaited<ReturnType<IdentityRepositories["enterpriseUsers"]["setStatus"]>>,
+    id: string,
+  ): EnterpriseUser {
+    if (result.status === "ok") {
+      return result.user;
+    }
+    if (result.status === "version_conflict") {
+      throw new ApiError(409, "VERSION_CONFLICT", "enterprise user was modified concurrently", {
+        enterprise_user_id: id,
+        actual_version: result.actual_version,
+      });
+    }
+    if (result.status === "last_admin") {
+      throw new ApiError(
+        409,
+        "LAST_ENTERPRISE_ADMIN",
+        "at least one active enterprise administrator must remain",
+      );
+    }
+    if (result.status === "not_claimed") {
+      throw new ApiError(
+        409,
+        "USER_NOT_CLAIMED",
+        "the enterprise user has not signed in yet; the role can change after the identity is claimed",
+      );
+    }
+    throw new ApiError(500, "INTERNAL_ERROR", "unexpected enterprise user update result");
+  }
+
+  #enterpriseUserView(row: EnterpriseUser): EnterpriseUserView {
+    const identities = this.#identity.enterpriseUsers.listIdentities(row.id);
+    const binding = identities[0];
+    const provider =
+      binding !== undefined
+        ? this.#repos.providerInstances.getById(
+            { enterprise_id: row.enterprise_id, actor_id: row.created_by },
+            binding.provider_instance_id,
+          )
+        : undefined;
+    const user = row.user_id !== null ? this.#identity.users.getById(row.user_id) : undefined;
+    const login =
+      binding !== undefined
+        ? this.#identity.identities.getByProviderSubject(
+            binding.provider_instance_id,
+            binding.subject,
+          )?.login
+        : undefined;
+    const role =
+      row.user_id !== null
+        ? this.#identity.enterpriseRoles.getByUser(row.enterprise_id, row.user_id)
+        : undefined;
+    return {
+      id: row.id,
+      enterprise_id: row.enterprise_id,
+      user_id: row.user_id,
+      status: row.status,
+      role: role?.role === "admin" ? "admin" : "member",
+      provider_instance_id: binding?.provider_instance_id ?? "",
+      provider_type: provider?.provider_type ?? "github",
+      subject: binding?.subject ?? "",
+      display_name: user?.display_name ?? null,
+      login: login ?? null,
+      claimed_at: row.claimed_at,
+      suspended_at: row.suspended_at,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      version: row.version,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -1056,21 +1373,52 @@ export class AuthService {
     if (actor.kind === "deployment") {
       return;
     }
-    const role = this.#identity.enterpriseRoles.getByUser(enterpriseId, actor.user_id);
-    if (role === undefined) {
+    this.#assertActiveEnterpriseAdmin(actor.user_id, enterpriseId, "admin");
+  }
+
+  /**
+   * Enterprise administration requires BOTH the administrator grant and an
+   * active enterprise membership: suspending a member also suspends the
+   * authority they hold in that enterprise only.
+   */
+  #assertActiveEnterpriseAdmin(userId: UserId, enterpriseId: EnterpriseId, action: string): void {
+    const role = this.#identity.enterpriseRoles.getByUser(enterpriseId, userId);
+    const membership = this.#identity.enterpriseUsers.getByUser(enterpriseId, userId);
+    if (role === undefined || membership === undefined || membership.status !== "active") {
       this.#audit({
         event: "admin.denied",
         enterprise_id: enterpriseId,
         actor_kind: "user",
-        actor_user_id: actor.user_id,
-        details: { action: "admin" },
+        actor_user_id: userId,
+        details: { action },
       });
+      if (membership !== undefined && membership.status !== "active") {
+        throw new ApiError(
+          403,
+          "ENTERPRISE_MEMBERSHIP_SUSPENDED",
+          "this enterprise membership is suspended",
+        );
+      }
       throw new ApiError(
         403,
         "FORBIDDEN",
         "administrator authority in this enterprise is required",
       );
     }
+  }
+
+  #enterpriseMembershipView(userId: UserId): EnterpriseMembershipView | null {
+    const membership = this.#identity.enterpriseUsers.getByUser(this.#config.enterpriseId, userId);
+    if (membership === undefined) {
+      return null;
+    }
+    const role = this.#identity.enterpriseRoles.getByUser(this.#config.enterpriseId, userId);
+    return {
+      enterprise_id: membership.enterprise_id,
+      status: membership.status,
+      role: role?.role === "admin" ? "admin" : "member",
+      version: membership.version,
+    };
   }
 
   #expired(expiresAt: string): boolean {
@@ -1084,6 +1432,12 @@ export class AuthService {
 
 function actorIdOf(actor: AdminActor): UserId {
   return actor.kind === "deployment" ? SYSTEM_ACTOR : actor.user_id;
+}
+
+function enterpriseActorOf(actor: AdminActor): EnterpriseUserActor {
+  return actor.kind === "deployment"
+    ? { kind: "deployment" }
+    : { kind: "user", user_id: actor.user_id };
 }
 
 /** Only same-deployment relative paths; never protocol-relative or absolute. */

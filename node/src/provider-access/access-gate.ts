@@ -24,6 +24,7 @@
 import type { CapabilityGrant, CapabilityKind } from "../control-plane/provider-access-types.js";
 import type { ProviderAccessRepositories } from "../control-plane/provider-access-repositories.js";
 import type { IdentityRepository, UserRepository } from "../control-plane/identity-repositories.js";
+import type { EnterpriseUserRepository } from "../control-plane/enterprise-user-repositories.js";
 import type { MembershipRepository, WorkspaceRepository } from "../control-plane/repositories.js";
 import type { UserId, WorkspaceRole, WorkspaceScope } from "../control-plane/types.js";
 import { computeEffectiveAccess } from "./effective-access.js";
@@ -82,6 +83,8 @@ export interface AccessGateDeps {
   workspaces: WorkspaceRepository;
   users: UserRepository;
   identities: IdentityRepository;
+  /** Enterprise-scoped membership/status (DAT-275); the only member evidence. */
+  enterpriseUsers: EnterpriseUserRepository;
   /** Shared with revocation/reconcile as the "authority changed" signal. */
   epoch: AuthorityEpoch;
   clock?: () => Date;
@@ -147,6 +150,7 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
     workspaces,
     users,
     identities,
+    enterpriseUsers,
     epoch,
     clock = () => new Date(),
     freshWindowMs,
@@ -226,13 +230,13 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
     const workspace = workspaces.getById(scope, scope.workspace_id);
     const membership = memberships.getByUser(scope, request.user_id);
 
-    // Enterprise membership: any recorded membership inside the enterprise,
-    // or a provider identity registered against the enterprise's provider
-    // instances. Enterprise administration is deliberately not consulted —
-    // it never grants repository data access by itself.
-    const isEnterpriseMember =
-      identities.enterprisesOf(request.user_id).includes(scope.enterprise_id) ||
-      memberships.listForUser(scope, request.user_id).length > 0;
+    // Enterprise membership is the authoritative enterprise_user row, not a
+    // provider identity: login alone never enrolled anyone, and an
+    // enterprise-suspended member has no access even while their workspace
+    // membership and provider identity still exist. Enterprise administration
+    // is deliberately not consulted — it never grants repository data access.
+    const enterpriseUser = enterpriseUsers.getByUser(scope.enterprise_id, request.user_id);
+    const isEnterpriseMember = enterpriseUser?.status === "active";
 
     // The provider subject behind this user for the integration's provider
     // instance. Identity linking is (provider instance, stable subject) only.

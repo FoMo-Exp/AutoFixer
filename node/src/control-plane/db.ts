@@ -1463,6 +1463,78 @@ const MIGRATIONS: Migration[] = [
         WHERE delivery_id IS NOT NULL`,
     ],
   },
+  {
+    // Enterprise users (DAT-275, ADR-0011). One enterprise-scoped membership
+    // row per person: `status` distinguishes an administrator-added subject
+    // that has not signed in yet (`pending_claim`) from a live member and an
+    // enterprise-suspended member. `user_id` stays null until a matching
+    // OAuth login proves the same (provider instance, stable subject); the
+    // identity binding table is the only match key, never email or login.
+    //
+    // Backfill is deliberately narrow: existing workspace memberships and
+    // enterprise administrator grants are the authoritative prior evidence.
+    // A bare provider identity is NOT enterprise membership — login alone
+    // never enrolled anyone. A historical global suspension lives on
+    // `app_user.status` and is preserved untouched.
+    version: 19,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS enterprise_user (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        user_id TEXT REFERENCES app_user(id),
+        status TEXT NOT NULL CHECK (status IN ('pending_claim', 'active', 'suspended')),
+        version INTEGER NOT NULL DEFAULT 1,
+        claimed_at TEXT,
+        suspended_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        UNIQUE (enterprise_id, user_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_user_scope
+        ON enterprise_user(enterprise_id, status)`,
+      `CREATE TABLE IF NOT EXISTS enterprise_user_identity (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        enterprise_user_id TEXT NOT NULL REFERENCES enterprise_user(id) ON DELETE CASCADE,
+        provider_instance_id TEXT NOT NULL REFERENCES provider_instance(id),
+        subject TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        UNIQUE (enterprise_id, provider_instance_id, subject)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_user_identity_membership
+        ON enterprise_user_identity(enterprise_user_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_enterprise_user_identity_subject
+        ON enterprise_user_identity(provider_instance_id, subject)`,
+      `INSERT OR IGNORE INTO enterprise_user
+         (id, enterprise_id, user_id, status, version, claimed_at,
+          created_at, updated_at, created_by, updated_by)
+       SELECT 'eum_' || lower(hex(randomblob(16))), m.enterprise_id, m.user_id,
+              'active', 1, MIN(m.created_at),
+              MIN(m.created_at), MAX(m.updated_at), MIN(m.created_by), MAX(m.updated_by)
+       FROM membership m
+       JOIN app_user u ON u.id = m.user_id
+       GROUP BY m.enterprise_id, m.user_id`,
+      `INSERT OR IGNORE INTO enterprise_user
+         (id, enterprise_id, user_id, status, version, claimed_at,
+          created_at, updated_at, created_by, updated_by)
+       SELECT 'eum_' || lower(hex(randomblob(16))), er.enterprise_id, er.user_id,
+              'active', 1, er.created_at,
+              er.created_at, er.updated_at, er.created_by, er.updated_by
+       FROM enterprise_role er`,
+      `INSERT OR IGNORE INTO enterprise_user_identity
+         (id, enterprise_id, enterprise_user_id, provider_instance_id, subject,
+          created_at, created_by)
+       SELECT 'eui_' || lower(hex(randomblob(16))), eu.enterprise_id, eu.id,
+              ui.provider_instance_id, ui.subject, eu.created_at, eu.created_by
+       FROM enterprise_user eu
+       JOIN user_identity ui ON ui.user_id = eu.user_id
+       JOIN provider_instance pi
+         ON pi.id = ui.provider_instance_id AND pi.enterprise_id = eu.enterprise_id`,
+    ],
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1470,6 +1542,9 @@ const MIGRATIONS: Migration[] = [
 // ---------------------------------------------------------------------------
 
 export type ControlPlaneDb = DatabaseSync;
+
+/** Recorded as the actor for system/deployment provisioning rows. */
+export const SYSTEM_ACTOR = "usr_auth_system";
 
 export interface OpenOptions {
   /**

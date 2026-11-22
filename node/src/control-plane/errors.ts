@@ -119,7 +119,9 @@ export type RequestScopeErrorCode =
   | "ACCOUNT_SUSPENDED"
   | "SCOPE_MISSING"
   | "SCOPE_AMBIGUOUS"
-  | "SCOPE_CROSS_TENANT";
+  | "SCOPE_CROSS_TENANT"
+  | "ENTERPRISE_MEMBERSHIP_REQUIRED"
+  | "ENTERPRISE_MEMBERSHIP_SUSPENDED";
 
 export class RequestScopeError extends ControlPlaneError {
   readonly status: 401 | 403;

@@ -28,6 +28,7 @@
 
 import type { AuthAuditRepository } from "../control-plane/identity-repositories.js";
 import type { EnterpriseRoleRepository } from "../control-plane/identity-repositories.js";
+import type { EnterpriseUserRepository } from "../control-plane/enterprise-user-repositories.js";
 import type {
   ProviderInstanceRepository,
   WorkspaceRepository,
@@ -122,6 +123,8 @@ export interface ServiceIntegrationServiceDeps {
   workspaces: WorkspaceRepository;
   providerInstances: ProviderInstanceRepository;
   enterpriseRoles: EnterpriseRoleRepository;
+  /** When wired, a suspended enterprise membership also suspends administration. */
+  enterpriseUsers?: EnterpriseUserRepository;
   integrations: ServiceIntegrationRepository;
   /** Existence checks only; secret values never leave the boundary. */
   credentials: ServiceCredentialStore;
@@ -248,7 +251,11 @@ export function createServiceIntegrationService(
       return SYSTEM_ACTOR;
     }
     const role = deps.enterpriseRoles.getByUser(enterpriseId, actor.user_id);
-    if (role?.role !== "admin") {
+    const membership = deps.enterpriseUsers?.getByUser(enterpriseId, actor.user_id);
+    if (
+      role?.role !== "admin" ||
+      (deps.enterpriseUsers !== undefined && membership?.status !== "active")
+    ) {
       // Denial is recorded best effort: an audit failure must not turn a
       // considered 403 into a different outcome.
       try {

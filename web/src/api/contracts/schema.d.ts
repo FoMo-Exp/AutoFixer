@@ -623,6 +623,110 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/enterprises/{enterprise_id}/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List enterprise users, including pending identity claims
+         * @description Enterprise administrator only, scoped to the path enterprise; a row from another enterprise is never returned. Opaque cursors and an optional status filter. The status column is scanned from the same enterprise_user rows every authorization decision reads.
+         */
+        get: operations["listEnterpriseUsers"];
+        put?: never;
+        /**
+         * Add an approved provider subject to the enterprise
+         * @description Enterprise administrator only. The subject is identified solely by (provider_instance_id, stable subject) on an approved provider instance of this enterprise. Idempotent: re-adding the same pair returns the existing row with `created: false`, and never reactivates a suspended membership. A subject that has not signed in is `pending_claim`; the matching OAuth login binds it once. No email or login is an input, so equal emails never merge accounts. Workspace enrollment is deliberately out of scope here.
+         */
+        post: operations["addEnterpriseUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one enterprise user
+         * @description Administrator only, enterprise-scoped. Unknown ids and rows from another enterprise are one indistinguishable 404.
+         */
+        get: operations["getEnterpriseUser"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}/suspend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Suspend one enterprise membership
+         * @description Enterprise-scoped suspension (ADR-0011): other enterprises and the global account are unchanged. New requests, streams, and executable steps authorized by this enterprise fail closed on the next check. The last active enterprise administrator cannot be suspended; the check and the status write plus its audit row are one transaction.
+         */
+        post: operations["suspendEnterpriseUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore one enterprise membership
+         * @description Restores enterprise access only; workspace permissions revoked under repository reapproval are not revived, and a pending membership returns to `pending_claim`.
+         */
+        post: operations["restoreEnterpriseUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}/role": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Grant or revoke enterprise administration
+         * @description Administrator only. `admin` requires a claimed membership (USER_NOT_CLAIMED otherwise, because administration needs an account). Demoting the last active administrator is LAST_ENTERPRISE_ADMIN; the count, the role write, and the audit row are one transaction. Enterprise administration never grants repository data access.
+         */
+        put: operations["setEnterpriseUserRole"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/users/{user_id}/suspend": {
         parameters: {
             query?: never;
@@ -632,7 +736,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Suspend a user: all sessions, SSE streams, and logins die */
+        /**
+         * Deployment-wide account suspension (operator only)
+         * @description Deployment-wide, not enterprise-scoped: it revokes every session and login of the account across enterprises. Only the deployment operator may perform it — an enterprise administrator cannot reach another enterprise this way and must use the enterprise user suspend route instead (ADR-0011).
+         */
         post: operations["suspendUser"];
         delete?: never;
         options?: never;
@@ -649,7 +756,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Reactivate a suspended user */
+        /**
+         * Reactivate a deployment-wide suspended account (operator only)
+         * @description Deployment operator only. Restoring a global suspension does not restore an enterprise suspension; that requires the enterprise restore route.
+         */
         post: operations["activateUser"];
         delete?: never;
         options?: never;
@@ -3092,6 +3202,56 @@ export interface components {
                 /** @enum {string} */
                 role: "owner" | "admin" | "member" | "viewer";
             }[];
+            /** @description The deployment enterprise's membership for this session, or null when the account has no enterprise membership (login alone never creates one). A suspended membership is reported here so the client can explain the denial without gaining access. Optional in the contract so a client generated before DAT-275 still type-checks; this server always serves it. */
+            enterprise_membership?: components["schemas"]["EnterpriseMembership"] | null;
+        };
+        /** @description One enterprise-scoped user (DAT-275, ADR-0011). The only identity match key is (provider_instance_id, subject); email and login are display-only and never merge accounts. `pending_claim` means an administrator added the subject and no matching OAuth login has proved it yet; it carries no login secret. `suspended` is enterprise-scoped and never changes another enterprise or the global account. */
+        EnterpriseUser: {
+            id: string;
+            enterprise_id: string;
+            /** @description Null until a matching OAuth login claims the membership. */
+            user_id: string | null;
+            /** @enum {string} */
+            status: "pending_claim" | "active" | "suspended";
+            /** @enum {string} */
+            role: "admin" | "member";
+            /** @description The approved enterprise provider instance the subject belongs to. */
+            provider_instance_id: string;
+            /** @enum {string} */
+            provider_type: "github" | "gitlab";
+            /** @description Stable provider subject; the only identity match key. */
+            subject: string;
+            display_name: string | null;
+            /** @description Provider handle; display-only. */
+            login: string | null;
+            /** Format: date-time */
+            claimed_at: string | null;
+            /** Format: date-time */
+            suspended_at: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** @description Optimistic-concurrency token. */
+            version: number;
+        };
+        CreatedEnterpriseUser: {
+            enterprise_user: components["schemas"]["EnterpriseUser"];
+            /** @description False when the same provider instance + subject was already present (idempotent). */
+            created: boolean;
+        };
+        AddEnterpriseUser: {
+            provider_instance_id: string;
+            /** @description Stable provider-assigned subject (e.g. the numeric GitHub user id). Never an email, login, or display name. */
+            subject: string;
+        };
+        EnterpriseMembership: {
+            enterprise_id: string;
+            /** @enum {string} */
+            status: "pending_claim" | "active" | "suspended";
+            /** @enum {string} */
+            role: "admin" | "member";
+            version: number;
         };
         LoginProvider: {
             provider_instance_id: string;
@@ -7029,6 +7189,412 @@ export interface operations {
             };
         };
     };
+    listEnterpriseUsers: {
+        parameters: {
+            query?: {
+                status?: "pending_claim" | "active" | "suspended";
+                /** @description Opaque pagination cursor copied from a previous page's `next_cursor`. Clients must not construct, parse, or interpret cursors; an unknown cursor is 400 INVALID_CURSOR. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                enterprise_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Enterprise user page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["EnterpriseUser"][];
+                        /** @description Opaque cursor for the next page; null at the end of the list. */
+                        next_cursor: string | null;
+                    };
+                };
+            };
+            /** @description INVALID_CURSOR or INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN or ENTERPRISE_MEMBERSHIP_SUSPENDED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    addEnterpriseUser: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                enterprise_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddEnterpriseUser"];
+            };
+        };
+        responses: {
+            /** @description Enterprise user added or already present */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedEnterpriseUser"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN or ENTERPRISE_MEMBERSHIP_SUSPENDED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND: provider instance not in this enterprise */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getEnterpriseUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                enterprise_id: string;
+                enterprise_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Enterprise user */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnterpriseUser"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN or ENTERPRISE_MEMBERSHIP_SUSPENDED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    suspendEnterpriseUser: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                enterprise_id: string;
+                enterprise_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The version read from the detail/list response. */
+                    version: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Enterprise user suspended */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnterpriseUser"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN or ENTERPRISE_MEMBERSHIP_SUSPENDED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description VERSION_CONFLICT or LAST_ENTERPRISE_ADMIN */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    restoreEnterpriseUser: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                enterprise_id: string;
+                enterprise_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    version: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Enterprise user restored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnterpriseUser"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN or ENTERPRISE_MEMBERSHIP_SUSPENDED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description VERSION_CONFLICT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    setEnterpriseUserRole: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                enterprise_id: string;
+                enterprise_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    role: "admin" | "member";
+                    version: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Enterprise role updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnterpriseUser"];
+                };
+            };
+            /** @description INVALID_REQUEST */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN or ENTERPRISE_MEMBERSHIP_SUSPENDED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description VERSION_CONFLICT, LAST_ENTERPRISE_ADMIN, or USER_NOT_CLAIMED */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     suspendUser: {
         parameters: {
             query?: never;
@@ -7041,14 +7607,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    /** @description Optional locator for deployment actors. */
-                    enterprise_id?: string;
-                };
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description User suspended */
             200: {
@@ -7068,7 +7627,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description FORBIDDEN: administrator authority over this user required */
+            /** @description FORBIDDEN: deployment operator authority required for a global suspension */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7100,13 +7659,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
-            content: {
-                "application/json": {
-                    enterprise_id?: string;
-                };
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description User activated */
             200: {
@@ -7126,7 +7679,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description FORBIDDEN: administrator authority over this user required */
+            /** @description FORBIDDEN: deployment operator authority required for a global suspension */
             403: {
                 headers: {
                     [name: string]: unknown;

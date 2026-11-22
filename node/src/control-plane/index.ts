@@ -7,7 +7,7 @@
  */
 
 export type { ControlPlaneDb, OpenOptions } from "./db.js";
-export { migrate, newId, nowIso, openControlPlaneDb } from "./db.js";
+export { SYSTEM_ACTOR, migrate, newId, nowIso, openControlPlaneDb } from "./db.js";
 
 export {
   ConflictError,
@@ -74,6 +74,26 @@ export type {
   SeedWorkspaceInput,
 } from "./seed.js";
 export { seedEnterprise, seedProviderInstance, seedWorkspace } from "./seed.js";
+
+export type {
+  AddEnterpriseUserInput,
+  AddEnterpriseUserResult,
+  EnterpriseUser,
+  EnterpriseUserIdentity,
+  EnterpriseUserActor,
+  EnterpriseUserStatus,
+  EnterpriseUserUpdateResult,
+  EnsureEnterpriseUserResult,
+  BootstrapAdminInput,
+  BootstrapAdminOutcome,
+} from "./enterprise-user-types.js";
+
+export type {
+  EnterpriseUserListFilter,
+  EnterpriseUserPage,
+  EnterpriseUserRepository,
+} from "./enterprise-user-repositories.js";
+export { createEnterpriseUserRepository } from "./enterprise-user-repositories.js";
 
 export type {
   AppendAuthAuditInput,

@@ -14,12 +14,23 @@
   "kind": "web",
   "csrf_token": "csrf_9f2c1a7e4b",
   "expires_at": "2026-11-04T08:00:00Z",
-  "enterprise_roles": [{ "enterprise_id": "ent_01J8Y0A1B2", "role": "admin" }],
+  "enterprise_roles": [
+    {
+      "enterprise_id": "ent_01J8Y0A1B2",
+      "role": "admin"
+    }
+  ],
   "memberships": [
     {
       "enterprise_id": "ent_01J8Y0A1B2",
       "workspace_id": "ws_01J8Z1C3D4",
       "role": "admin"
     }
-  ]
+  ],
+  "enterprise_membership": {
+    "enterprise_id": "ent_01J8Y0A1B2",
+    "status": "active",
+    "role": "admin",
+    "version": 3
+  }
 }
