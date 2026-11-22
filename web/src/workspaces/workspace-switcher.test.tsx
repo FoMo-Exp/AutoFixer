@@ -100,7 +100,7 @@ const storedKey = "fp-workspace:usr_1";
 
 async function renderEnterpriseApp(): Promise<void> {
   render(<App />);
-  await userEvent.click(await screen.findByRole("button", { name: /企业登录/ }));
+  await userEvent.click(await screen.findByRole("button", { name: /Continue with organization/ }));
 }
 
 beforeEach(() => {

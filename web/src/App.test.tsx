@@ -75,7 +75,7 @@ afterEach(() => {
 
 async function renderPersonalApp(): Promise<void> {
   render(<App />);
-  await userEvent.click(await screen.findByRole("button", { name: /个人登录/ }));
+  await userEvent.click(await screen.findByRole("button", { name: /Use a local workspace/ }));
 }
 
 async function select(summary: string) {

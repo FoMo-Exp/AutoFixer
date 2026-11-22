@@ -108,9 +108,9 @@ describe("auth gate", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "让信号穿过双闸门" })).toBeTruthy();
-    await userEvent.click(screen.getByRole("button", { name: /企业登录/ }));
-    expect(await screen.findByRole("heading", { name: "Sign in to ForgePilot" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /Continue with organization/ }));
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
     expect(ForgePilotClient.prototype.listTasks).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole("button", { name: /Continue with GitHub/ }));
@@ -122,9 +122,9 @@ describe("auth gate", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "让信号穿过双闸门" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
     expect(ForgePilotClient.prototype.listTasks).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole("button", { name: /企业登录/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Continue with organization/ }));
     expect(await screen.findByText("Ada Lovelace")).toBeTruthy();
     expect(await screen.findByRole("heading", { name: "Alpha" })).toBeTruthy();
     expect(IdentityClient.prototype.listAllWorkspaces).toHaveBeenCalled();
@@ -135,7 +135,9 @@ describe("auth gate", () => {
   it("turns a revoked desktop session into the recoverable expired gate", async () => {
     const handle = installDesktopAuth({ status: "signed_in", providers, session });
     render(<App />);
-    await userEvent.click(await screen.findByRole("button", { name: /企业登录/ }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Continue with organization/ }),
+    );
     await screen.findByText("Ada Lovelace");
 
     handle.emit({
@@ -145,7 +147,7 @@ describe("auth gate", () => {
       errorCode: "UNAUTHENTICATED",
     });
 
-    expect(await screen.findByRole("heading", { name: "Sign in again to continue" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Continue with GitHub/ })).toBeTruthy();
   });
 
@@ -175,8 +177,10 @@ describe("auth gate", () => {
 
     render(<App />);
 
-    await userEvent.click(await screen.findByRole("button", { name: /企业登录/ }));
-    expect(await screen.findByRole("heading", { name: "Sign in again to continue" })).toBeTruthy();
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Continue with organization/ }),
+    );
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
     await waitFor(() => expect(handle.bridge.expire).toHaveBeenCalled());
   });
 
@@ -189,7 +193,9 @@ describe("auth gate", () => {
 
     render(<App />);
 
-    await userEvent.click(await screen.findByRole("button", { name: /企业登录/ }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Continue with organization/ }),
+    );
     expect(await screen.findByRole("heading", { name: "Join a workspace" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
@@ -199,8 +205,8 @@ describe("auth gate", () => {
     const handle = installDesktopAuth({ status: "signed_out", providers });
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "让信号穿过双闸门" })).toBeTruthy();
-    await userEvent.click(screen.getByRole("button", { name: /个人登录/ }));
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /Use a local workspace/ }));
 
     await waitFor(() => expect(handle.bridge.setMode).toHaveBeenCalledWith("personal"));
     await waitFor(() => expect(ForgePilotClient.prototype.listTasks).toHaveBeenCalled());

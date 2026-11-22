@@ -203,14 +203,15 @@ export function createDesktopAuth(options: DesktopAuthOptions): DesktopAuth {
     return viewOf(session);
   }
 
-  async function initialize(): Promise<DesktopAuthState> {
-    if (initialized) return cloneState(state);
+  async function initialize(preserveCurrent = false): Promise<DesktopAuthState> {
+    if (initialized && !preserveCurrent) return cloneState(state);
     if (initializedRequest) return initializedRequest;
     initializedRequest = (async () => {
       if (!base) {
         return publish({ status: "legacy", providers: [] });
       }
-      publish({ status: "checking", providers: [] });
+      const previousProviders = state.providers;
+      if (!preserveCurrent) publish({ status: "checking", providers: [] });
       try {
         const providers = await authRequest<{ items: LoginProvider[] }>("/api/v1/auth/providers");
         initialized = true;
@@ -223,7 +224,7 @@ export function createDesktopAuth(options: DesktopAuthOptions): DesktopAuth {
         const message = error instanceof Error ? error.message : "Sign-in is unavailable.";
         return publish({
           status: "error",
-          providers: [],
+          providers: preserveCurrent ? previousProviders : [],
           message,
           ...(error instanceof AuthRequestError ? { errorCode: error.code } : {}),
         });
@@ -433,7 +434,7 @@ export function createDesktopAuth(options: DesktopAuthOptions): DesktopAuth {
     }
     initialized = false;
     initializedRequest = undefined;
-    return initialize();
+    return initialize(true);
   }
 
   return {
