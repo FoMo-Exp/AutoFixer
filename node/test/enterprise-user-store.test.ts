@@ -148,6 +148,8 @@ describe("enterprise user migration", () => {
   });
 });
 
+const userActor = (user_id: string) => ({ kind: "user" as const, user_id });
+
 describe("enterprise user repository", () => {
   function fresh() {
     const db = openAt(19);
@@ -170,17 +172,12 @@ describe("enterprise user repository", () => {
       login: "admin",
       actor_id: "usr_bootstrap",
     });
-    identity.enterpriseUsers.ensureActive(enterprise.id, admin.id, "usr_bootstrap", {
+    const bootstrapped = identity.enterpriseUsers.bootstrapAdmin({
+      enterprise_id: enterprise.id,
+      user_id: admin.id,
       provider_instance_id: provider.id,
-      subject: "9001",
     });
-    identity.enterpriseUsers.setRole(
-      enterprise.id,
-      identity.enterpriseUsers.getByUser(enterprise.id, admin.id)?.id ?? "",
-      "admin",
-      1,
-      "usr_bootstrap",
-    );
+    expect(bootstrapped.status).toBe("granted");
     return {
       db,
       repos,
@@ -197,7 +194,7 @@ describe("enterprise user repository", () => {
       enterprise_id: w.enterpriseId,
       provider_instance_id: w.providerInstanceId,
       subject: "4242",
-      actor_id: w.adminId,
+      actor: userActor(w.adminId),
     });
     expect(first.created).toBe(true);
     expect(first.user.status).toBe("pending_claim");
@@ -207,7 +204,7 @@ describe("enterprise user repository", () => {
       enterprise_id: w.enterpriseId,
       provider_instance_id: w.providerInstanceId,
       subject: "4242",
-      actor_id: w.adminId,
+      actor: userActor(w.adminId),
     });
     expect(second.created).toBe(false);
     expect(second.user.id).toBe(first.user.id);
@@ -244,14 +241,14 @@ describe("enterprise user repository", () => {
       enterprise_id: w.enterpriseId,
       provider_instance_id: w.providerInstanceId,
       subject: "4243",
-      actor_id: w.adminId,
+      actor: userActor(w.adminId),
     });
     const suspended = w.identity.enterpriseUsers.setStatus(
       w.enterpriseId,
       added.user.id,
       "suspended",
       added.user.version,
-      w.adminId,
+      userActor(w.adminId),
     );
     expect(suspended.status).toBe("ok");
 
@@ -271,7 +268,7 @@ describe("enterprise user repository", () => {
       adminRow?.id ?? "",
       "suspended",
       adminRow?.version ?? 0,
-      w.adminId,
+      userActor(w.adminId),
     );
     expect(suspended.status).toBe("last_admin");
     const demoted = w.identity.enterpriseUsers.setRole(
@@ -279,20 +276,24 @@ describe("enterprise user repository", () => {
       adminRow?.id ?? "",
       "member",
       adminRow?.version ?? 0,
-      w.adminId,
+      userActor(w.adminId),
     );
     expect(demoted.status).toBe("last_admin");
 
     // With a second active administrator, the same transitions are allowed.
     const second = w.identity.users.create({ display_name: "Second", actor_id: w.adminId });
-    const ensured = w.identity.enterpriseUsers.ensureActive(w.enterpriseId, second.id, w.adminId);
+    const ensured = w.identity.enterpriseUsers.ensureActive(
+      w.enterpriseId,
+      second.id,
+      userActor(w.adminId),
+    );
     expect(
       w.identity.enterpriseUsers.setRole(
         w.enterpriseId,
         ensured.user.id,
         "admin",
         ensured.user.version,
-        w.adminId,
+        userActor(w.adminId),
       ).status,
     ).toBe("ok");
     expect(
@@ -301,16 +302,105 @@ describe("enterprise user repository", () => {
         adminRow?.id ?? "",
         "suspended",
         adminRow?.version ?? 0,
-        w.adminId,
+        userActor(w.adminId),
       ).status,
     ).toBe("ok");
     w.db.close();
   });
 
+  test("deployment bootstrap writes deployment attribution and rolls back on audit failure", () => {
+    const db = openAt(19);
+    const identity = createIdentityRepositories(db);
+    const { enterprise, admin_scope } = seedEnterprise(db, {
+      enterprise_name: "Bootstrap Enterprise",
+      enterprise_slug: "bootstrap-ent",
+      admin_user_id: "usr_bootstrap",
+    });
+    const provider = seedProviderInstance(db, admin_scope, {
+      provider_type: "github",
+      origin_url: "https://github.com",
+    });
+    const user = identity.users.create({ display_name: "First Admin", actor_id: "usr_bootstrap" });
+    identity.identities.create({
+      user_id: user.id,
+      provider_instance_id: provider.id,
+      subject: "8001",
+      login: "first-admin",
+      actor_id: "usr_bootstrap",
+    });
+
+    // The required `admin.bootstrap` audit is in the same transaction: an
+    // unwritable audit leaves neither a role nor a membership behind.
+    db.exec("ALTER TABLE auth_audit RENAME TO auth_audit_unavailable");
+    expect(() =>
+      identity.enterpriseUsers.bootstrapAdmin({
+        enterprise_id: enterprise.id,
+        user_id: user.id,
+        provider_instance_id: provider.id,
+      }),
+    ).toThrow();
+    db.exec("ALTER TABLE auth_audit_unavailable RENAME TO auth_audit");
+    expect(identity.enterpriseRoles.listByEnterprise(enterprise.id)).toHaveLength(0);
+    expect(identity.enterpriseUsers.getByUser(enterprise.id, user.id)).toBeUndefined();
+
+    expect(
+      identity.enterpriseUsers.bootstrapAdmin({
+        enterprise_id: enterprise.id,
+        user_id: user.id,
+        provider_instance_id: provider.id,
+      }).status,
+    ).toBe("granted");
+    expect(
+      identity.enterpriseUsers.bootstrapAdmin({
+        enterprise_id: enterprise.id,
+        user_id: user.id,
+        provider_instance_id: provider.id,
+      }).status,
+    ).toBe("already_granted");
+    const bootstrapAudit = identity.authAudit.list({
+      enterprise_id: enterprise.id,
+      event: "admin.bootstrap",
+    });
+    expect(bootstrapAudit).toHaveLength(1);
+    expect(bootstrapAudit[0]).toMatchObject({
+      actor_kind: "deployment",
+      actor_user_id: null,
+      subject_user_id: user.id,
+    });
+
+    // Deployment-initiated membership changes are attributed the same way.
+    const member = identity.users.create({ display_name: "Member", actor_id: "usr_bootstrap" });
+    const ensuredMember = identity.enterpriseUsers.ensureActive(enterprise.id, member.id, {
+      kind: "deployment",
+    });
+    expect(
+      identity.enterpriseUsers.setStatus(
+        enterprise.id,
+        ensuredMember.user.id,
+        "suspended",
+        ensuredMember.user.version,
+        { kind: "deployment" },
+      ).status,
+    ).toBe("ok");
+    const suspensionAudit = identity.authAudit.list({
+      enterprise_id: enterprise.id,
+      event: "enterprise_user.suspended",
+    });
+    expect(suspensionAudit[0]).toMatchObject({
+      actor_kind: "deployment",
+      actor_user_id: null,
+    });
+    db.close();
+  });
+
   test("a required audit write failure rolls the status change back", () => {
     const w = fresh();
     const member = w.identity.users.create({ display_name: "Member", actor_id: w.adminId });
-    const ensured = w.identity.enterpriseUsers.ensureActive(w.enterpriseId, member.id, w.adminId);
+    const ensured = w.identity.enterpriseUsers.ensureActive(
+      w.enterpriseId,
+      member.id,
+      userActor(w.adminId),
+    );
     const before = w.identity.enterpriseUsers.getByUser(w.enterpriseId, member.id);
     w.db.exec("ALTER TABLE auth_audit RENAME TO auth_audit_unavailable");
     expect(() =>
@@ -319,7 +409,7 @@ describe("enterprise user repository", () => {
         ensured.user.id,
         "suspended",
         ensured.user.version,
-        w.adminId,
+        userActor(w.adminId),
       ),
     ).toThrow();
     w.db.exec("ALTER TABLE auth_audit_unavailable RENAME TO auth_audit");

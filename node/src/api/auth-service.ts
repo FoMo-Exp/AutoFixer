@@ -1,12 +1,14 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 
 import { hashToken, secretEquals } from "../control-plane/identity-repositories.js";
+import { SYSTEM_ACTOR } from "../control-plane/db.js";
 import type {
   AppUser,
   AuthAuditRecord,
   AuthSession,
   CreateSessionInput,
   EnterpriseUser,
+  EnterpriseUserActor,
   EnterpriseUserStatus,
   IdentityRepositories,
   LoginProvider,
@@ -62,8 +64,8 @@ import {
  *   SSE subscriptions close immediately.
  */
 
-/** Recorded as the actor for system provisioning rows. */
-export const SYSTEM_ACTOR = "usr_auth_system";
+/** Re-exported for the administrator surfaces that share the deployment actor. */
+export { SYSTEM_ACTOR };
 
 export interface AuthServiceConfig {
   /** Enterprise and workspace the task API surface is scoped to. */
@@ -892,11 +894,14 @@ export class AuthService {
       });
       throw new ApiError(404, "NOT_FOUND", "provider identity has not signed in yet");
     }
-    const existing = this.#identity.enterpriseRoles.listByEnterprise(enterprise.id);
-    if (existing.length > 0) {
-      if (existing[0]?.user_id === identity.user_id) {
-        return { enterprise_id: enterprise.id, user_id: identity.user_id, role: "admin" };
-      }
+    // Membership, administrator grant, and the `admin.bootstrap` audit are
+    // one transaction: a failed required audit leaves no administrator.
+    const outcome = this.#identity.enterpriseUsers.bootstrapAdmin({
+      enterprise_id: enterprise.id,
+      user_id: identity.user_id,
+      provider_instance_id: provider.id,
+    });
+    if (outcome.status === "conflict") {
       this.#audit({
         event: "admin.bootstrap",
         enterprise_id: enterprise.id,
@@ -906,12 +911,7 @@ export class AuthService {
       });
       throw new ApiError(409, "BOOTSTRAP_CONFLICT", "an enterprise administrator already exists");
     }
-    const ensured = this.#identity.enterpriseUsers.ensureActive(
-      enterprise.id,
-      identity.user_id,
-      SYSTEM_ACTOR,
-    );
-    if (ensured.suspended) {
+    if (outcome.status === "suspended") {
       this.#audit({
         event: "admin.bootstrap",
         enterprise_id: enterprise.id,
@@ -925,20 +925,6 @@ export class AuthService {
         "the enterprise user is suspended; deployment bootstrap does not lift it",
       );
     }
-    this.#identity.enterpriseRoles.grant({
-      enterprise_id: enterprise.id,
-      user_id: identity.user_id,
-      role: "admin",
-      actor_id: SYSTEM_ACTOR,
-    });
-    this.#audit({
-      event: "admin.bootstrap",
-      enterprise_id: enterprise.id,
-      actor_kind: "deployment",
-      subject_user_id: identity.user_id,
-      provider_instance_id: provider.id,
-      details: { result: "granted" },
-    });
     return { enterprise_id: enterprise.id, user_id: identity.user_id, role: "admin" };
   }
 
@@ -1038,7 +1024,7 @@ export class AuthService {
     const ensured = this.#identity.enterpriseUsers.ensureActive(
       input.enterprise_id,
       input.user_id,
-      actorIdOf(actor),
+      enterpriseActorOf(actor),
     );
     if (ensured.suspended) {
       throw new ApiError(
@@ -1177,7 +1163,7 @@ export class AuthService {
       enterprise_id: input.enterprise_id,
       provider_instance_id: provider.id,
       subject,
-      actor_id: actorIdOf(actor),
+      actor: enterpriseActorOf(actor),
     });
     return {
       enterprise_user: this.#enterpriseUserView(result.user),
@@ -1201,7 +1187,7 @@ export class AuthService {
       input.id,
       input.status,
       input.version,
-      actorIdOf(actor),
+      enterpriseActorOf(actor),
     );
     const row = this.#enterpriseUserUpdateResult(result, input.id);
     if (row.user_id !== null) {
@@ -1231,7 +1217,7 @@ export class AuthService {
       input.id,
       input.role,
       input.version,
-      actorIdOf(actor),
+      enterpriseActorOf(actor),
     );
     const row = this.#enterpriseUserUpdateResult(result, input.id);
     return this.#enterpriseUserView(row);
@@ -1446,6 +1432,12 @@ export class AuthService {
 
 function actorIdOf(actor: AdminActor): UserId {
   return actor.kind === "deployment" ? SYSTEM_ACTOR : actor.user_id;
+}
+
+function enterpriseActorOf(actor: AdminActor): EnterpriseUserActor {
+  return actor.kind === "deployment"
+    ? { kind: "deployment" }
+    : { kind: "user", user_id: actor.user_id };
 }
 
 /** Only same-deployment relative paths; never protocol-relative or absolute. */

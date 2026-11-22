@@ -1543,6 +1543,9 @@ const MIGRATIONS: Migration[] = [
 
 export type ControlPlaneDb = DatabaseSync;
 
+/** Recorded as the actor for system/deployment provisioning rows. */
+export const SYSTEM_ACTOR = "usr_auth_system";
+
 export interface OpenOptions {
   /**
    * Filesystem path for a durable database, or `":memory:"` for tests.

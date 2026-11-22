@@ -9,12 +9,15 @@
  */
 
 import type { ControlPlaneDb } from "./db.js";
-import { newId, nowIso, runInTransaction } from "./db.js";
+import { SYSTEM_ACTOR, newId, nowIso, runInTransaction } from "./db.js";
 import { NotFoundError } from "./errors.js";
 import type {
   AddEnterpriseUserInput,
   AddEnterpriseUserResult,
+  BootstrapAdminInput,
+  BootstrapAdminOutcome,
   EnterpriseUser,
+  EnterpriseUserActor,
   EnterpriseUserIdentity,
   EnterpriseUserStatus,
   EnterpriseUserUpdateResult,
@@ -59,7 +62,7 @@ export interface EnterpriseUserRepository {
     id: string,
     status: "active" | "suspended",
     expectedVersion: number,
-    actorId: UserId,
+    actor: EnterpriseUserActor,
   ): EnterpriseUserUpdateResult;
   /** Grant or revoke enterprise administration for a claimed member. */
   setRole(
@@ -67,7 +70,7 @@ export interface EnterpriseUserRepository {
     id: string,
     role: "admin" | "member",
     expectedVersion: number,
-    actorId: UserId,
+    actor: EnterpriseUserActor,
   ): EnterpriseUserUpdateResult;
   /**
    * Explicit administrator action (workspace grant or invitation redemption)
@@ -77,9 +80,15 @@ export interface EnterpriseUserRepository {
   ensureActive(
     enterpriseId: EnterpriseId,
     userId: UserId,
-    actorId: UserId,
+    actor: EnterpriseUserActor,
     providerBinding?: { provider_instance_id: ProviderInstanceId; subject: string },
   ): EnsureEnterpriseUserResult;
+  /**
+   * Deployment-owned first-administrator bootstrap. The membership, the
+   * administrator grant, and the `admin.bootstrap` audit commit together or
+   * not at all; an audit failure leaves no administrator behind.
+   */
+  bootstrapAdmin(input: BootstrapAdminInput): BootstrapAdminOutcome;
   /** Active memberships with enterprise administration, for the last-admin guard. */
   countActiveAdmins(enterpriseId: EnterpriseId): number;
 }
@@ -195,6 +204,7 @@ class SqliteEnterpriseUserRepository implements EnterpriseUserRepository {
 
   add(input: AddEnterpriseUserInput): AddEnterpriseUserResult {
     return runInTransaction(this.db, () => {
+      const actorId = actorColumnId(input.actor);
       const existing = this.#findByIdentity(
         input.enterprise_id,
         input.provider_instance_id,
@@ -230,8 +240,8 @@ class SqliteEnterpriseUserRepository implements EnterpriseUserRepository {
             identity !== undefined ? at : null,
             at,
             at,
-            input.actor_id,
-            input.actor_id,
+            actorId,
+            actorId,
           );
         membership = this.getById(input.enterprise_id, id);
         created = true;
@@ -253,13 +263,14 @@ class SqliteEnterpriseUserRepository implements EnterpriseUserRepository {
           input.provider_instance_id,
           input.subject,
           at,
-          input.actor_id,
+          actorId,
         );
       if (created) {
         this.#audit({
           event: "enterprise_user.added",
           enterprise_id: input.enterprise_id,
-          actor_user_id: input.actor_id,
+          actor_kind: input.actor.kind,
+          ...(input.actor.kind === "user" ? { actor_user_id: input.actor.user_id } : {}),
           subject_user_id: membership.user_id ?? undefined,
           provider_instance_id: input.provider_instance_id,
           details: { enterprise_user_id: membership.id, status: membership.status },
@@ -303,6 +314,7 @@ class SqliteEnterpriseUserRepository implements EnterpriseUserRepository {
           this.#audit({
             event: "enterprise_user.claimed",
             enterprise_id: row.enterprise_id,
+            actor_kind: "user",
             actor_user_id: userId,
             subject_user_id: userId,
             provider_instance_id: providerInstanceId,
@@ -329,6 +341,7 @@ class SqliteEnterpriseUserRepository implements EnterpriseUserRepository {
         this.#audit({
           event: "enterprise_user.claimed",
           enterprise_id: row.enterprise_id,
+          actor_kind: "user",
           actor_user_id: userId,
           subject_user_id: userId,
           provider_instance_id: providerInstanceId,
@@ -345,9 +358,10 @@ class SqliteEnterpriseUserRepository implements EnterpriseUserRepository {
     id: string,
     status: "active" | "suspended",
     expectedVersion: number,
-    actorId: UserId,
+    actor: EnterpriseUserActor,
   ): EnterpriseUserUpdateResult {
     return runInTransaction(this.db, () => {
+      const actorId = actorColumnId(actor);
       const row = this.getById(enterpriseId, id);
       if (row === undefined) {
         throw new NotFoundError("enterprise user", id);
@@ -383,7 +397,8 @@ class SqliteEnterpriseUserRepository implements EnterpriseUserRepository {
       this.#audit({
         event: status === "suspended" ? "enterprise_user.suspended" : "enterprise_user.restored",
         enterprise_id: enterpriseId,
-        actor_user_id: actorId,
+        actor_kind: actor.kind,
+        ...(actor.kind === "user" ? { actor_user_id: actor.user_id } : {}),
         subject_user_id: row.user_id ?? undefined,
         details: { enterprise_user_id: id, status: nextStatus },
       });
@@ -396,9 +411,10 @@ class SqliteEnterpriseUserRepository implements EnterpriseUserRepository {
     id: string,
     role: "admin" | "member",
     expectedVersion: number,
-    actorId: UserId,
+    actor: EnterpriseUserActor,
   ): EnterpriseUserUpdateResult {
     return runInTransaction(this.db, () => {
+      const actorId = actorColumnId(actor);
       const row = this.getById(enterpriseId, id);
       if (row === undefined) {
         throw new NotFoundError("enterprise user", id);
@@ -450,7 +466,8 @@ class SqliteEnterpriseUserRepository implements EnterpriseUserRepository {
       this.#audit({
         event: "enterprise_user.role_changed",
         enterprise_id: enterpriseId,
-        actor_user_id: actorId,
+        actor_kind: actor.kind,
+        ...(actor.kind === "user" ? { actor_user_id: actor.user_id } : {}),
         subject_user_id: row.user_id,
         details: { enterprise_user_id: id, role },
       });
@@ -461,61 +478,120 @@ class SqliteEnterpriseUserRepository implements EnterpriseUserRepository {
   ensureActive(
     enterpriseId: EnterpriseId,
     userId: UserId,
-    actorId: UserId,
+    actor: EnterpriseUserActor,
     providerBinding?: { provider_instance_id: ProviderInstanceId; subject: string },
   ): EnsureEnterpriseUserResult {
+    return runInTransaction(this.db, () =>
+      this.#ensureMembershipRow(enterpriseId, userId, actor, providerBinding),
+    );
+  }
+
+  bootstrapAdmin(input: BootstrapAdminInput): BootstrapAdminOutcome {
     return runInTransaction(this.db, () => {
-      const existing = this.getByUser(enterpriseId, userId);
-      if (existing !== undefined) {
-        if (existing.status === "suspended") {
-          return { user: existing, created: false, suspended: true };
+      const existing = this.db
+        .prepare(
+          `SELECT user_id FROM enterprise_role
+           WHERE enterprise_id = ? ORDER BY created_at, id`,
+        )
+        .all(input.enterprise_id) as unknown as Array<{ user_id: UserId }>;
+      if (existing.length > 0) {
+        if (existing[0]?.user_id !== input.user_id) {
+          return { status: "conflict" };
         }
-        return { user: existing, created: false, suspended: false };
+        const ensured = this.#ensureMembershipRow(input.enterprise_id, input.user_id, {
+          kind: "deployment",
+        });
+        if (ensured.suspended) {
+          return { status: "suspended" };
+        }
+        return { status: "already_granted" };
+      }
+      const ensured = this.#ensureMembershipRow(input.enterprise_id, input.user_id, {
+        kind: "deployment",
+      });
+      if (ensured.suspended) {
+        return { status: "suspended" };
       }
       const at = nowIso();
-      const id = newId("eum");
       this.db
         .prepare(
-          `INSERT INTO enterprise_user
-             (id, enterprise_id, user_id, status, version, claimed_at, suspended_at,
-              created_at, updated_at, created_by, updated_by)
-           VALUES (?, ?, ?, 'active', 1, ?, NULL, ?, ?, ?, ?)`,
+          `INSERT INTO enterprise_role
+             (id, enterprise_id, user_id, role, created_at, updated_at, created_by, updated_by)
+           VALUES (?, ?, ?, 'admin', ?, ?, ?, ?)`,
         )
-        .run(id, enterpriseId, userId, at, at, at, actorId, actorId);
-      if (providerBinding !== undefined) {
-        this.db
-          .prepare(
-            `INSERT OR IGNORE INTO enterprise_user_identity
-               (id, enterprise_id, enterprise_user_id, provider_instance_id, subject,
-                created_at, created_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            newId("eui"),
-            enterpriseId,
-            id,
-            providerBinding.provider_instance_id,
-            providerBinding.subject,
-            at,
-            actorId,
-          );
-      }
-      const created = this.getById(enterpriseId, id);
-      if (created === undefined) {
-        throw new NotFoundError("enterprise user", id);
-      }
+        .run(newId("erl"), input.enterprise_id, input.user_id, at, at, SYSTEM_ACTOR, SYSTEM_ACTOR);
       this.#audit({
-        event: "enterprise_user.added",
-        enterprise_id: enterpriseId,
-        actor_user_id: actorId,
-        subject_user_id: userId,
-        ...(providerBinding !== undefined
-          ? { provider_instance_id: providerBinding.provider_instance_id }
+        event: "admin.bootstrap",
+        enterprise_id: input.enterprise_id,
+        actor_kind: "deployment",
+        subject_user_id: input.user_id,
+        ...(input.provider_instance_id !== undefined
+          ? { provider_instance_id: input.provider_instance_id }
           : {}),
-        details: { enterprise_user_id: id, status: "active" },
+        details: { result: "granted" },
       });
-      return { user: created, created: true, suspended: false };
+      return { status: "granted" };
     });
+  }
+
+  #ensureMembershipRow(
+    enterpriseId: EnterpriseId,
+    userId: UserId,
+    actor: EnterpriseUserActor,
+    providerBinding?: { provider_instance_id: ProviderInstanceId; subject: string },
+  ): EnsureEnterpriseUserResult {
+    const existing = this.getByUser(enterpriseId, userId);
+    if (existing !== undefined) {
+      if (existing.status === "suspended") {
+        return { user: existing, created: false, suspended: true };
+      }
+      return { user: existing, created: false, suspended: false };
+    }
+    const at = nowIso();
+    const actorId = actorColumnId(actor);
+    const id = newId("eum");
+    this.db
+      .prepare(
+        `INSERT INTO enterprise_user
+           (id, enterprise_id, user_id, status, version, claimed_at, suspended_at,
+            created_at, updated_at, created_by, updated_by)
+         VALUES (?, ?, ?, 'active', 1, ?, NULL, ?, ?, ?, ?)`,
+      )
+      .run(id, enterpriseId, userId, at, at, at, actorId, actorId);
+    if (providerBinding !== undefined) {
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO enterprise_user_identity
+             (id, enterprise_id, enterprise_user_id, provider_instance_id, subject,
+              created_at, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          newId("eui"),
+          enterpriseId,
+          id,
+          providerBinding.provider_instance_id,
+          providerBinding.subject,
+          at,
+          actorId,
+        );
+    }
+    const created = this.getById(enterpriseId, id);
+    if (created === undefined) {
+      throw new NotFoundError("enterprise user", id);
+    }
+    this.#audit({
+      event: "enterprise_user.added",
+      enterprise_id: enterpriseId,
+      actor_kind: actor.kind,
+      ...(actor.kind === "user" ? { actor_user_id: actor.user_id } : {}),
+      subject_user_id: userId,
+      ...(providerBinding !== undefined
+        ? { provider_instance_id: providerBinding.provider_instance_id }
+        : {}),
+      details: { enterprise_user_id: id, status: "active" },
+    });
+    return { user: created, created: true, suspended: false };
   }
 
   countActiveAdmins(enterpriseId: EnterpriseId): number {
@@ -571,7 +647,8 @@ class SqliteEnterpriseUserRepository implements EnterpriseUserRepository {
   #audit(input: {
     event: string;
     enterprise_id: EnterpriseId;
-    actor_user_id: UserId;
+    actor_kind: "user" | "deployment";
+    actor_user_id?: UserId;
     subject_user_id?: UserId;
     provider_instance_id?: ProviderInstanceId;
     details: Record<string, unknown>;
@@ -581,19 +658,24 @@ class SqliteEnterpriseUserRepository implements EnterpriseUserRepository {
         `INSERT INTO auth_audit
            (id, at, event, enterprise_id, actor_kind, actor_user_id, subject_user_id,
             provider_instance_id, details)
-         VALUES (?, ?, ?, ?, 'user', ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         newId("aud"),
         nowIso(),
         input.event,
         input.enterprise_id,
-        input.actor_user_id,
+        input.actor_kind,
+        input.actor_user_id ?? null,
         input.subject_user_id ?? null,
         input.provider_instance_id ?? null,
         JSON.stringify(input.details),
       );
   }
+}
+
+function actorColumnId(actor: EnterpriseUserActor): UserId {
+  return actor.kind === "user" ? actor.user_id : SYSTEM_ACTOR;
 }
 
 export function createEnterpriseUserRepository(db: ControlPlaneDb): EnterpriseUserRepository {

@@ -421,7 +421,10 @@ describe("enterprise suspension boundary", () => {
     // their A suspension is a separate row.
     const crossAdded = await addUser(target, admin, "6102");
     const crossUser = await loginAs(target, { id: 6102, login: "cross" });
-    identity.enterpriseUsers.ensureActive(other.id, crossUser.userId, "usr_seed");
+    identity.enterpriseUsers.ensureActive(other.id, crossUser.userId, {
+      kind: "user",
+      user_id: "usr_seed",
+    });
     repos.memberships.create(
       { enterprise_id: other.id, workspace_id: otherWorkspace.id, actor_id: "usr_seed" },
       { user_id: crossUser.userId, role: "member" },
@@ -557,6 +560,48 @@ describe("enterprise administration invariants", () => {
       { Cookie: `fp_session=${admin.session}` },
     );
     expect(wrongEnterprise.status).toBe(403);
+  });
+
+  test("deployment-operator changes are audited as deployment, never as a user", async () => {
+    const target = await app();
+    const admin = await loginAdmin(target);
+    void admin;
+    const deploymentHeaders = {
+      "Content-Type": "application/json",
+      "X-Bootstrap-Token": BOOTSTRAP_TOKEN,
+    };
+    const added = await postJson<{ enterprise_user: EnterpriseUserBody; created: boolean }>(
+      usersUrl(target),
+      { provider_instance_id: target.providerInstanceId, subject: "7401" },
+      deploymentHeaders,
+    );
+    expect(added.status).toBe(201);
+    const suspended = await postJson<EnterpriseUserBody>(
+      usersUrl(target, `/${added.body.enterprise_user.id}/suspend`),
+      { version: added.body.enterprise_user.version },
+      deploymentHeaders,
+    );
+    expect(suspended.status).toBe(200);
+
+    const audits = await getJson<{
+      items: Array<{
+        event: string;
+        actor_kind: string;
+        actor_user_id: string | null;
+        subject_user_id: string | null;
+      }>;
+    }>(`${target.base}/api/v1/admin/enterprises/${target.enterpriseId}/auth-audit?limit=200`, {
+      "X-Bootstrap-Token": BOOTSTRAP_TOKEN,
+    });
+    expect(audits.status).toBe(200);
+    const bootstrap = audits.body.items.find((row) => row.event === "admin.bootstrap");
+    expect(bootstrap).toMatchObject({ actor_kind: "deployment", actor_user_id: null });
+    for (const event of ["enterprise_user.added", "enterprise_user.suspended"]) {
+      const row = audits.body.items.find(
+        (candidate) => candidate.event === event && candidate.subject_user_id === null,
+      );
+      expect(row, event).toMatchObject({ actor_kind: "deployment", actor_user_id: null });
+    }
   });
 
   test("global account suspension is deployment-only; enterprise suspension is not", async () => {

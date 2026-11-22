@@ -343,7 +343,7 @@ export async function webLogin(app: AuthApp, returnTo?: string): Promise<LoggedI
   createIdentityRepositories(app.orchestrator.controlPlane as never).enterpriseUsers.ensureActive(
     app.enterpriseId,
     info.body.user.id,
-    "usr_seed",
+    { kind: "user", user_id: "usr_seed" },
     {
       provider_instance_id: app.providerInstanceId,
       subject: String(app.provider.profile.id),

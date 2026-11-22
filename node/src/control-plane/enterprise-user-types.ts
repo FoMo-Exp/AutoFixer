@@ -40,12 +40,31 @@ export interface EnterpriseUserIdentity {
   created_by: UserId;
 }
 
+/**
+ * Who performs an enterprise-user change. Deployment bootstrap/operator
+ * actions are recorded as `deployment` with no user id — never as a user.
+ */
+export type EnterpriseUserActor = { kind: "user"; user_id: UserId } | { kind: "deployment" };
+
 export interface AddEnterpriseUserInput {
   enterprise_id: EnterpriseId;
   provider_instance_id: ProviderInstanceId;
   subject: string;
-  actor_id: UserId;
+  actor: EnterpriseUserActor;
 }
+
+export interface BootstrapAdminInput {
+  enterprise_id: EnterpriseId;
+  user_id: UserId;
+  /** Audited as the approved provider instance of the named identity. */
+  provider_instance_id?: ProviderInstanceId;
+}
+
+export type BootstrapAdminOutcome =
+  | { status: "granted" }
+  | { status: "already_granted" }
+  | { status: "conflict" }
+  | { status: "suspended" };
 
 export interface AddEnterpriseUserResult {
   user: EnterpriseUser;

@@ -7,7 +7,7 @@
  */
 
 export type { ControlPlaneDb, OpenOptions } from "./db.js";
-export { migrate, newId, nowIso, openControlPlaneDb } from "./db.js";
+export { SYSTEM_ACTOR, migrate, newId, nowIso, openControlPlaneDb } from "./db.js";
 
 export {
   ConflictError,
@@ -80,9 +80,12 @@ export type {
   AddEnterpriseUserResult,
   EnterpriseUser,
   EnterpriseUserIdentity,
+  EnterpriseUserActor,
   EnterpriseUserStatus,
   EnterpriseUserUpdateResult,
   EnsureEnterpriseUserResult,
+  BootstrapAdminInput,
+  BootstrapAdminOutcome,
 } from "./enterprise-user-types.js";
 
 export type {

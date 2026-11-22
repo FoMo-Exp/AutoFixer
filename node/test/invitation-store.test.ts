@@ -263,16 +263,21 @@ describe("atomic redemption", () => {
     const w = world();
     const invitee = w.makeUser("2102");
     w.verifyAccess("2102");
-    const ensured = w.identity.enterpriseUsers.ensureActive(w.scope.enterprise_id, invitee, ACTOR, {
-      provider_instance_id: w.providerInstanceId,
-      subject: "2102",
-    });
+    const ensured = w.identity.enterpriseUsers.ensureActive(
+      w.scope.enterprise_id,
+      invitee,
+      { kind: "user", user_id: ACTOR },
+      {
+        provider_instance_id: w.providerInstanceId,
+        subject: "2102",
+      },
+    );
     const suspended = w.identity.enterpriseUsers.setStatus(
       w.scope.enterprise_id,
       ensured.user.id,
       "suspended",
       ensured.user.version,
-      ACTOR,
+      { kind: "user", user_id: ACTOR },
     );
     expect(suspended.status).toBe("ok");
 
