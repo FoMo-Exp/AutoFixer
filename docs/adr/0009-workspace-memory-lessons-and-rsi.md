@@ -5,6 +5,10 @@ implemented.
 
 **Date:** 2026-11-03
 
+**Scope update:** ADR-0011 proposes a workspace containing multiple
+repositories. Its authorization intersection applies to workspace memory;
+the single-repository description below records the original context.
+
 ## Context
 
 AutoFixer is a team product. A workspace is one repository shared by selected

@@ -5,6 +5,11 @@ review. No enterprise functionality is claimed as implemented.
 
 **Date:** 2026-11-03
 
+**Scope update:** ADR-0011 proposes replacing the one-repository workspace
+assumption and defines the all-repository access intersection. Until that
+decision and its implementation are reviewed, the single-repository text below
+describes the original design, not the newly requested product model.
+
 ## Context
 
 The requester selected an enterprise shared service, initially deployed

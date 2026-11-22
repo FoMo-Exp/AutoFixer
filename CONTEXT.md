@@ -10,9 +10,9 @@ repositories, operational data, and remediation activity.
 _Avoid_: repository owner, workspace
 
 **Workspace**:
-An enterprise's collaboration space for one repository, with selected members
-and teams. A developer may belong to multiple workspaces.
-_Avoid_: local working directory, multi-repository project
+An enterprise's collaboration space for one or more repositories, with selected
+members and teams. A developer may belong to multiple workspaces.
+_Avoid_: local working directory, single repository
 
 **Team**:
 A workspace group with an active human leader and a declared area of
