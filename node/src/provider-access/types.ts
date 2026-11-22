@@ -22,6 +22,11 @@ import type {
   ProviderRoleSourceKind,
   ServiceIntegrationId,
 } from "../control-plane/provider-access-types.js";
+import type {
+  CapabilityBlockReason,
+  CapabilityCeilingState,
+  RepositoryCapability,
+} from "../control-plane/member-capability-types.js";
 import type { ProviderType, WorkspaceId, WorkspaceRole } from "../control-plane/types.js";
 
 // ---------------------------------------------------------------------------
@@ -208,9 +213,13 @@ export interface ProviderAdapter {
  * separately, so this class deliberately carries no capability requirement.
  */
 export type ActionKind =
-  "read" | "stream" | "artifact_read" | "approval" | "delivery" | "write" | "issue_sync";
+  "read" | "stream" | "artifact_read" | "approval" | "delivery" | "write" | "issue_sync" | "manage";
 
-/** All action kinds, in request-path order (used by revocation effects). */
+/**
+ * Action classes a revocation stops, in request-path order. `issue_sync` and
+ * `manage` are additionally gated (they need write/management capability), but
+ * this list stays the revocation contract for the five data-bearing classes.
+ */
 export const ACTION_KINDS: readonly ActionKind[] = [
   "read",
   "stream",
@@ -252,6 +261,11 @@ export const DEFAULT_ACTION_POLICY: Readonly<Record<ActionKind, ActionPolicy>> =
   delivery: { min_role: "member", sensitivity: "sensitive" },
   write: { min_role: "member", sensitivity: "sensitive", requires_capability: "delivery_write" },
   issue_sync: { min_role: "member", sensitivity: "sensitive" },
+  // Workspace administration (members, teams, invitations) is a management
+  // action: it demands the assigned admin/owner role *and* verified repository
+  // management capability across every repository, and enterprise
+  // administration alone never substitutes (ADR-0011).
+  manage: { min_role: "admin", sensitivity: "sensitive" },
 });
 
 export type DenyReason =
@@ -263,7 +277,11 @@ export type DenyReason =
   | "authority_stale"
   | "verification_stale"
   | "capability_grant"
-  | "action_policy";
+  | "action_policy"
+  | "capability_unverified"
+  | "capability_loss"
+  | "capability_ceiling"
+  | "capability_persistence";
 
 export interface AccessDecision {
   allowed: boolean;
@@ -273,6 +291,12 @@ export interface AccessDecision {
   reason?: DenyReason;
   /** Sensitive actions blocked pending reconciliation say so explicitly. */
   requires_reconciliation?: boolean;
+  /**
+   * The capability-layer refusal reason (DAT-276), when the denial came from
+   * the repository capability ceiling. Safe to expose: it names no repository,
+   * teammate, credential or provider role.
+   */
+  capability_reason?: CapabilityBlockReason | null;
   /** Authority verification timestamp the decision was based on. */
   authority_verified_at: string | null;
   checked_at: string;
@@ -293,12 +317,37 @@ export interface EffectiveAccessInput {
   };
   /** Live delivery/checkout capability grants held at decision time. */
   capability_grants: readonly CapabilityKind[];
+  /**
+   * The intersection of verified repository capabilities across the
+   * workspace's whole repository set (DAT-276). When present it is a hard
+   * bound: `unverified` blocks every workspace action for the duration (not a
+   * confirmed downgrade, so nothing is recorded), `confirmed_loss` denies
+   * everything, and a verified ceiling must contain the action's capability.
+   *
+   * Absent only in pure unit tests of the older single-repository dimensions;
+   * the production gate always supplies it.
+   */
+  capability_ceiling?: CapabilityCeilingInput;
   now: Date;
   /** Sensitive actions need verification at most this old (default 15 min). */
   fresh_window_ms?: number;
   /** Authority older than this is `stale` even if last state said active. */
   stale_after_ms?: number;
   policy?: Readonly<Record<ActionKind, ActionPolicy>>;
+}
+
+/** The capability dimension of one access decision. */
+export interface CapabilityCeilingInput {
+  state: CapabilityCeilingState;
+  /** Effective intersection (empty when unverified/lost). */
+  capabilities: readonly RepositoryCapability[];
+  reason: CapabilityBlockReason | null;
+  /**
+   * True when a confirmed reduction could not be persisted/audited. The
+   * decision then fails closed: acting on an unauditable reduction is worse
+   * than denying for the moment.
+   */
+  persistence_failed?: boolean;
 }
 
 // ---------------------------------------------------------------------------

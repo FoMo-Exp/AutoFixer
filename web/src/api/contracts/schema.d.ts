@@ -623,6 +623,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspace_id}/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the caller's workspace capability projection
+         * @description Session-scoped, workspace-scoped, advisory snapshot of module and action permissions, the verified repository capability intersection, per-repository evidence freshness and any confirmed reduction. The path workspace is a locator: a caller without a live membership gets the same indistinguishable 404 as every other workspace route. The projection is never a bearer grant — every request is checked again.
+         */
+        get: operations["getWorkspaceCapabilityProjection"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}/capability-ceiling": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one member's capability ceiling and provider evidence (administrator)
+         * @description Enterprise administrator only. Returns the persisted ceiling plus the per-repository verification it was decided against; an unverifiable evaluation is reported as such, never as a downgrade.
+         */
+        get: operations["getMemberCapabilityCeiling"];
+        put?: never;
+        /**
+         * Reapprove a member's capability ceiling inside the verified facts
+         * @description Only an active enterprise administrator who also proves verified repository management capability in the target workspace may reapprove; enterprise administration alone is not a repository authority and the legacy administrator membership route enforces the same check. The requested set may never exceed the verified intersection, and the assigned role, enterprise/security duties and delivery approvals are never granted here. The change and its append-only audit row commit in one transaction; a stale `version` is a conflict rather than an approval.
+         */
+        post: operations["reapproveMemberCapabilityCeiling"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/enterprises/{enterprise_id}/users": {
         parameters: {
             query?: never;
@@ -3234,6 +3278,137 @@ export interface components {
             updated_at: string;
             /** @description Optimistic-concurrency token. */
             version: number;
+        };
+        /** @description One repository's capability evidence for one member. Each repository of the workspace is verified independently and then intersected; a stronger role on one repository never compensates for a missing capability on another. */
+        CapabilityRepositoryEvidence: {
+            repository_id: string;
+            provider_instance_id: string;
+            /**
+             * @description `verified` carries proven capabilities; `unverified` means none can be proven right now (never a downgrade); `removed` is a positive provider statement that access is gone.
+             * @enum {string}
+             */
+            state: "verified" | "unverified" | "removed";
+            capabilities: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+            /** @enum {string|null} */
+            reason: "workspace_archived" | "repository_missing" | "repository_set_unsupported" | "repository_binding_inconsistent" | "installation_not_approved" | "provider_instance_unapproved" | "subject_missing" | "authority_unknown" | "authority_stale" | "verification_expired" | "permission_visibility_none" | "permission_visibility_partial" | "role_missing" | "unsupported_role" | "repository_access_removed" | "no_code_read" | "capability_store_unavailable" | null;
+            /** Format: date-time */
+            verified_at: string | null;
+        };
+        CapabilityAction: {
+            allowed: boolean;
+            /** @enum {string} */
+            required: "code_read" | "issue_write" | "repository_write" | "repository_manage";
+            /** @description Safe denial reason; never names a repository, teammate or credential. */
+            reason?: string;
+            requires_reconciliation?: boolean;
+        };
+        /** @description Session-scoped, workspace-scoped capability projection (DAT-276, ADR-0011). Advisory for navigation only: every request is still checked object by object against the verified provider capability intersection. An `unverified` state blocks every action until eligibility can be verified and is never recorded as a confirmed downgrade; `confirmed_loss` stays in force until an audited administrator reapproval. */
+        WorkspaceCapabilityProjection: {
+            /** @enum {string} */
+            schema_version: "workspace-capability-v1";
+            enterprise_id: string;
+            workspace_id: string;
+            /** @enum {string|null} */
+            assigned_role: "owner" | "admin" | "member" | "viewer" | null;
+            /** @enum {string} */
+            state: "verified" | "unverified" | "confirmed_loss";
+            /**
+             * @description Why no capability can be proven; null when `state` is `verified`.
+             * @enum {string|null}
+             */
+            blocked_reason: "workspace_archived" | "repository_missing" | "repository_set_unsupported" | "repository_binding_inconsistent" | "installation_not_approved" | "provider_instance_unapproved" | "subject_missing" | "authority_unknown" | "authority_stale" | "verification_expired" | "permission_visibility_none" | "permission_visibility_partial" | "role_missing" | "unsupported_role" | "repository_access_removed" | "no_code_read" | "capability_store_unavailable" | null;
+            /** @description Effective intersection (empty unless `verified`). */
+            capabilities: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+            /** @description Per-action decision and the capability it requires. */
+            actions: {
+                read: components["schemas"]["CapabilityAction"];
+                stream: components["schemas"]["CapabilityAction"];
+                artifact_read: components["schemas"]["CapabilityAction"];
+                approval: components["schemas"]["CapabilityAction"];
+                delivery: components["schemas"]["CapabilityAction"];
+                write: components["schemas"]["CapabilityAction"];
+                issue_sync: components["schemas"]["CapabilityAction"];
+                manage: components["schemas"]["CapabilityAction"];
+            };
+            repositories: components["schemas"]["CapabilityRepositoryEvidence"][];
+            /** @description The persisted ceiling. `promotion_available` is true when the providers now prove more than the ceiling: a recovery is observable but never applied without an administrator reapproval. */
+            ceiling: {
+                /** @enum {string|null} */
+                state: "approved" | "downgraded" | null;
+                capabilities: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+                reason: string | null;
+                version: number | null;
+                /** Format: date-time */
+                verified_at: string | null;
+                promotion_available: boolean;
+            };
+            /** @description Verification freshness and the repository-set version the decision used. */
+            authority: {
+                /** Format: date-time */
+                verified_at: string | null;
+                fresh_window_ms: number;
+                stale_after_ms: number;
+                set_version: number;
+                repository_count: number;
+            };
+            /** Format: date-time */
+            checked_at: string;
+        };
+        /** @description The persisted capability ceiling for one member (DAT-276). `ceiling` only moves down automatically; raising it requires an audited administrator reapproval inside the verified intersection. */
+        MemberCapabilityCeiling: {
+            id: string;
+            enterprise_id: string;
+            workspace_id: string;
+            user_id: string;
+            ceiling: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+            /** @description Latest verified intersection; observability only, never auto-applied. */
+            available_ceiling: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+            /** @enum {string} */
+            state: "approved" | "downgraded";
+            reason: string | null;
+            set_version: number;
+            /** Format: date-time */
+            verified_at: string;
+            version: number;
+        };
+        /** @description Administrator view of one member's ceiling: the persisted ceiling plus the per-repository verification it was decided against. */
+        MemberCapabilityCeilingView: {
+            capability_ceiling: {
+                evaluation: {
+                    /** @enum {string} */
+                    state: "verified" | "unverified" | "confirmed_loss";
+                    capabilities: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+                    /** @enum {string|null} */
+                    reason: "workspace_archived" | "repository_missing" | "repository_set_unsupported" | "repository_binding_inconsistent" | "installation_not_approved" | "provider_instance_unapproved" | "subject_missing" | "authority_unknown" | "authority_stale" | "verification_expired" | "permission_visibility_none" | "permission_visibility_partial" | "role_missing" | "unsupported_role" | "repository_access_removed" | "no_code_read" | "capability_store_unavailable" | null;
+                    repositories: components["schemas"]["CapabilityRepositoryEvidence"][];
+                    available_capabilities: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+                    ceiling: components["schemas"]["MemberCapabilityCeiling"];
+                    /** Format: date-time */
+                    checked_at: string;
+                } & {
+                    [key: string]: unknown;
+                };
+                /** @enum {string|null} */
+                assigned_role: "owner" | "admin" | "member" | "viewer" | null;
+                can_manage: boolean;
+                ceiling: {
+                    /** @enum {string|null} */
+                    state: "approved" | "downgraded" | null;
+                    capabilities: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+                    reason: string | null;
+                    version: number | null;
+                    /** Format: date-time */
+                    verified_at: string | null;
+                    promotion_available: boolean;
+                };
+            };
+        };
+        /** @description Administrator reapproval of a member's capability ceiling. The requested set must be a subset of the currently verified intersection; omitting `capabilities` approves that intersection as-is. The assigned workspace role is never changed by this call and no enterprise/security duty or delivery approval is ever granted. */
+        ReapproveCapabilityCeiling: {
+            /** @description The persisted ceiling version the administrator read. */
+            version: number;
+            /** @description Optional narrowing; may never exceed the verified intersection. */
+            capabilities?: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
         };
         CreatedEnterpriseUser: {
             enterprise_user: components["schemas"]["EnterpriseUser"];
@@ -7180,6 +7355,173 @@ export interface operations {
             };
             /** @description Membership not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getWorkspaceCapabilityProjection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Capability projection */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceCapabilityProjection"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Workspace was not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getMemberCapabilityCeiling: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                enterprise_id: string;
+                workspace_id: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Member capability ceiling */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemberCapabilityCeilingView"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN: administrator authority required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Workspace or membership not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    reapproveMemberCapabilityCeiling: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                enterprise_id: string;
+                workspace_id: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReapproveCapabilityCeiling"];
+            };
+        };
+        responses: {
+            /** @description Ceiling reapproved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemberCapabilityCeiling"];
+                };
+            };
+            /** @description INVALID_REQUEST: unknown capability or missing version */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description CAPABILITY_ADMIN_REQUIRED | CAPABILITY_MANAGEMENT_REQUIRED | CAPABILITY_CEILING_EXCEEDS_VERIFIED | CAPABILITY_CEILING_NOT_ELIGIBLE */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Workspace or membership not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description VERSION_CONFLICT | CAPABILITY_CEILING_MISMATCH | CAPABILITY_CEILING_UNAVAILABLE */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

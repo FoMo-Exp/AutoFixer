@@ -153,6 +153,8 @@ export interface DeliveryBrokerOptions {
     issue_id: string;
     repository_id: string;
     delivery_id: string;
+    /** The delivery's capability grant, used to re-check the requester live. */
+    grant_id: string;
   }) => boolean;
   /** Audit sink availability; a missing/closed sink blocks every write. */
   auditAvailable?: () => boolean;
@@ -797,6 +799,7 @@ export class DeliveryBroker {
         issue_id: delivery.issue_id,
         repository_id: delivery.repository.repository_id,
         delivery_id: delivery.delivery_id,
+        grant_id: delivery.grant_id,
       }) ?? false;
     // Fail closed: an unconfigured audit sink cannot prove the write is
     // auditable, so it blocks delivery instead of assuming availability.

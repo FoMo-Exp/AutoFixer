@@ -27,6 +27,14 @@ import type {
   WorkspaceId,
   WorkspaceRole,
 } from "../control-plane/index.js";
+import type {
+  CapabilityCeilingService,
+  CapabilityCeilingView,
+} from "../provider-access/capability-ceiling.js";
+import type {
+  MemberCapabilityCeiling,
+  RepositoryCapability,
+} from "../control-plane/member-capability-types.js";
 import { ApiError } from "./errors.js";
 import {
   ProviderError,
@@ -87,6 +95,12 @@ export interface AuthServiceDeps {
   credentials: OAuthCredentialsByOrigin;
   providerOAuth?: ProviderOAuth;
   lookup?: OriginDnsLookup;
+  /**
+   * Verified repository capability ceilings (DAT-276). When present, the
+   * administrator reapproval surface and the member ceiling view are served;
+   * without it those routes stay nonexistent rather than unaudited.
+   */
+  capabilityCeilings?: CapabilityCeilingService;
 }
 
 // ---------------------------------------------------------------------------
@@ -267,12 +281,14 @@ export class AuthService {
   readonly #credentials: OAuthCredentialsByOrigin;
   readonly #oauth: ProviderOAuth;
   readonly #lookup: OriginDnsLookup;
+  readonly #capabilityCeilings: CapabilityCeilingService | undefined;
 
   constructor(deps: AuthServiceDeps) {
     this.#repos = deps.repos;
     this.#identity = deps.identity;
     this.#config = deps.config;
     this.#credentials = deps.credentials;
+    this.#capabilityCeilings = deps.capabilityCeilings;
     this.#oauth = deps.providerOAuth ?? new ProviderOAuth();
     this.#lookup =
       deps.lookup ??
@@ -1221,6 +1237,112 @@ export class AuthService {
     );
     const row = this.#enterpriseUserUpdateResult(result, input.id);
     return this.#enterpriseUserView(row);
+  }
+
+  // -------------------------------------------------------------------------
+  // Repository capability ceilings (DAT-276, ADR-0011)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Administrator reapproval of a member's repository capability ceiling.
+   *
+   * Only an active enterprise administrator may reach this method, and the
+   * capability service independently requires verified repository management
+   * authority in the target workspace: enterprise administration never becomes
+   * repository authority, and the legacy administrator membership route cannot
+   * bypass the same ceiling. The deployment bootstrap credential is refused
+   * here — it carries no enterprise membership, so it cannot prove either
+   * condition (ADR-0011).
+   */
+  reapproveMemberCapability(
+    actor: AdminActor,
+    input: {
+      enterprise_id: EnterpriseId;
+      workspace_id: WorkspaceId;
+      user_id: UserId;
+      capabilities: readonly RepositoryCapability[] | null;
+      version: number;
+    },
+  ): MemberCapabilityCeiling {
+    this.#assertAdmin(actor, input.enterprise_id);
+    if (actor.kind !== "user") {
+      throw new ApiError(
+        403,
+        "FORBIDDEN",
+        "capability reapproval requires an enterprise administrator session, not the deployment credential",
+      );
+    }
+    const ceilings = this.#requireCapabilityCeilings();
+    this.#requireMembership(input.enterprise_id, input.workspace_id, input.user_id);
+    return ceilings.reapprove(
+      {
+        enterprise_id: input.enterprise_id,
+        workspace_id: input.workspace_id,
+        actor_id: actor.user_id,
+      },
+      actor.user_id,
+      {
+        workspace_id: input.workspace_id,
+        user_id: input.user_id,
+        capabilities: input.capabilities,
+        version: input.version,
+      },
+    );
+  }
+
+  /**
+   * Administrator read of one member's ceiling and provider evidence.
+   *
+   * The same management-capability bar applies as to a reapproval: the view
+   * names repository evidence, and enterprise administration is not
+   * repository authority (ADR-0011). An enterprise administrator without
+   * verified repository management in the workspace cannot read it.
+   */
+  getMemberCapability(
+    actor: AdminActor,
+    input: { enterprise_id: EnterpriseId; workspace_id: WorkspaceId; user_id: UserId },
+  ): CapabilityCeilingView {
+    this.#assertAdmin(actor, input.enterprise_id);
+    const ceilings = this.#requireCapabilityCeilings();
+    this.#requireMembership(input.enterprise_id, input.workspace_id, input.user_id);
+    const scope = {
+      enterprise_id: input.enterprise_id,
+      workspace_id: input.workspace_id,
+      actor_id: actor.kind === "user" ? actor.user_id : SYSTEM_ACTOR,
+    };
+    if (actor.kind !== "user" || !ceilings.view(scope, actor.user_id).can_manage) {
+      throw new ApiError(
+        403,
+        "CAPABILITY_MANAGEMENT_REQUIRED",
+        "the caller lacks verified repository management capability across the workspace's repositories",
+      );
+    }
+    return ceilings.view(scope, input.user_id);
+  }
+
+  #requireCapabilityCeilings(): CapabilityCeilingService {
+    if (this.#capabilityCeilings === undefined) {
+      throw new ApiError(404, "NOT_FOUND", "capability ceilings are not served by this deployment");
+    }
+    return this.#capabilityCeilings;
+  }
+
+  #requireMembership(
+    enterpriseId: EnterpriseId,
+    workspaceId: WorkspaceId,
+    userId: UserId,
+  ): Membership {
+    const scope = {
+      enterprise_id: enterpriseId,
+      workspace_id: workspaceId,
+      actor_id: SYSTEM_ACTOR,
+    };
+    this.#repos.workspaces.getById(scope, workspaceId);
+    const membership = this.#repos.memberships.getByUser(scope, userId);
+    if (membership === undefined) {
+      throw new ApiError(404, "NOT_FOUND", "workspace membership not found");
+    }
+    return membership;
   }
 
   #enterpriseUserUpdateResult(

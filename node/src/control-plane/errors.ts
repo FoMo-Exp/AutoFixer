@@ -125,6 +125,49 @@ export class WorkspaceRepositorySetError extends ControlPlaneError {
 }
 
 /**
+ * A capability-ceiling decision or mutation was refused (DAT-276).
+ *
+ * These codes are stable and each one is a refusal: an unverifiable ceiling
+ * never degrades to the last known capabilities, and an administrator can
+ * never approve more than the provider facts currently prove.
+ *
+ * - `CAPABILITY_CEILING_UNAVAILABLE` (409) — current evidence is missing,
+ *   stale or incomplete, so no reapproval decision can be formed yet.
+ * - `CAPABILITY_CEILING_EXCEEDS_VERIFIED` (403) — the requested capabilities
+ *   are not a subset of the verified intersection.
+ * - `CAPABILITY_CEILING_NOT_ELIGIBLE` (403) — the verified intersection lacks
+ *   code read, so the member is not eligible for workspace access and no
+ *   ceiling may be approved.
+ * - `CAPABILITY_CEILING_MISMATCH` (409) — the observed `available_ceiling` is
+ *   not the one the caller decided against (a concurrent provider change).
+ * - `CAPABILITY_ADMIN_REQUIRED` (403) — only an enterprise administrator may
+ *   reapprove a ceiling; the refusal is audited.
+ * - `CAPABILITY_MANAGEMENT_REQUIRED` (403) — the caller lacks verified
+ *   repository management capability across the workspace's repositories.
+ */
+export type CapabilityCeilingErrorCode =
+  | "CAPABILITY_CEILING_UNAVAILABLE"
+  | "CAPABILITY_CEILING_EXCEEDS_VERIFIED"
+  | "CAPABILITY_CEILING_NOT_ELIGIBLE"
+  | "CAPABILITY_CEILING_MISMATCH"
+  | "CAPABILITY_ADMIN_REQUIRED"
+  | "CAPABILITY_MANAGEMENT_REQUIRED";
+
+export class CapabilityCeilingError extends ControlPlaneError {
+  readonly status: 403 | 409;
+
+  constructor(
+    code: CapabilityCeilingErrorCode,
+    message: string,
+    status: 403 | 409 = 403,
+    readonly details: Record<string, unknown> = {},
+  ) {
+    super(code, message);
+    this.status = status;
+  }
+}
+
+/**
  * Request-scope resolution failed (DAT-241). `status` states the request-path
  * semantics: 401 = there is no valid authenticated session (authenticate
  * again); 403 = the caller is authenticated but no scope is available to them

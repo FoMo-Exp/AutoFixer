@@ -19,6 +19,7 @@ export {
 } from "./db.js";
 
 export {
+  CapabilityCeilingError,
   ConflictError,
   ControlPlaneError,
   NotFoundError,
@@ -28,7 +29,7 @@ export {
   VersionConflictError,
   WorkspaceRepositorySetError,
 } from "./errors.js";
-export type { RequestScopeErrorCode } from "./errors.js";
+export type { CapabilityCeilingErrorCode, RequestScopeErrorCode } from "./errors.js";
 
 export type {
   ControlPlaneRepositories,
@@ -222,3 +223,24 @@ export {
   MULTI_REPOSITORY_GATE_KEY,
   createWorkspaceRepositorySetRepository,
 } from "./workspace-repository-repositories.js";
+
+export type {
+  ApplyMemberCapabilityDowngradeInput,
+  CapabilityBlockReason,
+  CapabilityCeilingState,
+  InitializeMemberCapabilityInput,
+  MemberCapabilityCeiling,
+  PersistedCeilingState,
+  ReapproveMemberCapabilityInput,
+  RepositoryCapability,
+} from "./member-capability-types.js";
+export {
+  CAPABILITY_GRANT_KINDS,
+  MEMBER_CAPABILITY_AUDIT_EVENTS,
+  REPOSITORY_CAPABILITIES,
+} from "./member-capability-types.js";
+export type {
+  CapabilityCeilingAuditActor,
+  MemberCapabilityRepository,
+} from "./member-capability-repositories.js";
+export { createMemberCapabilityRepository } from "./member-capability-repositories.js";

@@ -2566,6 +2566,9 @@ function handleRequestDelivery(state: CollabState, payload: Payload): unknown {
     updated_at: at,
     reconciled_at: null,
     grant_id: grant.grant_id,
+    // Kept on the record so a later provider write can re-check the requester's
+    // live repository capability (DAT-276). Internal evidence only.
+    requested_by: str(payload["actor"], "actor"),
   };
   approval.state = "consumed";
   approval.consumed_by_delivery_id = delivery.delivery_id;

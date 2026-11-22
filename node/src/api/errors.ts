@@ -1,5 +1,6 @@
 import type { DshError } from "../dsh/client.js";
 import type { ControlPlaneError } from "../control-plane/errors.js";
+import { CapabilityCeilingError } from "../control-plane/errors.js";
 import {
   ConflictError,
   ForbiddenError,
@@ -360,6 +361,45 @@ const ERROR_SEMANTICS: Record<string, ErrorSemantics> = {
     category: "stop",
     retryable: false,
     next_action: "reconcile",
+  },
+  // Repository capability ceiling refusals (DAT-276, ADR-0011). Each one is a
+  // denial/stop: an unverifiable or reduced ceiling is never retried into a
+  // wider grant, and only an authorized administrator can reapprove.
+  CAPABILITY_CEILING_UNAVAILABLE: {
+    stage: "reconciliation",
+    category: "stop",
+    retryable: false,
+    next_action: "reconcile",
+  },
+  CAPABILITY_CEILING_EXCEEDS_VERIFIED: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  CAPABILITY_CEILING_NOT_ELIGIBLE: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  CAPABILITY_CEILING_MISMATCH: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  CAPABILITY_ADMIN_REQUIRED: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  CAPABILITY_MANAGEMENT_REQUIRED: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
   },
   CONFLICT: { stage: "validation", category: "stop", retryable: false, next_action: "refresh" },
   AUTH_FLOW_CONSUMED: {
@@ -732,6 +772,11 @@ export function apiErrorFromControlPlane(error: ControlPlaneError): ApiError {
   }
   if (error instanceof ValidationError) {
     return new ApiError(400, "INVALID_REQUEST", error.message);
+  }
+  if (error instanceof CapabilityCeilingError) {
+    // DAT-276 refusals keep their stable codes and 403/409 semantics: a stale
+    // version and an unverifiable ceiling are conflicts, not generic denials.
+    return new ApiError(error.status, error.code, error.message, error.details);
   }
   if (error instanceof RequestScopeError) {
     // Scope failures carry their own 401/403 semantics and stable codes;

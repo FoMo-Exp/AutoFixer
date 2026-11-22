@@ -329,6 +329,37 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
 
   if (tail.length === 2 && req.method === "GET" && sub === "stream") {
     service.getTask(taskId, workspaceId); // 404 before headers are committed
+
+    // The in-process epoch is only a *hint*: another process may observe and
+    // persist a capability reduction (DAT-276) without this process bumping
+    // anything, and that may happen between the request-boundary decision and
+    // the history replay below. Every write — including each replayed event —
+    // is therefore re-authorized against the shared persisted store first, so
+    // a stream can never deliver history to a member whose ceiling no longer
+    // permits `stream`. The check is cheap (one scoped read plus the ceiling
+    // evaluation) and fails closed on any denial.
+    const streamAuthority =
+      actor.kind === "session" && deps.authority !== undefined ? deps.authority : undefined;
+    const streamUser = actor.kind === "session" ? actor.ctx.user.id : null;
+    const streamStillAllowed = (): boolean => {
+      if (streamAuthority === undefined || streamUser === null) {
+        return true;
+      }
+      try {
+        return streamAuthority.check(streamUser, "stream", workspaceId).allowed;
+      } catch {
+        // A failed re-authorization is a denial: never keep emitting on an
+        // authority state that could not be evaluated.
+        return false;
+      }
+    };
+    if (streamAuthority !== undefined && streamUser !== null) {
+      // Re-check before committing any history. A denial here is still a real
+      // 403 envelope (headers are not sent yet), which is better than an empty
+      // 200 stream; the per-event check below covers the remaining window.
+      streamAuthority.require(streamUser, "stream", workspaceId);
+    }
+
     res.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache",
@@ -345,6 +376,12 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
     }
     for (const item of timeline) {
       if (item.sequence > lastSequence) {
+        // Cross-process safety for the replay itself: if authority was lost
+        // while this request was being served, send no history at all.
+        if (!streamStillAllowed()) {
+          res.end();
+          return;
+        }
         writeSseEvent(res, item);
       }
     }
@@ -389,12 +426,11 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
     // A provider revocation cuts live streams the same way: the stream
     // re-checks its stream action on every authority change and closes the
     // moment the gate denies it (DAT-203) — evaluated in this stream's
-    // workspace, not the deployment default.
-    if (actor.kind === "session" && deps.authority !== undefined) {
-      const authority = deps.authority;
-      const streamUser = actor.ctx.user.id;
-      const unsubscribeAuthority = authority.subscribe(() => {
-        if (!authority.check(streamUser, "stream", workspaceId).allowed) {
+    // workspace, not the deployment default. The local epoch is a fast close
+    // signal only; the shared-store check above is the actual boundary.
+    if (streamAuthority !== undefined && streamUser !== null) {
+      const unsubscribeAuthority = streamAuthority.subscribe(() => {
+        if (!streamStillAllowed()) {
           res.end();
         }
       });
@@ -403,6 +439,13 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
     const unsubscribe = service.subscribe(
       taskId,
       (event) => {
+        // Cross-process safety: another process's persisted reduction (or an
+        // expired verification) denies here even though this process never
+        // received a local change signal. Deny before writing anything.
+        if (!streamStillAllowed()) {
+          res.end();
+          return;
+        }
         writeSseEvent(res, event);
         if (event.type === "task.terminal") {
           res.end();
@@ -490,6 +533,7 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
           {
             auth: deps.auth,
             ...(deps.publicOrigin !== undefined ? { publicOrigin: deps.publicOrigin } : {}),
+            ...(deps.authority !== undefined ? { authority: deps.authority } : {}),
           },
           { req, res, url, segments, requestId },
         );
@@ -591,6 +635,30 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
           },
           { req, res, url, segments, requestId },
         );
+        return;
+      }
+
+      // Workspace capability projection (DAT-276, ADR-0011). A session-scoped,
+      // workspace-scoped snapshot of module/action permissions, the verified
+      // repository capability intersection, and authority freshness. It is
+      // advisory: every request is still checked object by object. A caller
+      // without a live membership in the path workspace gets the same
+      // indistinguishable 404 as every other workspace route.
+      if (segments[2] === "workspaces" && segments[4] === "capabilities" && segments.length === 5) {
+        const method = req.method ?? "GET";
+        if (method !== "GET") {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
+        }
+        const actor = authenticateRequest(req, deps);
+        if (actor.kind !== "session" || deps.auth === undefined || deps.authority === undefined) {
+          throw new ApiError(404, "NOT_FOUND", "Workspace was not found");
+        }
+        const workspaceId = segments[3];
+        if (workspaceId === undefined) {
+          throw new ApiError(404, "NOT_FOUND", "Workspace was not found");
+        }
+        scopedWorkspaceAccess(actor, deps, workspaceId);
+        writeJson(res, 200, deps.authority.projection(actor.ctx.user.id, workspaceId));
         return;
       }
 

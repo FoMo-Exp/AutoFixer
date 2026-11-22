@@ -32,12 +32,20 @@ import {
 } from "../control-plane/request-scope.js";
 import { RequestScopeError } from "../control-plane/errors.js";
 import type { DashboardService, DashboardScope } from "../dashboard/index.js";
+import type { RequestAuthority } from "./request-authority.js";
 
 export interface DashboardHttpDeps {
   auth: AuthService;
   service: DashboardService;
   /** Authoritative scope resolution (DAT-241); required for this surface. */
   scope: RequestScopeDeps;
+  /**
+   * Provider-authority boundary (DAT-276). Module data is part of the workspace
+   * access decision: a confirmed capability reduction or an unverifiable
+   * ceiling must not leave operational aggregates readable. Presentation
+   * metrics are checked as a `read` action before any aggregate is built.
+   */
+  authority?: RequestAuthority;
 }
 
 export interface DashboardRouteContext {
@@ -288,6 +296,7 @@ export async function handleDashboardRequest(
   const session = requireEnterpriseSessionActor(deps.auth, ctx.req);
   const scope = resolveScope(deps, session);
   requirePathWorkspace(ctx, scope);
+  deps.authority?.require(session.user.id, "read", scope.workspace_id);
 
   ctx.res.setHeader("Cache-Control", "no-store");
   // Set only once a drilldown locator passes validation, so a rejected value

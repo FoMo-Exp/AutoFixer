@@ -1,0 +1,85 @@
+{
+  "schema_version": "workspace-capability-v1",
+  "enterprise_id": "ent_acme",
+  "workspace_id": "ws_payments",
+  "assigned_role": "member",
+  "state": "unverified",
+  "blocked_reason": "authority_stale",
+  "capabilities": [],
+  "actions": {
+    "read": {
+      "allowed": false,
+      "required": "code_read",
+      "reason": "capability_unverified",
+      "requires_reconciliation": true
+    },
+    "stream": {
+      "allowed": false,
+      "required": "code_read",
+      "reason": "capability_unverified",
+      "requires_reconciliation": true
+    },
+    "artifact_read": {
+      "allowed": false,
+      "required": "code_read",
+      "reason": "capability_unverified",
+      "requires_reconciliation": true
+    },
+    "approval": {
+      "allowed": false,
+      "required": "repository_write",
+      "reason": "capability_unverified",
+      "requires_reconciliation": true
+    },
+    "delivery": {
+      "allowed": false,
+      "required": "repository_write",
+      "reason": "capability_unverified",
+      "requires_reconciliation": true
+    },
+    "write": {
+      "allowed": false,
+      "required": "repository_write",
+      "reason": "capability_unverified",
+      "requires_reconciliation": true
+    },
+    "issue_sync": {
+      "allowed": false,
+      "required": "issue_write",
+      "reason": "capability_unverified",
+      "requires_reconciliation": true
+    },
+    "manage": {
+      "allowed": false,
+      "required": "repository_manage",
+      "reason": "capability_unverified",
+      "requires_reconciliation": true
+    }
+  },
+  "repositories": [
+    {
+      "repository_id": "github:acme/payments",
+      "provider_instance_id": "pi_github_acme",
+      "state": "unverified",
+      "capabilities": [],
+      "reason": "authority_stale",
+      "verified_at": "2026-11-20T12:00:00.000Z"
+    }
+  ],
+  "ceiling": {
+    "state": "approved",
+    "capabilities": ["code_read", "issue_write", "repository_write"],
+    "reason": null,
+    "version": 1,
+    "verified_at": "2026-11-22T12:00:00.000Z",
+    "promotion_available": false
+  },
+  "authority": {
+    "verified_at": "2026-11-20T12:00:00.000Z",
+    "fresh_window_ms": 900000,
+    "stale_after_ms": 86400000,
+    "set_version": 1,
+    "repository_count": 1
+  },
+  "checked_at": "2026-11-22T12:11:00.000Z"
+}

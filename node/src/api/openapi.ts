@@ -215,6 +215,340 @@ const membershipSchema: JsonObject = {
   },
 };
 
+/**
+ * Repository capability vocabulary (DAT-276, ADR-0011). A capability is a
+ * provider-proven, action-scoped repository fact — never a workspace role, an
+ * enterprise role, or a grant.
+ */
+const CAPABILITY_NAMES = [
+  "code_read",
+  "issue_write",
+  "repository_write",
+  "repository_manage",
+] as const;
+
+const CAPABILITY_ACTION_NAMES = [
+  "read",
+  "stream",
+  "artifact_read",
+  "approval",
+  "delivery",
+  "write",
+  "issue_sync",
+  "manage",
+] as const;
+
+const CAPABILITY_BLOCK_REASONS = [
+  "workspace_archived",
+  "repository_missing",
+  "repository_set_unsupported",
+  "repository_binding_inconsistent",
+  "installation_not_approved",
+  "provider_instance_unapproved",
+  "subject_missing",
+  "authority_unknown",
+  "authority_stale",
+  "verification_expired",
+  "permission_visibility_none",
+  "permission_visibility_partial",
+  "role_missing",
+  "unsupported_role",
+  "repository_access_removed",
+  "no_code_read",
+  "capability_store_unavailable",
+] as const;
+
+const capabilityRepositoryEvidenceSchema: JsonObject = {
+  type: "object",
+  description:
+    "One repository's capability evidence for one member. Each repository of " +
+    "the workspace is verified independently and then intersected; a stronger " +
+    "role on one repository never compensates for a missing capability on " +
+    "another.",
+  required: [
+    "repository_id",
+    "provider_instance_id",
+    "state",
+    "capabilities",
+    "reason",
+    "verified_at",
+  ],
+  properties: {
+    repository_id: { type: "string" },
+    provider_instance_id: { type: "string" },
+    state: {
+      type: "string",
+      enum: ["verified", "unverified", "removed"],
+      description:
+        "`verified` carries proven capabilities; `unverified` means none can be " +
+        "proven right now (never a downgrade); `removed` is a positive provider " +
+        "statement that access is gone.",
+    },
+    capabilities: { type: "array", items: { type: "string", enum: [...CAPABILITY_NAMES] } },
+    reason: {
+      type: ["string", "null"],
+      enum: [...CAPABILITY_BLOCK_REASONS, null],
+    },
+    verified_at: { type: ["string", "null"], format: "date-time" },
+  },
+  additionalProperties: false,
+};
+
+const capabilityActionSchema: JsonObject = {
+  type: "object",
+  required: ["allowed", "required"],
+  properties: {
+    allowed: { type: "boolean" },
+    required: { type: "string", enum: [...CAPABILITY_NAMES] },
+    reason: {
+      type: "string",
+      description: "Safe denial reason; never names a repository, teammate or credential.",
+    },
+    requires_reconciliation: { type: "boolean" },
+  },
+  additionalProperties: false,
+};
+
+const workspaceCapabilityProjectionSchema: JsonObject = {
+  type: "object",
+  description:
+    "Session-scoped, workspace-scoped capability projection (DAT-276, " +
+    "ADR-0011). Advisory for navigation only: every request is still checked " +
+    "object by object against the verified provider capability intersection. " +
+    "An `unverified` state blocks every action until eligibility can be " +
+    "verified and is never recorded as a confirmed downgrade; `confirmed_loss` " +
+    "stays in force until an audited administrator reapproval.",
+  required: [
+    "schema_version",
+    "enterprise_id",
+    "workspace_id",
+    "assigned_role",
+    "state",
+    "blocked_reason",
+    "capabilities",
+    "actions",
+    "repositories",
+    "ceiling",
+    "authority",
+    "checked_at",
+  ],
+  properties: {
+    schema_version: { type: "string", enum: ["workspace-capability-v1"] },
+    enterprise_id: { type: "string" },
+    workspace_id: { type: "string" },
+    assigned_role: {
+      type: ["string", "null"],
+      enum: ["owner", "admin", "member", "viewer", null],
+    },
+    state: { type: "string", enum: ["verified", "unverified", "confirmed_loss"] },
+    blocked_reason: {
+      type: ["string", "null"],
+      enum: [...CAPABILITY_BLOCK_REASONS, null],
+      description: "Why no capability can be proven; null when `state` is `verified`.",
+    },
+    capabilities: {
+      type: "array",
+      items: { type: "string", enum: [...CAPABILITY_NAMES] },
+      description: "Effective intersection (empty unless `verified`).",
+    },
+    actions: {
+      type: "object",
+      description: "Per-action decision and the capability it requires.",
+      required: [...CAPABILITY_ACTION_NAMES],
+      properties: Object.fromEntries(
+        CAPABILITY_ACTION_NAMES.map((action) => [
+          action,
+          { $ref: "#/components/schemas/CapabilityAction" },
+        ]),
+      ),
+      additionalProperties: false,
+    },
+    repositories: {
+      type: "array",
+      items: { $ref: "#/components/schemas/CapabilityRepositoryEvidence" },
+    },
+    ceiling: {
+      type: "object",
+      description:
+        "The persisted ceiling. `promotion_available` is true when the " +
+        "providers now prove more than the ceiling: a recovery is observable " +
+        "but never applied without an administrator reapproval.",
+      required: [
+        "state",
+        "capabilities",
+        "reason",
+        "version",
+        "verified_at",
+        "promotion_available",
+      ],
+      properties: {
+        state: { type: ["string", "null"], enum: ["approved", "downgraded", null] },
+        capabilities: { type: "array", items: { type: "string", enum: [...CAPABILITY_NAMES] } },
+        reason: { type: ["string", "null"] },
+        version: { type: ["integer", "null"] },
+        verified_at: { type: ["string", "null"], format: "date-time" },
+        promotion_available: { type: "boolean" },
+      },
+      additionalProperties: false,
+    },
+    authority: {
+      type: "object",
+      description: "Verification freshness and the repository-set version the decision used.",
+      required: [
+        "verified_at",
+        "fresh_window_ms",
+        "stale_after_ms",
+        "set_version",
+        "repository_count",
+      ],
+      properties: {
+        verified_at: { type: ["string", "null"], format: "date-time" },
+        fresh_window_ms: { type: "integer" },
+        stale_after_ms: { type: "integer" },
+        set_version: { type: "integer" },
+        repository_count: { type: "integer" },
+      },
+      additionalProperties: false,
+    },
+    checked_at: { type: "string", format: "date-time" },
+  },
+  additionalProperties: false,
+};
+
+const memberCapabilityCeilingSchema: JsonObject = {
+  type: "object",
+  description:
+    "The persisted capability ceiling for one member (DAT-276). `ceiling` " +
+    "only moves down automatically; raising it requires an audited " +
+    "administrator reapproval inside the verified intersection.",
+  required: [
+    "id",
+    "enterprise_id",
+    "workspace_id",
+    "user_id",
+    "ceiling",
+    "available_ceiling",
+    "state",
+    "reason",
+    "set_version",
+    "verified_at",
+    "version",
+  ],
+  properties: {
+    id: { type: "string" },
+    enterprise_id: { type: "string" },
+    workspace_id: { type: "string" },
+    user_id: { type: "string" },
+    ceiling: { type: "array", items: { type: "string", enum: [...CAPABILITY_NAMES] } },
+    available_ceiling: {
+      type: "array",
+      items: { type: "string", enum: [...CAPABILITY_NAMES] },
+      description: "Latest verified intersection; observability only, never auto-applied.",
+    },
+    state: { type: "string", enum: ["approved", "downgraded"] },
+    reason: { type: ["string", "null"] },
+    set_version: { type: "integer" },
+    verified_at: { type: "string", format: "date-time" },
+    version: { type: "integer" },
+  },
+  additionalProperties: false,
+};
+
+const memberCapabilityCeilingViewSchema: JsonObject = {
+  type: "object",
+  description:
+    "Administrator view of one member's ceiling: the persisted ceiling plus " +
+    "the per-repository verification it was decided against.",
+  required: ["capability_ceiling"],
+  properties: {
+    capability_ceiling: {
+      type: "object",
+      required: ["evaluation", "assigned_role", "can_manage", "ceiling"],
+      properties: {
+        evaluation: {
+          type: "object",
+          required: [
+            "state",
+            "capabilities",
+            "reason",
+            "repositories",
+            "available_capabilities",
+            "ceiling",
+            "checked_at",
+          ],
+          properties: {
+            state: { type: "string", enum: ["verified", "unverified", "confirmed_loss"] },
+            capabilities: { type: "array", items: { type: "string", enum: [...CAPABILITY_NAMES] } },
+            reason: { type: ["string", "null"], enum: [...CAPABILITY_BLOCK_REASONS, null] },
+            repositories: {
+              type: "array",
+              items: { $ref: "#/components/schemas/CapabilityRepositoryEvidence" },
+            },
+            available_capabilities: {
+              type: "array",
+              items: { type: "string", enum: [...CAPABILITY_NAMES] },
+            },
+            ceiling: { $ref: "#/components/schemas/MemberCapabilityCeiling" },
+            checked_at: { type: "string", format: "date-time" },
+          },
+          additionalProperties: true,
+        },
+        assigned_role: {
+          type: ["string", "null"],
+          enum: ["owner", "admin", "member", "viewer", null],
+        },
+        can_manage: { type: "boolean" },
+        ceiling: {
+          type: "object",
+          required: [
+            "state",
+            "capabilities",
+            "reason",
+            "version",
+            "verified_at",
+            "promotion_available",
+          ],
+          properties: {
+            state: { type: ["string", "null"], enum: ["approved", "downgraded", null] },
+            capabilities: { type: "array", items: { type: "string", enum: [...CAPABILITY_NAMES] } },
+            reason: { type: ["string", "null"] },
+            version: { type: ["integer", "null"] },
+            verified_at: { type: ["string", "null"], format: "date-time" },
+            promotion_available: { type: "boolean" },
+          },
+          additionalProperties: false,
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  additionalProperties: false,
+};
+
+const reapproveCapabilityCeilingSchema: JsonObject = {
+  type: "object",
+  description:
+    "Administrator reapproval of a member's capability ceiling. The requested " +
+    "set must be a subset of the currently verified intersection; omitting " +
+    "`capabilities` approves that intersection as-is. The assigned workspace " +
+    "role is never changed by this call and no enterprise/security duty or " +
+    "delivery approval is ever granted.",
+  required: ["version"],
+  properties: {
+    version: {
+      type: "integer",
+      minimum: 1,
+      description: "The persisted ceiling version the administrator read.",
+    },
+    capabilities: {
+      type: "array",
+      items: { type: "string", enum: [...CAPABILITY_NAMES] },
+      description: "Optional narrowing; may never exceed the verified intersection.",
+    },
+  },
+  additionalProperties: false,
+};
+
 const enterpriseUserSchema: JsonObject = {
   type: "object",
   description:
@@ -3737,6 +4071,97 @@ export function buildOpenApiDocument(): OpenApiDocument {
         },
       },
     },
+    "/api/v1/workspaces/{workspace_id}/capabilities": {
+      get: {
+        operationId: "getWorkspaceCapabilityProjection",
+        summary: "Read the caller's workspace capability projection",
+        description:
+          "Session-scoped, workspace-scoped, advisory snapshot of module and " +
+          "action permissions, the verified repository capability intersection, " +
+          "per-repository evidence freshness and any confirmed reduction. The " +
+          "path workspace is a locator: a caller without a live membership gets " +
+          "the same indistinguishable 404 as every other workspace route. The " +
+          "projection is never a bearer grant — every request is checked again.",
+        parameters: [WORKSPACE_ID_PARAMETER],
+        responses: {
+          200: {
+            description: "Capability projection",
+            ...jsonRef("#/components/schemas/WorkspaceCapabilityProjection"),
+          },
+          401: unauthorizedResponse(),
+          404: errorResponse("Workspace was not found"),
+        },
+      },
+    },
+    "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}/capability-ceiling":
+      {
+        get: {
+          operationId: "getMemberCapabilityCeiling",
+          summary: "Read one member's capability ceiling and provider evidence (administrator)",
+          description:
+            "Enterprise administrator only. Returns the persisted ceiling plus " +
+            "the per-repository verification it was decided against; an " +
+            "unverifiable evaluation is reported as such, never as a downgrade.",
+          security: ADMIN_SECURITY,
+          parameters: [
+            { name: "enterprise_id", in: "path", required: true, schema: { type: "string" } },
+            { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+            { name: "user_id", in: "path", required: true, schema: { type: "string" } },
+          ],
+          responses: {
+            200: {
+              description: "Member capability ceiling",
+              ...jsonRef("#/components/schemas/MemberCapabilityCeilingView"),
+            },
+            401: unauthorizedResponse(),
+            403: errorResponse("FORBIDDEN: administrator authority required"),
+            404: errorResponse("Workspace or membership not found"),
+          },
+        },
+        post: {
+          operationId: "reapproveMemberCapabilityCeiling",
+          summary: "Reapprove a member's capability ceiling inside the verified facts",
+          description:
+            "Only an active enterprise administrator who also proves verified " +
+            "repository management capability in the target workspace may " +
+            "reapprove; enterprise administration alone is not a repository " +
+            "authority and the legacy administrator membership route enforces the " +
+            "same check. The requested set may never exceed the verified " +
+            "intersection, and the assigned role, enterprise/security duties and " +
+            "delivery approvals are never granted here. The change and its " +
+            "append-only audit row commit in one transaction; a stale `version` " +
+            "is a conflict rather than an approval.",
+          security: ADMIN_SECURITY,
+          parameters: [
+            { name: "enterprise_id", in: "path", required: true, schema: { type: "string" } },
+            { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
+            { name: "user_id", in: "path", required: true, schema: { type: "string" } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ReapproveCapabilityCeiling" },
+              },
+            },
+          },
+          responses: {
+            200: {
+              description: "Ceiling reapproved",
+              ...jsonRef("#/components/schemas/MemberCapabilityCeiling"),
+            },
+            400: errorResponse("INVALID_REQUEST: unknown capability or missing version"),
+            401: unauthorizedResponse(),
+            403: errorResponse(
+              "CAPABILITY_ADMIN_REQUIRED | CAPABILITY_MANAGEMENT_REQUIRED | CAPABILITY_CEILING_EXCEEDS_VERIFIED | CAPABILITY_CEILING_NOT_ELIGIBLE",
+            ),
+            404: errorResponse("Workspace or membership not found"),
+            409: errorResponse(
+              "VERSION_CONFLICT | CAPABILITY_CEILING_MISMATCH | CAPABILITY_CEILING_UNAVAILABLE",
+            ),
+          },
+        },
+      },
     "/api/v1/admin/enterprises/{enterprise_id}/users": {
       get: {
         operationId: "listEnterpriseUsers",
@@ -5762,6 +6187,12 @@ export function buildOpenApiDocument(): OpenApiDocument {
         IssueEvent: issueEventSchema,
         SessionInfo: sessionInfoSchema,
         EnterpriseUser: enterpriseUserSchema,
+        CapabilityRepositoryEvidence: capabilityRepositoryEvidenceSchema,
+        CapabilityAction: capabilityActionSchema,
+        WorkspaceCapabilityProjection: workspaceCapabilityProjectionSchema,
+        MemberCapabilityCeiling: memberCapabilityCeilingSchema,
+        MemberCapabilityCeilingView: memberCapabilityCeilingViewSchema,
+        ReapproveCapabilityCeiling: reapproveCapabilityCeilingSchema,
         CreatedEnterpriseUser: createdEnterpriseUserSchema,
         AddEnterpriseUser: addEnterpriseUserSchema,
         EnterpriseMembership: enterpriseMembershipSchema,

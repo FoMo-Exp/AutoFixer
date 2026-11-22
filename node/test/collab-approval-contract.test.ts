@@ -182,6 +182,7 @@ describe("approval and delivery contract", () => {
       updated_at: "2026-11-03T00:01:00.000Z",
       reconciled_at: null,
       grant_id: "grt_internal",
+      requested_by: "user:usr_test",
     };
     const view = deliveryView(record);
     expect(view).not.toHaveProperty("grant_id");

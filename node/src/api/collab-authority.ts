@@ -1,4 +1,6 @@
 import { digestOf } from "../collab/audit.js";
+import { grantStateAt } from "../collab/types.js";
+import type { CapabilityGrant } from "../collab/types.js";
 import type { ApprovalDirectory, ApprovalMemberFact } from "../collab/approval-service.js";
 import type { CollabMachine } from "../collab/machine.js";
 import type { WorkspaceScope } from "../collab/types.js";
@@ -177,6 +179,20 @@ export interface DeliveryPermissionDeps {
   access: ProviderAccessRepositories;
   workspaces: WorkspaceRepository;
   enterprise_id: string;
+  /**
+   * Live re-check of the *requester's* repository capability (DAT-276). The
+   * delivery request recorded `requester_authorized`, but a recorded boolean is
+   * not a durable fact: every provider write asks again, so a confirmed
+   * downgrade between request and write stops the delivery instead of pushing
+   * a change the requester can no longer read the repository for.
+   *
+   * Returns `true` only when the requester's ceiling still supports repository
+   * write in this workspace. Absent, delivery uses the pre-DAT-276 behavior
+   * (delivery-grant-only), which is why the deployment wires it.
+   */
+  requesterCapability?: (input: { workspace_id: string; user_id: string }) => boolean;
+  /** Clock for grant expiry (tests); defaults to the wall clock. */
+  clock?: () => Date;
 }
 
 /**
@@ -197,10 +213,53 @@ export interface DeliveryPermissionDeps {
  */
 export function createDeliveryPermission(
   deps: DeliveryPermissionDeps,
-): (input: { issue_id: string; repository_id: string; delivery_id: string }) => boolean {
+): (input: {
+  issue_id: string;
+  repository_id: string;
+  delivery_id: string;
+  grant_id: string;
+}) => boolean {
   return (input) => {
     const issue = deps.machine.getIssue(input.issue_id);
     if (issue === undefined || issue.repository.repository_id !== input.repository_id) {
+      return false;
+    }
+    const delivery = deps.machine.getDelivery(input.delivery_id);
+    if (
+      delivery === undefined ||
+      delivery.issue_id !== issue.issue_id ||
+      delivery.repository.repository_id !== input.repository_id
+    ) {
+      return false;
+    }
+    // The broker's `grant_id` is the collaboration *delivery grant* recorded on
+    // the delivery, not a control-plane capability grant. Re-validate that same
+    // ID on its own terms: it must still exist in a delivery-role run for this
+    // issue, permit push/PR, and be unrevoked and unexpired at write time. The
+    // machine checks this again when it records the state transition; doing it
+    // here means the provider write is refused before any transition is even
+    // attempted.
+    if (delivery.grant_id !== input.grant_id) {
+      return false;
+    }
+    const at = (deps.clock ?? (() => new Date()))().toISOString();
+    let grant: CapabilityGrant | undefined;
+    let grantRole: string | undefined;
+    for (const run of deps.machine.listRuns(issue.issue_id)) {
+      const found = run.grants.find((entry) => entry.grant_id === input.grant_id);
+      if (found !== undefined) {
+        grant = found;
+        grantRole = run.role;
+        break;
+      }
+    }
+    if (grant === undefined || grantRole !== "delivery") {
+      return false;
+    }
+    if (!grant.may_create_or_update_pr) {
+      return false;
+    }
+    if (grantStateAt(grant, at) !== "active") {
       return false;
     }
     const workspaceScope = {
@@ -219,10 +278,50 @@ export function createDeliveryPermission(
           integration.install_status === "active" &&
           integration.repository_id === input.repository_id,
       );
-    return integrations.some(
+    const workspaceAuthorized = integrations.some(
       (integration) =>
         integration.delivery_credential_ref !== null &&
         integration.permission_visibility !== "none",
     );
+    if (!workspaceAuthorized) {
+      return false;
+    }
+    // The requester is the delivery's own recorded actor, not a client field.
+    // `local-operator` is the deployment credential and keeps the pre-existing
+    // local-operator mode; anything unparseable fails closed.
+    const requester = requesterFromActor(delivery.requested_by);
+    if (requester === "local_operator") {
+      return true;
+    }
+    if (requester === null) {
+      return false;
+    }
+    // Live repository capability immediately before the write: an already
+    // verified reduction (in any process) blocks the provider write.
+    if (deps.requesterCapability === undefined) {
+      return true;
+    }
+    return deps.requesterCapability({
+      workspace_id: workspaceScope.workspace_id,
+      user_id: requester,
+    });
   };
+}
+
+/**
+ * Resolve the delivery requester from its recorded collab actor label.
+ * Only the exact `user:<id>` and `local-operator` forms are accepted.
+ */
+function requesterFromActor(actor: unknown): string | "local_operator" | null {
+  if (typeof actor !== "string" || actor.length === 0) {
+    // A record persisted before DAT-276 has no requester; it fails closed.
+    return null;
+  }
+  if (actor === "local-operator") {
+    return "local_operator";
+  }
+  if (actor.startsWith("user:") && actor.length > "user:".length) {
+    return actor.slice("user:".length);
+  }
+  return null;
 }

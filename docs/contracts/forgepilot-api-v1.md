@@ -132,6 +132,57 @@ Endpoints (details in the OpenAPI document):
 | `PUT /api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}/role` | `{role, version}` | `200 EnterpriseUser`; `409 VERSION_CONFLICT`/`LAST_ENTERPRISE_ADMIN`/`USER_NOT_CLAIMED` |
 | `POST /api/v1/admin/users/{user_id}/suspend` | none | `200 User`; deployment operator only |
 | `POST /api/v1/admin/users/{user_id}/activate` | none | `200 User`; deployment operator only |
+| `GET /api/v1/workspaces/{workspace_id}/capabilities` | none | `200 WorkspaceCapabilityProjection`; `404 Workspace was not found`; session only |
+| `GET /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}/capability-ceiling` | none | `200 MemberCapabilityCeilingView`; `403 FORBIDDEN`; `404` |
+| `POST /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}/capability-ceiling` | `{version, capabilities?}` | `200 MemberCapabilityCeiling`; `403 CAPABILITY_ADMIN_REQUIRED`/`CAPABILITY_MANAGEMENT_REQUIRED`/`CAPABILITY_CEILING_EXCEEDS_VERIFIED`/`CAPABILITY_CEILING_NOT_ELIGIBLE`; `409 VERSION_CONFLICT`/`CAPABILITY_CEILING_MISMATCH`/`CAPABILITY_CEILING_UNAVAILABLE` |
+
+## Workspace repository capability ceilings (DAT-276)
+
+Workspace access is bounded by the **intersection** of verified provider
+capabilities across every active repository of the workspace. For each
+repository the service maps the normalized provider role (provenance included)
+to capabilities — `code_read`, `issue_write`, `repository_write`,
+`repository_manage` — using an explicit policy table; `read`/`triage`/
+`reporter` prove code read, `write`/`developer` add write, and only
+administrator-level repository authority (GitHub `admin`, GitLab `owner`)
+proves management. A role outside the table (GitLab `guest`, an unknown or
+custom vocabulary) proves nothing and fails closed rather than being ranked by
+name. Organization membership alone is not repository access.
+
+Write on repository A and read on B yields read; no ranking of role names
+across providers can compensate for a missing capability. Every action also
+requires the assigned workspace role, action policy and any separate grant —
+a provider role never confers workspace `admin`/`owner`, enterprise
+administration, security duties or delivery approval.
+
+- **Verified reduction.** A positively verified lower intersection or lost
+  access is persisted with its reason, applies in every process and across
+  restarts, immediately tightens reads, writes, module data, streams, worker
+  steps and delivery grants, and retains the assigned role. A recorded
+  `delivery_write`/`checkout_read` grant the ceiling no longer supports is
+  revoked.
+- **No automatic promotion.** Provider recovery is reported as
+  `ceiling.promotion_available` and `available_ceiling`, but the effective
+  ceiling does not rise until an audited administrator reapproval.
+- **Temporary unavailability is not a downgrade.** Missing, unknown, stale,
+  expired, incomplete (`partial`/`none` visibility), unsupported or
+  unapproved evidence blocks every workspace action with
+  `AUTHORITY_RECHECK_REQUIRED` (`capability_unverified`) and is never
+  persisted; the same facts verifying again unblock access without a
+  promotion.
+- **Last owner.** A provider-confirmed loss blocks even the workspace owner;
+  ownership is never kept alive as unauthorized access.
+- **Reapproval.** Only an active enterprise administrator who also proves
+  verified repository management capability in the workspace may reapprove,
+  and the requested set must be a subset of the current verified intersection.
+  The change and its append-only audit row commit atomically; a refused
+  reapproval is audited too. The legacy administrator membership route
+  enforces the same management-capability check.
+- **Observability.** The projection reports per-repository evidence state,
+  the verified intersection, the persisted ceiling, the freshness bounds
+  (`fresh_window_ms`, `stale_after_ms`), the repository-set version and the
+  checked time. It never exposes another tenant, credentials, teammate data or
+  provider role internals.
 
 ## Repository service integration (DAT-267)
 
@@ -855,6 +906,12 @@ Stable codes and their default envelope semantics:
 | `PI_UNAVAILABLE` | 503 | execution | stop | no | `contact_admin` |
 | `DSH_UNAVAILABLE` | 503 | execution | retry | yes | `retry` |
 | `PROVIDER_ROSTER_INCOMPLETE` | 503 | reconciliation | retry | yes | `retry` |
+| `CAPABILITY_CEILING_UNAVAILABLE` | 409 | reconciliation | stop | no | `reconcile` |
+| `CAPABILITY_CEILING_EXCEEDS_VERIFIED` | 403 | authorization | denial | no | `contact_admin` |
+| `CAPABILITY_CEILING_NOT_ELIGIBLE` | 403 | authorization | denial | no | `contact_admin` |
+| `CAPABILITY_CEILING_MISMATCH` | 409 | validation | stop | no | `refresh` |
+| `CAPABILITY_ADMIN_REQUIRED` | 403 | authorization | denial | no | `contact_admin` |
+| `CAPABILITY_MANAGEMENT_REQUIRED` | 403 | authorization | denial | no | `contact_admin` |
 
 Node maps dsh policy outcomes without exposing dsh internals:
 `403 DSH_SCOPE_DENIED|DSH_POLICY_DENIED` (stage `policy`, category `denial`),
