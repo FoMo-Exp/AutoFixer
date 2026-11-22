@@ -1,14 +1,14 @@
 # ADR 0011: Enterprise users and workspace capabilities
 
 **Status:** Proposed — product boundaries below are a reviewable design, not a
-claim of implementation. Workspace enrollment scope remains an open question.
+claim of implementation. Multi-repository workspace support is not yet delivered.
 
 **Date:** 2026-11-22
 
 ## Context
 
-AutoFixer's first release serves enterprise users and repository-bound
-workspaces; it does not offer public self-registration. An administrator adds
+AutoFixer's shared service serves enterprise users and workspaces containing
+one or more repositories; it does not offer public self-registration. An administrator adds
 an approved GitHub or GitLab identity and the user joins the enterprise without
 an additional invitation acceptance step. The person proves that identity by
 signing in. Workspace access must reflect both AutoFixer membership and current
@@ -16,9 +16,11 @@ repository permissions; an enterprise administrator does not acquire
 repository data access merely by holding enterprise authority.
 
 ADR-0006 describes identity, membership, provider authority and invitations.
-This ADR extends it with explicit enterprise membership, a repository-based
-ceiling on workspace actions, module visibility, and the backend/frontend
-handoff. It does not relax ADR-0001, ADR-0005, ADR-0007 or ADR-0009.
+This ADR replaces its one-repository-per-workspace decision with the model
+below; its other identity and security boundaries remain in force. It extends
+the access model with enterprise membership, an all-repository ceiling, module
+visibility, and the backend/frontend handoff. It does not relax ADR-0001,
+ADR-0005, ADR-0007 or ADR-0009.
 
 The code at the initial design baseline has OAuth sessions, workspace
 memberships, invitations, provider adapters and authority reconciliation. The
@@ -55,20 +57,70 @@ PR #103; remaining boundaries require their own implementation and review.
   supported: successful authenticated redemption atomically establishes any
   required active enterprise membership, workspace membership and consumption.
   A suspended enterprise membership cannot be reactivated through an invite.
-- Workspace selection remains **open**: the recommended initial default is
-  that an administrator selects workspaces when adding a user, each subject to
-  repository eligibility; automatic enrollment in every eligible workspace has
-  not been approved. Do not implement or claim that product choice is settled
-  until it is confirmed. A newly created workspace never silently enrolls an
-  existing enterprise user under this unresolved rule.
+- An administrator explicitly selects the workspaces to join, each subject to
+  eligibility across all of its repositories. Adding an enterprise user or a
+  new workspace does not automatically enroll that user in workspaces. An
+  invitation remains an explicit alternative subject to the same eligibility.
+
+### Workspace repository set and admission
+
+One workspace may contain multiple repositories, for example separate
+microservices. Each binding identifies an approved provider instance,
+installation and immutable repository ID; repository URLs and names are
+metadata. An active workspace must contain at least one repository before it
+can admit members or grant access. Retain ADR-0006's existing one-active-
+workspace-per-enterprise-and-repository uniqueness constraint unless a later
+decision changes it. Repository transfer requires revalidation, never silent
+cross-enterprise reassignment.
+
+For a given user and workspace, translate each repository's verified effective
+provider permissions into a set of supported capabilities, then intersect
+those sets across **every** active repository. Only a user with verified code
+read in every repository is eligible to join. The resulting intersection is
+also the ceiling on workspace actions; a stronger permission on one repository
+cannot compensate for a missing capability on another. For example, write on
+repository A and read-only on B permits at most viewer-level workspace access;
+no read on either means no admission. This is a set intersection, not a ranking
+of provider role names across GitHub and GitLab. Every action also requires
+the assigned workspace role, policy, separate duties and resource checks.
+
+Missing, stale, incomplete, unsupported or ambiguous evidence for any
+repository cannot establish admission. For an existing member, fail closed
+for workspace access when current eligibility cannot be established; do not
+record an outage as a confirmed removal. Evaluate the full repository set for
+invitations, existing members, new requests, streams, worker steps and delivery.
+Any newly observed loss or reduced intersection revokes the affected access
+and grants, closes subscriptions, invalidates affected approvals and records
+an audit event. Reauthorization after a confirmed downgrade follows the rule
+below; provider recovery alone does not elevate a member. An uncertain check
+may recover without promotion when the previously approved facts are verified.
+
+Adding or removing a repository changes every member's intersection. The
+mutation must be authorized, audited and serialized against membership and
+access checks using a versioned repository set; no request may authorize
+against an old set after the change commits. Before adding, preview affected
+members and revalidate all current memberships. Until the product decides
+whether a change that would exclude current members should be rejected or
+applied with their access suspended, reject that addition; unknown results also
+block it. Never silently remove members or expand access. Repository removal
+must not automatically promote previously reduced authority; retain the
+existing audited reapproval rule. If an external change affects the last owner,
+use the audited recovery path below rather than retaining unauthorized access.
+
+Workspace-wide membership does not authorize a multi-repository remediation
+run. Existing single-repository tasks must explicitly bind their target to an
+active workspace repository, and check that target plus the workspace-wide
+intersection. Atomic multi-repository changes, delivery and approvals require
+a separate design before implementation; this decision does not grant them.
 
 ### Repository authority and role transitions
 
 The effective decision for a workspace action is the intersection of active
-enterprise membership, assigned workspace role, verified current repository
-capabilities, action policy, any separate duty or grant, and data sensitivity.
-Provider identities are bound to the workspace's approved provider instance
-and repository-scoped server integration. Login OAuth credentials are not the
+enterprise membership, assigned workspace role, the intersection of verified
+current capabilities for all workspace repositories, action policy, any separate
+duty or grant, and data sensitivity. Provider identities are bound to each
+repository's approved provider instance and repository-scoped server integration.
+Login OAuth credentials are not the
 service integration credential. Preserve direct, inherited, group and
 organization provenance when observable; do not invent it when the provider
 only reports effective access. Organization membership alone is not proof of
@@ -98,7 +150,7 @@ blocks workspace access and revokes relevant grants. Persist the reduction and
 its reason; a later provider recovery requires an audited administrator
 reapproval before increasing access. Unknown, stale or unavailable evidence
 is not a confirmed downgrade: do not overwrite authority or the approval
-ceiling, but block sensitive actions until verification succeeds. Recovery
+ceiling, but block workspace access until eligibility can be verified. Recovery
 from a temporary verification failure may unblock previously approved access
 without a new promotion. Provider event processing and bounded reconciliation
 propagate changes; enforce each newly observed revocation on subsequent
@@ -155,7 +207,7 @@ last-owner, audit and revocation rules as the workspace administration path;
 it must not be an authorization bypass. Workspace admins cannot change
 owner/admin memberships; an owner can do so subject to repository management
 authority and the last-owner rule. Administering a workspace requires verified
-repository management authority. Candidate roster incompleteness is an error,
+repository management authority across the repository set. Candidate roster incompleteness is an error,
 never an empty successful list.
 
 ### Backend contract and frontend handoff
@@ -202,6 +254,12 @@ frontend cannot rely on a process-local signal as its security boundary.
 ### Migration and scope
 
 Use a guarded forward migration; never edit a previously published migration.
+Backfill each existing workspace's single repository as its first binding,
+preserving its immutable provider and repository identity and uniqueness.
+Do not expose multi-repository membership until all authorization paths,
+including legacy APIs, background workers, streams, artifacts, memory and
+delivery, enforce the complete set. Make mixed-version rollout fail closed;
+never let an older single-repository server accept a multi-repository scope.
 Backfill enterprise memberships from authoritative existing workspace
 memberships and enterprise-admin records, not provider identity alone. A
 preexisting global suspension is not silently lifted. Report ambiguous or
@@ -259,11 +317,18 @@ invitation values or protected content.
 8. Implementation issues use main-based linked PRs; CI-equivalent lint, format,
    typecheck and relevant tests pass before `in_review`, and a new remote head
    is sent to QA with the exact workspace mention. `done` requires QA pass.
+9. With repositories A and B, write/read yields viewer ceiling; read/no-access
+   and incomplete, stale or unknown evidence reject admission. Cross-provider
+   capability intersections, explicit selection and invitations are tested.
+10. Repository additions, removals, transfer and concurrent membership changes
+    cannot leak data through old decisions, caches, streams, legacy endpoints or
+    worker grants. Previously reduced access is never silently promoted.
+    Existing one-repository records migrate without changing their access.
 
-## Open question
+## Open product question
 
-Does administrator addition enroll the user only in explicitly selected
-workspaces, or automatically in every currently eligible workspace? The
-recommendation is explicit selection. The enterprise addition and identity
-binding above do not depend on that answer, but workspace admission and its
-frontend flow must not be finalized until the product choice is confirmed.
+When adding a repository would make an existing member ineligible, should the
+operation be rejected until access is fixed, or proceed while that member's
+workspace access is suspended? Recommend rejecting the addition with an
+affected-member preview. This does not alter the confirmed rule that every
+active repository participates in the intersection.
