@@ -6,13 +6,16 @@
 
 import {
   createIdentityRepositories,
+  createMemberCapabilityRepository,
   createProviderAccessRepositories,
   createRepositories,
+  createWorkspaceRepositorySetRepository,
   openControlPlaneDb,
   seedEnterprise,
   seedProviderInstance,
   seedWorkspace,
 } from "../../src/control-plane/index.js";
+import { createCapabilityCeilingService } from "../../src/provider-access/capability-ceiling.js";
 import type {
   ControlPlaneDb,
   IdentityRepositories,
@@ -60,6 +63,7 @@ export interface Fixture {
   providerInstanceId: string;
   workspaceId: string;
   integration: ServiceIntegration;
+  capabilityCeilings: ReturnType<typeof createCapabilityCeilingService>;
   memberships: MembershipRepository;
   workspaces: WorkspaceRepository;
   users: UserRepository;
@@ -115,6 +119,18 @@ export function setupFixture(
 
   const epoch = createAuthorityEpoch();
   const clock = { now: new Date(NOW) };
+  const capabilityCeilings = createCapabilityCeilingService({
+    repositorySets: createWorkspaceRepositorySetRepository(db),
+    access,
+    memberships: repos.memberships,
+    providerInstances: repos.providerInstances,
+    identity,
+    capabilities: createMemberCapabilityRepository(db),
+    epoch,
+    clock: () => clock.now,
+    freshWindowMs: 15 * 60 * 1000,
+    staleAfterMs: 24 * 60 * 60 * 1000,
+  });
   const gate = createAccessGate({
     access,
     memberships: repos.memberships,
@@ -122,6 +138,7 @@ export function setupFixture(
     users: identity.users,
     identities: identity.identities,
     enterpriseUsers: identity.enterpriseUsers,
+    capabilityCeilings,
     epoch,
     clock: () => clock.now,
     freshWindowMs: 15 * 60 * 1000,
@@ -135,6 +152,7 @@ export function setupFixture(
     providerInstanceId: providerInstance.id,
     workspaceId: workspace.id,
     integration,
+    capabilityCeilings,
     memberships: repos.memberships,
     workspaces: repos.workspaces,
     users: identity.users,
@@ -190,14 +208,15 @@ export function verifyAuthority(
   subject: string,
   userId: string | null,
   at: string,
+  options: { provider_role?: string; source_kind?: RawProviderRole["kind"] } = {},
 ): void {
   fixture.access.roster.applySnapshot(fixture.scope, fixture.integration.id, {
     roles: [
       {
         subject,
         login: `login-${subject}`,
-        source_kind: "direct_collaborator",
-        provider_role: "write",
+        source_kind: options.source_kind ?? "direct_collaborator",
+        provider_role: options.provider_role ?? "write",
         authority_ref: REPO_ID,
         inherited_from: null,
       },

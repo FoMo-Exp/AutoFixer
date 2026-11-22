@@ -1,0 +1,53 @@
+{
+  "schema_version": "workspace-capability-v1",
+  "enterprise_id": "ent_acme",
+  "workspace_id": "ws_payments",
+  "assigned_role": "member",
+  "state": "verified",
+  "blocked_reason": null,
+  "capabilities": ["code_read", "issue_write", "repository_write"],
+  "actions": {
+    "read": { "allowed": true, "required": "code_read" },
+    "stream": { "allowed": true, "required": "code_read" },
+    "artifact_read": { "allowed": true, "required": "code_read" },
+    "approval": {
+      "allowed": false,
+      "required": "repository_write",
+      "reason": "workspace_role"
+    },
+    "delivery": { "allowed": true, "required": "repository_write" },
+    "write": { "allowed": true, "required": "repository_write" },
+    "issue_sync": { "allowed": true, "required": "issue_write" },
+    "manage": {
+      "allowed": false,
+      "required": "repository_manage",
+      "reason": "capability_ceiling"
+    }
+  },
+  "repositories": [
+    {
+      "repository_id": "github:acme/payments",
+      "provider_instance_id": "pi_github_acme",
+      "state": "verified",
+      "capabilities": ["code_read", "issue_write", "repository_write"],
+      "reason": null,
+      "verified_at": "2026-11-22T12:00:00.000Z"
+    }
+  ],
+  "ceiling": {
+    "state": "approved",
+    "capabilities": ["code_read", "issue_write", "repository_write"],
+    "reason": null,
+    "version": 1,
+    "verified_at": "2026-11-22T12:00:00.000Z",
+    "promotion_available": false
+  },
+  "authority": {
+    "verified_at": "2026-11-22T12:00:00.000Z",
+    "fresh_window_ms": 900000,
+    "stale_after_ms": 86400000,
+    "set_version": 1,
+    "repository_count": 1
+  },
+  "checked_at": "2026-11-22T12:03:00.000Z"
+}

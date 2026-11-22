@@ -1,6 +1,9 @@
 import type http from "node:http";
 
 import type { AdminActor, AuthService, SessionContext } from "./auth-service.js";
+import { REPOSITORY_CAPABILITIES } from "../control-plane/member-capability-types.js";
+import type { RepositoryCapability } from "../control-plane/member-capability-types.js";
+import type { RequestAuthority } from "./request-authority.js";
 import { ApiError } from "./errors.js";
 import { readJsonBody, requireString, writeJson, writeRedirect, writeText } from "./http-util.js";
 import {
@@ -30,6 +33,13 @@ export interface AuthHttpDeps {
   auth: AuthService;
   /** External origin override; loopback derives from the socket. */
   publicOrigin?: string;
+  /**
+   * Provider-authority boundary. The legacy administrator membership route
+   * must enforce the same management capability as any other management
+   * action: enterprise administration is not a repository-management bypass
+   * (ADR-0011).
+   */
+  authority?: RequestAuthority;
 }
 
 export interface AuthRouteContext {
@@ -344,6 +354,14 @@ async function handleAdmin(deps: AuthHttpDeps, ctx: AuthRouteContext): Promise<v
     const enterprise_id = pathSegment(segments, 4, "enterprise_id");
     const workspace_id = pathSegment(segments, 6, "workspace_id");
     const user_id = pathSegment(segments, 8, "user_id");
+    // The legacy administrator entry is not an authorization bypass: a user
+    // session managing members/roles must prove the same management capability
+    // (admin/owner role + verified repository management on every repository)
+    // that the workspace administration path requires. The deployment operator
+    // credential is the local-operator mode and is unchanged.
+    if (actor.kind === "user" && deps.authority?.isEnforcing(workspace_id) === true) {
+      deps.authority.require(actor.user_id, "manage", workspace_id);
+    }
     if (method === "DELETE") {
       auth.revokeMembership(actor, { enterprise_id, workspace_id, user_id });
       res.writeHead(204);
@@ -475,6 +493,70 @@ async function handleAdmin(deps: AuthHttpDeps, ctx: AuthRouteContext): Promise<v
         enterprise_id: pathSegment(segments, 4, "enterprise_id"),
         id: pathSegment(segments, 6, "enterprise_user_id"),
         role,
+        version,
+      }),
+    );
+    return;
+  }
+
+  // GET/POST /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}/capability-ceiling
+  if (
+    segments[3] === "enterprises" &&
+    segments[5] === "workspaces" &&
+    segments[7] === "members" &&
+    segments[9] === "capability-ceiling" &&
+    segments.length === 10
+  ) {
+    const enterprise_id = pathSegment(segments, 4, "enterprise_id");
+    const workspace_id = pathSegment(segments, 6, "workspace_id");
+    const user_id = pathSegment(segments, 8, "user_id");
+    const actor = adminActorOf(auth, req);
+    if (method === "GET") {
+      writeJson(res, 200, {
+        capability_ceiling: auth.getMemberCapability(actor, {
+          enterprise_id,
+          workspace_id,
+          user_id,
+        }),
+      });
+      return;
+    }
+    if (method !== "POST") {
+      throw new ApiError(404, "NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+    }
+    const body = await readJsonBody(req);
+    const version = body["version"];
+    if (typeof version !== "number" || !Number.isInteger(version) || version < 1) {
+      throw new ApiError(400, "INVALID_REQUEST", "version is required");
+    }
+    const raw = body["capabilities"];
+    let requested: RepositoryCapability[] | null = null;
+    if (raw !== undefined) {
+      if (!Array.isArray(raw) || raw.some((value) => typeof value !== "string")) {
+        throw new ApiError(
+          400,
+          "INVALID_REQUEST",
+          "capabilities must be an array of capability names",
+        );
+      }
+      const unknown = raw.filter(
+        (value) => !(REPOSITORY_CAPABILITIES as readonly string[]).includes(value as string),
+      );
+      if (unknown.length > 0) {
+        throw new ApiError(400, "INVALID_REQUEST", "unknown capability name", {
+          unknown,
+        });
+      }
+      requested = raw as RepositoryCapability[];
+    }
+    writeJson(
+      res,
+      200,
+      auth.reapproveMemberCapability(actor, {
+        enterprise_id,
+        workspace_id,
+        user_id,
+        capabilities: requested,
         version,
       }),
     );

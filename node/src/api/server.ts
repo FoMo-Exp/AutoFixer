@@ -490,6 +490,7 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
           {
             auth: deps.auth,
             ...(deps.publicOrigin !== undefined ? { publicOrigin: deps.publicOrigin } : {}),
+            ...(deps.authority !== undefined ? { authority: deps.authority } : {}),
           },
           { req, res, url, segments, requestId },
         );
@@ -591,6 +592,30 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
           },
           { req, res, url, segments, requestId },
         );
+        return;
+      }
+
+      // Workspace capability projection (DAT-276, ADR-0011). A session-scoped,
+      // workspace-scoped snapshot of module/action permissions, the verified
+      // repository capability intersection, and authority freshness. It is
+      // advisory: every request is still checked object by object. A caller
+      // without a live membership in the path workspace gets the same
+      // indistinguishable 404 as every other workspace route.
+      if (segments[2] === "workspaces" && segments[4] === "capabilities" && segments.length === 5) {
+        const method = req.method ?? "GET";
+        if (method !== "GET") {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
+        }
+        const actor = authenticateRequest(req, deps);
+        if (actor.kind !== "session" || deps.auth === undefined || deps.authority === undefined) {
+          throw new ApiError(404, "NOT_FOUND", "Workspace was not found");
+        }
+        const workspaceId = segments[3];
+        if (workspaceId === undefined) {
+          throw new ApiError(404, "NOT_FOUND", "Workspace was not found");
+        }
+        scopedWorkspaceAccess(actor, deps, workspaceId);
+        writeJson(res, 200, deps.authority.projection(actor.ctx.user.id, workspaceId));
         return;
       }
 

@@ -177,6 +177,18 @@ export interface DeliveryPermissionDeps {
   access: ProviderAccessRepositories;
   workspaces: WorkspaceRepository;
   enterprise_id: string;
+  /**
+   * Live re-check of the *requester's* repository capability (DAT-276). The
+   * delivery request recorded `requester_authorized`, but a recorded boolean is
+   * not a durable fact: every provider write asks again, so a confirmed
+   * downgrade between request and write stops the delivery instead of pushing
+   * a change the requester can no longer read the repository for.
+   *
+   * Returns `true` only when the requester's ceiling still supports repository
+   * write in this workspace. Absent, delivery uses the pre-DAT-276 behavior
+   * (delivery-grant-only), which is why the deployment wires it.
+   */
+  requesterCapability?: (input: { workspace_id: string; user_id: string }) => boolean;
 }
 
 /**
@@ -197,7 +209,12 @@ export interface DeliveryPermissionDeps {
  */
 export function createDeliveryPermission(
   deps: DeliveryPermissionDeps,
-): (input: { issue_id: string; repository_id: string; delivery_id: string }) => boolean {
+): (input: {
+  issue_id: string;
+  repository_id: string;
+  delivery_id: string;
+  grant_id: string;
+}) => boolean {
   return (input) => {
     const issue = deps.machine.getIssue(input.issue_id);
     if (issue === undefined || issue.repository.repository_id !== input.repository_id) {
@@ -219,10 +236,26 @@ export function createDeliveryPermission(
           integration.install_status === "active" &&
           integration.repository_id === input.repository_id,
       );
-    return integrations.some(
+    const workspaceAuthorized = integrations.some(
       (integration) =>
         integration.delivery_credential_ref !== null &&
         integration.permission_visibility !== "none",
     );
+    if (!workspaceAuthorized) {
+      return false;
+    }
+    if (deps.requesterCapability === undefined) {
+      return true;
+    }
+    // The grant names the requester the delivery was authorized for. Without a
+    // resolved requester there is nothing to re-check, so delivery fails closed.
+    const grant = deps.access.grants.getById(workspaceScope, input.grant_id);
+    if (grant === undefined || grant.grantee_user_id === null) {
+      return false;
+    }
+    return deps.requesterCapability({
+      workspace_id: workspaceScope.workspace_id,
+      user_id: grant.grantee_user_id,
+    });
   };
 }

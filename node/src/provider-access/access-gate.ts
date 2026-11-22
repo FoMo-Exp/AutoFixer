@@ -19,6 +19,12 @@
  *
  * Sensitive actions require fresh provider verification; unknown or stale
  * authority blocks them and marks the decision `requires_reconciliation`.
+ *
+ * The repository capability ceiling (DAT-276) is a required dependency, not an
+ * optional extra: with it wired, every decision is additionally bounded by the
+ * intersection of verified provider capabilities over the workspace's whole
+ * repository set, and an unverifiable ceiling blocks the workspace instead of
+ * falling back to the last known role.
  */
 
 import type { CapabilityGrant, CapabilityKind } from "../control-plane/provider-access-types.js";
@@ -27,7 +33,9 @@ import type { IdentityRepository, UserRepository } from "../control-plane/identi
 import type { EnterpriseUserRepository } from "../control-plane/enterprise-user-repositories.js";
 import type { MembershipRepository, WorkspaceRepository } from "../control-plane/repositories.js";
 import type { UserId, WorkspaceRole, WorkspaceScope } from "../control-plane/types.js";
+import type { CapabilityCeilingService, CapabilityCeilingView } from "./capability-ceiling.js";
 import { computeEffectiveAccess } from "./effective-access.js";
+import { requiredCapabilityForAction } from "./repository-capabilities.js";
 import { revokeAuthority, type RevocationEffects, type RevocationTarget } from "./revocation.js";
 import {
   DEFAULT_ACTION_POLICY,
@@ -85,6 +93,8 @@ export interface AccessGateDeps {
   identities: IdentityRepository;
   /** Enterprise-scoped membership/status (DAT-275); the only member evidence. */
   enterpriseUsers: EnterpriseUserRepository;
+  /** Verified, intersected repository capability ceiling (DAT-276). */
+  capabilityCeilings: CapabilityCeilingService;
   /** Shared with revocation/reconcile as the "authority changed" signal. */
   epoch: AuthorityEpoch;
   clock?: () => Date;
@@ -141,6 +151,50 @@ export interface AccessGate {
   ): RevocationEffects;
   /** Current authority-change epoch (observability/tests). */
   epoch(): number;
+  /**
+   * The member's workspace capability projection (DAT-276): module/action
+   * decisions, the verified ceiling, per-repository evidence freshness and any
+   * confirmed reduction. Fails closed for a non-member workspace.
+   */
+  projection(scope: WorkspaceScope, userId: UserId, now?: Date): CapabilityProjection;
+}
+
+export interface CapabilityProjection {
+  schema_version: "workspace-capability-v1";
+  enterprise_id: string;
+  workspace_id: string;
+  assigned_role: WorkspaceRole | null;
+  state: "verified" | "unverified" | "confirmed_loss";
+  blocked_reason: string | null;
+  capabilities: readonly string[];
+  actions: Record<
+    string,
+    { allowed: boolean; required: string; reason?: string; requires_reconciliation?: boolean }
+  >;
+  repositories: readonly {
+    repository_id: string;
+    provider_instance_id: string;
+    state: string;
+    capabilities: readonly string[];
+    reason: string | null;
+    verified_at: string | null;
+  }[];
+  ceiling: {
+    state: string | null;
+    capabilities: readonly string[];
+    reason: string | null;
+    version: number | null;
+    verified_at: string | null;
+    promotion_available: boolean;
+  };
+  authority: {
+    verified_at: string | null;
+    fresh_window_ms: number;
+    stale_after_ms: number;
+    set_version: number;
+    repository_count: number;
+  };
+  checked_at: string;
 }
 
 export function createAccessGate(deps: AccessGateDeps): AccessGate {
@@ -151,6 +205,7 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
     users,
     identities,
     enterpriseUsers,
+    capabilityCeilings,
     epoch,
     clock = () => new Date(),
     freshWindowMs,
@@ -201,6 +256,21 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
       now: now.toISOString(),
     });
     return live.map((grant) => grant.capability);
+  }
+
+  function ceilingInput(
+    scope: WorkspaceScope,
+    userId: UserId,
+    now: Date,
+  ): CapabilityCeilingView["evaluation"] | null {
+    const membership = memberships.getByUser(scope, userId);
+    const enterpriseUser = enterpriseUsers.getByUser(scope.enterprise_id, userId);
+    if (membership === undefined || enterpriseUser?.status !== "active") {
+      // The earlier dimensions deny this request; no ceiling row is created for
+      // a stranger or a suspended member.
+      return null;
+    }
+    return capabilityCeilings.evaluate(scope, userId, { now });
   }
 
   function authorize(request: AccessRequest): AccessDecision {
@@ -254,6 +324,8 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
     // scope-filtered reads above return nothing for ID substitution.
     const workspaceRole: WorkspaceRole | null = workspace && membership ? membership.role : null;
 
+    const ceiling = ceilingInput(scope, request.user_id, now);
+
     const decision = computeEffectiveAccess({
       action: request.action,
       enterprise: {
@@ -267,6 +339,16 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
         last_verified_at: authority?.last_verified_at ?? null,
       },
       capability_grants: liveGrantKinds(scope, integration.integration_id, request.user_id, now),
+      ...(ceiling !== null
+        ? {
+            capability_ceiling: {
+              state: ceiling.state,
+              capabilities: ceiling.capabilities,
+              reason: ceiling.reason,
+              persistence_failed: ceiling.persistence_failed,
+            },
+          }
+        : {}),
       now,
       ...(freshWindowMs !== undefined ? { fresh_window_ms: freshWindowMs } : {}),
       ...(staleAfterMs !== undefined ? { stale_after_ms: staleAfterMs } : {}),
@@ -293,5 +375,57 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
     return revokeAuthority(access, epoch, scope, target, reason, at);
   }
 
-  return { authorize, assert, revoke, epoch: () => epoch.current() };
+  function projection(
+    scope: WorkspaceScope,
+    userId: UserId,
+    now: Date = clock(),
+  ): CapabilityProjection {
+    const view = capabilityCeilings.view(scope, userId, { now });
+    const actions: CapabilityProjection["actions"] = {};
+    for (const action of Object.keys(policy) as ActionKind[]) {
+      const decision = authorize({ scope, user_id: userId, action, now });
+      actions[action] = {
+        allowed: decision.allowed,
+        required: requiredCapabilityForAction(action),
+        ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
+        ...(decision.requires_reconciliation === true ? { requires_reconciliation: true } : {}),
+      };
+    }
+    const freshness = capabilityCeilings.freshness();
+    return {
+      schema_version: "workspace-capability-v1",
+      enterprise_id: scope.enterprise_id,
+      workspace_id: scope.workspace_id,
+      assigned_role: (view.assigned_role as WorkspaceRole | null) ?? null,
+      state: view.evaluation.state,
+      blocked_reason: view.evaluation.reason,
+      capabilities: view.evaluation.capabilities,
+      actions,
+      repositories: view.evaluation.repositories.map((repository) => ({
+        repository_id: repository.repository_id,
+        provider_instance_id: repository.provider_instance_id,
+        state: repository.state,
+        capabilities: repository.capabilities,
+        reason: repository.reason,
+        verified_at: repository.verified_at,
+      })),
+      ceiling: view.ceiling,
+      authority: {
+        verified_at: view.evaluation.verified_at,
+        fresh_window_ms: freshness.fresh_window_ms,
+        stale_after_ms: freshness.stale_after_ms,
+        set_version: view.evaluation.set_version,
+        repository_count: view.evaluation.repository_count,
+      },
+      checked_at: view.evaluation.checked_at,
+    };
+  }
+
+  return {
+    authorize,
+    assert,
+    revoke,
+    epoch: () => epoch.current(),
+    projection,
+  };
 }

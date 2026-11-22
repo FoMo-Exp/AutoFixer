@@ -1650,6 +1650,54 @@ const MIGRATIONS: Migration[] = [
                20, '2026-11-22T00:00:00.000Z', 'usr_auth_system')`,
     ],
   },
+  {
+    // Per-member, per-action repository capability ceiling (DAT-276,
+    // ADR-0011). A workspace action is bounded by the intersection of the
+    // *verified* provider capabilities across every active repository binding.
+    //
+    // The ceiling is persisted because two different rules need durable state:
+    //
+    // - a positively verified reduction or loss is a confirmed downgrade. It
+    //   must survive a restart, apply in every process, and stay in force
+    //   after the provider recovers until an administrator reapproves it.
+    // - a temporary inability to verify (unknown, stale, unavailable,
+    //   incomplete) is *not* a downgrade and is deliberately not stored: it
+    //   blocks workspace access for its duration and clears itself when the
+    //   same facts verify again.
+    //
+    // `ceiling` is the effective maximum and only moves down automatically.
+    // `available_ceiling` records the latest verified intersection so a
+    // provider recovery is observable as "promotion available" without ever
+    // being applied on its own. `version` is the optimistic-concurrency token
+    // for administrator reapproval. Rows are absent until the first verified
+    // evaluation; the backfill intentionally invents no ceiling for a member
+    // whose provider facts are not currently verified.
+    version: 21,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS workspace_member_capability (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        user_id TEXT NOT NULL REFERENCES app_user(id),
+        ceiling TEXT NOT NULL,
+        available_ceiling TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('approved', 'downgraded')),
+        reason TEXT,
+        set_version INTEGER NOT NULL,
+        verified_at TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        UNIQUE (workspace_id, user_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_workspace_member_capability_scope
+        ON workspace_member_capability(enterprise_id, workspace_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_workspace_member_capability_user
+        ON workspace_member_capability(enterprise_id, user_id)`,
+    ],
+  },
 ];
 
 /** Highest schema version this build knows how to run. */

@@ -92,6 +92,16 @@ const AUTH_ENDPOINTS: Array<[method: string, path: string]> = [
   ["put", "/api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}/role"],
   ["post", "/api/v1/admin/users/{user_id}/suspend"],
   ["post", "/api/v1/admin/users/{user_id}/activate"],
+  // DAT-276: repository capability ceiling projection and reapproval.
+  ["get", "/api/v1/workspaces/{workspace_id}/capabilities"],
+  [
+    "get",
+    "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}/capability-ceiling",
+  ],
+  [
+    "post",
+    "/api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}/capability-ceiling",
+  ],
 ];
 
 /** Workspace-scoped task family (DAT-244). */

@@ -44,7 +44,34 @@ export {
 
 export { computeEffectiveAccess } from "./effective-access.js";
 
-export type { AccessGate, AccessGateDeps, AccessRequest, AuthorityEpoch } from "./access-gate.js";
+export type {
+  RepositoryCapabilityEvidence,
+  RoleCapabilityResult,
+} from "./repository-capabilities.js";
+export {
+  grantSupportedByCeiling,
+  intersectRepositoryCapabilities,
+  normalizeCapabilitySet,
+  providerRoleCapabilities,
+  requiredCapabilityForAction,
+} from "./repository-capabilities.js";
+
+export type {
+  CapabilityCeilingDeps,
+  CapabilityCeilingEvaluation,
+  CapabilityCeilingService,
+  CapabilityCeilingView,
+  ReapproveCeilingRequest,
+} from "./capability-ceiling.js";
+export { capabilityBlockSummary, createCapabilityCeilingService } from "./capability-ceiling.js";
+
+export type {
+  AccessGate,
+  AccessGateDeps,
+  AccessRequest,
+  AuthorityEpoch,
+  CapabilityProjection,
+} from "./access-gate.js";
 export { AccessDeniedError, createAccessGate, createAuthorityEpoch } from "./access-gate.js";
 
 export type { RevocationEffects, RevocationTarget } from "./revocation.js";

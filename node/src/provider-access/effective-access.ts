@@ -16,8 +16,15 @@
  *   stale one — blocked pending reconciliation, never silently allowed.
  * - A required capability grant must be live (unrevoked and unexpired) at
  *   decision time; grants are re-read, never trusted from a cached verdict.
+ * - The capability ceiling (DAT-276) is the intersection of verified provider
+ *   capabilities across every repository of the workspace. An unverifiable
+ *   ceiling blocks *every* workspace action for its duration and is never
+ *   recorded as a confirmed downgrade; a confirmed loss denies everything
+ *   until an audited administrator reapproval; a verified ceiling must contain
+ *   the capability the action needs.
  */
 
+import { requiredCapabilityForAction } from "./repository-capabilities.js";
 import {
   DEFAULT_ACTION_POLICY,
   WORKSPACE_ROLE_RANK,
@@ -76,6 +83,40 @@ export function computeEffectiveAccess(input: EffectiveAccessInput): AccessDecis
     return { ...base, allowed: false, reason: "authority_unknown", requires_reconciliation: true };
   }
 
+  // 4. The repository capability ceiling (DAT-276, ADR-0011): the intersection
+  //    of verified provider capabilities over every repository. It comes after
+  //    the more specific single-repository facts above (no subject, removed,
+  //    unknown) and before action sensitivity, because an unverifiable ceiling
+  //    blocks the *whole* workspace — including ordinary reads — and is never
+  //    stored as a confirmed downgrade.
+  const ceiling = input.capability_ceiling;
+  if (ceiling !== undefined) {
+    const capabilityBase = { ...base, capability_reason: ceiling.reason };
+    if (ceiling.persistence_failed === true) {
+      return {
+        ...capabilityBase,
+        allowed: false,
+        reason: "capability_persistence",
+        requires_reconciliation: true,
+      };
+    }
+    if (ceiling.state === "unverified") {
+      return {
+        ...capabilityBase,
+        allowed: false,
+        reason: "capability_unverified",
+        requires_reconciliation: true,
+      };
+    }
+    if (ceiling.state === "confirmed_loss") {
+      return { ...capabilityBase, allowed: false, reason: "capability_loss" };
+    }
+    const required = requiredCapabilityForAction(input.action);
+    if (!ceiling.capabilities.includes(required)) {
+      return { ...capabilityBase, allowed: false, reason: "capability_ceiling" };
+    }
+  }
+
   // Verification freshness. An aged verification degrades authority to
   // "stale" regardless of what the last sync recorded.
   const verifiedAt = input.repository.last_verified_at
@@ -106,7 +147,7 @@ export function computeEffectiveAccess(input: EffectiveAccessInput): AccessDecis
     // fall through
   }
 
-  // 4. Action policy: capability grants are re-checked live for actions that
+  // 5. Action policy: capability grants are re-checked live for actions that
   //    need one. An expired or revoked grant denies — never "probably fine".
   if (policy.requires_capability) {
     if (!input.capability_grants.includes(policy.requires_capability)) {

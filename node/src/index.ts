@@ -43,11 +43,14 @@ import type { ControlPlaneDb } from "./control-plane/index.js";
 import {
   createIdentityRepositories,
   createInvitationRepository,
+  createMemberCapabilityRepository,
   createProviderAccessRepositories,
   createRepositories,
   createWorkspaceRepositorySetRepository,
   openControlPlaneDb,
 } from "./control-plane/index.js";
+import { createAuthorityEpoch } from "./provider-access/access-gate.js";
+import { createCapabilityCeilingService } from "./provider-access/capability-ceiling.js";
 import type { AuthenticatedPrincipal, RequestScopeDeps } from "./control-plane/request-scope.js";
 import { resolveRequestScope } from "./control-plane/request-scope.js";
 import { DashboardAuditLog, DashboardService } from "./dashboard/index.js";
@@ -606,6 +609,22 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       workspaces: repos.workspaces,
       enterpriseUsers: identity.enterpriseUsers,
     };
+    // Provider authority (DAT-203) and the repository capability ceiling
+    // (DAT-276) share the control plane with identity, and one authority epoch
+    // so a confirmed capability reduction closes live streams in this process
+    // while the persisted ceiling applies in every process.
+    const providerAccess = createProviderAccessRepositories(controlPlane);
+    const workspaceRepositorySets = createWorkspaceRepositorySetRepository(controlPlane);
+    const providerEpoch = createAuthorityEpoch();
+    const capabilityCeilings = createCapabilityCeilingService({
+      repositorySets: workspaceRepositorySets,
+      access: providerAccess,
+      memberships: repos.memberships,
+      providerInstances: repos.providerInstances,
+      identity,
+      capabilities: createMemberCapabilityRepository(controlPlane),
+      epoch: providerEpoch,
+    });
     auth = new AuthService({
       repos,
       identity,
@@ -623,11 +642,11 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
         ? { providerOAuth: new ProviderOAuth({ fetchImpl: options.authFetchImpl }) }
         : {}),
       ...(options.authDnsLookup !== undefined ? { lookup: options.authDnsLookup } : {}),
+      capabilityCeilings,
     });
     // Provider authority (DAT-203) shares the control plane with identity:
     // the request boundary enforces effective access for session requests
     // whenever a service integration is installed for this workspace.
-    const providerAccess = createProviderAccessRepositories(controlPlane);
     // Workspace memory retrieval (DAT-236) shares the control-plane store. The
     // service is read-only over memory: it assembles bounded, cited bundles and
     // records audit rows; it cannot promote, edit, or grant anything.
@@ -690,6 +709,8 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       users: identity.users,
       identities: identity.identities,
       enterpriseUsers: identity.enterpriseUsers,
+      capabilityCeilings,
+      epoch: providerEpoch,
       enterpriseId: config.enterpriseId,
       workspaceId: config.workspaceId,
     });
@@ -809,6 +830,17 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
           access: providerAccess,
           workspaces: repos.workspaces,
           enterprise_id: config.enterpriseId,
+          // Re-check the requester's capability immediately before each
+          // provider write (DAT-276): a recorded "was authorized" boolean does
+          // not survive a confirmed downgrade.
+          requesterCapability: (input) => {
+            const decision = providerAuthority?.check(
+              input.user_id,
+              "delivery",
+              input.workspace_id,
+            );
+            return decision?.allowed === true;
+          },
         }),
         auditAvailable: () => collaboration.auditAvailable(),
       }),
@@ -851,7 +883,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       // DAT-281: the workspace's versioned repository set is cross-checked on
       // every workspace-scoped run binding. A multi-repository or missing set
       // fails closed instead of dispatching against one repository.
-      repositorySets: createWorkspaceRepositorySetRepository(controlPlane),
+      repositorySets: workspaceRepositorySets,
     });
     // The invitation digest key is deployment-owned and durable: a file next
     // to the control-plane database unless configured explicitly. An ephemeral
@@ -1001,7 +1033,14 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
         }
       : {}),
     ...(dashboard !== undefined && auth !== undefined && requestScopeDeps !== undefined
-      ? { dashboard: { auth, service: dashboard, scope: requestScopeDeps } }
+      ? {
+          dashboard: {
+            auth,
+            service: dashboard,
+            scope: requestScopeDeps,
+            ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
+          },
+        }
       : {}),
     ...(config.publicOrigin !== undefined ? { publicOrigin: config.publicOrigin } : {}),
   });

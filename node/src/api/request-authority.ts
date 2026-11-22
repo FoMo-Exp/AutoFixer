@@ -34,6 +34,7 @@ import type { IdentityRepository, UserRepository } from "../control-plane/identi
 import type { EnterpriseUserRepository } from "../control-plane/enterprise-user-repositories.js";
 import type { MembershipRepository, WorkspaceRepository } from "../control-plane/repositories.js";
 import type { EnterpriseId, WorkspaceId, WorkspaceScope } from "../control-plane/types.js";
+import type { CapabilityCeilingService } from "../provider-access/capability-ceiling.js";
 import {
   createAccessGate,
   createAuthorityEpoch,
@@ -43,6 +44,7 @@ import {
   type ActionKind,
   type ActionPolicy,
   type AuthorityEpoch,
+  type CapabilityProjection,
 } from "../provider-access/index.js";
 import { ApiError } from "./errors.js";
 
@@ -71,8 +73,20 @@ export interface RequestAuthorityDeps {
   identities: IdentityRepository;
   /** Enterprise membership/status gate evaluated before provider authority. */
   enterpriseUsers: EnterpriseUserRepository;
+  /**
+   * Verified repository capability ceilings (DAT-276). Required, not optional:
+   * every request is additionally bounded by the intersection of provider
+   * capabilities over the workspace's repository set.
+   */
+  capabilityCeilings: CapabilityCeilingService;
   enterpriseId: EnterpriseId;
   workspaceId: WorkspaceId;
+  /**
+   * Shared authority epoch. Supplying the deployment's epoch (DAT-276) means a
+   * confirmed capability reduction signaled by the ceiling service closes live
+   * SSE subscriptions in this process; decisions themselves are never cached.
+   */
+  epoch?: AuthorityEpoch;
   clock?: () => Date;
   freshWindowMs?: number;
   staleAfterMs?: number;
@@ -96,6 +110,11 @@ export interface RequestAuthority {
   subscribe(listener: () => void): () => void;
   /** Shared authority-change signal; revoke/reconcile/events bump it. */
   readonly epoch: AuthorityEpoch;
+  /**
+   * The caller's workspace capability projection (DAT-276): advisory snapshot
+   * for navigation only — every request is still checked object by object.
+   */
+  projection(userId: string, workspaceId?: WorkspaceId): CapabilityProjection;
 }
 
 /**
@@ -212,7 +231,7 @@ function apiErrorForDenial(decision: AccessDecision): ApiError {
 }
 
 export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAuthority {
-  const epoch = createAuthorityEpoch();
+  const epoch = deps.epoch ?? createAuthorityEpoch();
   const gate: AccessGate = createAccessGate({
     access: deps.access,
     memberships: deps.memberships,
@@ -220,6 +239,7 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
     users: deps.users,
     identities: deps.identities,
     enterpriseUsers: deps.enterpriseUsers,
+    capabilityCeilings: deps.capabilityCeilings,
     epoch,
     policy: HTTP_ACTION_POLICY,
     ...(deps.clock ? { clock: deps.clock } : {}),
@@ -288,6 +308,9 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
     },
     subscribe(listener: () => void): () => void {
       return epoch.subscribe(listener);
+    },
+    projection(userId: string, workspaceId?: WorkspaceId): CapabilityProjection {
+      return gate.projection(scopeFor(userId, workspaceId), userId);
     },
   };
 }
