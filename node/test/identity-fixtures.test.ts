@@ -97,6 +97,13 @@ interface FixtureCase {
 
 const FIXTURES: FixtureCase[] = [
   { file: "session.json", pointer: COMPONENT("SessionInfo") },
+  { file: "enterprise-user.json", pointer: COMPONENT("EnterpriseUser") },
+  { file: "enterprise-user-pending.json", pointer: COMPONENT("EnterpriseUser") },
+  { file: "created-enterprise-user.json", pointer: COMPONENT("CreatedEnterpriseUser") },
+  {
+    file: "enterprise-user-page.json",
+    pointer: responseSchema("/api/v1/admin/enterprises/{enterprise_id}/users", "get"),
+  },
   { file: "login-provider.json", pointer: COMPONENT("LoginProvider") },
   { file: "workspace.json", pointer: COMPONENT("Workspace") },
   { file: "workspace-page.json", pointer: responseSchema("/api/v1/workspaces", "get") },

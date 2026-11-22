@@ -8,6 +8,7 @@ import type { OrchestratorConfig } from "../../src/config.js";
 import type { DashboardSources } from "../../src/dashboard/index.js";
 import type { InvitationRateLimits } from "../../src/api/invitation-service.js";
 import {
+  createIdentityRepositories,
   createProviderAccessRepositories,
   openControlPlaneDb,
   seedEnterprise,
@@ -334,6 +335,19 @@ export async function webLogin(app: AuthApp, returnTo?: string): Promise<LoggedI
   const info = await getJson<{ user: { id: string }; csrf_token: string }>(
     `${app.base}/api/v1/auth/session`,
     { Cookie: `fp_session=${session}` },
+  );
+  // These suites exercise surfaces built before enterprise membership existed.
+  // Production never enrolls on login; the harness grants the membership an
+  // administrator would have added, so workspace/task tests stay about their
+  // own behavior. Enterprise-claim tests drive the real pending-claim path.
+  createIdentityRepositories(app.orchestrator.controlPlane as never).enterpriseUsers.ensureActive(
+    app.enterpriseId,
+    info.body.user.id,
+    "usr_seed",
+    {
+      provider_instance_id: app.providerInstanceId,
+      subject: String(app.provider.profile.id),
+    },
   );
   return { userId: info.body.user.id, session, csrf: info.body.csrf_token };
 }

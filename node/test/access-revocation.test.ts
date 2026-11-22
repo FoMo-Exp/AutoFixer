@@ -53,6 +53,11 @@ describe("request-path authorization", () => {
     });
     // A workspace membership exists — but without a provider identity there
     // is no repository authority: login alone never grants repository access.
+    fixture.identity.enterpriseUsers.ensureActive(
+      fixture.scope.enterprise_id,
+      user.id,
+      "usr_operator",
+    );
     fixture.memberships.create(fixture.scope, { user_id: user.id, role: "admin" });
     const decision = fixture.gate.authorize({
       scope: fixture.scope,

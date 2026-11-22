@@ -105,6 +105,22 @@ export function optionalSessionActor(
   return presented !== undefined ? auth.resolveSession(presented.token) : undefined;
 }
 
+/**
+ * Session credential for an enterprise-scoped surface: authentication plus an
+ * active enterprise membership. Suspension is evaluated on the request path
+ * from stored state, so a suspended member loses tasks, memory, dashboard,
+ * collaboration, and streams on the very next request without affecting any
+ * other enterprise they belong to.
+ */
+export function requireEnterpriseSessionActor(
+  auth: AuthService,
+  req: http.IncomingMessage,
+): SessionContext {
+  const ctx = requireSessionActor(auth, req);
+  auth.assertEnterpriseActive(ctx.user.id);
+  return ctx;
+}
+
 export function adminActorOf(auth: AuthService, req: http.IncomingMessage): AdminActor {
   const header = req.headers[BOOTSTRAP_HEADER];
   const value = Array.isArray(header) ? header[0] : header;
@@ -352,6 +368,119 @@ async function handleAdmin(deps: AuthHttpDeps, ctx: AuthRouteContext): Promise<v
     return;
   }
 
+  // GET/POST /api/v1/admin/enterprises/{enterprise_id}/users
+  if (
+    segments[3] === "enterprises" &&
+    segments[5] === "users" &&
+    segments.length === 6 &&
+    (method === "GET" || method === "POST")
+  ) {
+    const actor = adminActorOf(auth, req);
+    const enterprise_id = pathSegment(segments, 4, "enterprise_id");
+    if (method === "GET") {
+      const status = url.searchParams.get("status");
+      writeJson(
+        res,
+        200,
+        auth.listEnterpriseUsers(actor, {
+          enterprise_id,
+          ...(status !== null && status.length > 0 ? { status } : {}),
+          cursor: url.searchParams.get("cursor"),
+        }),
+      );
+      return;
+    }
+    const body = await readJsonBody(req);
+    const version = body["version"];
+    if (version !== undefined && typeof version !== "number") {
+      throw new ApiError(400, "INVALID_REQUEST", "version must be a number");
+    }
+    writeJson(
+      res,
+      201,
+      auth.addEnterpriseUser(actor, {
+        enterprise_id,
+        provider_instance_id: requireString(body, "provider_instance_id"),
+        subject: requireString(body, "subject"),
+      }),
+    );
+    return;
+  }
+
+  // GET /api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}
+  if (
+    method === "GET" &&
+    segments[3] === "enterprises" &&
+    segments[5] === "users" &&
+    segments.length === 7
+  ) {
+    writeJson(
+      res,
+      200,
+      auth.getEnterpriseUser(adminActorOf(auth, req), {
+        enterprise_id: pathSegment(segments, 4, "enterprise_id"),
+        id: pathSegment(segments, 6, "enterprise_user_id"),
+      }),
+    );
+    return;
+  }
+
+  // POST /api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}/suspend|restore
+  if (
+    method === "POST" &&
+    segments[3] === "enterprises" &&
+    segments[5] === "users" &&
+    segments.length === 8 &&
+    (segments[7] === "suspend" || segments[7] === "restore")
+  ) {
+    const body = await readJsonBody(req);
+    const version = body["version"];
+    if (typeof version !== "number" || !Number.isInteger(version) || version < 0) {
+      throw new ApiError(400, "INVALID_REQUEST", "version is required");
+    }
+    writeJson(
+      res,
+      200,
+      auth.setEnterpriseUserStatus(adminActorOf(auth, req), {
+        enterprise_id: pathSegment(segments, 4, "enterprise_id"),
+        id: pathSegment(segments, 6, "enterprise_user_id"),
+        status: segments[7] === "suspend" ? "suspended" : "active",
+        version,
+      }),
+    );
+    return;
+  }
+
+  // PUT /api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}/role
+  if (
+    method === "PUT" &&
+    segments[3] === "enterprises" &&
+    segments[5] === "users" &&
+    segments.length === 8 &&
+    segments[7] === "role"
+  ) {
+    const body = await readJsonBody(req);
+    const role = requireString(body, "role");
+    if (role !== "admin" && role !== "member") {
+      throw new ApiError(400, "INVALID_REQUEST", "role must be admin or member");
+    }
+    const version = body["version"];
+    if (typeof version !== "number" || !Number.isInteger(version) || version < 0) {
+      throw new ApiError(400, "INVALID_REQUEST", "version is required");
+    }
+    writeJson(
+      res,
+      200,
+      auth.setEnterpriseUserRole(adminActorOf(auth, req), {
+        enterprise_id: pathSegment(segments, 4, "enterprise_id"),
+        id: pathSegment(segments, 6, "enterprise_user_id"),
+        role,
+        version,
+      }),
+    );
+    return;
+  }
+
   // POST /api/v1/admin/users/{user_id}/suspend|activate
   if (
     method === "POST" &&
@@ -359,17 +488,12 @@ async function handleAdmin(deps: AuthHttpDeps, ctx: AuthRouteContext): Promise<v
     (segments[5] === "suspend" || segments[5] === "activate") &&
     segments.length === 6
   ) {
-    const body = await readJsonBody(req);
-    const enterpriseId = body["enterprise_id"];
     writeJson(
       res,
       200,
       auth.setUserStatus(adminActorOf(auth, req), {
         user_id: pathSegment(segments, 4, "user_id"),
         status: segments[5] === "suspend" ? "suspended" : "active",
-        ...(typeof enterpriseId === "string" && enterpriseId.length > 0
-          ? { enterprise_id: enterpriseId }
-          : {}),
       }),
     );
     return;

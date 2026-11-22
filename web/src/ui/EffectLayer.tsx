@@ -287,11 +287,7 @@ function drawLightSurfacePaletteReveal(
       continue;
     }
 
-    const [hue, saturation, value] = colorToHsv(
-      data[pixel],
-      data[pixel + 1],
-      data[pixel + 2],
-    );
+    const [hue, saturation, value] = colorToHsv(data[pixel], data[pixel + 1], data[pixel + 2]);
     if (value < reveal.shadowFloor) {
       const [red, green, blue] = hsvToColor(
         hue,
@@ -337,19 +333,11 @@ function drawLightSurfacePaletteReveal(
     [0.86, `rgba(${amberRgb}, 0.24)`],
     [1, `rgba(${amberRgb}, 0)`],
   ]);
-  paintRadialEllipse(
-    context,
-    width,
-    height,
-    reveal,
-    reveal.coreRadiusX,
-    reveal.coreRadiusY,
-    [
-      [0, `rgba(${accentRgb}, 0.92)`],
-      [0.72, `rgba(${accentRgb}, 0.84)`],
-      [1, `rgba(${amberRgb}, 0.58)`],
-    ],
-  );
+  paintRadialEllipse(context, width, height, reveal, reveal.coreRadiusX, reveal.coreRadiusY, [
+    [0, `rgba(${accentRgb}, 0.92)`],
+    [0.72, `rgba(${accentRgb}, 0.84)`],
+    [1, `rgba(${amberRgb}, 0.58)`],
+  ]);
 }
 
 function paintRadialEllipse(

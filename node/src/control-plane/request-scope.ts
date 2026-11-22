@@ -37,6 +37,7 @@
 
 import { RequestScopeError } from "./errors.js";
 import type { SessionRepository, UserRepository } from "./identity-repositories.js";
+import type { EnterpriseUserRepository } from "./enterprise-user-repositories.js";
 import type { MembershipRepository, WorkspaceRepository } from "./repositories.js";
 import type {
   EnterpriseScope,
@@ -114,6 +115,12 @@ export interface RequestScopeDeps {
   users: UserRepository;
   memberships: MembershipRepository;
   workspaces: WorkspaceRepository;
+  /**
+   * When present, enterprise membership status is authoritative for the
+   * resolved enterprise (production wiring). A missing or suspended membership
+   * fails closed before any model dispatch or executable step.
+   */
+  enterpriseUsers?: EnterpriseUserRepository;
   /** Injected clock for tests and replay; defaults to the system clock. */
   clock?: () => Date;
 }
@@ -191,6 +198,24 @@ export function resolveRequestScope(
       "SCOPE_AMBIGUOUS",
       "more than one live workspace membership; the scope is ambiguous",
     );
+  }
+
+  if (deps.enterpriseUsers !== undefined) {
+    const enterpriseUser = deps.enterpriseUsers.getByUser(first.enterprise_id, principal.user_id);
+    if (enterpriseUser === undefined) {
+      throw new RequestScopeError(
+        403,
+        "ENTERPRISE_MEMBERSHIP_REQUIRED",
+        "an active enterprise membership is required for this scope",
+      );
+    }
+    if (enterpriseUser.status !== "active") {
+      throw new RequestScopeError(
+        403,
+        "ENTERPRISE_MEMBERSHIP_SUSPENDED",
+        "this enterprise membership is suspended",
+      );
+    }
   }
 
   return {

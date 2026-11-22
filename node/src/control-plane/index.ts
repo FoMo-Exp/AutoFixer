@@ -76,6 +76,23 @@ export type {
 export { seedEnterprise, seedProviderInstance, seedWorkspace } from "./seed.js";
 
 export type {
+  AddEnterpriseUserInput,
+  AddEnterpriseUserResult,
+  EnterpriseUser,
+  EnterpriseUserIdentity,
+  EnterpriseUserStatus,
+  EnterpriseUserUpdateResult,
+  EnsureEnterpriseUserResult,
+} from "./enterprise-user-types.js";
+
+export type {
+  EnterpriseUserListFilter,
+  EnterpriseUserPage,
+  EnterpriseUserRepository,
+} from "./enterprise-user-repositories.js";
+export { createEnterpriseUserRepository } from "./enterprise-user-repositories.js";
+
+export type {
   AppendAuthAuditInput,
   AppUser,
   AuthActorKind,

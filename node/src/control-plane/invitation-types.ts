@@ -36,7 +36,9 @@ export type InvitationDenialReason =
   | "ineligible"
   /** The point refresh against the provider could not run (fail closed). */
   | "repository_access_unverified"
-  | "already_member";
+  | "already_member"
+  /** The invitee's enterprise membership is suspended; redemption never lifts it. */
+  | "enterprise_suspended";
 
 // ---------------------------------------------------------------------------
 // Entity

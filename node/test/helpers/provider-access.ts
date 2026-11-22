@@ -121,6 +121,7 @@ export function setupFixture(
     workspaces: repos.workspaces,
     users: identity.users,
     identities: identity.identities,
+    enterpriseUsers: identity.enterpriseUsers,
     epoch,
     clock: () => clock.now,
     freshWindowMs: 15 * 60 * 1000,
@@ -169,6 +170,10 @@ export function addMember(
     subject: options.subject,
     login: options.login,
     actor_id: ACTOR,
+  });
+  fixture.identity.enterpriseUsers.ensureActive(fixture.scope.enterprise_id, user.id, ACTOR, {
+    provider_instance_id: fixture.providerInstanceId,
+    subject: options.subject,
   });
   fixture.memberships.create(fixture.scope, { user_id: user.id, role: options.role });
   return { userId: user.id };

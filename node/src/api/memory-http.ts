@@ -22,7 +22,7 @@ import type { SessionContext } from "./auth-service.js";
 import type { AuthService } from "./auth-service.js";
 import { ApiError } from "./errors.js";
 import { readJsonBody, writeJson } from "./http-util.js";
-import { requireSessionActor, requestSessionToken } from "./auth-http.js";
+import { requireEnterpriseSessionActor, requestSessionToken } from "./auth-http.js";
 import { isAuthorizedBearer } from "./auth.js";
 import type { RequestAuthority } from "./request-authority.js";
 import type {
@@ -107,7 +107,7 @@ function requireMemoryScope(deps: MemoryHttpDeps, ctx: MemoryRouteContext): Memo
   if (workspaceId === undefined || workspaceId.length === 0) {
     throw new ApiError(400, "INVALID_REQUEST", "workspace_id is required");
   }
-  const session = requireSessionActor(deps.auth, ctx.req);
+  const session = requireEnterpriseSessionActor(deps.auth, ctx.req);
   const membership = deps.auth
     .sessionInfo(session)
     .memberships.find((entry) => entry.workspace_id === workspaceId);
