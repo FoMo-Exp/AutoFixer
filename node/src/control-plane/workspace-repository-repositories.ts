@@ -393,12 +393,16 @@ class SqliteWorkspaceRepositorySetRepository implements WorkspaceRepositorySetRe
     if (binding.installation_ref === null) {
       return;
     }
+    // Only an *active* installation approves anything. A suspended or
+    // uninstalled integration fails closed here exactly as it does in the
+    // request-authority gate; treating `suspended` as approval would let a
+    // deployment whose provider access was paused keep authorizing a scope.
     const installation = this.db
       .prepare(
         `SELECT id FROM service_integration
           WHERE id = ? AND enterprise_id = ? AND workspace_id = ?
             AND provider_instance_id = ? AND repository_id = ?
-            AND install_status != 'uninstalled'`,
+            AND install_status = 'active'`,
       )
       .get(
         binding.installation_ref,
@@ -467,7 +471,12 @@ export function repositorySetSchemaPresent(db: ControlPlaneDb): boolean {
   return true;
 }
 
-/** Resolve the approved installation for a repository, if one is registered. */
+/**
+ * Resolve the approved installation for a repository, if one is registered and
+ * active. A suspended or uninstalled integration is never linked: the binding
+ * stays without one instead of pointing at an installation that cannot observe
+ * the repository.
+ */
 function approvedInstallationRef(
   db: ControlPlaneDb,
   enterpriseId: string,
@@ -479,7 +488,7 @@ function approvedInstallationRef(
     .prepare(
       `SELECT id FROM service_integration
         WHERE enterprise_id = ? AND workspace_id = ? AND provider_instance_id = ?
-          AND repository_id = ? AND install_status != 'uninstalled'
+          AND repository_id = ? AND install_status = 'active'
         ORDER BY created_at, id LIMIT 1`,
     )
     .get(enterpriseId, workspaceId, providerInstanceId, repositoryId) as { id: string } | undefined;

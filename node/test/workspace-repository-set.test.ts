@@ -28,6 +28,7 @@ import type {
   EnterpriseScope,
   ProviderInstance,
   Workspace,
+  WorkspaceRepositorySetRepository,
   WorkspaceScope,
 } from "../src/control-plane/index.js";
 
@@ -269,6 +270,71 @@ describe("workspace repository set migration (v20)", () => {
     expect(allBindings(db)).toHaveLength(1);
   });
 
+  test("the backfill mirrors workspace status so an archived workspace cannot reserve a repository", () => {
+    const db = openAt(19);
+    const fixture = seedSingleRepositoryWorkspace(db);
+    const repos = createRepositories(db);
+    // The history the workspace-level index explicitly allows: archive the
+    // original workspace, then create a new active one for the same repository.
+    repos.workspaces.archive(fixture.enterpriseScope, fixture.workspace.id, 1);
+    const replacement = repos.workspaces.create(fixture.enterpriseScope, {
+      name: "Replacement",
+      repository_id: REPOSITORY,
+      provider_instance_id: fixture.provider.id,
+    });
+
+    migrate(db);
+
+    const rows = allBindings(db);
+    expect(rows).toHaveLength(2);
+    const archivedBinding = rows.find((row) => row["workspace_id"] === fixture.workspace.id);
+    const activeBinding = rows.find((row) => row["workspace_id"] === replacement.id);
+    expect(archivedBinding?.["status"]).toBe("retired");
+    expect(activeBinding?.["status"]).toBe("active");
+
+    // The active workspace is fully usable, and the archived one authorizes
+    // nothing, so neither is silently dropped or silently granted.
+    const sets = createWorkspaceRepositorySetRepository(db);
+    const active = createRepositories(db).workspaces.getById(
+      fixture.enterpriseScope,
+      replacement.id,
+    );
+    expect(active?.status).toBe("active");
+    expect(
+      sets.getSet({
+        enterprise_id: fixture.enterpriseScope.enterprise_id,
+        actor_id: ACTOR,
+        workspace_id: replacement.id,
+      }).usable,
+    ).toBe(true);
+    const archivedSet = sets.getSet(fixture.workspaceScope);
+    expect(archivedSet.blocked_reason).toBe("WORKSPACE_ARCHIVED");
+  });
+
+  test("the backfill only links an active installation", () => {
+    const db = openAt(19);
+    const fixture = seedSingleRepositoryWorkspace(db);
+    const integration = createProviderAccessRepositories(db).integrations.create(
+      fixture.workspaceScope,
+      {
+        provider_instance_id: fixture.provider.id,
+        repository_id: REPOSITORY,
+        repository_name: "acme/AutoFixer",
+        source_credential_ref: "svc-source-1",
+        permission_visibility: "full",
+        actor_id: ACTOR,
+      },
+    );
+    db.prepare("UPDATE service_integration SET install_status = 'suspended' WHERE id = ?").run(
+      integration.id,
+    );
+
+    migrate(db);
+    const rows = allBindings(db);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!["installation_ref"]).toBeNull();
+  });
+
   test("a workspace created after the migration is born with its binding", () => {
     const db = openAt(CURRENT_SCHEMA_VERSION);
     const fixture = seedSingleRepositoryWorkspace(db);
@@ -342,6 +408,140 @@ describe("legacy single-repository path", () => {
     expect(after.bindings[0]!.repository_id).toBe("github:repo:5150");
     expect(after.set_version).toBe(before.set_version + 1);
     expect(() => sets.getSetAtVersion(fixture.workspaceScope, before.set_version)).toThrow(
+      expect.objectContaining({ code: "REPOSITORY_SET_VERSION_CONFLICT" }),
+    );
+  });
+});
+
+describe("lifecycle atomicity and concurrency", () => {
+  test("archive and restore commit the workspace and its bindings together", () => {
+    const db = openAt(CURRENT_SCHEMA_VERSION);
+    const fixture = seedSingleRepositoryWorkspace(db);
+    const repos = createRepositories(db);
+    const sets = createWorkspaceRepositorySetRepository(db);
+
+    // Any failure while retiring bindings must roll the workspace status back:
+    // an archived workspace must never keep an active binding (and vice versa).
+    db.exec(`CREATE TRIGGER test_block_binding_update
+        BEFORE UPDATE ON workspace_repository_binding
+        BEGIN SELECT RAISE(ABORT, 'injected binding failure'); END`);
+    expect(() =>
+      repos.workspaces.archive(fixture.enterpriseScope, fixture.workspace.id, 1),
+    ).toThrow(/injected binding failure/);
+    expect(repos.workspaces.getById(fixture.enterpriseScope, fixture.workspace.id)?.status).toBe(
+      "active",
+    );
+    expect(sets.listBindings(fixture.workspaceScope)).toHaveLength(1);
+    db.exec("DROP TRIGGER test_block_binding_update");
+
+    // And the same for reactivation, which a retry could not otherwise repair.
+    repos.workspaces.archive(fixture.enterpriseScope, fixture.workspace.id, 1);
+    expect(sets.listBindings(fixture.workspaceScope)).toHaveLength(0);
+    db.exec(`CREATE TRIGGER test_block_binding_update
+        BEFORE UPDATE ON workspace_repository_binding
+        BEGIN SELECT RAISE(ABORT, 'injected binding failure'); END`);
+    expect(() =>
+      repos.workspaces.restore(fixture.enterpriseScope, fixture.workspace.id, 2),
+    ).toThrow(/injected binding failure/);
+    expect(repos.workspaces.getById(fixture.enterpriseScope, fixture.workspace.id)?.status).toBe(
+      "archived",
+    );
+    expect(sets.listBindings(fixture.workspaceScope, { include_retired: true })).toHaveLength(1);
+    db.exec("DROP TRIGGER test_block_binding_update");
+
+    repos.workspaces.restore(fixture.enterpriseScope, fixture.workspace.id, 2);
+    expect(sets.getSet(fixture.workspaceScope).usable).toBe(true);
+  });
+
+  test("a transfer between the snapshot read and the set read cannot dispatch the old repository", () => {
+    const db = openAt(CURRENT_SCHEMA_VERSION);
+    const fixture = seedSingleRepositoryWorkspace(db);
+    const repos = createRepositories(db);
+    const staleSnapshot = repos.workspaces.getById(fixture.enterpriseScope, fixture.workspace.id)!;
+
+    // Another connection completes the transfer after the resolver's snapshot.
+    repos.workspaces.transfer(
+      fixture.enterpriseScope,
+      fixture.workspace.id,
+      { repository_id: "github:repo:5150", provider_instance_id: fixture.provider.id },
+      1,
+    );
+    const config = {
+      repositoryId: staleSnapshot.repository_id,
+      repositoryUrl: "https://github.com/acme/AutoFixer.git",
+      baseRef: "main",
+      baseSha: "a".repeat(40),
+      actorId: ACTOR,
+      enterpriseId: fixture.enterpriseScope.enterprise_id,
+    } as unknown as OrchestratorConfig;
+    const resolver = createWorkspaceRunBindingResolver({
+      config,
+      // A snapshot reader that still reports the pre-transfer row.
+      workspaces: { getById: () => staleSnapshot } as unknown as ReturnType<
+        typeof createRepositories
+      >["workspaces"],
+      providerInstances: repos.providerInstances,
+      repositorySets: createWorkspaceRepositorySetRepository(db),
+    });
+    expect(() => resolver.resolve(fixture.workspace.id)).toThrow(
+      expect.objectContaining({ code: "REPOSITORY_BINDING_UNAVAILABLE" }),
+    );
+
+    // With the deployment pinned to the *current* repository the verified
+    // binding wins, and the stale snapshot is never the dispatched value.
+    const current = createWorkspaceRunBindingResolver({
+      config: { ...config, repositoryId: "github:repo:5150" } as unknown as OrchestratorConfig,
+      workspaces: { getById: () => staleSnapshot } as unknown as ReturnType<
+        typeof createRepositories
+      >["workspaces"],
+      providerInstances: repos.providerInstances,
+      repositorySets: createWorkspaceRepositorySetRepository(db),
+    });
+    expect(current.resolve(fixture.workspace.id).repositoryId).toBe("github:repo:5150");
+  });
+
+  test("a transfer committing during resolution is refused, not dispatched", () => {
+    const db = openAt(CURRENT_SCHEMA_VERSION);
+    const fixture = seedSingleRepositoryWorkspace(db);
+    const repos = createRepositories(db);
+    const real = createWorkspaceRepositorySetRepository(db);
+    let transferred = false;
+    // The set is re-read at the version just validated, so a transfer that
+    // lands between resolution and dispatch invalidates the decision.
+    const racing: WorkspaceRepositorySetRepository = Object.assign(
+      // Prototype-delegating wrapper: every other read stays the real store.
+      Object.create(real) as WorkspaceRepositorySetRepository,
+      {
+        requireSingleRepository: (scope: WorkspaceScope) => {
+          const scoped = real.requireSingleRepository(scope);
+          if (!transferred) {
+            transferred = true;
+            repos.workspaces.transfer(
+              fixture.enterpriseScope,
+              fixture.workspace.id,
+              { repository_id: "github:repo:5150", provider_instance_id: fixture.provider.id },
+              1,
+            );
+          }
+          return scoped;
+        },
+      },
+    );
+    const config = {
+      repositoryId: REPOSITORY,
+      repositoryUrl: "https://github.com/acme/AutoFixer.git",
+      baseRef: "main",
+      baseSha: "a".repeat(40),
+      actorId: ACTOR,
+      enterpriseId: fixture.enterpriseScope.enterprise_id,
+    } as unknown as OrchestratorConfig;
+    const resolver = createWorkspaceRunBindingResolver({
+      config,
+      workspaces: repos.workspaces,
+      providerInstances: repos.providerInstances,
+      repositorySets: racing,
+    });
+    expect(() => resolver.resolve(fixture.workspace.id)).toThrow(
       expect.objectContaining({ code: "REPOSITORY_SET_VERSION_CONFLICT" }),
     );
   });
@@ -460,6 +660,37 @@ describe("fail-closed binding evidence", () => {
       integration.id,
     );
     expect(() => sets.getSet(fixture.workspaceScope)).toThrow(
+      expect.objectContaining({ code: "INSTALLATION_NOT_APPROVED" }),
+    );
+  });
+
+  test("a suspended installation is not approval, exactly as in the request gate", () => {
+    const db = openAt(CURRENT_SCHEMA_VERSION);
+    const fixture = seedSingleRepositoryWorkspace(db);
+    const integration = createProviderAccessRepositories(db).integrations.create(
+      fixture.workspaceScope,
+      {
+        provider_instance_id: fixture.provider.id,
+        repository_id: REPOSITORY,
+        repository_name: "acme/AutoFixer",
+        source_credential_ref: "svc-source-1",
+        permission_visibility: "full",
+        actor_id: ACTOR,
+      },
+    );
+    db.prepare(
+      "UPDATE workspace_repository_binding SET installation_ref = ? WHERE workspace_id = ?",
+    ).run(integration.id, fixture.workspace.id);
+    const sets = createWorkspaceRepositorySetRepository(db);
+    expect(sets.getSet(fixture.workspaceScope).usable).toBe(true);
+
+    db.prepare("UPDATE service_integration SET install_status = 'suspended' WHERE id = ?").run(
+      integration.id,
+    );
+    expect(() => sets.getSet(fixture.workspaceScope)).toThrow(
+      expect.objectContaining({ code: "INSTALLATION_NOT_APPROVED" }),
+    );
+    expect(() => resolverFor(db, fixture).resolve(fixture.workspace.id)).toThrow(
       expect.objectContaining({ code: "INSTALLATION_NOT_APPROVED" }),
     );
   });

@@ -581,25 +581,31 @@ class SqliteWorkspaceRepository implements WorkspaceRepository {
       throw new ConflictError(`Workspace ${id} is already archived`);
     }
     const now = nowIso();
-    const result = this.db
-      .prepare(
-        `UPDATE workspace SET status = 'archived', updated_at = ?, updated_by = ?, version = version + 1
-         WHERE id = ? AND enterprise_id = ? AND version = ?`,
-      )
-      .run(
-        now,
-        scope.actor_id,
-        id,
-        scope.enterprise_id,
-        expectedVersion,
-      ) as unknown as VersionedUpdateResult;
-    requireVersionMatch("Workspace", id, result, expectedVersion, this.db, "workspace");
-    // An archived workspace does not keep its repositories bound: the set
-    // stays intact but is retired, so another workspace may take the
-    // repository without deleting history (DAT-281).
-    if (repositorySetSchemaPresent(this.db)) {
-      setWorkspaceBindingsStatus(this.db, scope, id, "retired");
-    }
+    const retiresBindings = repositorySetSchemaPresent(this.db);
+    // The workspace status and its bindings are one state change: an archived
+    // workspace must never be readable while its binding still reserves the
+    // repository (or vice versa), so both updates commit or neither does.
+    runInTransaction(this.db, () => {
+      const result = this.db
+        .prepare(
+          `UPDATE workspace SET status = 'archived', updated_at = ?, updated_by = ?, version = version + 1
+           WHERE id = ? AND enterprise_id = ? AND version = ?`,
+        )
+        .run(
+          now,
+          scope.actor_id,
+          id,
+          scope.enterprise_id,
+          expectedVersion,
+        ) as unknown as VersionedUpdateResult;
+      requireVersionMatch("Workspace", id, result, expectedVersion, this.db, "workspace");
+      // An archived workspace does not keep its repositories bound: the set
+      // stays intact but is retired, so another workspace may take the
+      // repository without deleting history (DAT-281).
+      if (retiresBindings) {
+        setWorkspaceBindingsStatus(this.db, scope, id, "retired");
+      }
+    });
     return requireRow("Workspace", id, this.getById(scope, id));
   }
 
@@ -624,23 +630,29 @@ class SqliteWorkspaceRepository implements WorkspaceRepository {
       );
     }
     const now = nowIso();
+    const reactivatesBindings = repositorySetSchemaPresent(this.db);
     try {
-      const result = this.db
-        .prepare(
-          `UPDATE workspace SET status = 'active', updated_at = ?, updated_by = ?, version = version + 1
-           WHERE id = ? AND enterprise_id = ? AND version = ?`,
-        )
-        .run(
-          now,
-          scope.actor_id,
-          id,
-          scope.enterprise_id,
-          expectedVersion,
-        ) as unknown as VersionedUpdateResult;
-      requireVersionMatch("Workspace", id, result, expectedVersion, this.db, "workspace");
-      if (repositorySetSchemaPresent(this.db)) {
-        setWorkspaceBindingsStatus(this.db, scope, id, "active");
-      }
+      // Symmetric with archive: reactivating the workspace and its bindings is
+      // one state change, so a crash can never leave an active workspace whose
+      // bindings are still retired (which a retry could not repair).
+      runInTransaction(this.db, () => {
+        const result = this.db
+          .prepare(
+            `UPDATE workspace SET status = 'active', updated_at = ?, updated_by = ?, version = version + 1
+             WHERE id = ? AND enterprise_id = ? AND version = ?`,
+          )
+          .run(
+            now,
+            scope.actor_id,
+            id,
+            scope.enterprise_id,
+            expectedVersion,
+          ) as unknown as VersionedUpdateResult;
+        requireVersionMatch("Workspace", id, result, expectedVersion, this.db, "workspace");
+        if (reactivatesBindings) {
+          setWorkspaceBindingsStatus(this.db, scope, id, "active");
+        }
+      });
     } catch (error) {
       if (String(error).includes("UNIQUE")) {
         // Pre-check passed but a concurrent restore/create won the race on the

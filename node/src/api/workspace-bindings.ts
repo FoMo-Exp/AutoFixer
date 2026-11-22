@@ -70,20 +70,41 @@ export function createWorkspaceRunBindingResolver(
           "The workspace's provider instance is not registered for this enterprise",
         );
       }
-      // The set must resolve to exactly this workspace's one repository, and
-      // must agree with the immutable identity used below.
-      requireSingleRepositoryBinding(deps, workspace);
-      if (workspace.repository_id !== deps.config.repositoryId) {
+      // The set is the authority from here on, not the snapshot above: a
+      // repository transfer on another connection can commit between the two
+      // reads, and the verified binding is the only value that is guaranteed to
+      // match the set version the authorization is formed against. The stale
+      // snapshot is never used to decide which repository to dispatch.
+      const scoped = requireSingleRepositoryBinding(deps, workspace);
+      if (scoped.binding.repository_id !== deps.config.repositoryId) {
         throw new ApiError(
           409,
           "REPOSITORY_BINDING_UNAVAILABLE",
           "This deployment has no pinned base revision for the workspace's repository",
         );
       }
+      // Re-read the set at the version just validated: if a transfer committed
+      // while this binding was resolved, the decision is stale and refused
+      // rather than dispatched against either repository.
+      try {
+        deps.repositorySets.getSetAtVersion(
+          {
+            enterprise_id: deps.config.enterpriseId,
+            actor_id: deps.config.actorId,
+            workspace_id: scoped.workspace_id,
+          },
+          scoped.set_version,
+        );
+      } catch (error) {
+        if (error instanceof WorkspaceRepositorySetError) {
+          throw new ApiError(error.status, error.code, error.message);
+        }
+        throw error;
+      }
       return {
-        enterpriseId: workspace.enterprise_id,
-        workspaceId: workspace.id,
-        repositoryId: deps.config.repositoryId,
+        enterpriseId: scoped.enterprise_id,
+        workspaceId: scoped.workspace_id,
+        repositoryId: scoped.binding.repository_id,
         repositoryUrl: deps.config.repositoryUrl,
         baseRef: deps.config.baseRef,
         baseSha: deps.config.baseSha,
@@ -101,6 +122,9 @@ export function createWorkspaceRunBindingResolver(
  * unapproved provider instance or installation, and a multi-repository set all
  * refuse here rather than letting a run proceed against one repository of
  * several (ADR-0011, DAT-281).
+ *
+ * The returned scope — set version plus verified binding — is what the caller
+ * must dispatch against; the earlier workspace snapshot carries no authority.
  */
 function requireSingleRepositoryBinding(deps: WorkspaceRunBindingDeps, workspace: Workspace) {
   try {
@@ -108,7 +132,7 @@ function requireSingleRepositoryBinding(deps: WorkspaceRunBindingDeps, workspace
       enterprise_id: deps.config.enterpriseId,
       actor_id: deps.config.actorId,
       workspace_id: workspace.id,
-    }).binding;
+    });
   } catch (error) {
     if (error instanceof WorkspaceRepositorySetError) {
       // The read boundary's code and status are already the answer the caller

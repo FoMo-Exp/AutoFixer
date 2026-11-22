@@ -17,7 +17,7 @@ A workspace owns a **versioned set** of repository bindings
 | `enterprise_id`        | Tenant scope. Every read is filtered by it, never by a client-supplied value. |
 | `workspace_id`         | Owning workspace.                                                             |
 | `provider_instance_id` | Administrator-approved provider instance of that enterprise.                  |
-| `installation_ref`     | Approved, repository-scoped server integration (`service_integration.id`).    |
+| `installation_ref`     | Approved, repository-scoped **active** server integration (`service_integration.id`). |
 | `repository_id`        | Immutable provider-assigned repository identity. URLs and names are metadata. |
 | `position`             | 1-based order; position 1 is the workspace's legacy binding.                  |
 | `status`               | `active` or `retired` (retired while its workspace is archived).              |
@@ -34,6 +34,10 @@ Constraints, all enforced by storage rather than convention:
 - `workspace.repository_set_version` — the optimistic-concurrency token for the
   whole set, incremented by a repository transfer. An access decision formed
   against version _N_ is refused against version _N+1_.
+- Workspace lifecycle and its bindings commit together: `archive` retires the
+  bindings and `restore` reactivates them in the same transaction as the
+  workspace status, so a crash cannot leave an archived workspace holding the
+  repository or an active workspace whose bindings are still retired.
 
 `workspace.repository_id` / `provider_instance_id` remain: they are the
 deployment's pinned single-repository binding and the values the running
@@ -56,8 +60,17 @@ resolved in favour of either side.
 - `currentSetVersion(scope)`.
 
 Every read verifies each binding against live `provider_instance` and
-`service_integration` rows in the same enterprise and workspace. Reads never
-retry, degrade, or fall back to a configured repository.
+`service_integration` rows in the same enterprise and workspace, and an
+installation reference counts only while `install_status = 'active'` — a
+suspended integration fails closed exactly as it does in the request-authority
+gate. Reads never retry, degrade, or fall back to a configured repository.
+
+Consumers must use the value these reads return, not an earlier workspace
+snapshot: `requireSingleRepository` reports the verified binding and the set
+version it was validated at, and the legacy run-binding resolver re-reads the
+set at that version before dispatch. A repository transfer that commits during
+resolution therefore causes `REPOSITORY_SET_VERSION_CONFLICT` instead of a run
+against the pre-transfer repository.
 
 ## 3. Fail-closed refusals
 
@@ -126,8 +139,15 @@ Rules:
 - `v20` adds `workspace.repository_set_version`, the binding table and the
   gate. It never edits a previously published migration.
 - Backfill copies each workspace's own immutable provider/repository identity
-  as binding #1, and links `installation_ref` only when an approved integration
-  for exactly that repository already exists. It invents nothing, adds no
+  as binding #1. `status` mirrors the workspace (`archived` workspaces get a
+  `retired` binding), because the active-binding index is enterprise-wide and
+  the workspace-level index explicitly allows an archived and an active
+  workspace to share a repository. `installation_ref` is linked only for an
+  **active** integration covering exactly that repository; a suspended or
+  uninstalled integration is never approval. The backfill has no
+  `INSERT OR IGNORE`: an active conflict is unreachable given the
+  workspace-level index, so one would fail and roll back the migration instead
+  of silently dropping a workspace's binding. It invents nothing, adds no
   member, and grants nothing.
 - Ambiguous history is reported, not repaired: a workspace whose binding
   disagrees with its legacy columns surfaces as

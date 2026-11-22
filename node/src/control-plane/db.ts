@@ -1592,7 +1592,20 @@ const MIGRATIONS: Migration[] = [
         ON workspace_repository_binding(workspace_id, status)`,
       `CREATE INDEX IF NOT EXISTS idx_workspace_binding_repository
         ON workspace_repository_binding(enterprise_id, repository_id)`,
-      `INSERT OR IGNORE INTO workspace_repository_binding
+      // Backfill: binding #1 carries the workspace's own immutable identity.
+      // `status` mirrors the workspace, because the active-binding index is
+      // enterprise-wide: an archived workspace must retire its binding instead
+      // of reserving the repository (the workspace-level unique index already
+      // allows an archived and an active workspace to share a repository).
+      // Only an *active* installation may be linked: a suspended integration
+      // is not approval (see `request-authority`/access gate), so it stays
+      // unlinked and the read path treats it as "no installation".
+      //
+      // No `OR IGNORE`: given the workspace-level unique index an active
+      // conflict is unreachable, so if one ever appears the migration must
+      // fail, roll back and surface the data problem instead of dropping a
+      // workspace's binding.
+      `INSERT INTO workspace_repository_binding
          (id, enterprise_id, workspace_id, provider_instance_id, installation_ref,
           repository_id, repository_url, repository_name, position, status,
           created_at, updated_at, created_by, updated_by, version)
@@ -1603,9 +1616,10 @@ const MIGRATIONS: Migration[] = [
                   AND si.workspace_id = w.id
                   AND si.provider_instance_id = w.provider_instance_id
                   AND si.repository_id = w.repository_id
-                  AND si.install_status != 'uninstalled'
+                  AND si.install_status = 'active'
                 ORDER BY si.created_at, si.id LIMIT 1),
-              w.repository_id, NULL, NULL, 1, 'active',
+              w.repository_id, NULL, NULL, 1,
+              CASE WHEN w.status = 'active' THEN 'active' ELSE 'retired' END,
               w.created_at, w.updated_at, w.created_by, w.updated_by, 1
        FROM workspace w`,
       // Immutable deployment feature gates. A row is never updated or
