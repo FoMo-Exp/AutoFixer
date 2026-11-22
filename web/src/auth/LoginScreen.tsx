@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
 import type { IdentityClient, LoginProvider, WorkspaceSession } from "../api/identity";
 import type { AuthStatus } from "./controller";
 import { Select } from "../ui/Select";
 import { describeError } from "../workspaces/identity-format";
+import { EffectLayer } from "../ui/EffectLayer";
+import { LOGIN_EFFECT_SETTINGS } from "../ui/image-effects";
 import blackHoleImage from "../assets/startup-blackhole-realistic.png";
-import { BlackHoleMotion } from "./BlackHoleMotion";
-import { CodeAccretionStreams } from "./CodeAccretionStreams";
+
+const loginVideoSrc = new URL("../../assets/login-ASIIC.mp4", import.meta.url).href;
 
 interface LoginScreenProps {
   status: AuthStatus;
@@ -27,37 +29,30 @@ export function LoginModeScreen({
   onPersonal: () => void;
 }): ReactElement {
   return (
-    <div className="auth-shell auth-mode-shell">
-      <div className="auth-mode-backdrop" aria-hidden="true" />
-      <div className="auth-mode-visual" aria-hidden="true">
-        <img className="auth-mode-black-hole" src={blackHoleImage} alt="" />
-        <BlackHoleMotion />
-        <CodeAccretionStreams />
-      </div>
-      <header className="auth-mode-header">
-        <BrandMark caption="受控修复工作台" />
-        <span>双闸门 · 人工把关</span>
-      </header>
-      <main className="auth-mode-main">
-        <section className="auth-mode-headline" aria-labelledby="auth-mode-title">
-          <h1 id="auth-mode-title">让信号穿过双闸门</h1>
-          <p>先选择工作区入口，再开始一条可审查的修复路径。</p>
-        </section>
-        <div className="auth-mode-visual-space" aria-hidden="true" />
-        <section className="auth-mode-choices" aria-label="选择登录方式">
-          <div className="auth-mode-choice-list">
-            <button className="button button-provider auth-mode-option" onClick={onEnterprise}>
-              <span className="provider-name">企业登录</span>
-              <span className="provider-host">组织 GitHub / GitLab</span>
+    <div className="auth-shell auth-login-shell" lang="en">
+      <main className="auth-login-frame">
+        <LoginEffectVisual />
+        <section
+          className="auth-login-form-column auth-login-mode-column"
+          aria-labelledby="auth-mode-title"
+        >
+          <BrandMark caption="Remediation workbench" />
+          <h1 id="auth-mode-title">Welcome back</h1>
+          <div className="auth-login-mode-options">
+            <button className="auth-login-mode-enterprise" onClick={onEnterprise}>
+              <span>Continue with organization</span>
+              <span>GitHub / GitLab</span>
             </button>
-            <button className="button button-provider auth-mode-option" onClick={onPersonal}>
-              <span className="provider-name">个人登录</span>
-              <span className="provider-host">本机个人工作区</span>
+            <div className="auth-login-divider" aria-hidden="true">
+              <span>or</span>
+            </div>
+            <button className="auth-login-mode-local" onClick={onPersonal}>
+              <span>Use a local workspace</span>
+              <span>This device only</span>
             </button>
           </div>
         </section>
       </main>
-      <footer className="auth-mode-footer">信号进入后，每一步修复都会等待人工把关。</footer>
     </div>
   );
 }
@@ -94,13 +89,73 @@ function BrandMark({ caption = "Remediation workbench" }: { caption?: string } =
 
 export function AuthLoadingScreen(): ReactElement {
   return (
-    <div className="auth-shell">
-      <main className="auth-card" aria-busy="true">
-        <BrandMark />
-        <h1>Checking your session…</h1>
-        <p className="auth-lede">Confirming workspace access with the local ForgePilot service.</p>
+    <div className="auth-shell auth-mode-shell auth-loading-shell" lang="en" aria-busy="true">
+      <div className="auth-mode-backdrop" aria-hidden="true" />
+      <div className="auth-mode-visual" aria-hidden="true">
+        <img className="auth-mode-black-hole" src={blackHoleImage} alt="" />
+      </div>
+      <div className="auth-mode-frame" aria-hidden="true" />
+      <header className="auth-mode-header">
+        <BrandMark caption="Remediation workbench" />
+      </header>
+      <main className="auth-loading-main">
+        <h1 className="visually-hidden">Confirming workspace session</h1>
+        <div className="auth-loading" role="status" aria-live="polite">
+          <span className="auth-loading-label">Confirming workspace session</span>
+          <span className="auth-loading-bar" aria-hidden="true" />
+        </div>
       </main>
+      <footer className="auth-mode-footer">
+        <span>Connecting to the local ForgePilot service</span>
+        <span className="auth-mode-protocol">forgepilot-api/v1</span>
+      </footer>
     </div>
+  );
+}
+
+function LoginEffectVisual(): ReactElement {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  return (
+    <section className="auth-login-visual-column" aria-label="ForgePilot introduction">
+      <div className="auth-login-media auth-login-media-full">
+        <video
+          aria-hidden="true"
+          autoPlay
+          className="auth-login-video"
+          loop
+          muted
+          playsInline
+          preload="metadata"
+          ref={videoRef}
+          src={loginVideoSrc}
+        />
+        <EffectLayer
+          sourceRef={videoRef}
+          settings={LOGIN_EFFECT_SETTINGS}
+          lightSurfacePaletteReveal={{
+            centerX: 0.5,
+            centerY: 0.5,
+            radiusX: 0.56,
+            radiusY: 0.54,
+            feather: 0.22,
+            coreRadiusX: 0.26,
+            coreRadiusY: 0.29,
+            shadowFloor: 0.84,
+            shadowSaturation: 0.84,
+          }}
+        />
+        <div className="auth-login-media-copy">
+          <span>ForgePilot remediation workspace</span>
+          <h2>
+            Repairs stay
+            <br />
+            in human hands.
+          </h2>
+          <p>Each run is bounded. Every change stays reviewable.</p>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -117,74 +172,90 @@ export function LoginScreen({
   const signingIn = status === "signing_in";
   const expired = status === "expired";
   const failed = status === "error";
+
   return (
-    <div className="auth-shell">
-      <main className="auth-card">
-        <BrandMark />
-        {signingIn ? (
-          <>
-            <span className="eyebrow">Waiting for the browser</span>
-            <h1>Complete sign-in in your browser</h1>
-            <p className="auth-lede" role="status" aria-live="polite">
-              This window finishes the sign-in automatically. Keep it open until your workspace
-              appears.
-            </p>
-            <div className="auth-actions">
-              <button className="button button-quiet" onClick={() => void onCancel()}>
-                Cancel sign-in
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <span className="eyebrow">
-              {expired ? "Session expired" : failed ? "Sign-in unavailable" : "Enterprise sign-in"}
-            </span>
-            <h1>{expired ? "Sign in again to continue" : "Sign in to ForgePilot"}</h1>
-            <p className="auth-lede">
-              {expired
-                ? "Your previous session is no longer valid. Sign in with your provider to restore workspace access."
-                : "Use your organization's GitHub or GitLab account. Your provider password never reaches ForgePilot."}
-            </p>
-            {message && (
-              <div className="auth-message" role={failed ? "alert" : "status"}>
-                {message}
-              </div>
-            )}
-            {providers.length === 0 ? (
-              <div className="auth-empty">
-                <p>No administrator-approved login provider is available yet.</p>
-                <button className="button button-quiet" onClick={() => void onRetry()}>
-                  Check again
+    <div className="auth-shell auth-login-shell" lang="en">
+      <main className="auth-login-frame">
+        <LoginEffectVisual />
+
+        <section className="auth-login-form-column" aria-labelledby="auth-login-title">
+          <BrandMark />
+          {signingIn ? (
+            <>
+              <span className="auth-login-eyebrow">Waiting for the browser</span>
+              <h1 id="auth-login-title">Complete sign-in in your browser</h1>
+              <p className="auth-lede" role="status" aria-live="polite">
+                This window finishes sign-in automatically. Keep it open until your workspace
+                appears.
+              </p>
+              <div className="auth-actions">
+                <button className="button button-quiet" onClick={() => void onCancel()}>
+                  Cancel sign-in
                 </button>
               </div>
-            ) : (
-              <div className="auth-providers">
-                {providers.map((provider) => (
-                  <button
-                    key={provider.provider_instance_id}
-                    className="button button-provider"
-                    onClick={() => void onSignIn(provider.provider_instance_id)}
-                  >
-                    <span className="provider-name">Continue with {providerLabel(provider)}</span>
-                    <span className="provider-host">{providerHost(provider)}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-            {desktop && (
-              <p className="auth-footnote">
-                Sign-in opens in your system browser. The desktop app receives a session without
-                exposing the credential to page code.
+            </>
+          ) : (
+            <>
+              <span className="auth-login-eyebrow">
+                {expired
+                  ? "Session expired"
+                  : failed
+                    ? "Sign-in unavailable"
+                    : "Enterprise sign-in"}
+              </span>
+              <h1 id="auth-login-title">Welcome back</h1>
+              <p className="auth-lede">
+                {expired
+                  ? "Your previous session has expired. Continue with an approved provider to restore workspace access."
+                  : "Continue with your organization’s approved identity provider."}
               </p>
-            )}
-            {onBack && (
-              <button className="button button-quiet" onClick={onBack}>
-                返回登录方式
-              </button>
-            )}
-          </>
-        )}
+              {message && (
+                <div className="auth-message" role={failed ? "alert" : "status"}>
+                  {message}
+                </div>
+              )}
+              {providers.length === 0 ? (
+                <div className="auth-empty">
+                  <p>No administrator-approved login provider is available yet.</p>
+                  <button className="button button-quiet" onClick={() => void onRetry()}>
+                    Check again
+                  </button>
+                </div>
+              ) : (
+                <div className="auth-providers">
+                  {providers.map((provider) => (
+                    <button
+                      key={provider.provider_instance_id}
+                      className="button button-provider auth-login-provider"
+                      onClick={() => void onSignIn(provider.provider_instance_id)}
+                    >
+                      <span className="auth-provider-mark" aria-hidden="true">
+                        {provider.provider_type === "github" ? "GH" : "GL"}
+                      </span>
+                      <span className="auth-provider-copy">
+                        <span className="provider-name">
+                          Continue with {providerLabel(provider)}
+                        </span>
+                        <span className="provider-host">{providerHost(provider)}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {desktop && (
+                <p className="auth-footnote">
+                  Sign-in finishes in your system browser. This window receives the session after
+                  approval.
+                </p>
+              )}
+              {onBack && (
+                <button className="button button-quiet auth-login-back" onClick={onBack}>
+                  Back to sign-in options
+                </button>
+              )}
+            </>
+          )}
+        </section>
       </main>
     </div>
   );
@@ -266,7 +337,7 @@ export function NoWorkspaceScreen({
   }
 
   return (
-    <div className="auth-shell">
+    <div className="auth-shell" lang="en">
       <main className="auth-card">
         <BrandMark />
         <span className="eyebrow">No workspace access</span>
@@ -340,7 +411,7 @@ export function NoWorkspaceScreen({
         <div className="auth-actions">
           {onBack && (
             <button className="button button-quiet" onClick={onBack}>
-              返回登录方式
+              Back to sign-in options
             </button>
           )}
           <button className="button button-quiet" onClick={() => void onRetry()}>

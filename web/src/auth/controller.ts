@@ -108,6 +108,7 @@ export function createBrowserAuthController(options: BrowserAuthOptions): AuthCo
   let cancelExpiry: (() => void) | undefined;
   let initialized = false;
   let initializing: Promise<void> | undefined;
+  let refreshing: Promise<void> | undefined;
 
   function publish(next: AuthSnapshot): void {
     snapshot = next;
@@ -172,7 +173,8 @@ export function createBrowserAuthController(options: BrowserAuthOptions): AuthCo
     });
   }
 
-  async function loadProvidersAndSession(): Promise<void> {
+  async function loadProvidersAndSession(preserveCurrent = false): Promise<void> {
+    const previousProviders = snapshot.providers;
     let providers: LoginProvider[];
     try {
       providers = await listLoginProviders(baseUrl, { fetchImpl });
@@ -184,17 +186,21 @@ export function createBrowserAuthController(options: BrowserAuthOptions): AuthCo
       }
       publish({
         status: "error",
-        providers: [],
+        providers: preserveCurrent ? previousProviders : [],
         message: errorMessageOf(error),
         ...(errorCodeOf(error) ? { errorCode: errorCodeOf(error) } : {}),
       });
       return;
     }
-    publish({ status: "checking", providers });
+    if (preserveCurrent) {
+      snapshot = { ...snapshot, providers };
+    } else {
+      publish({ status: "checking", providers });
+    }
     try {
       const current = await getAuthSession(baseUrl, { fetchImpl });
       initialized = true;
-      snapshot = { status: "checking", providers };
+      if (!preserveCurrent) snapshot = { status: "checking", providers };
       applySession(current);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
@@ -204,7 +210,7 @@ export function createBrowserAuthController(options: BrowserAuthOptions): AuthCo
       }
       publish({
         status: "error",
-        providers,
+        providers: preserveCurrent ? previousProviders : providers,
         message: errorMessageOf(error),
         ...(errorCodeOf(error) ? { errorCode: errorCodeOf(error) } : {}),
       });
@@ -228,9 +234,12 @@ export function createBrowserAuthController(options: BrowserAuthOptions): AuthCo
     },
     initialize,
     async retry() {
-      initialized = false;
-      initializing = undefined;
-      await initialize();
+      if (initializing) return initializing;
+      if (refreshing) return refreshing;
+      refreshing = loadProvidersAndSession(true).finally(() => {
+        refreshing = undefined;
+      });
+      return refreshing;
     },
     async signIn(providerInstanceId) {
       if (!snapshot.providers.some((item) => item.provider_instance_id === providerInstanceId)) {
