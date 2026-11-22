@@ -259,6 +259,7 @@ function setup(): Fixture {
       access,
       workspaces: repos.workspaces,
       enterprise_id: enterprise.id,
+      clock: clock.now,
     }),
     auditAvailable: () => machine.auditAvailable(),
   });
@@ -476,6 +477,7 @@ function restartedServices(f: Fixture): { machine: CollabMachine; deps: CollabHt
           access: f.access,
           workspaces: f.repos.workspaces,
           enterprise_id: f.issue.workspace.enterprise_id,
+          clock: f.clock.now,
         }),
         auditAvailable: () => machine.auditAvailable(),
       }),

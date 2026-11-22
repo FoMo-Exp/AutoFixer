@@ -497,6 +497,14 @@ export interface DeliveryRecord {
   reconciled_at: string | null;
   /** The active delivery grant checked before each provider write. */
   grant_id: string;
+  /**
+   * The collab actor that requested the delivery: `user:<id>` for a session,
+   * `local-operator` for the deployment operator. The broker resolves the
+   * requester from here when it re-checks the live repository capability
+   * immediately before each provider write (DAT-276); it is internal evidence
+   * and never part of the public delivery projection.
+   */
+  requested_by: string;
 }
 
 /** Human disposition reference for the stopped -> approved (new grant) path. */

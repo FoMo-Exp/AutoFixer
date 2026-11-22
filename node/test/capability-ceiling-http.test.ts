@@ -14,10 +14,14 @@ import { cookieSessionHeaders, startAuthApp, webLogin } from "./helpers/auth-app
 import type { AuthApp, LoggedInSession } from "./helpers/auth-app.js";
 import { getJson, postJson } from "./helpers/http.js";
 import {
+  createIdentityRepositories,
+  createMemberCapabilityRepository,
   createProviderAccessRepositories,
   createRepositories,
-  createIdentityRepositories,
+  createWorkspaceRepositorySetRepository,
 } from "../src/control-plane/index.js";
+import { createAuthorityEpoch } from "../src/provider-access/access-gate.js";
+import { createCapabilityCeilingService } from "../src/provider-access/capability-ceiling.js";
 import type { ProviderAccessRepositories, ServiceIntegration } from "../src/control-plane/index.js";
 import type { WorkspaceScope } from "../src/control-plane/types.js";
 import { applyProviderEvent } from "../src/provider-access/reconcile.js";
@@ -465,5 +469,83 @@ describe("administrator reapproval over HTTP", () => {
     );
     // A session administrator path is not a management-capability bypass.
     expect(response.status).toBe(403);
+  });
+});
+
+describe("cross-process capability reduction and live streams", () => {
+  test("another process's persisted loss closes this process's stream before it emits", async () => {
+    const authApp = await app();
+    const member = await webLogin(authApp);
+    expect(await grantMembership(authApp, member.userId, "owner")).toBe(200);
+    const fixture = installIntegration(authApp, member.userId, { providerRole: "admin" });
+
+    const created = await postJson<{ id: string }>(
+      `${authApp.base}/api/v1/tasks`,
+      { repository_id: REPOSITORY_ID, base_ref: "main", summary: "cross-process stream" },
+      { "Content-Type": "application/json", ...cookieSessionHeaders(member) },
+    );
+    expect(created.status).toBe(201);
+    const taskId = created.body.id;
+
+    const connected = fetch(`${authApp.base}/api/v1/tasks/${taskId}/stream`, {
+      headers: { Cookie: `fp_session=${member.session}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    const ended = connected.then((response) => {
+      expect(response.status).toBe(200);
+      return response.text();
+    });
+    await connected;
+    const stillOpen = await Promise.race([
+      ended.then(() => "ended"),
+      new Promise((resolve) => setTimeout(() => resolve("open"), 300)),
+    ]);
+    expect(stillOpen).toBe("open");
+
+    const authority = authApp.orchestrator.providerAuthority!;
+    const epochBefore = authority.epoch.current();
+
+    // The provider removal is observed by a *different* process: it persists
+    // the confirmed loss through its own capability service and its own local
+    // epoch. Nothing bumps this process's epoch.
+    fixture.access.roster.setAuthorityState(
+      fixture.scope,
+      fixture.integration.id,
+      SUBJECT,
+      "removed",
+      new Date().toISOString(),
+    );
+    const db = authApp.orchestrator.controlPlane!;
+    const otherProcess = createCapabilityCeilingService({
+      repositorySets: createWorkspaceRepositorySetRepository(db),
+      access: createProviderAccessRepositories(db),
+      memberships: createRepositories(db).memberships,
+      providerInstances: createRepositories(db).providerInstances,
+      identity: createIdentityRepositories(db),
+      capabilities: createMemberCapabilityRepository(db),
+      epoch: createAuthorityEpoch(),
+    });
+    const otherEvaluation = otherProcess.evaluate(fixture.scope, member.userId);
+    expect(otherEvaluation.state).toBe("confirmed_loss");
+    expect(otherEvaluation.record?.ceiling).toEqual([]);
+    expect(authority.epoch.current()).toBe(epochBefore);
+
+    // An event is emitted in this process (another actor cancels the task).
+    // The stream must re-authorize against the shared persisted facts before
+    // writing: it closes without delivering the event.
+    await authApp.orchestrator.service.cancelTask(
+      taskId,
+      "cross-process capability loss",
+      authApp.workspaceId,
+    );
+
+    const body = await ended;
+    expect(body).not.toContain("task.terminal");
+    expect(body).not.toContain("cross-process capability loss");
+
+    const read = await getJson(`${authApp.base}/api/v1/tasks`, {
+      Cookie: `fp_session=${member.session}`,
+    });
+    expect(read.status).toBe(403);
   });
 });

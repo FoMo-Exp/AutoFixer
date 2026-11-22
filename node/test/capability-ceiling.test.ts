@@ -780,66 +780,6 @@ describe("schema", () => {
   });
 });
 
-describe("delivery is re-checked immediately before the provider write", () => {
-  test("a downgrade between request and write stops the delivery", () => {
-    const { userId } = addMember(fixture, { subject: "7701", login: "bo", role: "member" });
-    verifyAuthority(fixture, "7701", userId, NOW);
-    fixture.capabilityCeilings.evaluate(fixture.scope, userId);
-    const grant = fixture.access.grants.grant(fixture.scope, fixture.integration.id, {
-      grantee_user_id: userId,
-      capability: "delivery_write",
-      expires_at: "2026-11-03T13:00:00.000Z",
-      actor_id: "usr_operator",
-    });
-
-    const issue = {
-      issue_id: "iss_delivery_probe",
-      workspace: {
-        workspace_id: fixture.scope.workspace_id,
-        enterprise_id: fixture.scope.enterprise_id,
-      },
-      repository: { repository_id: REPO_ID, url: "https://github.com/FoMo-Exp/AutoFixer.git" },
-    };
-    const permission = createDeliveryPermission({
-      machine: { getIssue: () => issue } as unknown as CollabMachine,
-      access: fixture.access,
-      workspaces: fixture.workspaces,
-      enterprise_id: fixture.scope.enterprise_id,
-      requesterCapability: ({ workspace_id, user_id }) =>
-        fixture.gate.authorize({
-          scope: { ...fixture.scope, workspace_id },
-          user_id,
-          action: "delivery",
-          now: fixture.clock.now,
-        }).allowed,
-    });
-    const input = {
-      issue_id: issue.issue_id,
-      repository_id: REPO_ID,
-      delivery_id: "del_probe",
-      grant_id: grant.id,
-    };
-
-    expect(permission(input)).toBe(true);
-
-    // The provider confirms a reduction after the delivery request was
-    // recorded. The recorded "was authorized" flag is not revisited; the live
-    // capability check before the write is.
-    changeRole("7701", "read", NOW);
-    fixture.capabilityCeilings.evaluate(fixture.scope, userId);
-    expect(permission(input)).toBe(false);
-
-    // A grant that no longer names a requester also fails closed.
-    const anonymous = fixture.access.grants.grant(fixture.scope, fixture.integration.id, {
-      grantee_user_id: null,
-      capability: "delivery_write",
-      expires_at: "2026-11-03T13:00:00.000Z",
-      actor_id: "usr_operator",
-    });
-    expect(permission({ ...input, grant_id: anonymous.id })).toBe(false);
-  });
-});
-
 describe("incomplete evidence and enterprise isolation", () => {
   test("a partial roster cannot establish admission or a ceiling", () => {
     const partial = setupFixture({ permission_visibility: "partial" });
@@ -944,5 +884,138 @@ describe("incomplete evidence and enterprise isolation", () => {
       "repository_write",
       "repository_manage",
     ]);
+  });
+});
+
+describe("delivery is re-checked immediately before each provider write", () => {
+  interface DeliveryStubOptions {
+    revoked_at?: string | null;
+    expires_at?: string;
+    may_create_or_update_pr?: boolean;
+    role?: string;
+    requested_by?: string;
+    grant_id?: string;
+  }
+
+  function machineFor(options: DeliveryStubOptions = {}) {
+    const grantId = options.grant_id ?? "grt_delivery";
+    const issue = {
+      issue_id: "iss_delivery_probe",
+      workspace: {
+        workspace_id: fixture.scope.workspace_id,
+        enterprise_id: fixture.scope.enterprise_id,
+      },
+      repository: { repository_id: REPO_ID, url: "https://github.com/FoMo-Exp/AutoFixer.git" },
+    };
+    const grant = {
+      grant_id: grantId,
+      run_id: "run_delivery",
+      capability_grant_version: "rungrant/v1",
+      policy_version: "policy/v1",
+      issued_at: NOW,
+      expires_at: options.expires_at ?? "2026-11-03T13:00:00.000Z",
+      permitted_paths: [],
+      permitted_tools: [],
+      network_destinations: [],
+      max_wall_clock_seconds: 60,
+      resource_limits: { max_memory_mb: 1, max_tokens: 1 },
+      may_create_patch: true,
+      may_create_or_update_pr: options.may_create_or_update_pr ?? true,
+      scope_digest: "digest",
+      revoked_at: options.revoked_at ?? null,
+      revoked_reason: null,
+    };
+    const run = {
+      run_id: "run_delivery",
+      issue_id: issue.issue_id,
+      role: options.role ?? "delivery",
+      head_sha: "head_sha",
+      grants: [grant],
+    };
+    const delivery = {
+      delivery_id: "del_delivery",
+      operation_id: "op_delivery",
+      issue_id: issue.issue_id,
+      candidate_id: "cand_1",
+      approval_id: "appa_1",
+      repository: issue.repository,
+      target_branch: "main",
+      head_sha: "head_sha",
+      provider: "github",
+      state: "pending",
+      branch: null,
+      pr_id: null,
+      pr_url: null,
+      error_code: null,
+      created_at: NOW,
+      updated_at: NOW,
+      reconciled_at: null,
+      grant_id: grantId,
+      requested_by: options.requested_by ?? "user:usr_grantee",
+    };
+    return { issue, grant, run, delivery };
+  }
+
+  function permission(
+    options: DeliveryStubOptions = {},
+    requesterCapability?: (input: { workspace_id: string; user_id: string }) => boolean,
+  ) {
+    const machine = machineFor(options);
+    return createDeliveryPermission({
+      machine: {
+        getIssue: () => machine.issue,
+        getDelivery: () => machine.delivery,
+        listRuns: () => [machine.run],
+      } as unknown as CollabMachine,
+      access: fixture.access,
+      workspaces: fixture.workspaces,
+      enterprise_id: fixture.scope.enterprise_id,
+      clock: () => new Date(NOW),
+      ...(requesterCapability !== undefined ? { requesterCapability } : {}),
+    });
+  }
+
+  const input = (grant_id = "grt_delivery") => ({
+    issue_id: "iss_delivery_probe",
+    repository_id: REPO_ID,
+    delivery_id: "del_delivery",
+    grant_id,
+  });
+
+  test("a live delivery grant and a permitted requester authorize the write", () => {
+    // No control-plane `capability_grant` row is involved: the broker's grant
+    // is the recorded collaboration delivery grant, and it is validated on its
+    // own terms plus the live capability check.
+    const seen: string[] = [];
+    const allowed = permission({}, (request) => {
+      seen.push(request.user_id);
+      return true;
+    });
+    expect(allowed(input())).toBe(true);
+    expect(seen).toEqual(["usr_grantee"]);
+  });
+
+  test("a revoked, expired, non-PR or non-delivery grant blocks the write", () => {
+    expect(permission({ revoked_at: "2026-11-03T11:30:00.000Z" })(input())).toBe(false);
+    expect(permission({ expires_at: "2026-11-03T11:59:59.000Z" })(input())).toBe(false);
+    expect(permission({ may_create_or_update_pr: false })(input())).toBe(false);
+    expect(permission({ role: "diagnose" })(input())).toBe(false);
+    // A different grant id than the one recorded on the delivery.
+    expect(permission()(input("grt_other"))).toBe(false);
+  });
+
+  test("the requester's live repository capability is required before the write", () => {
+    // The provider was downgraded after the delivery request was recorded:
+    // the recorded "was authorized" flag is not revisited, the live check is.
+    expect(permission({}, () => false)(input())).toBe(false);
+    // The deployment operator keeps the local-operator mode.
+    expect(permission({ requested_by: "local-operator" }, () => false)(input())).toBe(true);
+    // An actor label that names no requester fails closed.
+    expect(permission({ requested_by: "someone" }, () => true)(input())).toBe(false);
+  });
+
+  test("a delivery for another repository never authorizes this repository", () => {
+    const allowed = permission({}, () => true);
+    expect(allowed({ ...input(), repository_id: "github:FoMo-Exp/Other" })).toBe(false);
   });
 });

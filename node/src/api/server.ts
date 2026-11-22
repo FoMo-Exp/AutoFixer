@@ -390,11 +390,32 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
     // re-checks its stream action on every authority change and closes the
     // moment the gate denies it (DAT-203) — evaluated in this stream's
     // workspace, not the deployment default.
-    if (actor.kind === "session" && deps.authority !== undefined) {
-      const authority = deps.authority;
-      const streamUser = actor.ctx.user.id;
-      const unsubscribeAuthority = authority.subscribe(() => {
-        if (!authority.check(streamUser, "stream", workspaceId).allowed) {
+    //
+    // The in-process epoch is only a *hint*: another process may observe and
+    // persist a capability reduction (DAT-276) without this process bumping
+    // anything. Every write is therefore re-authorized against the shared
+    // store immediately before it happens, so a stream in this process can
+    // never emit an event to a member whose persisted ceiling no longer
+    // permits `stream`. The check is cheap (no cache: one scoped read plus
+    // the ceiling evaluation) and fails closed on any denial.
+    const streamAuthority =
+      actor.kind === "session" && deps.authority !== undefined ? deps.authority : undefined;
+    const streamUser = actor.kind === "session" ? actor.ctx.user.id : null;
+    const streamStillAllowed = (): boolean => {
+      if (streamAuthority === undefined || streamUser === null) {
+        return true;
+      }
+      try {
+        return streamAuthority.check(streamUser, "stream", workspaceId).allowed;
+      } catch {
+        // A failed re-authorization is a denial: never keep emitting on an
+        // authority state that could not be evaluated.
+        return false;
+      }
+    };
+    if (streamAuthority !== undefined && streamUser !== null) {
+      const unsubscribeAuthority = streamAuthority.subscribe(() => {
+        if (!streamStillAllowed()) {
           res.end();
         }
       });
@@ -403,6 +424,13 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
     const unsubscribe = service.subscribe(
       taskId,
       (event) => {
+        // Cross-process safety: another process's persisted reduction (or an
+        // expired verification) denies here even though this process never
+        // received a local change signal. Deny before writing anything.
+        if (!streamStillAllowed()) {
+          res.end();
+          return;
+        }
         writeSseEvent(res, event);
         if (event.type === "task.terminal") {
           res.end();

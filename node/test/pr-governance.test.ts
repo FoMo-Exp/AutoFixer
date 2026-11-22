@@ -56,6 +56,7 @@ const DELIVERY: DeliveryRecord = {
   updated_at: NOW.toISOString(),
   reconciled_at: null,
   grant_id: "grt_dat261",
+  requested_by: "user:usr_test",
 };
 
 function check(

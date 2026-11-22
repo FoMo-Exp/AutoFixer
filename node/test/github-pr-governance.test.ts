@@ -63,6 +63,7 @@ const DELIVERY: DeliveryRecord = {
   updated_at: "2026-11-18T09:00:00.000Z",
   reconciled_at: null,
   grant_id: "grt_dat261",
+  requested_by: "user:usr_test",
 };
 
 interface Fixture {
