@@ -65,6 +65,27 @@ installation reference counts only while `install_status = 'active'` — a
 suspended integration fails closed exactly as it does in the request-authority
 gate. Reads never retry, degrade, or fall back to a configured repository.
 
+"A binding with no installation reference" is decided by the same existence
+rule the request gate uses, not by the reference being null:
+
+| Integration rows in the workspace | Binding reference | Result |
+| --------------------------------- | ----------------- | ------ |
+| none                              | null              | local-prototype mode (ADR-0006); the set is usable |
+| any (`active`, `suspended`, `uninstalled`) | null or not the matching active one | `INSTALLATION_NOT_APPROVED` |
+| any                               | the matching `active` installation | usable |
+
+A workspace whose only integration is suspended or uninstalled therefore
+refuses everything rather than silently reverting to prototype mode, which is
+what the request-authority gate already enforces.
+
+Because the order "create workspace, then register the integration" is normal,
+registering an `active` installation for a repository — and reactivating a
+suspended one — re-links the same repository's binding to it
+(`linkWorkspaceBindingInstallation`, inside the caller's transaction). This is
+registration bookkeeping: the enterprise, provider instance and immutable
+repository identity do not change, so no authority is expanded. A binding that
+already points at an `active` installation is left alone.
+
 Consumers must use the value these reads return, not an earlier workspace
 snapshot: `requireSingleRepository` reports the verified binding and the set
 version it was validated at, and the legacy run-binding resolver re-reads the

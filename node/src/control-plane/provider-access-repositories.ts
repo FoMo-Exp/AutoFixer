@@ -13,6 +13,7 @@
 import type { ControlPlaneDb } from "./db.js";
 import { newId, nowIso } from "./db.js";
 import { ConflictError, NotFoundError, ValidationError, VersionConflictError } from "./errors.js";
+import { linkWorkspaceBindingInstallation } from "./workspace-repository-repositories.js";
 import type {
   AppendProviderEventInput,
   AuthorityState,
@@ -514,6 +515,22 @@ class SqliteServiceIntegrationRepository implements ServiceIntegrationRepository
       }
       throw error;
     }
+    // A newly approved installation is the approved observer for its
+    // repository, so a binding that could not reference one yet (created before
+    // the integration existed, or pointing at a replaced one) is repaired here.
+    // The caller's transaction makes this atomic with the integration row, so
+    // the read boundary never sees "integration exists, binding unlinked".
+    linkWorkspaceBindingInstallation(
+      this.db,
+      {
+        id,
+        enterprise_id: scope.enterprise_id,
+        workspace_id: scope.workspace_id,
+        provider_instance_id: input.provider_instance_id,
+        repository_id: input.repository_id,
+      },
+      { actor_id: input.actor_id },
+    );
     return requireRow("ServiceIntegration", id, this.getById(scope, id));
   }
 
@@ -650,7 +667,23 @@ class SqliteServiceIntegrationRepository implements ServiceIntegrationRepository
       this.db,
       "service_integration",
     );
-    return requireRow("ServiceIntegration", id, this.getById(scope, id));
+    const updated = requireRow("ServiceIntegration", id, this.getById(scope, id));
+    if (updated.install_status === "active") {
+      // Reactivating an installation re-approves the same repository; a binding
+      // left unlinked while it was suspended recovers here.
+      linkWorkspaceBindingInstallation(
+        this.db,
+        {
+          id: updated.id,
+          enterprise_id: updated.enterprise_id,
+          workspace_id: updated.workspace_id,
+          provider_instance_id: updated.provider_instance_id,
+          repository_id: updated.repository_id,
+        },
+        { actor_id: input.actor_id },
+      );
+    }
+    return updated;
   }
 }
 

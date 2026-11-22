@@ -391,7 +391,28 @@ class SqliteWorkspaceRepositorySetRepository implements WorkspaceRepositorySetRe
       );
     }
     if (binding.installation_ref === null) {
-      return;
+      // "No installation" is only the local-prototype case: a workspace with
+      // *zero* integration rows, where no provider roster exists at all
+      // (ADR-0006). An integration that exists but is suspended, uninstalled or
+      // simply never bound is "authority in play" — exactly the state the
+      // request-authority gate fails closed on — so it must refuse here too
+      // instead of degrading to prototype mode.
+      const anyIntegration = this.db
+        .prepare(
+          `SELECT id FROM service_integration
+            WHERE enterprise_id = ? AND workspace_id = ?
+            LIMIT 1`,
+        )
+        .get(workspace.enterprise_id, workspace.id) as { id: string } | undefined;
+      if (anyIntegration === undefined) {
+        return;
+      }
+      throw new WorkspaceRepositorySetError(
+        "INSTALLATION_NOT_APPROVED",
+        `Workspace ${workspace.id} has an installation but its repository binding references no active one; authority fails closed until the binding is repaired`,
+        409,
+        { workspace_id: workspace.id, binding_id: binding.id },
+      );
     }
     // Only an *active* installation approves anything. A suspended or
     // uninstalled integration fails closed here exactly as it does in the
@@ -538,6 +559,61 @@ export function insertPrimaryWorkspaceBinding(
     now,
     actor.actor_id,
     actor.actor_id,
+  );
+}
+
+/**
+ * Controlled repair: point a workspace's binding at the installation the
+ * administrator just approved for that repository.
+ *
+ * This is the only write that can move `installation_ref` without changing the
+ * repository identity, and it exists because the order "create workspace, then
+ * register the integration" is normal: until the integration row exists the
+ * workspace is in local-prototype mode, and the moment one does exist the read
+ * boundary fails closed on a null reference. Re-linking the *same* repository
+ * to a newly approved, active installation is registration bookkeeping, never
+ * an authority expansion — the repository, provider instance and enterprise are
+ * unchanged.
+ *
+ * Bindings that already reference another active installation are left alone; a
+ * reference to a suspended/uninstalled integration is replaced, so uninstall →
+ * reinstall for the same repository recovers without manual SQL.
+ *
+ * Assumes the caller's transaction (the service layer creates integrations and
+ * changes their status inside one).
+ */
+export function linkWorkspaceBindingInstallation(
+  db: ControlPlaneDb,
+  integration: {
+    id: string;
+    enterprise_id: string;
+    workspace_id: WorkspaceId;
+    provider_instance_id: string;
+    repository_id: string;
+  },
+  actor: { actor_id: string },
+): void {
+  if (!repositorySetSchemaPresent(db)) {
+    return;
+  }
+  const now = nowIso();
+  db.prepare(
+    `UPDATE workspace_repository_binding
+        SET installation_ref = ?, updated_at = ?, updated_by = ?, version = version + 1
+      WHERE enterprise_id = ? AND workspace_id = ? AND provider_instance_id = ?
+        AND repository_id = ?
+        AND (installation_ref IS NULL
+             OR installation_ref IN (
+               SELECT id FROM service_integration WHERE install_status != 'active'
+             ))`,
+  ).run(
+    integration.id,
+    now,
+    actor.actor_id,
+    integration.enterprise_id,
+    integration.workspace_id,
+    integration.provider_instance_id,
+    integration.repository_id,
   );
 }
 

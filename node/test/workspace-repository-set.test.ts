@@ -333,6 +333,15 @@ describe("workspace repository set migration (v20)", () => {
     const rows = allBindings(db);
     expect(rows).toHaveLength(1);
     expect(rows[0]!["installation_ref"]).toBeNull();
+
+    // A suspended integration is "authority in play": the unlinked binding must
+    // refuse instead of falling back to local-prototype mode.
+    expect(() => createWorkspaceRepositorySetRepository(db).getSet(fixture.workspaceScope)).toThrow(
+      expect.objectContaining({ code: "INSTALLATION_NOT_APPROVED" }),
+    );
+    expect(() => resolverFor(db, fixture).resolve(fixture.workspace.id)).toThrow(
+      expect.objectContaining({ code: "INSTALLATION_NOT_APPROVED" }),
+    );
   });
 
   test("a workspace created after the migration is born with its binding", () => {
@@ -688,6 +697,114 @@ describe("fail-closed binding evidence", () => {
       integration.id,
     );
     expect(() => sets.getSet(fixture.workspaceScope)).toThrow(
+      expect.objectContaining({ code: "INSTALLATION_NOT_APPROVED" }),
+    );
+    expect(() => resolverFor(db, fixture).resolve(fixture.workspace.id)).toThrow(
+      expect.objectContaining({ code: "INSTALLATION_NOT_APPROVED" }),
+    );
+  });
+
+  test("a workspace with no integration row at all stays in local-prototype mode", () => {
+    const db = openAt(CURRENT_SCHEMA_VERSION);
+    const fixture = seedSingleRepositoryWorkspace(db);
+    expect(
+      db
+        .prepare("SELECT COUNT(*) AS count FROM service_integration WHERE workspace_id = ?")
+        .get(fixture.workspace.id),
+    ).toEqual({ count: 0 });
+    const sets = createWorkspaceRepositorySetRepository(db);
+    const set = sets.getSet(fixture.workspaceScope);
+    expect(set.usable).toBe(true);
+    expect(set.bindings[0]!.installation_ref).toBeNull();
+    expect(resolverFor(db, fixture).resolve(fixture.workspace.id).repositoryId).toBe(REPOSITORY);
+  });
+
+  test("an integration registered after the workspace repairs the binding", () => {
+    const db = openAt(CURRENT_SCHEMA_VERSION);
+    const fixture = seedSingleRepositoryWorkspace(db);
+    const sets = createWorkspaceRepositorySetRepository(db);
+    expect(sets.getSet(fixture.workspaceScope).bindings[0]!.installation_ref).toBeNull();
+
+    const integration = createProviderAccessRepositories(db).integrations.create(
+      fixture.workspaceScope,
+      {
+        provider_instance_id: fixture.provider.id,
+        repository_id: REPOSITORY,
+        repository_name: "acme/AutoFixer",
+        source_credential_ref: "svc-source-1",
+        permission_visibility: "full",
+        actor_id: ACTOR,
+      },
+    );
+
+    const set = sets.getSet(fixture.workspaceScope);
+    expect(set.usable).toBe(true);
+    expect(set.bindings[0]!.installation_ref).toBe(integration.id);
+    expect(set.bindings[0]!.version).toBe(2);
+    expect(resolverFor(db, fixture).resolve(fixture.workspace.id).repositoryId).toBe(REPOSITORY);
+  });
+
+  test("reactivating a suspended installation re-links an unlinked binding", () => {
+    const db = openAt(CURRENT_SCHEMA_VERSION);
+    const fixture = seedSingleRepositoryWorkspace(db);
+    const access = createProviderAccessRepositories(db);
+    const integration = access.integrations.create(fixture.workspaceScope, {
+      provider_instance_id: fixture.provider.id,
+      repository_id: REPOSITORY,
+      repository_name: "acme/AutoFixer",
+      source_credential_ref: "svc-source-1",
+      permission_visibility: "full",
+      actor_id: ACTOR,
+    });
+    access.integrations.setStatus(
+      fixture.workspaceScope,
+      integration.id,
+      { install_status: "suspended", actor_id: ACTOR },
+      1,
+    );
+    // Simulate the historical state where the binding was never linked while
+    // the installation was suspended.
+    db.prepare(
+      "UPDATE workspace_repository_binding SET installation_ref = NULL WHERE workspace_id = ?",
+    ).run(fixture.workspace.id);
+    expect(() => createWorkspaceRepositorySetRepository(db).getSet(fixture.workspaceScope)).toThrow(
+      expect.objectContaining({ code: "INSTALLATION_NOT_APPROVED" }),
+    );
+
+    access.integrations.setStatus(
+      fixture.workspaceScope,
+      integration.id,
+      { install_status: "active", actor_id: ACTOR },
+      2,
+    );
+    const set = createWorkspaceRepositorySetRepository(db).getSet(fixture.workspaceScope);
+    expect(set.usable).toBe(true);
+    expect(set.bindings[0]!.installation_ref).toBe(integration.id);
+  });
+
+  test("an uninstalled integration leaves the workspace refused, not in prototype mode", () => {
+    const db = openAt(CURRENT_SCHEMA_VERSION);
+    const fixture = seedSingleRepositoryWorkspace(db);
+    const access = createProviderAccessRepositories(db);
+    const integration = access.integrations.create(fixture.workspaceScope, {
+      provider_instance_id: fixture.provider.id,
+      repository_id: REPOSITORY,
+      repository_name: "acme/AutoFixer",
+      source_credential_ref: "svc-source-1",
+      permission_visibility: "full",
+      actor_id: ACTOR,
+    });
+    access.integrations.setStatus(
+      fixture.workspaceScope,
+      integration.id,
+      { install_status: "uninstalled", actor_id: ACTOR },
+      1,
+    );
+    db.prepare(
+      "UPDATE workspace_repository_binding SET installation_ref = NULL WHERE workspace_id = ?",
+    ).run(fixture.workspace.id);
+
+    expect(() => createWorkspaceRepositorySetRepository(db).getSet(fixture.workspaceScope)).toThrow(
       expect.objectContaining({ code: "INSTALLATION_NOT_APPROVED" }),
     );
     expect(() => resolverFor(db, fixture).resolve(fixture.workspace.id)).toThrow(
