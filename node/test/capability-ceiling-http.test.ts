@@ -549,3 +549,164 @@ describe("cross-process capability reduction and live streams", () => {
     expect(read.status).toBe(403);
   });
 });
+
+describe("SSE history replay after a cross-process reduction", () => {
+  /**
+   * Downgrade observed by a *different* process: the shared roster row becomes
+   * `removed` and a separate capability service (own epoch) persists the
+   * confirmed loss. Nothing bumps the running process's epoch.
+   */
+  function otherProcessDowngrade(
+    authApp: AuthApp,
+    fixture: BoundaryFixture,
+    userId: string,
+  ): { state: string; epochBumpedLocally: boolean } {
+    fixture.access.roster.setAuthorityState(
+      fixture.scope,
+      fixture.integration.id,
+      SUBJECT,
+      "removed",
+      new Date().toISOString(),
+    );
+    const db = authApp.orchestrator.controlPlane!;
+    const otherProcess = createCapabilityCeilingService({
+      repositorySets: createWorkspaceRepositorySetRepository(db),
+      access: createProviderAccessRepositories(db),
+      memberships: createRepositories(db).memberships,
+      providerInstances: createRepositories(db).providerInstances,
+      identity: createIdentityRepositories(db),
+      capabilities: createMemberCapabilityRepository(db),
+      epoch: createAuthorityEpoch(),
+    });
+    const authority = authApp.orchestrator.providerAuthority!;
+    const before = authority.epoch.current();
+    const evaluation = otherProcess.evaluate(fixture.scope, userId);
+    return {
+      state: evaluation.state,
+      epochBumpedLocally: authority.epoch.current() !== before,
+    };
+  }
+
+  /** Run `onStreamRequire(n)` after the n-th `stream` request-authority check. */
+  async function withStreamRequireHook(
+    authApp: AuthApp,
+    onStreamRequire: (call: number) => void,
+    run: () => Promise<void>,
+  ): Promise<void> {
+    const authority = authApp.orchestrator.providerAuthority!;
+    const original = authority.require.bind(authority);
+    let calls = 0;
+    (authority as unknown as { require: typeof authority.require }).require = (
+      userId,
+      action,
+      workspaceId,
+    ) => {
+      original(userId, action, workspaceId);
+      if (action === "stream") {
+        calls += 1;
+        onStreamRequire(calls);
+      }
+    };
+    try {
+      await run();
+    } finally {
+      (authority as unknown as { require: typeof authority.require }).require = original;
+    }
+  }
+
+  test("a reduction persisted after the request decision sends no replayed history", async () => {
+    const authApp = await app();
+    const member = await webLogin(authApp);
+    expect(await grantMembership(authApp, member.userId, "owner")).toBe(200);
+    const fixture = installIntegration(authApp, member.userId, { providerRole: "admin" });
+
+    const created = await postJson<{ id: string }>(
+      `${authApp.base}/api/v1/tasks`,
+      { repository_id: REPOSITORY_ID, base_ref: "main", summary: "replay leak probe" },
+      { "Content-Type": "application/json", ...cookieSessionHeaders(member) },
+    );
+    expect(created.status).toBe(201);
+    const taskId = created.body.id;
+
+    // There is history to leak: the task's own status events.
+    const timeline = await getJson<{ items: Array<{ event_id: string }> }>(
+      `${authApp.base}/api/v1/tasks/${taskId}/timeline`,
+      { Cookie: `fp_session=${member.session}` },
+    );
+    expect(timeline.status).toBe(200);
+    expect(timeline.body.items.length).toBeGreaterThan(0);
+    const firstEventId = timeline.body.items[0]!.event_id;
+
+    // The request-boundary decision (call 1) passes. The pre-header re-check
+    // (call 2) passes too; the reduction is persisted immediately afterwards
+    // — i.e. after authorization, before the replay loop.
+    let downgraded: { state: string; epochBumpedLocally: boolean } | null = null;
+    await withStreamRequireHook(
+      authApp,
+      (call) => {
+        if (call === 2) {
+          downgraded = otherProcessDowngrade(authApp, fixture, member.userId);
+        }
+      },
+      async () => {
+        const response = await fetch(`${authApp.base}/api/v1/tasks/${taskId}/stream`, {
+          headers: { Cookie: `fp_session=${member.session}` },
+          signal: AbortSignal.timeout(10_000),
+        });
+        const body = await response.text();
+        // Headers were already committed when the loss was observed, so this is
+        // an empty 200 stream — never a replay of the stored history.
+        expect(response.status).toBe(200);
+        expect(body).toBe("");
+        expect(body).not.toContain(firstEventId);
+        expect(body).not.toContain("task.status_changed");
+      },
+    );
+
+    expect(downgraded).not.toBeNull();
+    expect(downgraded!.state).toBe("confirmed_loss");
+    expect(downgraded!.epochBumpedLocally).toBe(false);
+    // The persisted loss also blocks every later request.
+    expect(
+      (await getJson(`${authApp.base}/api/v1/tasks`, { Cookie: `fp_session=${member.session}` }))
+        .status,
+    ).toBe(403);
+  });
+
+  test("a reduction persisted before the replay re-check is refused before headers", async () => {
+    const authApp = await app();
+    const member = await webLogin(authApp);
+    expect(await grantMembership(authApp, member.userId, "owner")).toBe(200);
+    const fixture = installIntegration(authApp, member.userId, { providerRole: "admin" });
+
+    const created = await postJson<{ id: string }>(
+      `${authApp.base}/api/v1/tasks`,
+      { repository_id: REPOSITORY_ID, base_ref: "main", summary: "pre-header probe" },
+      { "Content-Type": "application/json", ...cookieSessionHeaders(member) },
+    );
+    expect(created.status).toBe(201);
+    const taskId = created.body.id;
+
+    await withStreamRequireHook(
+      authApp,
+      (call) => {
+        if (call === 1) {
+          otherProcessDowngrade(authApp, fixture, member.userId);
+        }
+      },
+      async () => {
+        const response = await fetch(`${authApp.base}/api/v1/tasks/${taskId}/stream`, {
+          headers: { Cookie: `fp_session=${member.session}` },
+          signal: AbortSignal.timeout(10_000),
+        });
+        expect(response.status).toBe(403);
+        const body = (await response.json()) as {
+          error: { code: string; details?: { reason?: string } };
+        };
+        // A confirmed loss is a denial (not a "reconcile and retry" state).
+        expect(body.error.code).toBe("FORBIDDEN");
+        expect(["repository_access", "capability_loss"]).toContain(body.error.details?.reason);
+      },
+    );
+  });
+});

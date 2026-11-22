@@ -329,6 +329,37 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
 
   if (tail.length === 2 && req.method === "GET" && sub === "stream") {
     service.getTask(taskId, workspaceId); // 404 before headers are committed
+
+    // The in-process epoch is only a *hint*: another process may observe and
+    // persist a capability reduction (DAT-276) without this process bumping
+    // anything, and that may happen between the request-boundary decision and
+    // the history replay below. Every write — including each replayed event —
+    // is therefore re-authorized against the shared persisted store first, so
+    // a stream can never deliver history to a member whose ceiling no longer
+    // permits `stream`. The check is cheap (one scoped read plus the ceiling
+    // evaluation) and fails closed on any denial.
+    const streamAuthority =
+      actor.kind === "session" && deps.authority !== undefined ? deps.authority : undefined;
+    const streamUser = actor.kind === "session" ? actor.ctx.user.id : null;
+    const streamStillAllowed = (): boolean => {
+      if (streamAuthority === undefined || streamUser === null) {
+        return true;
+      }
+      try {
+        return streamAuthority.check(streamUser, "stream", workspaceId).allowed;
+      } catch {
+        // A failed re-authorization is a denial: never keep emitting on an
+        // authority state that could not be evaluated.
+        return false;
+      }
+    };
+    if (streamAuthority !== undefined && streamUser !== null) {
+      // Re-check before committing any history. A denial here is still a real
+      // 403 envelope (headers are not sent yet), which is better than an empty
+      // 200 stream; the per-event check below covers the remaining window.
+      streamAuthority.require(streamUser, "stream", workspaceId);
+    }
+
     res.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache",
@@ -345,6 +376,12 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
     }
     for (const item of timeline) {
       if (item.sequence > lastSequence) {
+        // Cross-process safety for the replay itself: if authority was lost
+        // while this request was being served, send no history at all.
+        if (!streamStillAllowed()) {
+          res.end();
+          return;
+        }
         writeSseEvent(res, item);
       }
     }
@@ -389,30 +426,8 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
     // A provider revocation cuts live streams the same way: the stream
     // re-checks its stream action on every authority change and closes the
     // moment the gate denies it (DAT-203) — evaluated in this stream's
-    // workspace, not the deployment default.
-    //
-    // The in-process epoch is only a *hint*: another process may observe and
-    // persist a capability reduction (DAT-276) without this process bumping
-    // anything. Every write is therefore re-authorized against the shared
-    // store immediately before it happens, so a stream in this process can
-    // never emit an event to a member whose persisted ceiling no longer
-    // permits `stream`. The check is cheap (no cache: one scoped read plus
-    // the ceiling evaluation) and fails closed on any denial.
-    const streamAuthority =
-      actor.kind === "session" && deps.authority !== undefined ? deps.authority : undefined;
-    const streamUser = actor.kind === "session" ? actor.ctx.user.id : null;
-    const streamStillAllowed = (): boolean => {
-      if (streamAuthority === undefined || streamUser === null) {
-        return true;
-      }
-      try {
-        return streamAuthority.check(streamUser, "stream", workspaceId).allowed;
-      } catch {
-        // A failed re-authorization is a denial: never keep emitting on an
-        // authority state that could not be evaluated.
-        return false;
-      }
-    };
+    // workspace, not the deployment default. The local epoch is a fast close
+    // signal only; the shared-store check above is the actual boundary.
     if (streamAuthority !== undefined && streamUser !== null) {
       const unsubscribeAuthority = streamAuthority.subscribe(() => {
         if (!streamStillAllowed()) {
