@@ -10,8 +10,15 @@
  */
 
 import type { ControlPlaneDb } from "./db.js";
-import { newId, nowIso } from "./db.js";
+import { newId, nowIso, runInTransaction } from "./db.js";
 import { ConflictError, NotFoundError, ValidationError, VersionConflictError } from "./errors.js";
+import {
+  bumpRepositorySetVersion,
+  insertPrimaryWorkspaceBinding,
+  replacePrimaryWorkspaceBinding,
+  repositorySetSchemaPresent,
+  setWorkspaceBindingsStatus,
+} from "./workspace-repository-repositories.js";
 import type {
   CreateEnterpriseInput,
   CreateMembershipInput,
@@ -454,12 +461,17 @@ class SqliteWorkspaceRepository implements WorkspaceRepository {
     }
     const id = newId("wsp");
     const now = nowIso();
+    const hasRepositorySet = repositorySetSchemaPresent(this.db);
     try {
       this.db
         .prepare(
-          `INSERT INTO workspace
-             (id, enterprise_id, name, repository_id, provider_instance_id, status, created_at, updated_at, created_by, updated_by, version)
-           VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 1)`,
+          hasRepositorySet
+            ? `INSERT INTO workspace
+                 (id, enterprise_id, name, repository_id, provider_instance_id, status, repository_set_version, created_at, updated_at, created_by, updated_by, version)
+               VALUES (?, ?, ?, ?, ?, 'active', 1, ?, ?, ?, ?, 1)`
+            : `INSERT INTO workspace
+                 (id, enterprise_id, name, repository_id, provider_instance_id, status, created_at, updated_at, created_by, updated_by, version)
+               VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, 1)`,
         )
         .run(
           id,
@@ -472,6 +484,30 @@ class SqliteWorkspaceRepository implements WorkspaceRepository {
           scope.actor_id,
           scope.actor_id,
         );
+      // The workspace's repository set exists from the moment the workspace
+      // does: binding #1 is the same immutable identity. There is no window in
+      // which a workspace has no binding (DAT-281). A database pinned below the
+      // repository-set schema (only ever a test fixture, since the service
+      // always migrates on open) keeps the legacy column alone and is
+      // backfilled when it is upgraded.
+      if (hasRepositorySet) {
+        insertPrimaryWorkspaceBinding(
+          this.db,
+          {
+            id,
+            enterprise_id: scope.enterprise_id,
+            provider_instance_id: input.provider_instance_id,
+            repository_id: input.repository_id,
+          },
+          {
+            provider_instance_id: input.provider_instance_id,
+            repository_id: input.repository_id,
+            repository_url: input.repository_url ?? null,
+            repository_name: input.repository_name ?? null,
+          },
+          scope,
+        );
+      }
     } catch (error) {
       // The partial unique index rejects a second active workspace for the
       // same repository in the same enterprise.
@@ -558,6 +594,12 @@ class SqliteWorkspaceRepository implements WorkspaceRepository {
         expectedVersion,
       ) as unknown as VersionedUpdateResult;
     requireVersionMatch("Workspace", id, result, expectedVersion, this.db, "workspace");
+    // An archived workspace does not keep its repositories bound: the set
+    // stays intact but is retired, so another workspace may take the
+    // repository without deleting history (DAT-281).
+    if (repositorySetSchemaPresent(this.db)) {
+      setWorkspaceBindingsStatus(this.db, scope, id, "retired");
+    }
     return requireRow("Workspace", id, this.getById(scope, id));
   }
 
@@ -596,6 +638,9 @@ class SqliteWorkspaceRepository implements WorkspaceRepository {
           expectedVersion,
         ) as unknown as VersionedUpdateResult;
       requireVersionMatch("Workspace", id, result, expectedVersion, this.db, "workspace");
+      if (repositorySetSchemaPresent(this.db)) {
+        setWorkspaceBindingsStatus(this.db, scope, id, "active");
+      }
     } catch (error) {
       if (String(error).includes("UNIQUE")) {
         // Pre-check passed but a concurrent restore/create won the race on the
@@ -630,32 +675,43 @@ class SqliteWorkspaceRepository implements WorkspaceRepository {
       );
     }
     const now = nowIso();
-    try {
-      const result = this.db
-        .prepare(
-          `UPDATE workspace SET repository_id = ?, provider_instance_id = ?, updated_at = ?, updated_by = ?, version = version + 1
-           WHERE id = ? AND enterprise_id = ? AND version = ?`,
-        )
-        .run(
-          input.repository_id,
-          input.provider_instance_id,
-          now,
-          scope.actor_id,
-          id,
-          scope.enterprise_id,
-          expectedVersion,
-        ) as unknown as VersionedUpdateResult;
-      requireVersionMatch("Workspace", id, result, expectedVersion, this.db, "workspace");
-    } catch (error) {
-      if (String(error).includes("UNIQUE")) {
-        throw new ConflictError(
-          `An active workspace already exists for repository ${input.repository_id} in this enterprise`,
-          { repository_id: input.repository_id },
-        );
+    // The workspace's single binding moves with it, and the set version moves
+    // on: a decision formed against the old repository is invalid afterwards.
+    return runInTransaction(this.db, () => {
+      try {
+        const result = this.db
+          .prepare(
+            `UPDATE workspace SET repository_id = ?, provider_instance_id = ?, updated_at = ?, updated_by = ?, version = version + 1
+             WHERE id = ? AND enterprise_id = ? AND version = ?`,
+          )
+          .run(
+            input.repository_id,
+            input.provider_instance_id,
+            now,
+            scope.actor_id,
+            id,
+            scope.enterprise_id,
+            expectedVersion,
+          ) as unknown as VersionedUpdateResult;
+        requireVersionMatch("Workspace", id, result, expectedVersion, this.db, "workspace");
+        if (repositorySetSchemaPresent(this.db)) {
+          replacePrimaryWorkspaceBinding(this.db, scope, id, {
+            provider_instance_id: input.provider_instance_id,
+            repository_id: input.repository_id,
+          });
+          bumpRepositorySetVersion(this.db, scope, id);
+        }
+      } catch (error) {
+        if (String(error).includes("UNIQUE")) {
+          throw new ConflictError(
+            `An active workspace already exists for repository ${input.repository_id} in this enterprise`,
+            { repository_id: input.repository_id },
+          );
+        }
+        throw error;
       }
-      throw error;
-    }
-    return requireRow("Workspace", id, this.getById(scope, id));
+      return requireRow("Workspace", id, this.getById(scope, id));
+    });
   }
 }
 

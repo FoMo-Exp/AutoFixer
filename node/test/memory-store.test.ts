@@ -144,8 +144,12 @@ describe("Memory migrations", () => {
     // admission decisions and retirement candidates, v8 DAT-235 promotion
     // and consolidation lifecycle, v9 DAT-236 bounded retrieval, v10 DAT-237
     // enterprise templates, v11 DAT-238 bounded RSI, v12-v15 issue sync,
-    // v16 DAT-264 outcome capture, and v17 DAT-265 distillation outbox.
-    expect(applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+    // v16 DAT-264 outcome capture, v17 DAT-265 distillation outbox, v18
+    // DAT-266 delivery terminal capture, v19 DAT-275 enterprise users, and
+    // v20 DAT-281 workspace repository set + immutable feature gate.
+    expect(applied).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+    ]);
   });
 });
 

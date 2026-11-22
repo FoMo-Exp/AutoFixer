@@ -45,6 +45,7 @@ import {
   createInvitationRepository,
   createProviderAccessRepositories,
   createRepositories,
+  createWorkspaceRepositorySetRepository,
   openControlPlaneDb,
 } from "./control-plane/index.js";
 import type { AuthenticatedPrincipal, RequestScopeDeps } from "./control-plane/request-scope.js";
@@ -847,6 +848,10 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       config,
       workspaces: repos.workspaces,
       providerInstances: repos.providerInstances,
+      // DAT-281: the workspace's versioned repository set is cross-checked on
+      // every workspace-scoped run binding. A multi-repository or missing set
+      // fails closed instead of dispatching against one repository.
+      repositorySets: createWorkspaceRepositorySetRepository(controlPlane),
     });
     // The invitation digest key is deployment-owned and durable: a file next
     // to the control-plane database unless configured explicitly. An ephemeral

@@ -239,6 +239,62 @@ const ERROR_SEMANTICS: Record<string, ErrorSemantics> = {
     retryable: false,
     next_action: null,
   },
+  // Workspace repository-set boundary (DAT-281, ADR-0011). Every one of these
+  // is a refusal: there is no retry and no fallback to a single repository.
+  REPOSITORY_BINDING_MISSING: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  REPOSITORY_BINDING_INCONSISTENT: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  REPOSITORY_BINDING_UNAPPROVED: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  INSTALLATION_NOT_APPROVED: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  REPOSITORY_SET_VERSION_CONFLICT: {
+    stage: "authorization",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  MULTI_REPOSITORY_SCOPE_DISABLED: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: null,
+  },
+  MULTI_REPOSITORY_SCOPE_UNSUPPORTED: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: null,
+  },
+  SCOPE_MUTATION_DISABLED: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: null,
+  },
+  FEATURE_GATE_UNREADABLE: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
   WORKSPACE_ARCHIVED: {
     stage: "validation",
     category: "stop",

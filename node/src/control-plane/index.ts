@@ -7,7 +7,16 @@
  */
 
 export type { ControlPlaneDb, OpenOptions } from "./db.js";
-export { SYSTEM_ACTOR, migrate, newId, nowIso, openControlPlaneDb } from "./db.js";
+export {
+  CURRENT_SCHEMA_VERSION,
+  SYSTEM_ACTOR,
+  SchemaVersionMismatchError,
+  assertSchemaSupported,
+  migrate,
+  newId,
+  nowIso,
+  openControlPlaneDb,
+} from "./db.js";
 
 export {
   ConflictError,
@@ -17,6 +26,7 @@ export {
   ScopeError,
   ValidationError,
   VersionConflictError,
+  WorkspaceRepositorySetError,
 } from "./errors.js";
 export type { RequestScopeErrorCode } from "./errors.js";
 
@@ -193,3 +203,22 @@ export type {
   SubjectAuthority,
   TransferIntegrationInput,
 } from "./provider-access-types.js";
+
+export type {
+  AddWorkspaceRepositoryBindingInput,
+  DeploymentFeatureGate,
+  DeploymentFeatureGateKey,
+  SingleRepositoryWorkspaceScope,
+  WorkspaceRepositoryBinding,
+  WorkspaceRepositoryBindingId,
+  WorkspaceRepositoryBindingStatus,
+  WorkspaceRepositorySet,
+  WorkspaceRepositorySetErrorCode,
+  WritePrimaryBindingInput,
+} from "./workspace-repository-types.js";
+
+export type { WorkspaceRepositorySetRepository } from "./workspace-repository-repositories.js";
+export {
+  MULTI_REPOSITORY_GATE_KEY,
+  createWorkspaceRepositorySetRepository,
+} from "./workspace-repository-repositories.js";
