@@ -20,15 +20,18 @@ This ADR extends it with explicit enterprise membership, a repository-based
 ceiling on workspace actions, module visibility, and the backend/frontend
 handoff. It does not relax ADR-0001, ADR-0005, ADR-0007 or ADR-0009.
 
-The current code has OAuth sessions, workspace memberships, invitations,
-provider adapters and authority reconciliation. The workspace member API is
+The code at the initial design baseline has OAuth sessions, workspace
+memberships, invitations, provider adapters and authority reconciliation. The
+workspace member API is
 declared in OpenAPI and used by the UI, but its member list and mutation
 routes are not wired in `node/src/api/server.ts`. The current
 `computeEffectiveAccess` checks authority state and freshness, but does not
 apply the provider role to individual actions. `app_user.status` and the
 existing suspend route are global; an enterprise administrator can currently
 affect a user associated with other enterprises. These are implementation
-gaps, not guarantees made by this ADR.
+gaps at that baseline, not guarantees made by this ADR. DAT-275 subsequently
+merged enterprise membership, scoped suspension and identity enrollment in
+PR #103; remaining boundaries require their own implementation and review.
 
 ## Decision
 
