@@ -1535,7 +1535,125 @@ const MIGRATIONS: Migration[] = [
          ON pi.id = ui.provider_instance_id AND pi.enterprise_id = eu.enterprise_id`,
     ],
   },
+  {
+    // Workspace repository set (DAT-281, ADR-0011). A workspace owns a
+    // *versioned set* of repository bindings instead of one inline column.
+    // Each binding names the approved provider instance, the approved server
+    // installation that may observe that repository, and the immutable
+    // provider-assigned repository identifier. URLs and names are metadata.
+    //
+    // The legacy `workspace.repository_id` / `provider_instance_id` columns
+    // stay in place: they are the deployment's pinned single-repository
+    // binding, every pre-existing workspace is backfilled as binding #1, and
+    // while the multi-repository gate below is closed a workspace's set must
+    // agree with that legacy pair or every read fails closed.
+    //
+    // `repository_set_version` is the optimistic-concurrency token for the
+    // whole set: a membership or access decision taken against version N is
+    // never applied to version N+1 (ADR-0011 "versioned repository set").
+    //
+    // Backfill is deliberately literal: it copies the workspace's own
+    // immutable provider/repository identity, links the installation only
+    // when an approved integration for exactly that repository already
+    // exists, and invents nothing. A workspace with inconsistent historical
+    // data keeps a binding that the read path reports as inconsistent rather
+    // than being silently granted a different repository.
+    version: 20,
+    statements: [
+      `ALTER TABLE workspace ADD COLUMN repository_set_version INTEGER NOT NULL DEFAULT 1`,
+      `CREATE TABLE IF NOT EXISTS workspace_repository_binding (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        -- A hard-deleted workspace takes its bindings with it (teardown), the
+        -- same way memory rows cascade; normal lifecycle is archive, which
+        -- retires the bindings and keeps the audit history.
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        provider_instance_id TEXT NOT NULL REFERENCES provider_instance(id),
+        installation_ref TEXT REFERENCES service_integration(id),
+        repository_id TEXT NOT NULL,
+        repository_url TEXT,
+        repository_name TEXT,
+        position INTEGER NOT NULL DEFAULT 1 CHECK (position >= 1),
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'retired')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        UNIQUE (workspace_id, provider_instance_id, repository_id)
+      )`,
+      // Within one enterprise a repository may be bound actively by at most
+      // one workspace; archived workspaces retire their bindings so they do
+      // not keep a repository reserved (mirrors the workspace-level index).
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_binding_active_repo
+        ON workspace_repository_binding(enterprise_id, provider_instance_id, repository_id)
+        WHERE status = 'active'`,
+      `CREATE INDEX IF NOT EXISTS idx_workspace_binding_workspace
+        ON workspace_repository_binding(workspace_id, status)`,
+      `CREATE INDEX IF NOT EXISTS idx_workspace_binding_repository
+        ON workspace_repository_binding(enterprise_id, repository_id)`,
+      // Backfill: binding #1 carries the workspace's own immutable identity.
+      // `status` mirrors the workspace, because the active-binding index is
+      // enterprise-wide: an archived workspace must retire its binding instead
+      // of reserving the repository (the workspace-level unique index already
+      // allows an archived and an active workspace to share a repository).
+      // Only an *active* installation may be linked: a suspended integration
+      // is not approval (see `request-authority`/access gate), so it stays
+      // unlinked and the read path treats it as "no installation".
+      //
+      // No `OR IGNORE`: given the workspace-level unique index an active
+      // conflict is unreachable, so if one ever appears the migration must
+      // fail, roll back and surface the data problem instead of dropping a
+      // workspace's binding.
+      `INSERT INTO workspace_repository_binding
+         (id, enterprise_id, workspace_id, provider_instance_id, installation_ref,
+          repository_id, repository_url, repository_name, position, status,
+          created_at, updated_at, created_by, updated_by, version)
+       SELECT 'wrb_' || lower(hex(randomblob(16))), w.enterprise_id, w.id,
+              w.provider_instance_id,
+              (SELECT si.id FROM service_integration si
+                WHERE si.enterprise_id = w.enterprise_id
+                  AND si.workspace_id = w.id
+                  AND si.provider_instance_id = w.provider_instance_id
+                  AND si.repository_id = w.repository_id
+                  AND si.install_status = 'active'
+                ORDER BY si.created_at, si.id LIMIT 1),
+              w.repository_id, NULL, NULL, 1,
+              CASE WHEN w.status = 'active' THEN 'active' ELSE 'retired' END,
+              w.created_at, w.updated_at, w.created_by, w.updated_by, 1
+       FROM workspace w`,
+      // Immutable deployment feature gates. A row is never updated or
+      // deleted (triggers below refuse both): the effective state is the row
+      // with the highest `min_schema_version`, so turning a gate on is a
+      // *new forward migration* that appends a row, never an API call or an
+      // operator UPDATE. A build whose known schema is older than the newest
+      // gate row refuses to serve (mixed-version rollout fails closed).
+      `CREATE TABLE IF NOT EXISTS deployment_feature_gate (
+        key TEXT NOT NULL,
+        min_schema_version INTEGER NOT NULL CHECK (min_schema_version >= 1),
+        state TEXT NOT NULL CHECK (state IN ('enabled', 'disabled')),
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        PRIMARY KEY (key, min_schema_version)
+      )`,
+      `CREATE TRIGGER IF NOT EXISTS deployment_feature_gate_immutable_update
+        BEFORE UPDATE ON deployment_feature_gate
+        BEGIN SELECT RAISE(ABORT, 'deployment_feature_gate rows are immutable; append a new forward migration'); END`,
+      `CREATE TRIGGER IF NOT EXISTS deployment_feature_gate_immutable_delete
+        BEFORE DELETE ON deployment_feature_gate
+        BEGIN SELECT RAISE(ABORT, 'deployment_feature_gate rows are immutable; append a new forward migration'); END`,
+      `INSERT OR IGNORE INTO deployment_feature_gate
+         (key, state, reason, min_schema_version, created_at, created_by)
+       VALUES ('multi_repository_workspace', 'disabled',
+               'DAT-281/ADR-0011: repository-set storage exists, but no membership, execution or access path enforces the whole set yet. Enabling requires a forward migration that appends an enabled row and code that enforces every active binding.',
+               20, '2026-11-22T00:00:00.000Z', 'usr_auth_system')`,
+    ],
+  },
 ];
+
+/** Highest schema version this build knows how to run. */
+export const CURRENT_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.version;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -1566,7 +1684,52 @@ export function openControlPlaneDb(options: OpenOptions = {}): ControlPlaneDb {
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
   migrate(db);
+  assertSchemaSupported(db);
   return db;
+}
+
+/**
+ * A database written by a newer build than this one.
+ *
+ * Mixed-version rollouts fail closed (ADR-0011). An older single-repository
+ * process must never open a database whose schema already contains a
+ * multi-repository decision it cannot enforce: it would read
+ * `workspace.repository_id`, ignore the rest of the set, and silently
+ * authorize against one repository of many. So a process refuses to serve
+ * instead of degrading.
+ */
+export class SchemaVersionMismatchError extends Error {
+  readonly code = "SCHEMA_VERSION_UNSUPPORTED";
+
+  constructor(
+    readonly database_version: number,
+    readonly supported_version: number,
+  ) {
+    super(
+      `Control-plane schema version ${database_version} is newer than this build's ${supported_version}; refusing to serve a database it cannot enforce`,
+    );
+    this.name = "SchemaVersionMismatchError";
+  }
+}
+
+/**
+ * Refuse a database whose recorded schema is newer than this build supports.
+ *
+ * Runs after {@link migrate}, so an up-to-date or older database passes and
+ * only a database upgraded by a newer build fails. Exported so a caller can
+ * pin a lower supported version in tests and so deploys can check before
+ * serving traffic.
+ */
+export function assertSchemaSupported(
+  db: ControlPlaneDb,
+  supportedVersion: number = CURRENT_SCHEMA_VERSION,
+): void {
+  const row = db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as
+    { version: number | null } | undefined;
+  const applied = typeof row?.version === "number" ? row.version : 0;
+  if (applied > supportedVersion) {
+    throw new SchemaVersionMismatchError(applied, supportedVersion);
+  }
 }
 
 /**

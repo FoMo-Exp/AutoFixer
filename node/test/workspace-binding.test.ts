@@ -254,6 +254,41 @@ describe("control-plane workspace binding resolution", () => {
       providerInstances: {
         getById: () => provider,
       },
+      // DAT-281: the workspace's repository set must resolve to exactly the
+      // workspace's single repository; these cases exercise the checks before
+      // and after that boundary, so the set resolves to the legacy pair.
+      repositorySets: {
+        requireSingleRepository: () => ({
+          enterprise_id: BETA.enterpriseId,
+          workspace_id: BETA.workspaceId,
+          set_version: 1,
+          binding: {
+            id: "wrb_1",
+            enterprise_id: BETA.enterpriseId,
+            workspace_id: BETA.workspaceId,
+            provider_instance_id: "pi_1",
+            installation_ref: null,
+            repository_id: BETA.repositoryId,
+            repository_url: null,
+            repository_name: null,
+            position: 1,
+            status: "active",
+            created_at: "2026-11-04T00:00:00.000Z",
+            updated_at: "2026-11-04T00:00:00.000Z",
+            created_by: "usr_admin",
+            updated_by: "usr_admin",
+            version: 1,
+          },
+          gate: {
+            key: "multi_repository_workspace",
+            state: "disabled",
+            reason: "test",
+            min_schema_version: 20,
+            created_at: "2026-11-04T00:00:00.000Z",
+            created_by: "usr_admin",
+          },
+        }),
+      },
     };
   }
 

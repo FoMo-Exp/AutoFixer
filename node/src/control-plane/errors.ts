@@ -5,6 +5,8 @@
  * HTTP status codes without inspecting messages.
  */
 
+import type { WorkspaceRepositorySetErrorCode } from "./workspace-repository-types.js";
+
 /** Base class for all control-plane domain errors. */
 export class ControlPlaneError extends Error {
   readonly code: string;
@@ -96,6 +98,29 @@ export class VersionConflictError extends ControlPlaneError {
 export class ValidationError extends ControlPlaneError {
   constructor(message: string) {
     super("VALIDATION_ERROR", message);
+  }
+}
+
+/**
+ * A workspace repository-set read or write was refused (DAT-281, ADR-0011).
+ *
+ * The `status` states the request-path semantics for a later route: 404 is
+ * never used here (a missing workspace stays a {@link NotFoundError}), 403 is
+ * a scope this deployment may not use at all, 409 is a binding or version
+ * fact that does not hold. Every one of these is a refusal — there is no
+ * degraded single-repository fallback.
+ */
+export class WorkspaceRepositorySetError extends ControlPlaneError {
+  readonly status: 403 | 409;
+
+  constructor(
+    code: WorkspaceRepositorySetErrorCode,
+    message: string,
+    status: 403 | 409 = 409,
+    readonly details: Record<string, unknown> = {},
+  ) {
+    super(code, message);
+    this.status = status;
   }
 }
 

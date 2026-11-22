@@ -144,6 +144,10 @@ export interface CreateWorkspaceInput {
   name: string;
   repository_id: string;
   provider_instance_id: ProviderInstanceId;
+  /** Display metadata for the workspace's first repository binding. */
+  repository_url?: string | null;
+  /** Display metadata for the workspace's first repository binding. */
+  repository_name?: string | null;
 }
 
 export interface UpdateWorkspaceInput {
