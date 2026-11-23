@@ -613,10 +613,16 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Grant or fail on a workspace membership (administrator) */
+        /**
+         * Grant or fail on a workspace membership (administrator)
+         * @description Legacy administrator entry. It applies exactly the workspace member rules — no bypass: a user session must be an enterprise administrator *and* a workspace owner/admin with verified repository management authority for this workspace; the target must be provider-proven eligible; admin/owner grants are refused for a workspace admin (403 ROLE_NOT_ASSIGNABLE). The deployment bootstrap credential is the explicitly scoped local-operator mode. Grants and their audit rows commit together (DAT-277).
+         */
         put: operations["grantMembership"];
         post?: never;
-        /** Revoke a workspace membership; live streams close immediately */
+        /**
+         * Revoke a workspace membership; live streams close immediately
+         * @description Legacy administrator entry; the removal rules are the workspace member rules (last owner refused and audited, capability grants revoked, live subscriptions closed, no effect on other workspaces). A user session must be an enterprise administrator and a workspace owner/admin with verified repository management authority (DAT-277).
+         */
         delete: operations["revokeMembership"];
         options?: never;
         head?: never;
@@ -928,13 +934,13 @@ export interface paths {
         };
         /**
          * List workspace memberships with provider-role provenance
-         * @description Owner/admin and members see the roster with the provenance of effective provider roles (MemberAuthority). Provenance is normalized explicitly and fails closed: unverified authority shows `unknown`, and stale authority blocks sensitive actions pending reconciliation (DAT-203).
+         * @description Any live member sees the roster with the provenance of effective provider roles (MemberAuthority). Provenance is normalized explicitly and fails closed: unverified authority shows `unknown` and `stale: true`, and stale authority blocks sensitive actions pending reconciliation (DAT-203, DAT-276). The path workspace is only a locator — a caller without a live membership in it gets the same 404 as an unknown workspace.
          */
         get: operations["listWorkspaceMembers"];
         put?: never;
         /**
          * Add a member selected from the provider roster
-         * @description Owner/admin only; the user must be an eligible discovered candidate (see `GET /api/v1/workspaces/{workspace_id}/member-candidates`). Roles are granted only within the actor's own authority — a grant above it is 403 ROLE_NOT_ASSIGNABLE. Every grant is audited (ADR-0006).
+         * @description Owner/admin only, and only while the workspace has an active repository-scoped integration that verifies repository management authority — enterprise administration alone is not a bypass. The user must be an eligible discovered candidate: code read proven on every repository of the workspace. `viewer`/`member` grants are bounded by the verified capability intersection (`repository_write` on every repository allows `member`); `admin`/`owner` are a separate owner decision that a workspace admin can never make (403 ROLE_NOT_ASSIGNABLE). The grant and its audit row commit together (ADR-0006, ADR-0011).
          */
         post: operations["addWorkspaceMember"];
         delete?: never;
@@ -955,14 +961,14 @@ export interface paths {
         post?: never;
         /**
          * Remove a member (revoke access)
-         * @description Owner/admin only. Removal is enforced on the same request path from this point: reads, streams, artifacts, approvals, and writes are rejected, and the member's workspace-scoped SSE subscriptions are terminated (see Session invalidation). Capability grants derived from the membership are revoked (ADR-0006, DAT-203).
+         * @description Owner/admin only. Removal is enforced on the same request path from this point: reads, streams, artifacts, approvals, and writes are rejected, live workspace SSE subscriptions for that user are terminated, and every live capability grant derived from the membership is revoked — in this workspace only, never in another. The membership change and its audit row commit together; refusing to remove the last owner is 409 LAST_WORKSPACE_OWNER and is audited (ADR-0006, ADR-0011, DAT-203).
          */
         delete: operations["removeWorkspaceMember"];
         options?: never;
         head?: never;
         /**
          * Change a member's workspace role
-         * @description Owner/admin only. Roles are assigned only within the actor's own authority (403 ROLE_NOT_ASSIGNABLE for escalation). Administrative role elevation is this separate audited action — invitations always join as `member` (ADR-0006).
+         * @description Owner/admin only. A workspace admin can never change or grant an `admin`/`owner` membership (403 ROLE_NOT_ASSIGNABLE). Raising a role above the target's verified provider ceiling is refused (409 TARGET_NOT_ELIGIBLE with `reason` or 403 ROLE_NOT_ASSIGNABLE with `max_role`); demotions need no positive provider fact and revoke the grants the lower role no longer supports. Demoting the last owner is refused as 409 LAST_WORKSPACE_OWNER and audited. `version` is the membership's current version.
          */
         patch: operations["updateWorkspaceMember"];
         trace?: never;
@@ -976,7 +982,7 @@ export interface paths {
         };
         /**
          * Provider-roster eligibility view for imports (owner/admin)
-         * @description The provider member roster, normalized explicitly: organization owners, groups, inherited roles, and direct collaborators are named as such, and authority that belongs to an organization is never invented as a repository "owner" user (ADR-0006). Completeness is fail-closed: missing provider permissions or incomplete roster pages are the error PROVIDER_ROSTER_INCOMPLETE, never an empty 200 list. Candidates with stale or unknown authority carry `eligible: false` with an `ineligible_reason` code (DAT-203).
+         * @description The provider member roster, normalized explicitly: organization owners, groups, inherited roles, and direct collaborators are named as such, and authority that belongs to an organization is never invented as a repository "owner" user (ADR-0006). Completeness is fail-closed: missing provider permissions or incomplete roster pages are the error PROVIDER_ROSTER_INCOMPLETE, never an empty 200 list. A subject without a signed-in identity is `identity_unlinked` — an email address is never a claiming key. Each candidate states the provider-derived `max_role` and the `assignable_roles` for the calling actor (DAT-203, DAT-277).
          */
         get: operations["listMemberCandidates"];
         put?: never;
@@ -2711,8 +2717,18 @@ export interface components {
             provenance: "organization_owner" | "group" | "inherited_role" | "direct_collaborator" | "unknown";
             already_member: boolean;
             eligible: boolean;
-            /** @description Machine code naming why the candidate cannot be imported (e.g. `stale_authority`, `no_repository_access`); null when eligible. Additive vocabulary. */
-            ineligible_reason: string | null;
+            /**
+             * @description Machine code naming why the candidate cannot be imported. Every value is a refusal: an unverifiable provider fact never degrades into an implied eligibility, and an unlinked subject is never claimed through an email address. Null only when `eligible` is true.
+             * @enum {string|null}
+             */
+            ineligible_reason: "identity_unlinked" | "already_member" | "workspace_archived" | "repository_missing" | "repository_set_unsupported" | "repository_binding_inconsistent" | "installation_not_approved" | "provider_instance_unapproved" | "subject_missing" | "authority_unknown" | "authority_stale" | "verification_expired" | "permission_visibility_none" | "permission_visibility_partial" | "role_missing" | "unsupported_role" | "repository_access_removed" | "no_code_read" | "capability_store_unavailable" | null;
+            /**
+             * @description Highest viewer/member role the candidate's verified capability intersection supports: `repository_write` on every repository allows `member`, otherwise only `viewer`. Null when ineligible. `admin`/`owner` are never provider-derived — they are a separate, audited owner decision.
+             * @enum {string|null}
+             */
+            max_role: "viewer" | "member" | null;
+            /** @description Roles the calling actor may grant to this candidate through the add action. Empty for an already-member or ineligible candidate; `admin`/`owner` appear only for an owner actor. */
+            assignable_roles: ("owner" | "admin" | "member" | "viewer")[];
         };
         /** @description A workspace team (ADR-0006). Teams are a routing signal, never an authorization source: team leadership or membership grants no repository access, security privilege, or delivery approval. Leaders must be active workspace members. */
         Team: {
@@ -7283,7 +7299,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description FORBIDDEN: administrator authority required */
+            /** @description FORBIDDEN, ROLE_NOT_ASSIGNABLE, CAPABILITY_MANAGEMENT_REQUIRED, or AUTHORITY_RECHECK_REQUIRED */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7301,8 +7317,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description CONFLICT: already a member */
+            /** @description MEMBERSHIP_CONFLICT, ENTERPRISE_MEMBERSHIP_SUSPENDED, or TARGET_NOT_ELIGIBLE */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description MEMBERSHIP_AUDIT_UNAVAILABLE — nothing was applied */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7344,7 +7369,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description FORBIDDEN: administrator authority required */
+            /** @description FORBIDDEN or CAPABILITY_MANAGEMENT_REQUIRED */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7355,6 +7380,24 @@ export interface operations {
             };
             /** @description Membership not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description LAST_WORKSPACE_OWNER — the refusal is audited */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description MEMBERSHIP_AUDIT_UNAVAILABLE — nothing was applied */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8600,7 +8643,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description FORBIDDEN or ROLE_NOT_ASSIGNABLE */
+            /** @description FORBIDDEN, ROLE_NOT_ASSIGNABLE (role above the actor or the verified ceiling), CAPABILITY_MANAGEMENT_REQUIRED, or AUTHORITY_RECHECK_REQUIRED */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8618,8 +8661,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description MEMBERSHIP_CONFLICT — the user is already a member */
+            /** @description MEMBERSHIP_CONFLICT, ENTERPRISE_MEMBERSHIP_SUSPENDED, or TARGET_NOT_ELIGIBLE (with `reason`) */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description MEMBERSHIP_AUDIT_UNAVAILABLE — the change and its audit row did not commit; nothing was applied */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8660,7 +8712,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description FORBIDDEN */
+            /** @description FORBIDDEN or CAPABILITY_MANAGEMENT_REQUIRED */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8671,6 +8723,24 @@ export interface operations {
             };
             /** @description NOT_FOUND */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description LAST_WORKSPACE_OWNER — assign another owner first; the refusal is audited */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description MEMBERSHIP_AUDIT_UNAVAILABLE — the removal and its audit row did not commit; nothing was applied */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8731,7 +8801,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description FORBIDDEN or ROLE_NOT_ASSIGNABLE */
+            /** @description FORBIDDEN, ROLE_NOT_ASSIGNABLE, CAPABILITY_MANAGEMENT_REQUIRED, or AUTHORITY_RECHECK_REQUIRED */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8749,8 +8819,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description VERSION_CONFLICT */
+            /** @description VERSION_CONFLICT, LAST_WORKSPACE_OWNER, or TARGET_NOT_ELIGIBLE */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description MEMBERSHIP_AUDIT_UNAVAILABLE — the change and its audit row did not commit; nothing was applied */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -20,6 +20,7 @@ import { createApprovalDirectory, createDeliveryPermission } from "./api/collab-
 import type { CollabHttpDeps } from "./api/collab-http.js";
 import { createInvitationAuthority } from "./api/invitation-authority.js";
 import { InvitationService, readOrCreateInvitationDigestKey } from "./api/invitation-service.js";
+import { WorkspaceMemberService } from "./api/workspace-member-service.js";
 import type { InvitationRateLimits } from "./api/invitation-service.js";
 import { ProviderOAuth, readOAuthCredentialsFile } from "./api/oauth.js";
 import { createApiServer } from "./api/server.js";
@@ -572,6 +573,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let invitations: InvitationService | undefined;
   let controlPlane: ControlPlaneDb | undefined;
   let providerAuthority: RequestAuthority | undefined;
+  let members: WorkspaceMemberService | undefined;
   let workspaceBindings = createConfiguredWorkspaceRunBindingResolver(config);
   let requestScopeDeps: RequestScopeDeps | undefined;
   // Live workspace rows for egress-coverage diagnostics (DAT-257). Read at
@@ -713,6 +715,21 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       epoch: providerEpoch,
       enterpriseId: config.enterpriseId,
       workspaceId: config.workspaceId,
+    });
+    // Workspace membership (DAT-277) is decided from the caller's live role
+    // plus the target's verified provider capabilities, and every mutation
+    // commits with its audit row. It shares the request authority and the
+    // invalidation hub so a removal/downgrade cuts derived access and streams.
+    members = new WorkspaceMemberService({
+      repos,
+      identity,
+      access: providerAccess,
+      repositorySets: workspaceRepositorySets,
+      capabilityCeilings,
+      authority: providerAuthority,
+      hub: auth.hub,
+      epoch: providerEpoch,
+      enterpriseId: config.enterpriseId,
     });
     // DAT-247's service credential boundary: secrets come from a protected
     // file (or explicit injection), never from a user OAuth token. An empty
@@ -1017,6 +1034,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     ...(auth !== undefined ? { auth } : {}),
     ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
     ...(invitations !== undefined ? { invitations } : {}),
+    ...(members !== undefined ? { members } : {}),
     ...(serviceIntegrations !== undefined ? { serviceIntegrations } : {}),
     ...(issues !== undefined ? { issues } : {}),
     ...(collab !== undefined ? { collab } : {}),

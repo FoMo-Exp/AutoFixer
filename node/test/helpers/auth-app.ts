@@ -102,6 +102,12 @@ export interface AuthApp {
   /** Repository-scoped service integration (set with `repositoryIntegration`). */
   integration: ServiceIntegration | undefined;
   provider: FakeProvider;
+  /**
+   * Stop and rebuild the orchestrator against the same control-plane file
+   * (a process restart). The returned base URL is updated in place: the
+   * restarted process binds a new ephemeral port.
+   */
+  restart(): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -218,38 +224,40 @@ export async function startAuthApp(options: AuthAppOptions): Promise<AuthApp> {
   };
 
   const scripted = scriptedStream([]);
-  const orchestrator = createOrchestrator({
-    config,
-    model: TEST_MODEL,
-    gateway: scriptedGateway(TEST_MODEL, scripted.streamFn),
-    authFetchImpl: provider.fetchImpl,
-    authDnsLookup: options.lookup ?? (async () => ["104.16.0.1"]),
-    ...(options.invitationRateLimits !== undefined
-      ? { invitationRateLimits: options.invitationRateLimits }
-      : {}),
-    ...(options.providerServiceCredentials !== undefined
-      ? { providerServiceCredentials: options.providerServiceCredentials }
-      : options.repositoryIntegration
+  const buildOrchestrator = () =>
+    createOrchestrator({
+      config,
+      model: TEST_MODEL,
+      gateway: scriptedGateway(TEST_MODEL, scripted.streamFn),
+      authFetchImpl: provider.fetchImpl,
+      authDnsLookup: options.lookup ?? (async () => ["104.16.0.1"]),
+      ...(options.invitationRateLimits !== undefined
+        ? { invitationRateLimits: options.invitationRateLimits }
+        : {}),
+      ...(options.providerServiceCredentials !== undefined
+        ? { providerServiceCredentials: options.providerServiceCredentials }
+        : options.repositoryIntegration
+          ? {
+              providerServiceCredentials: createStaticServiceCredentialStore({
+                [SERVICE_CREDENTIAL_REF]: SERVICE_CREDENTIAL,
+              }),
+            }
+          : {}),
+      ...(options.providerApiBaseUrl !== undefined
+        ? { providerApiBaseUrl: options.providerApiBaseUrl }
+        : {}),
+      ...(options.dashboardSources !== undefined
         ? {
-            providerServiceCredentials: createStaticServiceCredentialStore({
-              [SERVICE_CREDENTIAL_REF]: SERVICE_CREDENTIAL,
+            dashboardSources: options.dashboardSources({
+              enterpriseId: enterprise.id,
+              workspaceId: workspace.id,
             }),
           }
         : {}),
-    ...(options.providerApiBaseUrl !== undefined
-      ? { providerApiBaseUrl: options.providerApiBaseUrl }
-      : {}),
-    ...(options.dashboardSources !== undefined
-      ? {
-          dashboardSources: options.dashboardSources({
-            enterpriseId: enterprise.id,
-            workspaceId: workspace.id,
-          }),
-        }
-      : {}),
-  });
+    });
+  let orchestrator = buildOrchestrator();
   const { port } = await orchestrator.start();
-  return {
+  const app: AuthApp = {
     orchestrator,
     base: `http://127.0.0.1:${port}`,
     enterpriseId: enterprise.id,
@@ -257,8 +265,16 @@ export async function startAuthApp(options: AuthAppOptions): Promise<AuthApp> {
     providerInstanceId: instance.id,
     integration,
     provider,
-    stop: () => orchestrator.stop(),
+    async restart() {
+      await app.orchestrator.stop();
+      orchestrator = buildOrchestrator();
+      app.orchestrator = orchestrator;
+      const restarted = await orchestrator.start();
+      app.base = `http://127.0.0.1:${restarted.port}`;
+    },
+    stop: () => app.orchestrator.stop(),
   };
+  return app;
 }
 
 // ---------------------------------------------------------------------------

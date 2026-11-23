@@ -13,5 +13,7 @@
   "provenance": "organization_owner",
   "already_member": false,
   "eligible": true,
-  "ineligible_reason": null
+  "ineligible_reason": null,
+  "max_role": "member",
+  "assignable_roles": ["viewer", "member", "admin", "owner"]
 }

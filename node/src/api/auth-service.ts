@@ -112,6 +112,14 @@ export type AuthInvalidation =
   | { type: "user.suspended"; user_id: string }
   | { type: "membership.revoked"; user_id: string; workspace_id: string }
   | {
+      /** A live role change; a downgrade cuts subscriptions and derived grants. */
+      type: "membership.changed";
+      user_id: string;
+      workspace_id: string;
+      role: string;
+      downgraded: boolean;
+    }
+  | {
       /** Enterprise-scoped suspension/restoration; other enterprises unchanged. */
       type: "enterprise_user.status_changed";
       enterprise_id: string;
@@ -1017,81 +1025,6 @@ export class AuthService {
       });
     }
     return updated;
-  }
-
-  grantMembership(
-    actor: AdminActor,
-    input: {
-      enterprise_id: EnterpriseId;
-      workspace_id: WorkspaceId;
-      user_id: UserId;
-      role: WorkspaceRole;
-    },
-  ): Membership {
-    this.#assertAdmin(actor, input.enterprise_id);
-    const scope = { enterprise_id: input.enterprise_id, actor_id: actorIdOf(actor) };
-    this.#repos.workspaces.getById(scope, input.workspace_id);
-    if (this.#identity.users.getById(input.user_id) === undefined) {
-      throw new ApiError(404, "NOT_FOUND", "user not found");
-    }
-    // A workspace grant is an explicit administrator act, so it establishes the
-    // enterprise membership it depends on — but never reactivates a suspended
-    // one (that would bypass the enterprise suspension boundary).
-    const ensured = this.#identity.enterpriseUsers.ensureActive(
-      input.enterprise_id,
-      input.user_id,
-      enterpriseActorOf(actor),
-    );
-    if (ensured.suspended) {
-      throw new ApiError(
-        409,
-        "ENTERPRISE_MEMBERSHIP_SUSPENDED",
-        "the target enterprise user is suspended; restore the membership first",
-      );
-    }
-    const membership = this.#repos.memberships.create(
-      { ...scope, workspace_id: input.workspace_id },
-      { user_id: input.user_id, role: input.role },
-    );
-    this.#audit({
-      event: "membership.granted",
-      enterprise_id: input.enterprise_id,
-      actor_kind: actor.kind,
-      ...(actor.kind === "user" ? { actor_user_id: actor.user_id } : {}),
-      subject_user_id: input.user_id,
-      details: { workspace_id: input.workspace_id, role: input.role },
-    });
-    return membership;
-  }
-
-  revokeMembership(
-    actor: AdminActor,
-    input: { enterprise_id: EnterpriseId; workspace_id: WorkspaceId; user_id: UserId },
-  ): void {
-    this.#assertAdmin(actor, input.enterprise_id);
-    const scope = { enterprise_id: input.enterprise_id, actor_id: actorIdOf(actor) };
-    this.#repos.workspaces.getById(scope, input.workspace_id);
-    const membership = this.#repos.memberships.getByUser(
-      { ...scope, workspace_id: input.workspace_id },
-      input.user_id,
-    );
-    if (membership === undefined) {
-      throw new ApiError(404, "NOT_FOUND", "membership not found");
-    }
-    this.#repos.memberships.remove({ ...scope, workspace_id: input.workspace_id }, membership.id);
-    this.hub.emit({
-      type: "membership.revoked",
-      user_id: input.user_id,
-      workspace_id: input.workspace_id,
-    });
-    this.#audit({
-      event: "membership.revoked",
-      enterprise_id: input.enterprise_id,
-      actor_kind: actor.kind,
-      ...(actor.kind === "user" ? { actor_user_id: actor.user_id } : {}),
-      subject_user_id: input.user_id,
-      details: { workspace_id: input.workspace_id, role: membership.role },
-    });
   }
 
   listAudit(
