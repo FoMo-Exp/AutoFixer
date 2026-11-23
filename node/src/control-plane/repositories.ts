@@ -109,6 +109,32 @@ export interface MembershipChangeAudit {
   details: Record<string, unknown>;
 }
 
+/**
+ * The audit row that must commit with a refused last-owner change: the refusal
+ * is visible even though no membership row changed. Written inside the same
+ * transaction as the guard, so an unauditable refusal fails closed instead of
+ * silently blocking.
+ */
+export interface MembershipBlockedAudit {
+  enterprise_id: EnterpriseId;
+  actor_kind: "user" | "deployment";
+  /** Null/absent for the deployment credential. */
+  actor_user_id?: UserId | null;
+  action: "remove" | "demote";
+}
+
+export interface MembershipMutationOptions {
+  /** Required: a last-owner refusal must be audited atomically. */
+  blockedAudit: MembershipBlockedAudit;
+  /**
+   * Capability-grant revocation that belongs to the same authorization change.
+   * Runs inside the membership transaction after the write and its audit row:
+   * a failure rolls the membership change back, so no live grant outlives the
+   * role that justified it.
+   */
+  applyEffects?: (membership: Membership) => void;
+}
+
 export interface MembershipRepository {
   create(scope: WorkspaceScope, input: CreateMembershipInput): Membership;
   /**
@@ -123,7 +149,11 @@ export interface MembershipRepository {
   getById(scope: WorkspaceScope, id: MembershipId): Membership | undefined;
   getByUser(scope: WorkspaceScope, userId: UserId): Membership | undefined;
   list(scope: WorkspaceScope): Membership[];
-  /** Number of memberships in the workspace holding `role`. */
+  /**
+   * Number of memberships holding `role` that can still act: the user account
+   * and its enterprise membership are both active, matching the session and
+   * request-authority checks. Suspended owners do not keep a workspace alive.
+   */
   countByRole(scope: WorkspaceScope, role: WorkspaceRole): number;
   /** Every membership of one user across the scope's enterprise. */
   listForUser(scope: EnterpriseScope, userId: UserId): Membership[];
@@ -141,9 +171,9 @@ export interface MembershipRepository {
     expectedVersion: number,
   ): Membership;
   /**
-   * Change a role with its audit row in one transaction. Refuses (409
-   * LAST_WORKSPACE_OWNER) when demoting the last owner, evaluated inside the
-   * same transaction as the write.
+   * Change a role with its audit row and revocation effects in one
+   * transaction. Refuses (409 LAST_WORKSPACE_OWNER) when demoting the last
+   * *effective* owner, evaluated inside the same transaction as the write.
    */
   updateRoleAudited(
     scope: WorkspaceScope,
@@ -151,14 +181,20 @@ export interface MembershipRepository {
     role: WorkspaceRole,
     expectedVersion: number,
     audit: MembershipChangeAudit,
+    options: MembershipMutationOptions,
   ): Membership;
   remove(scope: WorkspaceScope, id: MembershipId): void;
   /**
-   * Remove a membership with its audit row in one transaction, refusing to
-   * remove the last owner. Returns the removed row for post-commit revocation
-   * work (capability grants, invalidation).
+   * Remove a membership with its audit row and revocation effects in one
+   * transaction, refusing to remove the last *effective* owner. Returns the
+   * removed row after the commit.
    */
-  removeAudited(scope: WorkspaceScope, id: MembershipId, audit: MembershipChangeAudit): Membership;
+  removeAudited(
+    scope: WorkspaceScope,
+    id: MembershipId,
+    audit: MembershipChangeAudit,
+    options: MembershipMutationOptions,
+  ): Membership;
 }
 
 export interface ControlPlaneRepositories {
@@ -940,7 +976,11 @@ class SqliteMembershipRepository implements MembershipRepository {
   countByRole(scope: WorkspaceScope, role: WorkspaceRole): number {
     const row = this.db
       .prepare(
-        `SELECT COUNT(*) AS count FROM membership m JOIN workspace w ON m.workspace_id = w.id
+        `SELECT COUNT(*) AS count FROM membership m
+          JOIN workspace w ON m.workspace_id = w.id
+          JOIN app_user u ON u.id = m.user_id AND u.status = 'active'
+          JOIN enterprise_user eu ON eu.enterprise_id = m.enterprise_id
+            AND eu.user_id = m.user_id AND eu.status = 'active'
           WHERE m.workspace_id = ? AND m.role = ? AND w.enterprise_id = ?`,
       )
       .get(scope.workspace_id, role, scope.enterprise_id) as { count: number } | undefined;
@@ -1034,21 +1074,33 @@ class SqliteMembershipRepository implements MembershipRepository {
     role: WorkspaceRole,
     expectedVersion: number,
     audit: MembershipChangeAudit,
+    options: MembershipMutationOptions,
   ): Membership {
-    return runInTransaction(this.db, () => {
+    const outcome = runInTransaction(this.db, () => {
       const existing = requireRow("Membership", id, this.getById(scope, id));
       // Evaluated inside the transaction as the write: two concurrent
-      // demotions cannot both see a second owner and both succeed.
-      if (existing.role === "owner" && role !== "owner" && this.countByRole(scope, "owner") <= 1) {
-        throw new LastOwnerError(scope.workspace_id, "demote", {
-          membership_id: id,
-          user_id: existing.user_id,
-        });
+      // demotions cannot both see a second *effective* owner and both succeed.
+      if (
+        existing.role === "owner" &&
+        role !== "owner" &&
+        this.#isEffectiveMember(scope, existing.user_id) &&
+        this.countByRole(scope, "owner") <= 1
+      ) {
+        this.#appendBlockedAudit(scope, existing, options.blockedAudit);
+        return { blocked: true as const, membership: existing };
       }
       const updated = this.updateRole(scope, id, role, expectedVersion);
       this.#appendAudit(scope, audit);
-      return updated;
+      options.applyEffects?.(updated);
+      return { blocked: false as const, membership: updated };
     });
+    if (outcome.blocked) {
+      throw new LastOwnerError(scope.workspace_id, "demote", {
+        membership_id: id,
+        user_id: outcome.membership.user_id,
+      });
+    }
+    return outcome.membership;
   }
 
   remove(scope: WorkspaceScope, id: MembershipId): void {
@@ -1061,19 +1113,50 @@ class SqliteMembershipRepository implements MembershipRepository {
       .run(id, scope.workspace_id, scope.enterprise_id);
   }
 
-  removeAudited(scope: WorkspaceScope, id: MembershipId, audit: MembershipChangeAudit): Membership {
-    return runInTransaction(this.db, () => {
+  removeAudited(
+    scope: WorkspaceScope,
+    id: MembershipId,
+    audit: MembershipChangeAudit,
+    options: MembershipMutationOptions,
+  ): Membership {
+    const outcome = runInTransaction(this.db, () => {
       const existing = requireRow("Membership", id, this.getById(scope, id));
-      if (existing.role === "owner" && this.countByRole(scope, "owner") <= 1) {
-        throw new LastOwnerError(scope.workspace_id, "remove", {
-          membership_id: id,
-          user_id: existing.user_id,
-        });
+      if (
+        existing.role === "owner" &&
+        this.#isEffectiveMember(scope, existing.user_id) &&
+        this.countByRole(scope, "owner") <= 1
+      ) {
+        this.#appendBlockedAudit(scope, existing, options.blockedAudit);
+        return { blocked: true as const, membership: existing };
       }
       this.remove(scope, id);
       this.#appendAudit(scope, audit);
-      return existing;
+      options.applyEffects?.(existing);
+      return { blocked: false as const, membership: existing };
     });
+    if (outcome.blocked) {
+      throw new LastOwnerError(scope.workspace_id, "remove", {
+        membership_id: id,
+        user_id: outcome.membership.user_id,
+      });
+    }
+    return outcome.membership;
+  }
+
+  /**
+   * A membership row only represents live authority while both the account
+   * and its enterprise membership are active; the session and request-authority
+   * gates refuse the same combinations.
+   */
+  #isEffectiveMember(scope: WorkspaceScope, userId: UserId): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS ok FROM app_user u
+          JOIN enterprise_user eu ON eu.user_id = u.id AND eu.enterprise_id = ?
+          WHERE u.id = ? AND u.status = 'active' AND eu.status = 'active'`,
+      )
+      .get(scope.enterprise_id, userId) as { ok: number } | undefined;
+    return row !== undefined;
   }
 
   /**
@@ -1081,6 +1164,49 @@ class SqliteMembershipRepository implements MembershipRepository {
    * Secrets never enter it: the details are role identifiers and ids only.
    */
   #appendAudit(scope: WorkspaceScope, audit: MembershipChangeAudit): void {
+    this.#insertAudit({
+      event: audit.event,
+      enterprise_id: audit.enterprise_id,
+      actor_kind: audit.actor_kind,
+      actor_user_id: audit.actor_user_id,
+      subject_user_id: audit.subject_user_id,
+      details: { workspace_id: scope.workspace_id, ...audit.details },
+    });
+  }
+
+  /**
+   * Record a refused last-owner change in the same transaction as the guard.
+   * The change itself never commits; the refusal's audit row does.
+   */
+  #appendBlockedAudit(
+    scope: WorkspaceScope,
+    existing: Membership,
+    blocked: MembershipBlockedAudit,
+  ): void {
+    this.#insertAudit({
+      event: "membership.owner_change_blocked",
+      enterprise_id: blocked.enterprise_id,
+      actor_kind: blocked.actor_kind,
+      actor_user_id: blocked.actor_user_id,
+      subject_user_id: existing.user_id,
+      details: {
+        workspace_id: scope.workspace_id,
+        membership_id: existing.id,
+        action: blocked.action,
+        reason: "last_workspace_owner",
+        role: existing.role,
+      },
+    });
+  }
+
+  #insertAudit(input: {
+    event: string;
+    enterprise_id: EnterpriseId;
+    actor_kind: "user" | "deployment";
+    actor_user_id?: UserId | null;
+    subject_user_id: UserId;
+    details: Record<string, unknown>;
+  }): void {
     this.db
       .prepare(
         `INSERT INTO auth_audit
@@ -1091,12 +1217,12 @@ class SqliteMembershipRepository implements MembershipRepository {
       .run(
         newId("aud"),
         nowIso(),
-        audit.event,
-        audit.enterprise_id,
-        audit.actor_kind,
-        audit.actor_kind === "deployment" ? null : (audit.actor_user_id ?? null),
-        audit.subject_user_id,
-        JSON.stringify({ workspace_id: scope.workspace_id, ...audit.details }),
+        input.event,
+        input.enterprise_id,
+        input.actor_kind,
+        input.actor_kind === "deployment" ? null : (input.actor_user_id ?? null),
+        input.subject_user_id,
+        JSON.stringify(input.details),
       );
   }
 }

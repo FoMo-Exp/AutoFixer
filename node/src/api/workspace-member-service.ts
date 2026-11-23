@@ -26,11 +26,13 @@
  * - **Anti-escalation.** A workspace `admin` never grants, changes or removes
  *   an `admin`/`owner` membership. An `owner` may, subject to verified
  *   repository management capability and the last-owner rule.
- * - **Last owner.** Removing or demoting the final owner is refused (409)
- *   inside the same transaction as the write, so concurrent attempts cannot
- *   both succeed.
- * - **Atomic audit.** The membership change and its `auth_audit` row commit
- *   together; a failed audit rolls the change back.
+ * - **Last owner.** Removing or demoting the final *effective* owner (active
+ *   account and active enterprise membership) is refused (409) inside the same
+ *   transaction as the write, so concurrent attempts cannot both succeed; the
+ *   refusal itself is audited in that transaction.
+ * - **Atomic audit and revocation.** The membership change, its `auth_audit`
+ *   row, the last-owner refusal audit and the capability-grant revocation all
+ *   commit together; any failure rolls the whole change back.
  * - **Revocation.** Removal revokes every live capability grant for that user
  *   in that workspace, bumps the shared authority epoch (closing live
  *   subscriptions) and emits the membership invalidation; a downgrade to
@@ -380,6 +382,7 @@ export class WorkspaceMemberService {
           : null,
     });
 
+    const downgraded = WORKSPACE_ROLE_RANK[role] < WORKSPACE_ROLE_RANK[target.role];
     let updated: Membership;
     try {
       updated = this.#repos.memberships.updateRoleAudited(
@@ -395,17 +398,27 @@ export class WorkspaceMemberService {
           subject_user_id: target.user_id,
           details: { previous_role: target.role, role },
         },
+        {
+          blockedAudit: {
+            enterprise_id: this.#enterpriseId,
+            actor_kind: "user",
+            actor_user_id: actorUserId,
+            action: "demote",
+          },
+          ...(downgraded
+            ? {
+                applyEffects: (): void => {
+                  this.#revokeUnsupportedGrants(ctx.scope, target.user_id, role);
+                },
+              }
+            : {}),
+        },
       );
     } catch (error) {
-      if (error instanceof LastOwnerError) {
-        this.#recordOwnerChangeBlocked(ctx, target, "demote", actorUserId);
-      }
       throw this.#mapMutationError(error);
     }
 
-    const downgraded = WORKSPACE_ROLE_RANK[role] < WORKSPACE_ROLE_RANK[target.role];
     if (downgraded) {
-      this.#revokeUnsupportedGrants(ctx.scope, target.user_id, role);
       this.#epoch.bump();
       this.#hub.emit({
         type: "membership.changed",
@@ -814,6 +827,17 @@ export class WorkspaceMemberService {
           binding.repository_id,
         );
       }
+      // A static permission declaration is not enough: if the latest sync run
+      // did not complete, the local roster is known to be partial or merely in
+      // progress, so candidates cannot be presented as a complete list.
+      const latestRun = this.#access.reconcileRuns.list(ctx.scope, integration.id, 1)[0];
+      if (latestRun !== undefined && latestRun.status !== "completed") {
+        throw rosterIncomplete(
+          latestRun.status === "running" ? "reconcile_in_progress" : "reconcile_incomplete",
+          binding.repository_id,
+          latestRun.failure_code !== null ? { failure_code: latestRun.failure_code } : {},
+        );
+      }
       const provider = this.#repos.providerInstances.getById(
         { enterprise_id: ctx.scope.enterprise_id, actor_id: ctx.scope.actor_id },
         binding.provider_instance_id,
@@ -987,63 +1011,42 @@ export class WorkspaceMemberService {
   #removeMembership(ctx: ResolvedWorkspace, target: Membership, actorUserId: UserId | null): void {
     let removed: Membership;
     try {
-      removed = this.#repos.memberships.removeAudited(ctx.scope, target.id, {
-        event: "membership.revoked",
-        enterprise_id: ctx.scope.enterprise_id,
-        actor_kind: actorUserId === null ? "deployment" : "user",
-        actor_user_id: actorUserId,
-        subject_user_id: target.user_id,
-        details: { role: target.role, source: "workspace_member_api" },
-      });
+      removed = this.#repos.memberships.removeAudited(
+        ctx.scope,
+        target.id,
+        {
+          event: "membership.revoked",
+          enterprise_id: ctx.scope.enterprise_id,
+          actor_kind: actorUserId === null ? "deployment" : "user",
+          actor_user_id: actorUserId,
+          subject_user_id: target.user_id,
+          details: { role: target.role, source: "workspace_member_api" },
+        },
+        {
+          blockedAudit: {
+            enterprise_id: ctx.scope.enterprise_id,
+            actor_kind: actorUserId === null ? "deployment" : "user",
+            ...(actorUserId !== null ? { actor_user_id: actorUserId } : {}),
+            action: "remove",
+          },
+          // Grants and their cleanup audit belong to the same transaction as
+          // the membership removal: the request path already denies without
+          // the membership, and no live grant may outlive it.
+          applyEffects: (removedMembership): void => {
+            const revoked = this.#revokeAllGrants(ctx.scope, removedMembership.user_id);
+            this.#auditCleanup(ctx, removedMembership, revoked, actorUserId);
+          },
+        },
+      );
     } catch (error) {
-      if (error instanceof LastOwnerError) {
-        this.#recordOwnerChangeBlocked(ctx, target, "remove", actorUserId);
-      }
       throw this.#mapMutationError(error);
     }
-    // The request path already denies without the membership; revoking the
-    // grants and bumping the epoch removes the remaining derived authority and
-    // cuts live subscriptions in this process.
-    const revoked = this.#revokeAllGrants(ctx.scope, removed.user_id);
     this.#epoch.bump();
     this.#hub.emit({
       type: "membership.revoked",
       user_id: removed.user_id,
       workspace_id: ctx.workspace.id,
     });
-    this.#auditCleanup(ctx, removed, revoked, actorUserId);
-  }
-
-  /**
-   * A blocked last-owner change is an audited safety event, not a silent 409.
-   * This row is written after the guarded transaction rolled back, so it can
-   * never make the refused change look applied; a failed write here must not
-   * turn the guard into a 500 either.
-   */
-  #recordOwnerChangeBlocked(
-    ctx: ResolvedWorkspace,
-    target: Membership,
-    action: "remove" | "demote",
-    actorUserId: UserId | null,
-  ): void {
-    try {
-      this.#identity.authAudit.append({
-        event: "membership.owner_change_blocked",
-        enterprise_id: ctx.scope.enterprise_id,
-        actor_kind: actorUserId === null ? "deployment" : "user",
-        ...(actorUserId !== null ? { actor_user_id: actorUserId } : {}),
-        subject_user_id: target.user_id,
-        details: {
-          workspace_id: ctx.workspace.id,
-          membership_id: target.id,
-          action,
-          reason: "last_workspace_owner",
-          role: target.role,
-        },
-      });
-    } catch {
-      // Refusal stands regardless; see the method comment.
-    }
   }
 
   #revokeAllGrants(scope: WorkspaceScope, userId: UserId): number {
@@ -1080,9 +1083,8 @@ export class WorkspaceMemberService {
   }
 
   /**
-   * Post-commit observability for derived-authority cleanup. This is a second
-   * audit row, not the authorization record — the membership change and its
-   * own audit row already committed atomically.
+   * Observability for derived-authority cleanup, written inside the same
+   * transaction as the removal and the grant revocation it describes.
    */
   #auditCleanup(
     ctx: ResolvedWorkspace,
@@ -1171,8 +1173,9 @@ export class WorkspaceMemberService {
   }
 
   /**
-   * A membership change that could not commit with its required audit row is
-   * blocked as a whole: the transaction rolled back and nothing was applied.
+   * A membership change that could not commit together with its audit row,
+   * last-owner refusal audit and revocation effects is blocked as a whole: the
+   * transaction rolled back and nothing was applied.
    */
   #mapMutationError(error: unknown): ApiError {
     if (error instanceof LastOwnerError) {
@@ -1199,7 +1202,7 @@ export class WorkspaceMemberService {
     return new ApiError(
       503,
       "MEMBERSHIP_AUDIT_UNAVAILABLE",
-      "the membership change could not be committed together with its audit record; nothing was applied",
+      "the membership change could not be committed together with its audit record and revocation effects; nothing was applied",
       {},
       { retryable: true },
     );
@@ -1225,12 +1228,16 @@ function provenanceOf(kind: ProviderRoleSourceKind | undefined): MemberProvenanc
   }
 }
 
-function rosterIncomplete(reason: string, repositoryId: string): ApiError {
+function rosterIncomplete(
+  reason: string,
+  repositoryId: string,
+  details: Record<string, unknown> = {},
+): ApiError {
   return new ApiError(
     503,
     "PROVIDER_ROSTER_INCOMPLETE",
     "the provider roster cannot be enumerated completely, so candidates are unavailable",
-    { reason, repository_id: repositoryId },
+    { reason, repository_id: repositoryId, ...details },
     { retryable: true },
   );
 }

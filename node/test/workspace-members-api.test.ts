@@ -983,6 +983,258 @@ describe("workspace members (DAT-277)", () => {
     expect(afterFailure.version).toBe(1);
   });
 
+  test("the last-owner guard ignores owners whose access is already dead", async () => {
+    const f = await fixture();
+    expect((await addMember(f, f.owner, f.bob.userId, "owner")).status).toBe(201);
+
+    // Bob is an owner on paper but his enterprise membership is suspended, so
+    // the access decision refuses him. He must not keep the workspace from
+    // being left ownerless by the only *effective* owner.
+    const identity = identityOf(f.app);
+    const bobEnterprise = identity.enterpriseUsers.getByUser(f.app.enterpriseId, f.bob.userId);
+    expect(bobEnterprise).toBeDefined();
+    const suspended = identity.enterpriseUsers.setStatus(
+      f.app.enterpriseId,
+      bobEnterprise!.id,
+      "suspended",
+      bobEnterprise!.version,
+      { kind: "deployment" },
+    );
+    expect(suspended.status).toBe("ok");
+
+    const ownerMembership = (await listMembers(f, f.owner)).body.items.find(
+      (entry) => entry.user_id === f.owner.userId,
+    )!;
+    const removed = await request<ErrorBody>(
+      f.app,
+      "DELETE",
+      `${membersPath(f.app)}/${ownerMembership.id}`,
+      f.owner,
+    );
+    expect(removed.status).toBe(409);
+    expect(removed.body.error.code).toBe("LAST_WORKSPACE_OWNER");
+
+    const demoted = await request<ErrorBody>(
+      f.app,
+      "PATCH",
+      `${membersPath(f.app)}/${ownerMembership.id}`,
+      f.owner,
+      { role: "admin", version: ownerMembership.version },
+    );
+    expect(demoted.status).toBe(409);
+    expect(demoted.body.error.code).toBe("LAST_WORKSPACE_OWNER");
+
+    const after = (await listMembers(f, f.owner)).body.items;
+    expect(after.find((entry) => entry.user_id === f.owner.userId)?.role).toBe("owner");
+  });
+
+  test("an incomplete or in-progress reconcile run blocks candidates", async () => {
+    const f = await fixture();
+    const runs = accessOf(f.app).reconcileRuns;
+    const integration = integrationOf(f.app);
+    const start = (offsetMs: number) =>
+      runs.start(f.scope, integration.id, {
+        integration_id: integration.id,
+        started_at: new Date(Date.now() + offsetMs).toISOString(),
+      });
+    const finish = (id: string, status: "completed" | "incomplete", offsetMs: number) =>
+      runs.finish(f.scope, id, {
+        status,
+        pages_seen: 1,
+        roster_size: 5,
+        ...(status === "incomplete" ? { failure_code: "PROVIDER_PAGE_UNAVAILABLE" } : {}),
+        finished_at: new Date(Date.now() + offsetMs).toISOString(),
+      });
+
+    // A known-incomplete sync leaves the local roster partial even though the
+    // integration still declares full permission visibility.
+    const incomplete = start(1_000);
+    finish(incomplete.id, "incomplete", 1_100);
+    const refused = await request<ErrorBody>(f.app, "GET", candidatesPath(f.app), f.owner);
+    expect(refused.status).toBe(503);
+    expect(refused.body.error.code).toBe("PROVIDER_ROSTER_INCOMPLETE");
+    expect(refused.body.error.details).toMatchObject({
+      reason: "reconcile_incomplete",
+      repository_id: REPOSITORY_ID,
+      failure_code: "PROVIDER_PAGE_UNAVAILABLE",
+    });
+
+    // A sync in progress is not a complete roster either.
+    const running = start(2_000);
+    const busy = await request<ErrorBody>(f.app, "GET", candidatesPath(f.app), f.owner);
+    expect(busy.status).toBe(503);
+    expect(busy.body.error.details?.reason).toBe("reconcile_in_progress");
+
+    // Only a completed latest run restores the candidate list.
+    finish(running.id, "completed", 2_100);
+    const ok = await request<Page<CandidateView>>(f.app, "GET", candidatesPath(f.app), f.owner);
+    expect(ok.status).toBe(200);
+    expect(candidatesBySubject(ok.body).get(SUBJECT_BOB)?.eligible).toBe(true);
+  });
+
+  test("a failed grant revocation rolls the removal back, and a retry succeeds", async () => {
+    const f = await fixture();
+    const access = accessOf(f.app);
+    const db = dbOf(f.app);
+    expect((await addMember(f, f.owner, f.bob.userId, "member")).status).toBe(201);
+    const grant = access.grants.grant(f.scope, integrationOf(f.app).id, {
+      grantee_user_id: f.bob.userId,
+      capability: "delivery_write",
+      expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      actor_id: "usr_seed",
+    });
+    const bobMembership = (await listMembers(f, f.owner)).body.items.find(
+      (entry) => entry.user_id === f.bob.userId,
+    )!;
+
+    db.exec(
+      "CREATE TRIGGER fail_grant_revoke BEFORE UPDATE ON capability_grant " +
+        "BEGIN SELECT RAISE(ABORT, 'grant store offline'); END",
+    );
+    const failed = await request<ErrorBody>(
+      f.app,
+      "DELETE",
+      `${membersPath(f.app)}/${bobMembership.id}`,
+      f.owner,
+    );
+    expect(failed.status).toBe(503);
+    expect(failed.body.error.code).toBe("MEMBERSHIP_AUDIT_UNAVAILABLE");
+
+    // Nothing was applied: the membership and the grant are both still live.
+    expect(
+      (await listMembers(f, f.owner)).body.items.some((entry) => entry.user_id === f.bob.userId),
+    ).toBe(true);
+    const liveAfterFailure = access.grants.listLive(f.scope, integrationOf(f.app).id, {
+      grantee_user_id: f.bob.userId,
+      now: new Date().toISOString(),
+    });
+    expect(liveAfterFailure.some((entry) => entry.id === grant.id)).toBe(true);
+
+    db.exec("DROP TRIGGER fail_grant_revoke");
+    const retried = await request<void>(
+      f.app,
+      "DELETE",
+      `${membersPath(f.app)}/${bobMembership.id}`,
+      f.owner,
+    );
+    expect(retried.status).toBe(204);
+    const liveAfterRetry = access.grants.listLive(f.scope, integrationOf(f.app).id, {
+      grantee_user_id: f.bob.userId,
+      now: new Date().toISOString(),
+    });
+    expect(liveAfterRetry.some((entry) => entry.id === grant.id)).toBe(false);
+  });
+
+  test("a failed grant revocation rolls a downgrade back, and a retry succeeds", async () => {
+    const f = await fixture();
+    const access = accessOf(f.app);
+    const db = dbOf(f.app);
+    expect((await addMember(f, f.owner, f.bob.userId, "member")).status).toBe(201);
+    const grant = access.grants.grant(f.scope, integrationOf(f.app).id, {
+      grantee_user_id: f.bob.userId,
+      capability: "delivery_write",
+      expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      actor_id: "usr_seed",
+    });
+    const bobMembership = (await listMembers(f, f.owner)).body.items.find(
+      (entry) => entry.user_id === f.bob.userId,
+    )!;
+
+    db.exec(
+      "CREATE TRIGGER fail_grant_revoke BEFORE UPDATE ON capability_grant " +
+        "BEGIN SELECT RAISE(ABORT, 'grant store offline'); END",
+    );
+    const failed = await request<ErrorBody>(
+      f.app,
+      "PATCH",
+      `${membersPath(f.app)}/${bobMembership.id}`,
+      f.owner,
+      { role: "viewer", version: bobMembership.version },
+    );
+    expect(failed.status).toBe(503);
+    expect(failed.body.error.code).toBe("MEMBERSHIP_AUDIT_UNAVAILABLE");
+
+    const afterFailure = (await listMembers(f, f.owner)).body.items.find(
+      (entry) => entry.user_id === f.bob.userId,
+    )!;
+    expect(afterFailure.role).toBe("member");
+    expect(afterFailure.version).toBe(bobMembership.version);
+    expect(
+      access.grants
+        .listLive(f.scope, integrationOf(f.app).id, {
+          grantee_user_id: f.bob.userId,
+          now: new Date().toISOString(),
+        })
+        .some((entry) => entry.id === grant.id),
+    ).toBe(true);
+
+    db.exec("DROP TRIGGER fail_grant_revoke");
+    const retried = await request<MembershipView>(
+      f.app,
+      "PATCH",
+      `${membersPath(f.app)}/${bobMembership.id}`,
+      f.owner,
+      { role: "viewer", version: bobMembership.version },
+    );
+    expect(retried.status).toBe(200);
+    expect(retried.body.role).toBe("viewer");
+    expect(
+      access.grants
+        .listLive(f.scope, integrationOf(f.app).id, {
+          grantee_user_id: f.bob.userId,
+          now: new Date().toISOString(),
+        })
+        .some((entry) => entry.id === grant.id),
+    ).toBe(false);
+  });
+
+  test("an unauditable last-owner refusal fails visibly instead of silently", async () => {
+    const f = await fixture();
+    const db = dbOf(f.app);
+    const ownerMembership = (await listMembers(f, f.owner)).body.items[0]!;
+
+    db.exec(
+      "CREATE TRIGGER fail_blocked_audit BEFORE INSERT ON auth_audit " +
+        "WHEN NEW.event = 'membership.owner_change_blocked' " +
+        "BEGIN SELECT RAISE(ABORT, 'audit offline'); END",
+    );
+    const failed = await request<ErrorBody>(
+      f.app,
+      "DELETE",
+      `${membersPath(f.app)}/${ownerMembership.id}`,
+      f.owner,
+    );
+    expect(failed.status).toBe(503);
+    expect(failed.body.error.code).toBe("MEMBERSHIP_AUDIT_UNAVAILABLE");
+    // The refusal still holds: nothing was removed.
+    expect((await listMembers(f, f.owner)).status).toBe(200);
+
+    // Once the audit store recovers, the same attempt is refused *and*
+    // recorded; the refusal is never silently unaudited.
+    db.exec("DROP TRIGGER fail_blocked_audit");
+    const refused = await request<ErrorBody>(
+      f.app,
+      "DELETE",
+      `${membersPath(f.app)}/${ownerMembership.id}`,
+      f.owner,
+    );
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.code).toBe("LAST_WORKSPACE_OWNER");
+
+    const audit = await fetch(
+      `${f.app.base}/api/v1/admin/enterprises/${f.app.enterpriseId}/auth-audit`,
+      { headers: { "X-Bootstrap-Token": BOOTSTRAP_TOKEN } },
+    );
+    const auditBody = (await audit.json()) as {
+      items: Array<{ event: string; details?: Record<string, unknown> }>;
+    };
+    const blocked = auditBody.items.filter(
+      (entry) => entry.event === "membership.owner_change_blocked",
+    );
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]?.details?.action).toBe("remove");
+  });
+
   test("memberships survive a process restart", async () => {
     const f = await fixture();
     expect((await addMember(f, f.owner, f.bob.userId, "member")).status).toBe(201);
