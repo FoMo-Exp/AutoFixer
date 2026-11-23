@@ -13,6 +13,8 @@ import { ControlPlaneError } from "../control-plane/errors.js";
 import { principalFromSession } from "../control-plane/request-scope.js";
 import { handleInvitationRequest } from "./invitation-http.js";
 import type { InvitationService } from "./invitation-service.js";
+import { handleWorkspaceMemberRequest, isWorkspaceMemberRoute } from "./workspace-member-http.js";
+import type { WorkspaceMemberService } from "./workspace-member-service.js";
 import { handleCollabRequest } from "./collab-http.js";
 import type { CollabHttpDeps } from "./collab-http.js";
 import {
@@ -66,6 +68,12 @@ export interface ApiServerDeps {
    * unrouted.
    */
   invitations?: InvitationService;
+  /**
+   * Workspace member and member-candidate surface (DAT-277). Served with the
+   * identity subsystem; unset keeps the member routes and the legacy
+   * administrator membership entry nonexistent rather than unaudited.
+   */
+  members?: WorkspaceMemberService;
   /** Workspace-scoped issue creation/list/detail and provider synchronization. */
   issues?: IssueSyncService;
   /**
@@ -413,6 +421,10 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
             event.user_id === sessionCtx.user.id &&
             event.workspace_id === workspaceId &&
             auth.workspaceAccess(sessionCtx.user.id, workspaceId) === undefined) ||
+          (event.type === "membership.changed" &&
+            event.user_id === sessionCtx.user.id &&
+            event.workspace_id === workspaceId &&
+            event.downgraded) ||
           (event.type === "enterprise_user.status_changed" &&
             event.user_id === sessionCtx.user.id &&
             event.status !== "active" &&
@@ -533,7 +545,7 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
           {
             auth: deps.auth,
             ...(deps.publicOrigin !== undefined ? { publicOrigin: deps.publicOrigin } : {}),
-            ...(deps.authority !== undefined ? { authority: deps.authority } : {}),
+            ...(deps.members !== undefined ? { members: deps.members } : {}),
           },
           { req, res, url, segments, requestId },
         );
@@ -612,6 +624,21 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
           res,
           200,
           deps.auth.listWorkspaces(actor.ctx.user.id, url.searchParams.get("cursor")),
+        );
+        return;
+      }
+
+      // Workspace members and provider-roster candidates (DAT-277). The path
+      // workspace is a locator: the service resolves the caller's live
+      // membership and the verifiable provider facts before anything else, so
+      // this family is dispatched ahead of the task-plane actor logic.
+      if (isWorkspaceMemberRoute(segments)) {
+        if (deps.auth === undefined || deps.members === undefined) {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+        }
+        await handleWorkspaceMemberRequest(
+          { auth: deps.auth, members: deps.members },
+          { req, res, url, segments, requestId },
         );
         return;
       }

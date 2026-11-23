@@ -102,6 +102,25 @@ export class ValidationError extends ControlPlaneError {
 }
 
 /**
+ * A workspace membership change would leave the workspace without an owner
+ * (DAT-277, ADR-0011). The check and the write run in the same transaction, so
+ * two concurrent removals/demotions cannot both observe a second owner and
+ * both succeed: exactly one leaves at least one owner in place.
+ */
+export class LastOwnerError extends ControlPlaneError {
+  constructor(
+    readonly workspaceId: string,
+    readonly action: "remove" | "demote",
+    readonly details: Record<string, unknown> = {},
+  ) {
+    super(
+      "LAST_WORKSPACE_OWNER",
+      `Refusing to ${action} the workspace's last owner; assign another owner first`,
+    );
+  }
+}
+
+/**
  * A workspace repository-set read or write was refused (DAT-281, ADR-0011).
  *
  * The `status` states the request-path semantics for a later route: 404 is

@@ -980,17 +980,76 @@ the enterprise or expands credentials — and is blocked with
 `AUTHORITY_RECHECK_REQUIRED` while authority is stale or unknown.
 
 Workspace roles are `owner`, `admin`, `member`, `viewer`, assigned only
-within the actor's own authority (`ROLE_NOT_ASSIGNABLE` for escalation);
-enterprise administration does not automatically grant repository data
-access. Members carry `MemberAuthority`: normalized provider-role provenance
+within the actor's own authority (`ROLE_NOT_ASSIGNABLE` for escalation).
+Enterprise administration does not automatically grant repository data access,
+and neither does enterprise administration alone permit member management: the
+member surface requires a live owner/admin membership **and** verified
+repository management authority over the workspace's whole repository set
+(`CAPABILITY_MANAGEMENT_REQUIRED`, or `AUTHORITY_RECHECK_REQUIRED` while that
+authority is unknown or stale). A deployment without an active
+repository-scoped integration cannot prove that authority, so it refuses member
+management outright instead of falling back to role-only control.
+
+Members carry `MemberAuthority`: normalized provider-role provenance
 (`organization_owner`, `group`, `inherited_role`, `direct_collaborator`, or
 `unknown`), `verified_at`, and `stale`. Authority that belongs to an
 organization is never invented as a repository "owner" user. Stale or unknown
 authority blocks sensitive actions pending reconciliation.
 
-`GET /api/v1/workspaces/{workspace_id}/member-candidates` is the import view:
-missing provider permissions or incomplete roster pages are
-`PROVIDER_ROSTER_INCOMPLETE` — an error, never an empty member list.
+### Member and candidate contract (DAT-277)
+
+- `GET /api/v1/workspaces/{workspace_id}/members` — a cursor-paginated page of
+  memberships visible to any live member of that workspace. A caller without a
+  live membership gets the same `404` as an unknown workspace.
+- `POST /api/v1/workspaces/{workspace_id}/members` — add one user, in exactly
+  the selected workspace. The target must be an enterprise user whose verified
+  provider intersection proves code read on every repository of the workspace;
+  otherwise `409 TARGET_NOT_ELIGIBLE` with a stable `reason`. A `viewer` or
+  `member` grant may not exceed the intersection: `repository_write` on every
+  repository allows `member`, anything less allows at most `viewer`
+  (`403 ROLE_NOT_ASSIGNABLE` with `max_role`). `admin`/`owner` are never
+  provider-derived; only an owner may grant them, and a workspace admin may
+  never grant or manage them. An existing member is `409 MEMBERSHIP_CONFLICT`,
+  and a user outside this deployment's directory is the same `404` as a
+  missing one.
+- `PATCH /api/v1/workspaces/{workspace_id}/members/{membership_id}` — change a
+  role with optimistic concurrency (`409 VERSION_CONFLICT`) and the same
+  anti-escalation and ceiling rules. A demotion needs no positive provider
+  fact: it always succeeds (subject to the last-owner rule) and revokes the
+  capability grants the lower role no longer supports.
+- `DELETE /api/v1/workspaces/{workspace_id}/members/{membership_id}` — remove
+  the membership. From the next request its reads, streams, artifacts,
+  approvals, and writes are denied, live workspace SSE subscriptions for that
+  user are closed, and every live capability grant derived from the membership
+  in this workspace is revoked. No other workspace is affected. Removing or
+  demoting the last effective owner is `409 LAST_WORKSPACE_OWNER`, evaluated
+  inside the same transaction as the write (so concurrent attempts cannot both
+  succeed) and audited as a blocked change. The membership change and its
+  `auth_audit` row commit atomically; if the audit record cannot be written the
+  change is rolled back and the request is `503
+  MEMBERSHIP_AUDIT_UNAVAILABLE` — nothing was applied, and the request may be
+  retried as one idempotent operation.
+
+`GET /api/v1/workspaces/{workspace_id}/member-candidates` is the import view.
+It serves only from a complete roster: missing provider permissions, a partial
+or unobservable roster, or an inactive installation is `503
+PROVIDER_ROSTER_INCOMPLETE` — an error, never an empty member list. Each
+candidate names its provider role and provenance, whether it is already a
+member, `max_role` (the verified viewer/member ceiling), and the
+`assignable_roles` for the calling actor. An ineligible candidate carries
+`eligible: false` and one of the stable `ineligible_reason` codes, including
+`identity_unlinked` for a provider subject that has never signed in — an email
+address is never a claiming key, and no role is ever granted to an unlinked
+subject through this surface. A candidate who is stale, unknown, removed,
+unsupported, or missing a repository fails closed; an operational
+reconciliation that re-verifies the provider facts restores eligibility.
+
+The legacy administrator entry
+(`PUT`/`DELETE /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}`)
+is the same decision surface, not a bypass: a user session must be an
+enterprise administrator **and** pass the workspace member rules above. The
+deployment bootstrap credential is the explicitly scoped local-operator mode;
+the last-owner and atomic-audit invariants still apply to it.
 
 Teams are a routing signal, never an authorization source: team leadership or
 membership grants no repository access, security privilege, or delivery

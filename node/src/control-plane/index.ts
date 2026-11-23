@@ -22,6 +22,7 @@ export {
   CapabilityCeilingError,
   ConflictError,
   ControlPlaneError,
+  LastOwnerError,
   NotFoundError,
   RequestScopeError,
   ScopeError,
@@ -34,6 +35,7 @@ export type { CapabilityCeilingErrorCode, RequestScopeErrorCode } from "./errors
 export type {
   ControlPlaneRepositories,
   EnterpriseRepository,
+  MembershipChangeAudit,
   MembershipRepository,
   ProviderInstanceRepository,
   TeamRepository,

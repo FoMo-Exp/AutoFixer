@@ -3,7 +3,7 @@ import type http from "node:http";
 import type { AdminActor, AuthService, SessionContext } from "./auth-service.js";
 import { REPOSITORY_CAPABILITIES } from "../control-plane/member-capability-types.js";
 import type { RepositoryCapability } from "../control-plane/member-capability-types.js";
-import type { RequestAuthority } from "./request-authority.js";
+import type { WorkspaceMemberService } from "./workspace-member-service.js";
 import { ApiError } from "./errors.js";
 import { readJsonBody, requireString, writeJson, writeRedirect, writeText } from "./http-util.js";
 import {
@@ -34,12 +34,12 @@ export interface AuthHttpDeps {
   /** External origin override; loopback derives from the socket. */
   publicOrigin?: string;
   /**
-   * Provider-authority boundary. The legacy administrator membership route
-   * must enforce the same management capability as any other management
-   * action: enterprise administration is not a repository-management bypass
-   * (ADR-0011).
+   * Workspace member service (DAT-277). The legacy administrator membership
+   * entry delegates here, so enterprise administration can never bypass role
+   * policy, provider eligibility, verified repository management, the
+   * last-owner guard or the atomic audit record (ADR-0011).
    */
-  authority?: RequestAuthority;
+  members?: WorkspaceMemberService;
 }
 
 export interface AuthRouteContext {
@@ -354,16 +354,17 @@ async function handleAdmin(deps: AuthHttpDeps, ctx: AuthRouteContext): Promise<v
     const enterprise_id = pathSegment(segments, 4, "enterprise_id");
     const workspace_id = pathSegment(segments, 6, "workspace_id");
     const user_id = pathSegment(segments, 8, "user_id");
-    // The legacy administrator entry is not an authorization bypass: a user
-    // session managing members/roles must prove the same management capability
-    // (admin/owner role + verified repository management on every repository)
-    // that the workspace administration path requires. The deployment operator
-    // credential is the local-operator mode and is unchanged.
-    if (actor.kind === "user" && deps.authority?.isEnforcing(workspace_id) === true) {
-      deps.authority.require(actor.user_id, "manage", workspace_id);
+    // The legacy entry is not an authorization bypass: a user session managing
+    // members/roles must prove the same enterprise-administrator standing and
+    // the same workspace management authority (admin/owner role + verified
+    // repository management on every repository) as the workspace surface, and
+    // the last-owner and audit rules apply identically. The deployment
+    // bootstrap credential is the explicitly scoped local-operator mode.
+    if (deps.members === undefined) {
+      throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
     }
     if (method === "DELETE") {
-      auth.revokeMembership(actor, { enterprise_id, workspace_id, user_id });
+      deps.members.legacyRevoke(actor, { enterprise_id, workspace_id, user_id });
       res.writeHead(204);
       res.end();
       return;
@@ -376,7 +377,7 @@ async function handleAdmin(deps: AuthHttpDeps, ctx: AuthRouteContext): Promise<v
     writeJson(
       res,
       200,
-      auth.grantMembership(actor, {
+      deps.members.legacyGrant(actor, {
         enterprise_id,
         workspace_id,
         user_id,

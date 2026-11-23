@@ -5,6 +5,7 @@ import {
   ConflictError,
   ForbiddenError,
   InvalidTransitionError,
+  LastOwnerError as ControlPlaneLastOwnerError,
   NotFoundError,
   PreconditionFailedError,
   RequestScopeError,
@@ -760,6 +761,15 @@ export function apiErrorFromControlPlane(error: ControlPlaneError): ApiError {
   }
   if (error instanceof VersionConflictError) {
     return new ApiError(409, "VERSION_CONFLICT", error.message);
+  }
+  if (error instanceof ControlPlaneLastOwnerError) {
+    // DAT-277: the last owner is a workspace invariant, not a generic
+    // conflict; clients need the stable code to explain the required action.
+    return new ApiError(409, error.code, error.message, {
+      workspace_id: error.workspaceId,
+      action: error.action,
+      ...error.details,
+    });
   }
   if (error instanceof InvalidTransitionError) {
     return new ApiError(409, "INVALID_TRANSITION", error.message, error.details);
