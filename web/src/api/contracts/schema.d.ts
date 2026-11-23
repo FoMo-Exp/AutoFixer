@@ -629,6 +629,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/enterprises/{enterprise_id}/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the caller's enterprise-scoped capability projection
+         * @description Session-scoped, enterprise-scoped, advisory snapshot for an active enterprise membership. It covers the enterprise directory, identity audit and service-integration metadata only; `workspace_data_access.granted` is always false because enterprise administration is not repository authority. A non-administrator member receives the same shape with administrator actions denied. The path enterprise is a locator; another enterprise is indistinguishable from a missing one (404).
+         */
+        get: operations["getEnterpriseCapabilityProjection"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspace_id}/capabilities": {
         parameters: {
             query?: never;
@@ -638,7 +658,7 @@ export interface paths {
         };
         /**
          * Read the caller's workspace capability projection
-         * @description Session-scoped, workspace-scoped, advisory snapshot of module and action permissions, the verified repository capability intersection, per-repository evidence freshness and any confirmed reduction. The path workspace is a locator: a caller without a live membership gets the same indistinguishable 404 as every other workspace route. The projection is never a bearer grant — every request is checked again.
+         * @description Session-scoped, workspace-scoped, advisory snapshot of the eight ADR-0011 modules, each module's role/duty visibility and per-action decisions, the data-sensitivity ceiling, the verified repository capability intersection, per-repository evidence freshness, the confirmed reduction and an explicit expiry/invalidation contract. The path workspace is a locator: a caller without a live membership gets the same indistinguishable 404 as every other workspace route. The projection is never a bearer grant — every request is checked again, and an expired or failed projection fails closed.
          */
         get: operations["getWorkspaceCapabilityProjection"];
         put?: never;
@@ -3318,10 +3338,28 @@ export interface components {
             reason?: string;
             requires_reconciliation?: boolean;
         };
-        /** @description Session-scoped, workspace-scoped capability projection (DAT-276, ADR-0011). Advisory for navigation only: every request is still checked object by object against the verified provider capability intersection. An `unverified` state blocks every action until eligibility can be verified and is never recorded as a confirmed downgrade; `confirmed_loss` stays in force until an audited administrator reapproval. */
+        CapabilityModuleAction: {
+            allowed: boolean;
+            required: string;
+            /** @description Safe machine reason (a gate reason, `workspace_role`, `team_leader`, `security_duty`, or `enterprise_admin`). Never names a repository, teammate, credential or sensitive policy value. */
+            reason?: string;
+        };
+        /** @description Advisory lifetime of a projection. The server never accepts a projection as a grant; clients refetch at `expires_at` for navigation or `stale_after` for sensitive data and on any `invalidation` event. Unknown fields, an expired projection or a failed re-evaluation fail closed (hide module data and re-fetch). */
+        CapabilityProjectionFreshness: {
+            /** Format: date-time */
+            checked_at: string;
+            /** Format: date-time */
+            expires_at: string;
+            /** Format: date-time */
+            stale_after: string;
+            /** @enum {string} */
+            state: "fresh";
+            invalidation: ("authority_epoch_changed" | "capability_ceiling_changed" | "membership_changed" | "enterprise_status_changed" | "session_revoked" | "provider_reconciled" | "projection_expired")[];
+        };
+        /** @description Session-scoped, workspace-scoped capability projection (DAT-278, ADR-0011). Advisory for navigation only: every request is still checked object by object against the verified provider capability intersection. It exposes eight modules with role/duty visibility, per-action decisions, the highest data class the caller may read, the verified repository capability intersection, and an explicit freshness/invalidation contract. An `unverified` state blocks every data action until eligibility can be verified and is never recorded as a confirmed downgrade; `confirmed_loss` stays in force until an audited administrator reapproval. Security actions come only from explicit human duties and survive an ordinary workspace demotion; service integration metadata comes only from enterprise administration and is never repository data access. */
         WorkspaceCapabilityProjection: {
             /** @enum {string} */
-            schema_version: "workspace-capability-v1";
+            schema_version: "workspace-capability-v2";
             enterprise_id: string;
             workspace_id: string;
             /** @enum {string|null} */
@@ -3335,6 +3373,163 @@ export interface components {
             blocked_reason: "workspace_archived" | "repository_missing" | "repository_set_unsupported" | "repository_binding_inconsistent" | "installation_not_approved" | "provider_instance_unapproved" | "subject_missing" | "authority_unknown" | "authority_stale" | "verification_expired" | "permission_visibility_none" | "permission_visibility_partial" | "role_missing" | "unsupported_role" | "repository_access_removed" | "no_code_read" | "capability_store_unavailable" | null;
             /** @description Effective intersection (empty unless `verified`). */
             capabilities: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+            /** @description The eight ADR-0011 modules. `visible` is role/duty based; each action is decided independently and `data_ceiling` is the highest data class the caller may read. A hidden button is never the control. */
+            modules: {
+                tasks: {
+                    /** @description Role/duty-based module visibility. Visibility is never a grant: a visible module still denies each action separately. */
+                    visible: boolean;
+                    /**
+                     * @description Highest data class this module may return. `restricted` is never produced for ordinary workspace roles; restricted Memory and quarantine need a separate grant.
+                     * @enum {string}
+                     */
+                    data_ceiling: "none" | "repository" | "internal" | "confidential" | "operational" | "financial" | "roster" | "governance" | "redacted" | "audit" | "metadata";
+                    reason: string | null;
+                    actions: {
+                        view: components["schemas"]["CapabilityModuleAction"];
+                        stream: components["schemas"]["CapabilityModuleAction"];
+                        artifacts: components["schemas"]["CapabilityModuleAction"];
+                        create: components["schemas"]["CapabilityModuleAction"];
+                        run: components["schemas"]["CapabilityModuleAction"];
+                        manage: components["schemas"]["CapabilityModuleAction"];
+                        approve: components["schemas"]["CapabilityModuleAction"];
+                    };
+                };
+                issues: {
+                    /** @description Role/duty-based module visibility. Visibility is never a grant: a visible module still denies each action separately. */
+                    visible: boolean;
+                    /**
+                     * @description Highest data class this module may return. `restricted` is never produced for ordinary workspace roles; restricted Memory and quarantine need a separate grant.
+                     * @enum {string}
+                     */
+                    data_ceiling: "none" | "repository" | "internal" | "confidential" | "operational" | "financial" | "roster" | "governance" | "redacted" | "audit" | "metadata";
+                    reason: string | null;
+                    actions: {
+                        view: components["schemas"]["CapabilityModuleAction"];
+                        create: components["schemas"]["CapabilityModuleAction"];
+                        comment: components["schemas"]["CapabilityModuleAction"];
+                        request_approval: components["schemas"]["CapabilityModuleAction"];
+                        decide_candidate: components["schemas"]["CapabilityModuleAction"];
+                        deliver: components["schemas"]["CapabilityModuleAction"];
+                    };
+                };
+                memory: {
+                    /** @description Role/duty-based module visibility. Visibility is never a grant: a visible module still denies each action separately. */
+                    visible: boolean;
+                    /**
+                     * @description Highest data class this module may return. `restricted` is never produced for ordinary workspace roles; restricted Memory and quarantine need a separate grant.
+                     * @enum {string}
+                     */
+                    data_ceiling: "none" | "repository" | "internal" | "confidential" | "operational" | "financial" | "roster" | "governance" | "redacted" | "audit" | "metadata";
+                    reason: string | null;
+                    actions: {
+                        view: components["schemas"]["CapabilityModuleAction"];
+                        view_confidential: components["schemas"]["CapabilityModuleAction"];
+                        govern_team: components["schemas"]["CapabilityModuleAction"];
+                        govern_workspace: components["schemas"]["CapabilityModuleAction"];
+                        restricted_access: components["schemas"]["CapabilityModuleAction"];
+                    };
+                };
+                rsi: {
+                    /** @description Role/duty-based module visibility. Visibility is never a grant: a visible module still denies each action separately. */
+                    visible: boolean;
+                    /**
+                     * @description Highest data class this module may return. `restricted` is never produced for ordinary workspace roles; restricted Memory and quarantine need a separate grant.
+                     * @enum {string}
+                     */
+                    data_ceiling: "none" | "repository" | "internal" | "confidential" | "operational" | "financial" | "roster" | "governance" | "redacted" | "audit" | "metadata";
+                    reason: string | null;
+                    actions: {
+                        view: components["schemas"]["CapabilityModuleAction"];
+                        propose: components["schemas"]["CapabilityModuleAction"];
+                        approve: components["schemas"]["CapabilityModuleAction"];
+                        evaluate: components["schemas"]["CapabilityModuleAction"];
+                        replay: components["schemas"]["CapabilityModuleAction"];
+                        canary: components["schemas"]["CapabilityModuleAction"];
+                        rollback: components["schemas"]["CapabilityModuleAction"];
+                        kill_switch: components["schemas"]["CapabilityModuleAction"];
+                    };
+                };
+                dashboard: {
+                    /** @description Role/duty-based module visibility. Visibility is never a grant: a visible module still denies each action separately. */
+                    visible: boolean;
+                    /**
+                     * @description Highest data class this module may return. `restricted` is never produced for ordinary workspace roles; restricted Memory and quarantine need a separate grant.
+                     * @enum {string}
+                     */
+                    data_ceiling: "none" | "repository" | "internal" | "confidential" | "operational" | "financial" | "roster" | "governance" | "redacted" | "audit" | "metadata";
+                    reason: string | null;
+                    actions: {
+                        view: components["schemas"]["CapabilityModuleAction"];
+                        view_trace: components["schemas"]["CapabilityModuleAction"];
+                        view_financial: components["schemas"]["CapabilityModuleAction"];
+                        audit: components["schemas"]["CapabilityModuleAction"];
+                        export: components["schemas"]["CapabilityModuleAction"];
+                    };
+                };
+                members: {
+                    /** @description Role/duty-based module visibility. Visibility is never a grant: a visible module still denies each action separately. */
+                    visible: boolean;
+                    /**
+                     * @description Highest data class this module may return. `restricted` is never produced for ordinary workspace roles; restricted Memory and quarantine need a separate grant.
+                     * @enum {string}
+                     */
+                    data_ceiling: "none" | "repository" | "internal" | "confidential" | "operational" | "financial" | "roster" | "governance" | "redacted" | "audit" | "metadata";
+                    reason: string | null;
+                    actions: {
+                        view: components["schemas"]["CapabilityModuleAction"];
+                        manage_members: components["schemas"]["CapabilityModuleAction"];
+                        manage_teams: components["schemas"]["CapabilityModuleAction"];
+                        invite: components["schemas"]["CapabilityModuleAction"];
+                        manage_roles: components["schemas"]["CapabilityModuleAction"];
+                    };
+                };
+                security: {
+                    /** @description Role/duty-based module visibility. Visibility is never a grant: a visible module still denies each action separately. */
+                    visible: boolean;
+                    /**
+                     * @description Highest data class this module may return. `restricted` is never produced for ordinary workspace roles; restricted Memory and quarantine need a separate grant.
+                     * @enum {string}
+                     */
+                    data_ceiling: "none" | "repository" | "internal" | "confidential" | "operational" | "financial" | "roster" | "governance" | "redacted" | "audit" | "metadata";
+                    reason: string | null;
+                    actions: {
+                        "audit.export": components["schemas"]["CapabilityModuleAction"];
+                        "audit.read": components["schemas"]["CapabilityModuleAction"];
+                        "case.handle": components["schemas"]["CapabilityModuleAction"];
+                        "case.read_redacted_status": components["schemas"]["CapabilityModuleAction"];
+                        "case.request_reassignment": components["schemas"]["CapabilityModuleAction"];
+                        "case.request_termination": components["schemas"]["CapabilityModuleAction"];
+                        "case.review_decide": components["schemas"]["CapabilityModuleAction"];
+                        "case.submit_for_review": components["schemas"]["CapabilityModuleAction"];
+                        "case.terminate": components["schemas"]["CapabilityModuleAction"];
+                        "endpoint.configure": components["schemas"]["CapabilityModuleAction"];
+                        "quarantine.grant_access": components["schemas"]["CapabilityModuleAction"];
+                        "quarantine.view": components["schemas"]["CapabilityModuleAction"];
+                        "recovery.approve": components["schemas"]["CapabilityModuleAction"];
+                        "recovery.reconcile": components["schemas"]["CapabilityModuleAction"];
+                        "recovery.revoke": components["schemas"]["CapabilityModuleAction"];
+                        "role.grant": components["schemas"]["CapabilityModuleAction"];
+                        "rule.activate": components["schemas"]["CapabilityModuleAction"];
+                        "rule.propose": components["schemas"]["CapabilityModuleAction"];
+                        "rule.review": components["schemas"]["CapabilityModuleAction"];
+                        "rule.rollback": components["schemas"]["CapabilityModuleAction"];
+                    };
+                };
+                service_integration: {
+                    /** @description Role/duty-based module visibility. Visibility is never a grant: a visible module still denies each action separately. */
+                    visible: boolean;
+                    /**
+                     * @description Highest data class this module may return. `restricted` is never produced for ordinary workspace roles; restricted Memory and quarantine need a separate grant.
+                     * @enum {string}
+                     */
+                    data_ceiling: "none" | "repository" | "internal" | "confidential" | "operational" | "financial" | "roster" | "governance" | "redacted" | "audit" | "metadata";
+                    reason: string | null;
+                    actions: {
+                        view_metadata: components["schemas"]["CapabilityModuleAction"];
+                        configure: components["schemas"]["CapabilityModuleAction"];
+                    };
+                };
+            };
             /** @description Per-action decision and the capability it requires. */
             actions: {
                 read: components["schemas"]["CapabilityAction"];
@@ -3367,6 +3562,75 @@ export interface components {
                 set_version: number;
                 repository_count: number;
             };
+            freshness: components["schemas"]["CapabilityProjectionFreshness"];
+            /** Format: date-time */
+            checked_at: string;
+        };
+        /** @description Session-scoped enterprise projection (DAT-278, ADR-0011). Gives an enterprise administrator the directory, identity-audit and service-integration metadata surfaces their separate grant covers, without any workspace repository data. `workspace_data_access` is always false: enterprise administration is not repository authority. A non-administrator enterprise member receives the same shape with every administrator action denied, never a filtered directory. */
+        EnterpriseCapabilityProjection: {
+            /** @enum {string} */
+            schema_version: "enterprise-capability-v1";
+            enterprise_id: string;
+            member: {
+                /** @enum {string} */
+                status: "active" | "suspended";
+                /** @enum {string} */
+                role: "admin" | "member";
+            };
+            modules: {
+                enterprise_directory: {
+                    visible: boolean;
+                    /** @enum {string} */
+                    data_ceiling: "none" | "directory" | "audit" | "metadata";
+                    reason: string | null;
+                    actions: {
+                        view: components["schemas"]["CapabilityModuleAction"];
+                        add_user: components["schemas"]["CapabilityModuleAction"];
+                        suspend_user: components["schemas"]["CapabilityModuleAction"];
+                        restore_user: components["schemas"]["CapabilityModuleAction"];
+                        change_role: components["schemas"]["CapabilityModuleAction"];
+                    };
+                };
+                identity_audit: {
+                    visible: boolean;
+                    /** @enum {string} */
+                    data_ceiling: "none" | "directory" | "audit" | "metadata";
+                    reason: string | null;
+                    actions: {
+                        read: components["schemas"]["CapabilityModuleAction"];
+                    };
+                };
+                service_integration: {
+                    visible: boolean;
+                    /** @enum {string} */
+                    data_ceiling: "none" | "directory" | "audit" | "metadata";
+                    reason: string | null;
+                    actions: {
+                        view_metadata: components["schemas"]["CapabilityModuleAction"];
+                        configure: components["schemas"]["CapabilityModuleAction"];
+                    };
+                };
+                workspace_data: {
+                    visible: boolean;
+                    /** @enum {string} */
+                    data_ceiling: "none" | "directory" | "audit" | "metadata";
+                    reason: string | null;
+                    actions: {
+                        view_tasks: components["schemas"]["CapabilityModuleAction"];
+                        view_issues: components["schemas"]["CapabilityModuleAction"];
+                        view_memory: components["schemas"]["CapabilityModuleAction"];
+                        view_rsi: components["schemas"]["CapabilityModuleAction"];
+                        view_dashboard: components["schemas"]["CapabilityModuleAction"];
+                        view_security: components["schemas"]["CapabilityModuleAction"];
+                    };
+                };
+            };
+            workspace_data_access: {
+                /** @enum {boolean} */
+                granted: false;
+                reason: string;
+            };
+            freshness: components["schemas"]["CapabilityProjectionFreshness"];
             /** Format: date-time */
             checked_at: string;
         };
@@ -7398,6 +7662,55 @@ export interface operations {
             };
             /** @description MEMBERSHIP_AUDIT_UNAVAILABLE — nothing was applied */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getEnterpriseCapabilityProjection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                enterprise_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Enterprise capability projection */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnterpriseCapabilityProjection"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description ENTERPRISE_MEMBERSHIP_REQUIRED / ENTERPRISE_MEMBERSHIP_SUSPENDED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Enterprise was not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

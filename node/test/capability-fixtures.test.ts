@@ -79,6 +79,7 @@ const FIXTURES: Array<{ file: string; pointer: string[] }> = [
   { file: "projection-verified.json", pointer: COMPONENT("WorkspaceCapabilityProjection") },
   { file: "projection-downgraded.json", pointer: COMPONENT("WorkspaceCapabilityProjection") },
   { file: "projection-unverified.json", pointer: COMPONENT("WorkspaceCapabilityProjection") },
+  { file: "enterprise-projection.json", pointer: COMPONENT("EnterpriseCapabilityProjection") },
   { file: "member-capability-ceiling.json", pointer: COMPONENT("MemberCapabilityCeilingView") },
 ];
 
@@ -117,6 +118,43 @@ describe("capability contract fixtures", () => {
         "manage",
       ].sort(),
     );
+  });
+
+  test("the projection schema closes all eight modules over their actions", () => {
+    const projection = document.components.schemas["WorkspaceCapabilityProjection"] as {
+      properties: {
+        schema_version: { enum: string[] };
+        modules: {
+          required: string[];
+          additionalProperties: boolean;
+          properties: Record<
+            string,
+            { required: string[]; properties: { actions: { required: string[] } } }
+          >;
+        };
+      };
+    };
+    expect(projection.properties.schema_version.enum).toEqual(["workspace-capability-v2"]);
+    expect(projection.properties.modules.required).toEqual([
+      "tasks",
+      "issues",
+      "memory",
+      "rsi",
+      "dashboard",
+      "members",
+      "security",
+      "service_integration",
+    ]);
+    expect(projection.properties.modules.additionalProperties).toBe(false);
+    for (const [module, schema] of Object.entries(projection.properties.modules.properties)) {
+      expect(schema.required).toEqual(["visible", "data_ceiling", "reason", "actions"]);
+      expect(schema.properties.actions.required.length, module).toBeGreaterThan(0);
+    }
+    // Restricted is never reachable through the ordinary projection.
+    const ceilings = projection.properties.modules.properties["memory"] as unknown as {
+      properties: { data_ceiling: { enum: string[] } };
+    };
+    expect(ceilings.properties.data_ceiling.enum).not.toContain("restricted");
   });
 
   test("an unknown capability name is rejected by the contract", () => {

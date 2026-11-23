@@ -28,6 +28,7 @@ import type { TaskEvent, TaskResource } from "./task-store.js";
 import type { TaskService } from "./task-service.js";
 import { actionForRequest } from "./request-authority.js";
 import type { RequestAuthority } from "./request-authority.js";
+import { computeEnterpriseCapabilityProjection } from "./enterprise-capability.js";
 import type { IssueSyncService } from "../issue-sync/service.js";
 import type { RuntimeDiagnostics } from "../diagnostics/runtime.js";
 import {
@@ -665,7 +666,55 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
         return;
       }
 
-      // Workspace capability projection (DAT-276, ADR-0011). A session-scoped,
+      // Enterprise-scoped capability projection (DAT-278, ADR-0011). It exists
+      // so an enterprise administrator without a workspace membership can see
+      // the enterprise surfaces their grant covers, and it states explicitly
+      // that enterprise administration is not repository data access. The path
+      // enterprise is a locator only; the session's active membership decides.
+      if (
+        segments[2] === "enterprises" &&
+        segments.length === 5 &&
+        segments[4] === "capabilities"
+      ) {
+        const method = req.method ?? "GET";
+        if (method !== "GET" && method !== "HEAD") {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
+        }
+        if (deps.auth === undefined || deps.authority === undefined) {
+          throw new ApiError(404, "NOT_FOUND", "Enterprise was not found");
+        }
+        const session = requireEnterpriseSessionActor(deps.auth, req);
+        const info = deps.auth.sessionInfo(session);
+        const membership = info.enterprise_membership;
+        if (membership === undefined || membership === null) {
+          throw new ApiError(
+            403,
+            "ENTERPRISE_MEMBERSHIP_REQUIRED",
+            "an active enterprise membership is required",
+          );
+        }
+        if (segments[3] !== membership.enterprise_id) {
+          throw new ApiError(404, "NOT_FOUND", "Enterprise was not found");
+        }
+        const freshness = deps.authority.freshness();
+        writeJson(
+          res,
+          200,
+          computeEnterpriseCapabilityProjection({
+            enterprise_id: membership.enterprise_id,
+            // requireEnterpriseSessionActor already refused every non-active
+            // status; the projection only models the active states.
+            status: membership.status === "active" ? "active" : "suspended",
+            role: membership.role,
+            now: new Date(),
+            fresh_window_ms: freshness.fresh_window_ms,
+            stale_after_ms: freshness.stale_after_ms,
+          }),
+        );
+        return;
+      }
+
+      // Workspace capability projection (DAT-278, ADR-0011). A session-scoped,
       // workspace-scoped snapshot of module/action permissions, the verified
       // repository capability intersection, and authority freshness. It is
       // advisory: every request is still checked object by object. A caller

@@ -303,11 +303,12 @@ describe("independent conformance to the normative contract", () => {
     // (DAT-220), the eighteen ADR-0005 security operations (DAT-213), and
     // five provider issue synchronization operations (ADR-0010), the
     // operator runtime-diagnostics read (DAT-257), the read-only PR
-    // governance observation (DAT-261), and the three administrator
+    // governance observation (DAT-261), the three administrator
     // service-integration operations (DAT-267), the six enterprise-user
-    // operations (DAT-275), and the three repository capability-ceiling
-    // operations (DAT-276).
-    expect(checked).toBe(136);
+    // operations (DAT-275), the three repository capability-ceiling
+    // operations (DAT-276), and the enterprise-scoped capability projection
+    // (DAT-278).
+    expect(checked).toBe(137);
   });
 
   test("the committed openapi.json also carries the auth scheme", () => {

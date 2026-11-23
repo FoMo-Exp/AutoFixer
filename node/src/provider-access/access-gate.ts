@@ -31,12 +31,24 @@ import type { CapabilityGrant, CapabilityKind } from "../control-plane/provider-
 import type { ProviderAccessRepositories } from "../control-plane/provider-access-repositories.js";
 import type { IdentityRepository, UserRepository } from "../control-plane/identity-repositories.js";
 import type { EnterpriseUserRepository } from "../control-plane/enterprise-user-repositories.js";
-import type { MembershipRepository, WorkspaceRepository } from "../control-plane/repositories.js";
+import type {
+  MembershipRepository,
+  TeamRepository,
+  WorkspaceRepository,
+} from "../control-plane/repositories.js";
 import type { UserId, WorkspaceRole, WorkspaceScope } from "../control-plane/types.js";
 import type { CapabilityCeilingService, CapabilityCeilingView } from "./capability-ceiling.js";
 import { computeEffectiveAccess } from "./effective-access.js";
+import {
+  computeModuleCapabilities,
+  PROJECTION_INVALIDATION_REASONS,
+  WORKSPACE_CAPABILITY_SCHEMA_VERSION,
+  type CapabilityModule,
+  type ModuleCapabilityView,
+} from "./module-capabilities.js";
 import { requiredCapabilityForAction } from "./repository-capabilities.js";
 import { revokeAuthority, type RevocationEffects, type RevocationTarget } from "./revocation.js";
+import type { SecurityDuty, SecurityDutyDirectory } from "../security/duties.js";
 import {
   DEFAULT_ACTION_POLICY,
   type AccessDecision,
@@ -95,6 +107,12 @@ export interface AccessGateDeps {
   enterpriseUsers: EnterpriseUserRepository;
   /** Verified, intersected repository capability ceiling (DAT-276). */
   capabilityCeilings: CapabilityCeilingService;
+  /** Team rows, read only to detect the memory team-leader exception. */
+  teams?: Pick<TeamRepository, "list">;
+  /** Enterprise administrator grant for this enterprise (never repository authority). */
+  isEnterpriseAdmin?: (userId: UserId) => boolean;
+  /** Explicit, human-only security duties; empty/unset grants nothing. */
+  securityDuties?: SecurityDutyDirectory;
   /** Shared with revocation/reconcile as the "authority changed" signal. */
   epoch: AuthorityEpoch;
   clock?: () => Date;
@@ -160,13 +178,19 @@ export interface AccessGate {
 }
 
 export interface CapabilityProjection {
-  schema_version: "workspace-capability-v1";
+  schema_version: typeof WORKSPACE_CAPABILITY_SCHEMA_VERSION;
   enterprise_id: string;
   workspace_id: string;
   assigned_role: WorkspaceRole | null;
   state: "verified" | "unverified" | "confirmed_loss";
   blocked_reason: string | null;
   capabilities: readonly string[];
+  /**
+   * Eight modules × their actions and data ceilings (DAT-278). Visibility is a
+   * role/duty answer; `data_ceiling` is the highest class the caller may read,
+   * and every action is rechecked server-side on its own request.
+   */
+  modules: Record<CapabilityModule, ModuleCapabilityView>;
   actions: Record<
     string,
     { allowed: boolean; required: string; reason?: string; requires_reconciliation?: boolean }
@@ -194,6 +218,18 @@ export interface CapabilityProjection {
     set_version: number;
     repository_count: number;
   };
+  /**
+   * Advisory lifetime. The server never accepts a projection as authority;
+   * clients must refetch at `expires_at` (navigation) or `stale_after`
+   * (sensitive data) and on any listed invalidation event.
+   */
+  freshness: {
+    checked_at: string;
+    expires_at: string;
+    stale_after: string;
+    state: "fresh";
+    invalidation: readonly string[];
+  };
   checked_at: string;
 }
 
@@ -206,6 +242,9 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
     identities,
     enterpriseUsers,
     capabilityCeilings,
+    teams,
+    isEnterpriseAdmin,
+    securityDuties,
     epoch,
     clock = () => new Date(),
     freshWindowMs,
@@ -381,9 +420,11 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
     now: Date = clock(),
   ): CapabilityProjection {
     const view = capabilityCeilings.view(scope, userId, { now });
+    const decisionByAction = {} as Record<ActionKind, AccessDecision>;
     const actions: CapabilityProjection["actions"] = {};
     for (const action of Object.keys(policy) as ActionKind[]) {
       const decision = authorize({ scope, user_id: userId, action, now });
+      decisionByAction[action] = decision;
       actions[action] = {
         allowed: decision.allowed,
         required: requiredCapabilityForAction(action),
@@ -392,14 +433,33 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
       };
     }
     const freshness = capabilityCeilings.freshness();
+    const enterpriseUser = enterpriseUsers.getByUser(scope.enterprise_id, userId);
+    const ledTeam = teams?.list(scope).some((team) => team.leader_user_id === userId) ?? false;
+    const duties: readonly SecurityDuty[] = securityDuties
+      ? securityDuties.dutiesOf(userId, {
+          enterpriseId: scope.enterprise_id,
+          workspaceId: scope.workspace_id,
+        })
+      : [];
+    const modules = computeModuleCapabilities({
+      role: (view.assigned_role as WorkspaceRole | null) ?? null,
+      enterprise_member: enterpriseUser?.status === "active",
+      enterprise_admin:
+        enterpriseUser?.status === "active" && (isEnterpriseAdmin?.(userId) ?? false),
+      decisions: decisionByAction,
+      team_leader: ledTeam,
+      security_duties: duties,
+    });
+    const checkedAt = view.evaluation.checked_at;
     return {
-      schema_version: "workspace-capability-v1",
+      schema_version: WORKSPACE_CAPABILITY_SCHEMA_VERSION,
       enterprise_id: scope.enterprise_id,
       workspace_id: scope.workspace_id,
       assigned_role: (view.assigned_role as WorkspaceRole | null) ?? null,
       state: view.evaluation.state,
       blocked_reason: view.evaluation.reason,
       capabilities: view.evaluation.capabilities,
+      modules,
       actions,
       repositories: view.evaluation.repositories.map((repository) => ({
         repository_id: repository.repository_id,
@@ -417,7 +477,14 @@ export function createAccessGate(deps: AccessGateDeps): AccessGate {
         set_version: view.evaluation.set_version,
         repository_count: view.evaluation.repository_count,
       },
-      checked_at: view.evaluation.checked_at,
+      freshness: {
+        checked_at: checkedAt,
+        expires_at: new Date(now.getTime() + freshness.fresh_window_ms).toISOString(),
+        stale_after: new Date(now.getTime() + freshness.stale_after_ms).toISOString(),
+        state: "fresh",
+        invalidation: PROJECTION_INVALIDATION_REASONS,
+      },
+      checked_at: checkedAt,
     };
   }
 

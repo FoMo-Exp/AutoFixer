@@ -133,6 +133,7 @@ Endpoints (details in the OpenAPI document):
 | `POST /api/v1/admin/users/{user_id}/suspend` | none | `200 User`; deployment operator only |
 | `POST /api/v1/admin/users/{user_id}/activate` | none | `200 User`; deployment operator only |
 | `GET /api/v1/workspaces/{workspace_id}/capabilities` | none | `200 WorkspaceCapabilityProjection`; `404 Workspace was not found`; session only |
+| `GET /api/v1/enterprises/{enterprise_id}/capabilities` | none | `200 EnterpriseCapabilityProjection`; `403` membership required/suspended; `404 Enterprise was not found`; session only |
 | `GET /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}/capability-ceiling` | none | `200 MemberCapabilityCeilingView`; `403 FORBIDDEN`; `404` |
 | `POST /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}/capability-ceiling` | `{version, capabilities?}` | `200 MemberCapabilityCeiling`; `403 CAPABILITY_ADMIN_REQUIRED`/`CAPABILITY_MANAGEMENT_REQUIRED`/`CAPABILITY_CEILING_EXCEEDS_VERIFIED`/`CAPABILITY_CEILING_NOT_ELIGIBLE`; `409 VERSION_CONFLICT`/`CAPABILITY_CEILING_MISMATCH`/`CAPABILITY_CEILING_UNAVAILABLE` |
 
@@ -183,6 +184,44 @@ administration, security duties or delivery approval.
   (`fresh_window_ms`, `stale_after_ms`), the repository-set version and the
   checked time. It never exposes another tenant, credentials, teammate data or
   provider role internals.
+
+## Eight-module capability projection (DAT-278)
+
+`GET /api/v1/workspaces/{workspace_id}/capabilities` serves
+`workspace-capability-v2`: the eight ADR-0011 modules (`tasks`, `issues`,
+`memory`, `rsi`, `dashboard`, `members`, `security`, `service_integration`),
+each with `visible`, a `data_ceiling`, a safe `reason` and a closed action map.
+
+- **Visibility is not authorization.** A visible module still decides every
+  action separately; the route rechecks object and action on the request path.
+- **Data ceilings are real.** A viewer/member reads Memory through `internal`,
+  admin/owner through `confidential`; `restricted` is never reachable through
+  the ordinary projection. Dashboard exposes `operational` to every role and
+  `financial`/`audit` only to admin/owner. RSI is hidden below `member`.
+- **Two authorities are not workspace roles.** Security actions come only from
+  explicit human duties (`security_handler`, `independent_reviewer`,
+  `enterprise_security_admin`, `task_owner`) and survive an ordinary role
+  demotion; enterprise administration reaches the enterprise directory,
+  identity audit and service-integration metadata and never workspace data.
+- **Team leadership** enables `memory.govern_team` only for a member leading a
+  team; it grants no repository, delivery or security authority.
+- **Fail closed.** An unverifiable capability intersection sets every data
+  module's `data_ceiling` to `none`, denies its actions with the gate reason
+  (`capability_unverified`) and keeps the duty/enterprise-metadata surfaces.
+  A confirmed loss persists until an audited administrator reapproval.
+- **Advisory lifetime.** `freshness` carries `checked_at`, `expires_at`,
+  `stale_after`, `state: "fresh"` and the invalidation set
+  (`authority_epoch_changed`, `capability_ceiling_changed`,
+  `membership_changed`, `enterprise_status_changed`, `session_revoked`,
+  `provider_reconciled`, `projection_expired`). Clients refetch at expiry and
+  on invalidation; the server never accepts a projection as a grant. Unknown
+  fields, an expired projection or a failed re-evaluation fail closed.
+
+`GET /api/v1/enterprises/{enterprise_id}/capabilities` serves
+`enterprise-capability-v1` for an active enterprise member. Its
+`workspace_data_access.granted` is always `false`: enterprise administration
+is not repository authority, and an administrator without a workspace
+membership also cannot read the workspace projection.
 
 ## Repository service integration (DAT-267)
 

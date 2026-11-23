@@ -32,9 +32,14 @@
 import type { ProviderAccessRepositories } from "../control-plane/provider-access-repositories.js";
 import type { IdentityRepository, UserRepository } from "../control-plane/identity-repositories.js";
 import type { EnterpriseUserRepository } from "../control-plane/enterprise-user-repositories.js";
-import type { MembershipRepository, WorkspaceRepository } from "../control-plane/repositories.js";
+import type {
+  MembershipRepository,
+  TeamRepository,
+  WorkspaceRepository,
+} from "../control-plane/repositories.js";
 import type { EnterpriseId, WorkspaceId, WorkspaceScope } from "../control-plane/types.js";
 import type { CapabilityCeilingService } from "../provider-access/capability-ceiling.js";
+import type { SecurityDutyDirectory } from "../security/duties.js";
 import {
   createAccessGate,
   createAuthorityEpoch,
@@ -79,6 +84,12 @@ export interface RequestAuthorityDeps {
    * capabilities over the workspace's repository set.
    */
   capabilityCeilings: CapabilityCeilingService;
+  /** Workspace teams, for the memory team-leader exception (DAT-278). */
+  teams?: Pick<TeamRepository, "list">;
+  /** Enterprise administrator grant; metadata surfaces only, never repository data. */
+  isEnterpriseAdmin?: (userId: string) => boolean;
+  /** Human-only security duties; unset grants no security module access. */
+  securityDuties?: SecurityDutyDirectory;
   enterpriseId: EnterpriseId;
   workspaceId: WorkspaceId;
   /**
@@ -111,10 +122,12 @@ export interface RequestAuthority {
   /** Shared authority-change signal; revoke/reconcile/events bump it. */
   readonly epoch: AuthorityEpoch;
   /**
-   * The caller's workspace capability projection (DAT-276): advisory snapshot
+   * The caller's workspace capability projection (DAT-278): advisory snapshot
    * for navigation only — every request is still checked object by object.
    */
   projection(userId: string, workspaceId?: WorkspaceId): CapabilityProjection;
+  /** Freshness bounds used by both workspace and enterprise projections. */
+  freshness(): { fresh_window_ms: number; stale_after_ms: number };
 }
 
 /**
@@ -240,6 +253,9 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
     identities: deps.identities,
     enterpriseUsers: deps.enterpriseUsers,
     capabilityCeilings: deps.capabilityCeilings,
+    ...(deps.teams !== undefined ? { teams: deps.teams } : {}),
+    ...(deps.isEnterpriseAdmin !== undefined ? { isEnterpriseAdmin: deps.isEnterpriseAdmin } : {}),
+    ...(deps.securityDuties !== undefined ? { securityDuties: deps.securityDuties } : {}),
     epoch,
     policy: HTTP_ACTION_POLICY,
     ...(deps.clock ? { clock: deps.clock } : {}),
@@ -311,6 +327,9 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
     },
     projection(userId: string, workspaceId?: WorkspaceId): CapabilityProjection {
       return gate.projection(scopeFor(userId, workspaceId), userId);
+    },
+    freshness(): { fresh_window_ms: number; stale_after_ms: number } {
+      return deps.capabilityCeilings.freshness();
     },
   };
 }
