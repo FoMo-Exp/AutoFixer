@@ -799,8 +799,10 @@ export class WorkspaceMemberService {
 
   /**
    * The workspace's complete provider roster, or the stable
-   * PROVIDER_ROSTER_INCOMPLETE refusal. A partial or unobservable roster is
-   * never presented as a (possibly empty) candidate list.
+   * PROVIDER_ROSTER_INCOMPLETE refusal. A partial, unobservable or never
+   * fully-reconciled roster is never presented as a (possibly empty) candidate
+   * list: only a completed reconcile run is evidence that every subject was
+   * enumerated.
    */
   #completeRoster(ctx: ResolvedWorkspace): RosterEntry[] {
     let set;
@@ -827,11 +829,16 @@ export class WorkspaceMemberService {
           binding.repository_id,
         );
       }
-      // A static permission declaration is not enough: if the latest sync run
-      // did not complete, the local roster is known to be partial or merely in
-      // progress, so candidates cannot be presented as a complete list.
+      // A static permission declaration is not enough: only a completed full
+      // reconciliation proves the local roster is complete. A missing run, a
+      // run still in progress, or a failed run all mean the roster may be a
+      // partial subject refresh, so candidates cannot be presented as a
+      // complete list.
       const latestRun = this.#access.reconcileRuns.list(ctx.scope, integration.id, 1)[0];
-      if (latestRun !== undefined && latestRun.status !== "completed") {
+      if (latestRun === undefined) {
+        throw rosterIncomplete("reconcile_missing", binding.repository_id);
+      }
+      if (latestRun.status !== "completed") {
         throw rosterIncomplete(
           latestRun.status === "running" ? "reconcile_in_progress" : "reconcile_incomplete",
           binding.repository_id,

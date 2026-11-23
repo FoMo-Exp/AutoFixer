@@ -237,22 +237,34 @@ function applyRoster(
   } = {},
 ): void {
   const workspaceId = options.workspaceId ?? app.workspaceId;
-  accessOf(app).roster.applySnapshot(
-    scopeOf(app, workspaceId),
-    options.integrationId ?? integrationOf(app).id,
-    {
-      roles: roles.map((role) => ({
-        subject: role.subject,
-        login: role.login,
-        source_kind: role.source_kind ?? "direct_collaborator",
-        provider_role: role.provider_role,
-        authority_ref: options.repositoryId ?? REPOSITORY_ID,
-        inherited_from: null,
-      })),
-      verified_at: options.verified_at ?? new Date().toISOString(),
-      ...(options.subject_users !== undefined ? { subject_users: options.subject_users } : {}),
-    },
-  );
+  const scope = scopeOf(app, workspaceId);
+  const integrationId = options.integrationId ?? integrationOf(app).id;
+  const access = accessOf(app);
+  access.roster.applySnapshot(scope, integrationId, {
+    roles: roles.map((role) => ({
+      subject: role.subject,
+      login: role.login,
+      source_kind: role.source_kind ?? "direct_collaborator",
+      provider_role: role.provider_role,
+      authority_ref: options.repositoryId ?? REPOSITORY_ID,
+      inherited_from: null,
+    })),
+    verified_at: options.verified_at ?? new Date().toISOString(),
+    ...(options.subject_users !== undefined ? { subject_users: options.subject_users } : {}),
+  });
+  // A full snapshot is only produced by a completed reconciliation; record
+  // that evidence so candidate enumeration can prove the roster is complete.
+  const at = new Date().toISOString();
+  const run = access.reconcileRuns.start(scope, integrationId, {
+    integration_id: integrationId,
+    started_at: at,
+  });
+  access.reconcileRuns.finish(scope, run.id, {
+    status: "completed",
+    pages_seen: 1,
+    roster_size: roles.length,
+    finished_at: new Date().toISOString(),
+  });
   app.orchestrator.providerAuthority?.epoch.bump();
 }
 
@@ -1070,6 +1082,46 @@ describe("workspace members (DAT-277)", () => {
     const ok = await request<Page<CandidateView>>(f.app, "GET", candidatesPath(f.app), f.owner);
     expect(ok.status).toBe(200);
     expect(candidatesBySubject(ok.body).get(SUBJECT_BOB)?.eligible).toBe(true);
+  });
+
+  test("candidates refuse a roster with no completed full sync", async () => {
+    const f = await fixture();
+    const db = dbOf(f.app);
+    const access = accessOf(f.app);
+    const integration = integrationOf(f.app);
+
+    // Roster rows can also be written by single-subject refreshes, which are
+    // not evidence about anyone else. Without a completed full run the
+    // candidate list may be partial or empty, so it must not be returned.
+    db.exec("DELETE FROM reconcile_run");
+    const refused = await request<ErrorBody>(f.app, "GET", candidatesPath(f.app), f.owner);
+    expect(refused.status).toBe(503);
+    expect(refused.body.error.code).toBe("PROVIDER_ROSTER_INCOMPLETE");
+    expect(refused.body.error.details).toMatchObject({
+      reason: "reconcile_missing",
+      repository_id: REPOSITORY_ID,
+    });
+
+    // The first completed full snapshot restores the list.
+    const at = new Date().toISOString();
+    const run = access.reconcileRuns.start(f.scope, integration.id, {
+      integration_id: integration.id,
+      started_at: at,
+    });
+    access.reconcileRuns.finish(f.scope, run.id, {
+      status: "completed",
+      pages_seen: 1,
+      roster_size: 5,
+      finished_at: new Date().toISOString(),
+    });
+    const recovered = await request<Page<CandidateView>>(
+      f.app,
+      "GET",
+      candidatesPath(f.app),
+      f.owner,
+    );
+    expect(recovered.status).toBe(200);
+    expect(candidatesBySubject(recovered.body).get(SUBJECT_BOB)?.eligible).toBe(true);
   });
 
   test("a failed grant revocation rolls the removal back, and a retry succeeds", async () => {
