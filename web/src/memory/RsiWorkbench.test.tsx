@@ -14,6 +14,8 @@ import type {
   Workspace,
 } from "../api/client";
 import { RsiWorkbench } from "./RsiWorkbench";
+import { capabilityProjection, accessOf } from "../capabilities/test-projection";
+import type { ModuleAccess } from "../capabilities/projection";
 
 const fixtureDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -60,6 +62,7 @@ function renderSurface(
   proposals: RsiProposal[],
   details: RsiProposal[] = proposals,
   role: Workspace["role"] = "owner",
+  access?: ModuleAccess,
 ): void {
   vi.spyOn(client, "getRsiStatus").mockResolvedValue(status);
   vi.spyOn(client, "listRsiProposals").mockResolvedValue(proposals);
@@ -73,6 +76,7 @@ function renderSurface(
       client={client}
       currentUserId="usr_operator"
       loadWorkspaces={workspaceDirectory(role)}
+      access={access}
     />,
   );
 }
@@ -106,6 +110,22 @@ describe("RSI workbench", () => {
     expect(screen.getByText("Rejected by RSI")).toBeTruthy();
     expect(screen.getAllByText(/Bounded relevance change/).length).toBeGreaterThan(0);
     expect(screen.getByText(/Rejected retrieval bound change/)).toBeTruthy();
+  });
+
+  it("takes RSI action authority from the projection, not the workspace role", async () => {
+    const client = makeClient();
+    const projection = capabilityProjection({
+      role: "member",
+      workspaceId: baseWorkspace.id,
+      enterpriseId: baseWorkspace.enterprise_id,
+    });
+    renderSurface(client, listedProposals, listedProposals, "owner", accessOf(projection, "rsi"));
+
+    await screen.findByRole("heading", { name: "Bounded self-improvement" });
+    expect(
+      await screen.findByText("Owner capability required to change RSI controls."),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save controls" })).toHaveProperty("disabled", true);
   });
 
   it("surfaces security events and regression evidence, and never holdout content", async () => {

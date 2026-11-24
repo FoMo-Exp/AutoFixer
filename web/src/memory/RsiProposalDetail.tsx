@@ -42,6 +42,10 @@ interface RsiProposalDetailProps {
   role: Workspace["role"];
   currentUserId: string | undefined;
   status: RsiStatus | undefined;
+  canApprove?: boolean;
+  canEvaluate?: boolean;
+  canCanary?: boolean;
+  canRollback?: boolean;
   onBack: () => void;
   onChanged: () => void;
 }
@@ -54,6 +58,10 @@ export function RsiProposalDetail({
   role,
   currentUserId,
   status,
+  canApprove: canApproveProp,
+  canEvaluate: canEvaluateProp,
+  canCanary: canCanaryProp,
+  canRollback: canRollbackProp,
   onBack,
   onChanged,
 }: RsiProposalDetailProps): ReactElement {
@@ -104,9 +112,10 @@ export function RsiProposalDetail({
     }
   }
 
-  const canEvaluate = role === "owner";
-  const canApprove = role === "owner" || role === "admin";
-  const canOperate = role === "owner";
+  const canEvaluate = canEvaluateProp ?? role === "owner";
+  const canApprove = canApproveProp ?? (role === "owner" || role === "admin");
+  const canCanary = canCanaryProp ?? role === "owner";
+  const canRollback = canRollbackProp ?? role === "owner";
   const isProposer = currentUserId !== undefined && proposal?.proposer.id === currentUserId;
   const final = proposal?.status === "promoted" || proposal?.status === "rolled_back";
   const approvalComplete =
@@ -135,7 +144,7 @@ export function RsiProposalDetail({
           : approvalComplete
             ? "The required approvals are already recorded."
             : undefined;
-  const canaryDisabledReason = !canOperate
+  const canaryDisabledReason = !canCanary
     ? "Owner role required to start a canary."
     : proposal?.gate.kill_switch
       ? "The workspace kill switch is engaged."
@@ -404,8 +413,8 @@ export function RsiProposalDetail({
                   <button
                     type="button"
                     className="button button-danger button-small"
-                    disabled={!canOperate || busy !== undefined}
-                    title={!canOperate ? "Owner role required to roll back." : undefined}
+                    disabled={!canRollback || busy !== undefined}
+                    title={!canRollback ? "Rollback capability is not available." : undefined}
                     onClick={() => setRollbackDialogOpen(true)}
                   >
                     Roll back
@@ -592,8 +601,8 @@ export function RsiProposalDetail({
                       <button
                         type="button"
                         className="button button-secondary button-small"
-                        disabled={!canOperate || busy !== undefined}
-                        title={!canOperate ? "Owner role required." : undefined}
+                        disabled={!canCanary || busy !== undefined}
+                        title={!canCanary ? "Canary capability is not available." : undefined}
                         onClick={() =>
                           void runAction("observe", () =>
                             client.recordRsiCanaryObservation(workspaceId, proposal.proposal_id),
@@ -604,9 +613,9 @@ export function RsiProposalDetail({
                       </button>
                     </div>
                   )}
-                  {!canOperate && (
+                  {!canCanary && (
                     <p className="stage-terminal-note" role="status">
-                      Owner role required to observe or stop a rollout.
+                      Canary observation requires the owner capability.
                     </p>
                   )}
 

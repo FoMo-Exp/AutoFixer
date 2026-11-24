@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import { ForgePilotClient } from "../api/client";
 import { IdentityClient } from "../api/identity";
+import { capabilityProjection } from "../capabilities/test-projection";
 import type { DesktopAuthState } from "../../electron/auth";
 
 const providers = [
@@ -87,6 +88,9 @@ const workspace = {
 beforeEach(() => {
   window.localStorage.setItem("fp-workspace:usr_1", "ws_alpha");
   vi.spyOn(IdentityClient.prototype, "listAllWorkspaces").mockResolvedValue([workspace]);
+  vi.spyOn(IdentityClient.prototype, "getWorkspaceCapabilities").mockResolvedValue(
+    capabilityProjection({ role: "member", workspaceId: "ws_alpha", enterpriseId: "ent_1" }),
+  );
   vi.spyOn(ForgePilotClient.prototype, "listTasks").mockResolvedValue({
     items: [],
     next_cursor: null,

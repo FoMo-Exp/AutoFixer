@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import type { ForgePilotClient, SecurityCase, SecurityCaseState, Workspace } from "../api/client";
 import type { WorkspaceSession } from "../api/identity";
@@ -9,6 +9,8 @@ import { SecurityCaseDetail } from "./SecurityCaseDetail";
 import { SecurityRulesPanel } from "./SecurityRulesPanel";
 import { SecurityAuditPanel } from "./SecurityAuditPanel";
 import { SecurityEmptyState, SecurityErrorNotice } from "./SecurityNotice";
+import { accessAllowed } from "../capabilities/projection";
+import type { ModuleAccess } from "../capabilities/projection";
 import {
   describeSecurityError,
   formatSecurityTime,
@@ -43,11 +45,14 @@ export function SecurityWorkbench({
   client,
   session,
   loadWorkspaces,
+  access,
 }: {
   client: ForgePilotClient;
   session: WorkspaceSession | undefined;
   /** The caller's live workspace directory, owned by the identity surface. */
   loadWorkspaces: () => Promise<Workspace[]>;
+  /** DAT-279 security duty decisions; never a workspace role. */
+  access?: ModuleAccess;
 }): ReactElement {
   const sidebarGlassRef = useLiquidGlass<HTMLElement>();
   const [section, setSection] = useState<SecuritySection>("cases");
@@ -154,9 +159,45 @@ export function SecurityWorkbench({
 
   const activeWorkspaces = workspaces.filter((workspace) => workspace.status === "active");
   const selectedWorkspace = activeWorkspaces.find((workspace) => workspace.id === workspaceId);
+  // Duties come from the projection; enterprise administration is a separate
+  // grant and never a workspace role. The legacy local mode keeps the session
+  // check.
   const canAdminister = Boolean(
-    selectedWorkspace && isEnterpriseAdmin(session, selectedWorkspace.enterprise_id),
+    access !== undefined
+      ? accessAllowed(access, "quarantine.grant_access") ||
+          accessAllowed(access, "rule.activate") ||
+          accessAllowed(access, "audit.export")
+      : selectedWorkspace && isEnterpriseAdmin(session, selectedWorkspace.enterprise_id),
   );
+  const canGrantQuarantine =
+    access !== undefined ? accessAllowed(access, "quarantine.grant_access") : canAdminister;
+  const canActivateRules =
+    access !== undefined ? accessAllowed(access, "rule.activate") : canAdminister;
+  const canExportAudit =
+    access !== undefined ? accessAllowed(access, "audit.export") : canAdminister;
+  const canProposeRule = access !== undefined ? accessAllowed(access, "rule.propose") : true;
+  const canReviewRule = access !== undefined ? accessAllowed(access, "rule.review") : true;
+  const canViewQuarantine = access !== undefined ? accessAllowed(access, "quarantine.view") : true;
+  const sections = useMemo<SecuritySection[]>(
+    () =>
+      access !== undefined
+        ? (
+            [
+              accessAllowed(access, "case.read_redacted_status") ? "cases" : null,
+              accessAllowed(access, "rule.propose") ||
+              accessAllowed(access, "rule.review") ||
+              accessAllowed(access, "rule.activate")
+                ? "rules"
+                : null,
+              accessAllowed(access, "audit.read") ? "audit" : null,
+            ] as Array<SecuritySection | null>
+          ).filter((entry): entry is SecuritySection => entry !== null)
+        : ["cases", "rules", "audit"],
+    [access],
+  );
+  useEffect(() => {
+    if (!sections.includes(section)) setSection(sections[0] ?? "cases");
+  }, [sections, section]);
 
   function changeWorkspace(nextWorkspaceId: string): void {
     setWorkspaceId(nextWorkspaceId);
@@ -177,7 +218,7 @@ export function SecurityWorkbench({
     >
       <div className="security-section-bar">
         <nav className="surface-nav" aria-label="Security views">
-          {(Object.keys(SECTION_LABELS) as SecuritySection[]).map((entry) => (
+          {sections.map((entry) => (
             <button
               key={entry}
               type="button"
@@ -410,7 +451,8 @@ export function SecurityWorkbench({
                 caseId={selectedCase.case_id}
                 seed={selectedCase}
                 userId={session?.user.id}
-                canAdminister={canAdminister}
+                canAdminister={canGrantQuarantine}
+                canViewQuarantine={canViewQuarantine}
                 onBack={() => setSelection(undefined)}
                 onChanged={handleChanged}
               />
@@ -439,7 +481,9 @@ export function SecurityWorkbench({
           client={client}
           workspaceId={workspaceId}
           userId={session?.user.id}
-          canAdminister={canAdminister}
+          canAdminister={canActivateRules}
+          canPropose={canProposeRule}
+          canReview={canReviewRule}
         />
       )}
 
@@ -448,7 +492,7 @@ export function SecurityWorkbench({
           <SecurityAuditPanel
             client={client}
             workspaceId={workspaceId}
-            canAdminister={canAdminister}
+            canAdminister={canExportAudit}
           />
         </main>
       )}

@@ -20,6 +20,7 @@ import type {
 import type { WorkspaceSession } from "../api/identity";
 import type { components } from "../api/contracts/schema";
 import { SecurityWorkbench } from "./SecurityWorkbench";
+import type { ModuleAccess } from "../capabilities/projection";
 
 const fixtureDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -350,6 +351,70 @@ describe("quarantine access", () => {
 
     await userEvent.click(within(section).getByRole("button", { name: "Clear from screen" }));
     expect(screen.queryByText("sk-live-raw-context")).toBeNull();
+  });
+
+  it("drops displayed quarantine content when the duty is withdrawn", async () => {
+    vi.spyOn(ForgePilotClient.prototype, "grantSecurityQuarantineAccess").mockResolvedValue(grant);
+    vi.spyOn(ForgePilotClient.prototype, "viewQuarantinedContext").mockResolvedValue({
+      quarantine_id: "q_3c1d",
+      content: "sk-live-raw-context",
+      viewed_at: new Date().toISOString(),
+    });
+    const allowed: ModuleAccess = {
+      visible: true,
+      dataCeiling: "redacted",
+      reason: null,
+      actions: {
+        "case.read_redacted_status": { allowed: true, required: "security_duty", reason: null },
+        "case.handle": { allowed: true, required: "security_duty", reason: null },
+        "quarantine.view": { allowed: true, required: "security_duty", reason: null },
+        "quarantine.grant_access": { allowed: true, required: "security_duty", reason: null },
+      },
+    };
+    const denied: ModuleAccess = {
+      ...allowed,
+      actions: {
+        ...allowed.actions,
+        "quarantine.view": { allowed: false, required: "security_duty", reason: "security_duty" },
+      },
+    };
+    const client = makeClient();
+    const { rerender } = render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_admin", true)}
+        access={allowed}
+      />,
+    );
+    await openCase();
+
+    const section = screen
+      .getByRole("heading", { name: "Quarantine" })
+      .closest("section") as HTMLElement;
+    await userEvent.click(within(section).getByRole("combobox"));
+    await userEvent.click(screen.getByRole("option", { name: "q_3c1d" }));
+    await userEvent.type(within(section).getByLabelText("Grant subject"), "human_handler");
+    await userEvent.click(within(section).getByRole("button", { name: "Issue grant" }));
+    await userEvent.click(within(section).getByRole("checkbox"));
+    await userEvent.click(
+      within(section).getByRole("button", { name: "Inspect quarantined context" }),
+    );
+    expect(await screen.findByText("sk-live-raw-context")).toBeTruthy();
+
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_admin", true)}
+        access={denied}
+      />,
+    );
+
+    await waitFor(() => expect(screen.queryByText("sk-live-raw-context")).toBeNull());
+    expect(
+      within(section).getByRole("button", { name: "Inspect quarantined context" }),
+    ).toHaveProperty("disabled", true);
   });
 
   it("surfaces an expired grant as an actionable refusal", async () => {

@@ -16,6 +16,7 @@ import type {
   Workspace,
 } from "../api/identity";
 import { WorkspaceAdminDialog } from "./WorkspaceAdminDialog";
+import { capabilityProjection } from "../capabilities/test-projection";
 
 const fixtureDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -71,6 +72,7 @@ interface FakeClient {
   getServiceIntegration: Mock;
   initializeServiceIntegration: Mock;
   deactivateServiceIntegration: Mock;
+  getWorkspaceCapabilities: Mock;
 }
 
 function fakeClient(): FakeClient {
@@ -104,6 +106,14 @@ function fakeClient(): FakeClient {
     getServiceIntegration: vi.fn().mockResolvedValue(serviceIntegration),
     initializeServiceIntegration: vi.fn().mockResolvedValue(serviceIntegration),
     deactivateServiceIntegration: vi.fn().mockResolvedValue(undefined),
+    getWorkspaceCapabilities: vi.fn().mockResolvedValue(
+      capabilityProjection({
+        role: "owner",
+        workspaceId: workspace.id,
+        enterpriseId: workspace.enterprise_id,
+        enterpriseAdmin: true,
+      }),
+    ),
   };
 }
 
@@ -196,6 +206,13 @@ describe("WorkspaceAdminDialog", () => {
       items: [{ ...workspace, role: "member" }],
       next_cursor: null,
     });
+    client.getWorkspaceCapabilities.mockResolvedValue(
+      capabilityProjection({
+        role: "member",
+        workspaceId: workspace.id,
+        enterpriseId: workspace.enterprise_id,
+      }),
+    );
     renderDialog(client, nonAdminSession);
 
     expect(await screen.findByText("Read-only roster")).toBeTruthy();

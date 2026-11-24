@@ -14,6 +14,8 @@ import { Select } from "../ui/Select";
 import { useLiquidGlass } from "../ui/use-liquid-glass";
 import { CostLedgerPanel } from "./CostLedgerPanel";
 import { TraceViewer } from "./TraceViewer";
+import { accessAllowed } from "../capabilities/projection";
+import type { ModuleAccess } from "../capabilities/projection";
 import {
   barMaximum,
   breakdownBars,
@@ -66,10 +68,13 @@ function summaryKey(
 export function DashboardWorkbench({
   client,
   loadWorkspaces,
+  access,
 }: {
   client: ForgePilotClient;
   /** The caller's live workspace directory, owned by the identity surface. */
   loadWorkspaces: () => Promise<Workspace[]>;
+  /** DAT-279 capability decisions for the dashboard module. */
+  access?: ModuleAccess;
 }): ReactElement {
   const sidebarGlassRef = useLiquidGlass<HTMLElement>();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -240,11 +245,14 @@ export function DashboardWorkbench({
   }
 
   function openPane(next: Pane): void {
+    if (next === "ledger" && !canViewFinancial) return;
+    if (next === "trace" && !canViewTrace) return;
     setPane(next);
     setMobileView("detail");
   }
 
   function openIssueTrace(issueId: string): void {
+    if (!canViewTrace) return;
     setTraceSeed(issueId);
     openPane("trace");
   }
@@ -253,14 +261,23 @@ export function DashboardWorkbench({
   const selectedWorkspace = activeWorkspaces.find((workspace) => workspace.id === workspaceId);
   const workspaceUnavailable =
     workspaceError !== undefined && (workspaceError.status === 404 || workspaceError.status === 0);
-  // The summary's access block is authoritative once it arrives; before that,
-  // the live membership role decides whether the ledger is even requested.
+  // The projection decides whether the ledger is even requested; the summary's
+  // access block remains authoritative once it arrives.
+  const canViewFinancial =
+    access !== undefined
+      ? accessAllowed(access, "view_financial")
+      : selectedWorkspace === undefined
+        ? true
+        : selectedWorkspace.role === "owner" || selectedWorkspace.role === "admin";
+  const canViewTrace = access !== undefined ? accessAllowed(access, "view_trace") : true;
   const ledgerGranted =
     summary !== undefined
-      ? summary.access.financial === "granted"
-      : selectedWorkspace === undefined
-        ? undefined
-        : selectedWorkspace.role === "owner" || selectedWorkspace.role === "admin";
+      ? summary.access.financial === "granted" && canViewFinancial
+      : canViewFinancial;
+  useEffect(() => {
+    if (pane === "ledger" && !canViewFinancial) setPane("overview");
+    if (pane === "trace" && !canViewTrace) setPane("overview");
+  }, [canViewFinancial, canViewTrace, pane]);
 
   return (
     <div
@@ -371,22 +388,26 @@ export function DashboardWorkbench({
           >
             Overview
           </button>
-          <button
-            type="button"
-            className={`dashboard-pane-tab ${pane === "ledger" ? "dashboard-pane-tab-active" : ""}`}
-            aria-current={pane === "ledger" ? "page" : undefined}
-            onClick={() => openPane("ledger")}
-          >
-            Cost ledger
-          </button>
-          <button
-            type="button"
-            className={`dashboard-pane-tab ${pane === "trace" ? "dashboard-pane-tab-active" : ""}`}
-            aria-current={pane === "trace" ? "page" : undefined}
-            onClick={() => openPane("trace")}
-          >
-            Trace
-          </button>
+          {canViewFinancial && (
+            <button
+              type="button"
+              className={`dashboard-pane-tab ${pane === "ledger" ? "dashboard-pane-tab-active" : ""}`}
+              aria-current={pane === "ledger" ? "page" : undefined}
+              onClick={() => openPane("ledger")}
+            >
+              Cost ledger
+            </button>
+          )}
+          {canViewTrace && (
+            <button
+              type="button"
+              className={`dashboard-pane-tab ${pane === "trace" ? "dashboard-pane-tab-active" : ""}`}
+              aria-current={pane === "trace" ? "page" : undefined}
+              onClick={() => openPane("trace")}
+            >
+              Trace
+            </button>
+          )}
         </nav>
 
         <div className="sidebar-footer">

@@ -4,17 +4,13 @@ import type { IdentityClient, Workspace, WorkspaceSession } from "../api/identit
 import { AuditPanel } from "./AuditPanel";
 import { ErrorNotice } from "./ErrorNotice";
 import type { ErrorDescription } from "./identity-format";
-import {
-  ROLE_LABELS,
-  canManageWorkspace,
-  describeError,
-  isEnterpriseAdmin,
-  formatTimestamp,
-} from "./identity-format";
+import { ROLE_LABELS, describeError, isEnterpriseAdmin, formatTimestamp } from "./identity-format";
 import { InvitationsPanel } from "./InvitationsPanel";
 import { MembersPanel } from "./MembersPanel";
 import { ServiceIntegrationPanel } from "./ServiceIntegrationPanel";
 import { TeamsPanel } from "./TeamsPanel";
+import { accessAllowed } from "../capabilities/projection";
+import { useWorkspaceCapabilities } from "../capabilities/use-capabilities";
 
 interface WorkspaceAdminDialogProps {
   client: IdentityClient;
@@ -111,15 +107,44 @@ export function WorkspaceAdminDialog({
   }, []);
 
   const workspace = workspaces.find((item) => item.id === selectedId);
-  const canManage = canManageWorkspace(workspace, session);
+  // Every administration affordance is decided by the projection for the
+  // selected workspace. The legacy local mode (no identity) never opens this
+  // dialog. While the projection loads or fails, writes stay hidden.
+  const capabilities = useWorkspaceCapabilities({
+    client,
+    workspaceId: selectedId ?? null,
+    enabled: selectedId !== undefined,
+  });
+  const snapshot = capabilities.status === "ready" ? capabilities.snapshot : undefined;
+  const members = snapshot?.modules.members;
+  const service = snapshot?.modules.service_integration;
+  const canManageMembers = accessAllowed(members, "manage_members");
+  const canManageTeams = accessAllowed(members, "manage_teams");
+  const canInvite = accessAllowed(members, "invite");
+  const canManageRoles = accessAllowed(members, "manage_roles");
+  const canViewMembers = accessAllowed(members, "view");
+  const canViewIntegration = accessAllowed(service, "view_metadata");
+  const canConfigureIntegration = accessAllowed(service, "configure");
   const enterpriseAdmin = workspace ? isEnterpriseAdmin(session, workspace.enterprise_id) : false;
-
-  const visibleTab: AdminTab =
-    (activeTab === "invitations" && !canManage) ||
-    (activeTab === "audit" && !enterpriseAdmin) ||
-    (activeTab === "integration" && !enterpriseAdmin)
-      ? "members"
-      : activeTab;
+  const tabAllowed = (tab: AdminTab): boolean => {
+    switch (tab) {
+      case "members":
+      case "teams":
+        return canViewMembers;
+      case "invitations":
+        return canInvite;
+      case "audit":
+        return enterpriseAdmin;
+      case "integration":
+        return canViewIntegration;
+    }
+  };
+  const visibleTab: AdminTab = tabAllowed(activeTab)
+    ? activeTab
+    : ((["members", "teams", "invitations", "audit", "integration"] as AdminTab[]).find(
+        tabAllowed,
+      ) ?? "members");
+  const canManage = canManageMembers || canManageTeams || canInvite || canManageRoles;
 
   return (
     <div
@@ -184,28 +209,39 @@ export function WorkspaceAdminDialog({
                   </div>
                   {!canManage && <span className="identity-badge">Read-only</span>}
                 </div>
+                {capabilities.status !== "ready" && (
+                  <p className="identity-panel-status" role="status">
+                    {capabilities.status === "error"
+                      ? "The capability projection could not be read, so administration stays read-only."
+                      : "Verifying workspace capabilities before showing administration…"}
+                  </p>
+                )}
                 <div className="settings-tabs" role="tablist" aria-label="Workspace sections">
-                  <button
-                    id="admin-tab-members"
-                    type="button"
-                    role="tab"
-                    className={`settings-tab${visibleTab === "members" ? " active" : ""}`}
-                    aria-selected={visibleTab === "members"}
-                    onClick={() => setActiveTab("members")}
-                  >
-                    Members
-                  </button>
-                  <button
-                    id="admin-tab-teams"
-                    type="button"
-                    role="tab"
-                    className={`settings-tab${visibleTab === "teams" ? " active" : ""}`}
-                    aria-selected={visibleTab === "teams"}
-                    onClick={() => setActiveTab("teams")}
-                  >
-                    Teams
-                  </button>
-                  {canManage && (
+                  {canViewMembers && (
+                    <button
+                      id="admin-tab-members"
+                      type="button"
+                      role="tab"
+                      className={`settings-tab${visibleTab === "members" ? " active" : ""}`}
+                      aria-selected={visibleTab === "members"}
+                      onClick={() => setActiveTab("members")}
+                    >
+                      Members
+                    </button>
+                  )}
+                  {canViewMembers && (
+                    <button
+                      id="admin-tab-teams"
+                      type="button"
+                      role="tab"
+                      className={`settings-tab${visibleTab === "teams" ? " active" : ""}`}
+                      aria-selected={visibleTab === "teams"}
+                      onClick={() => setActiveTab("teams")}
+                    >
+                      Teams
+                    </button>
+                  )}
+                  {canInvite && (
                     <button
                       id="admin-tab-invitations"
                       type="button"
@@ -229,7 +265,7 @@ export function WorkspaceAdminDialog({
                       Audit
                     </button>
                   )}
-                  {enterpriseAdmin && (
+                  {canViewIntegration && (
                     <button
                       id="admin-tab-integration"
                       type="button"
@@ -242,29 +278,39 @@ export function WorkspaceAdminDialog({
                     </button>
                   )}
                 </div>
+                {capabilities.status === "ready" &&
+                  !tabAllowed("members") &&
+                  !tabAllowed("invitations") &&
+                  !tabAllowed("audit") &&
+                  !tabAllowed("integration") && (
+                    <p className="card-empty" role="status">
+                      No administration module is available from the current capability projection.
+                    </p>
+                  )}
                 <div
                   className="admin-panel-scroll"
                   id={`admin-panel-${visibleTab}`}
                   role="tabpanel"
                   aria-labelledby={`admin-tab-${visibleTab}`}
                 >
-                  {visibleTab === "members" && (
+                  {visibleTab === "members" && canViewMembers && (
                     <MembersPanel
                       key={`members-${workspace.id}`}
                       client={client}
                       workspace={workspace}
-                      canManage={canManage}
+                      canManage={canManageMembers}
+                      canManageRoles={canManageRoles}
                     />
                   )}
-                  {visibleTab === "teams" && (
+                  {visibleTab === "teams" && canViewMembers && (
                     <TeamsPanel
                       key={`teams-${workspace.id}`}
                       client={client}
                       workspace={workspace}
-                      canManage={canManage}
+                      canManage={canManageTeams}
                     />
                   )}
-                  {visibleTab === "invitations" && canManage && (
+                  {visibleTab === "invitations" && canInvite && (
                     <InvitationsPanel
                       key={`invitations-${workspace.id}`}
                       client={client}
@@ -278,12 +324,12 @@ export function WorkspaceAdminDialog({
                       workspace={workspace}
                     />
                   )}
-                  {visibleTab === "integration" && enterpriseAdmin && (
+                  {visibleTab === "integration" && canViewIntegration && (
                     <ServiceIntegrationPanel
                       key={`integration-${workspace.id}`}
                       client={client}
                       workspace={workspace}
-                      canConfigure={enterpriseAdmin}
+                      canConfigure={canConfigureIntegration}
                     />
                   )}
                 </div>

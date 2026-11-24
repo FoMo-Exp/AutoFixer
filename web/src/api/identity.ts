@@ -26,6 +26,7 @@ export type InvitationRedemption = components["schemas"]["InvitationRedemption"]
 export type AuthAuditRecord = components["schemas"]["AuthAuditRecord"];
 export type LoginProvider = components["schemas"]["LoginProvider"];
 export type ServiceIntegration = components["schemas"]["ServiceIntegration"];
+export type WorkspaceCapabilityProjection = components["schemas"]["WorkspaceCapabilityProjection"];
 export type ServiceIntegrationStatus = ServiceIntegration["install_status"];
 export type ServicePermissionVisibility = ServiceIntegration["permission_visibility"];
 export type WorkspaceRole = Workspace["role"];
@@ -215,6 +216,21 @@ export class IdentityClient extends ApiTransport {
     return this.requestNoContent(
       `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/teams/${encodeURIComponent(teamId)}`,
       { method: "DELETE", signal: options.signal },
+    );
+  }
+
+  /**
+   * Session-scoped capability projection for one workspace (DAT-278). This is
+   * the only source for module-entry and action gating; the response is
+   * validated by `capabilities/projection.ts` before any decision.
+   */
+  async getWorkspaceCapabilities(
+    workspaceId: string,
+    options: RequestOptions = {},
+  ): Promise<WorkspaceCapabilityProjection> {
+    return this.request<WorkspaceCapabilityProjection>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/capabilities`,
+      { signal: options.signal },
     );
   }
 

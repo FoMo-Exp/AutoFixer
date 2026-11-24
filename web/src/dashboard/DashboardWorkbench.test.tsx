@@ -14,6 +14,7 @@ import type {
 } from "../api/client";
 import { DashboardWorkbench } from "./DashboardWorkbench";
 import { formatRatio, trimDecimal } from "./dashboard-format";
+import { capabilityProjection, accessOf } from "../capabilities/test-projection";
 
 const fixtureDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -384,6 +385,35 @@ describe("trace viewer", () => {
       screen.getByText(/Captured content and quarantine material need separate grants/),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
+  it("hides the ledger and trace panes when the projection denies those data scopes", async () => {
+    const client = makeClient();
+    const projection = capabilityProjection({
+      role: "viewer",
+      workspaceId: workspace.id,
+      enterpriseId: workspace.enterprise_id,
+    });
+    const dashboard = accessOf(projection, "dashboard");
+    const costItems = vi.spyOn(ForgePilotClient.prototype, "listDashboardCostItems");
+    render(
+      <DashboardWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        access={{
+          ...dashboard,
+          actions: {
+            ...dashboard.actions,
+            view_trace: { allowed: false, required: "code_read", reason: "workspace_role" },
+          },
+        }}
+      />,
+    );
+    await waitForOverview();
+
+    expect(screen.queryByRole("button", { name: "Cost ledger" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Trace" })).toBeNull();
+    expect(costItems).not.toHaveBeenCalled();
   });
 });
 

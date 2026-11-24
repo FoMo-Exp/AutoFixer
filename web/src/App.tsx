@@ -6,6 +6,21 @@ import { IdentityClient } from "./api/identity";
 import type { Workspace } from "./api/identity";
 import { resolveApiConfig } from "./api/config";
 import type { ApiConfig } from "./api/config";
+import {
+  CapabilityUnavailableScreen,
+  ModuleDeniedScreen,
+  ModuleNoDataScreen,
+} from "./capabilities/CapabilityScreen";
+import {
+  MODULE_LABELS,
+  accessAllowed,
+  actionReason,
+  legacyCapabilitySnapshot,
+  moduleEnterable,
+  moduleVisible,
+} from "./capabilities/projection";
+import type { CapabilityModule, ModuleAccess } from "./capabilities/projection";
+import { useWorkspaceCapabilities } from "./capabilities/use-capabilities";
 import { useAuth } from "./auth/useAuth";
 import type { AuthApi } from "./auth/useAuth";
 import {
@@ -37,7 +52,6 @@ import { SettingsDialog } from "./settings/SettingsDialog";
 import { captureInviteToken } from "./workspaces/invite-token";
 import { InviteJoin } from "./workspaces/InviteJoin";
 import { WorkspaceAdminDialog } from "./workspaces/WorkspaceAdminDialog";
-import { isEnterpriseAdmin } from "./workspaces/identity-format";
 import {
   approvalScopeDigest,
   buildTimelineRows,
@@ -100,7 +114,28 @@ function initialForm(workspace: Workspace | undefined): CreateTaskForm {
 
 type ServiceStatus = "connecting" | "connected" | "offline";
 
-type SurfaceView = "home" | "tasks" | "issues" | "memory" | "rsi" | "dashboard" | "security";
+type SurfaceView =
+  | "home"
+  | "tasks"
+  | "issues"
+  | "memory"
+  | "rsi"
+  | "dashboard"
+  | "members"
+  | "security"
+  | "service_integration";
+
+/** The surface order of the eight-module strip, after Home. */
+const MODULE_ORDER = [
+  "tasks",
+  "issues",
+  "memory",
+  "rsi",
+  "dashboard",
+  "members",
+  "security",
+  "service_integration",
+] as const;
 
 /**
  * Browser-tab glyphs for the top surface strip. They are decorative: the
@@ -221,6 +256,42 @@ const SURFACE_ICONS: Record<SurfaceView, ReactElement> = {
       <path d="M12 3 5 6v5c0 4.4 3 7.7 7 9 4-1.3 7-4.6 7-9V6l-7-3Z" />
     </svg>
   ),
+  members: (
+    <svg
+      className="surface-tab-icon"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="9" cy="8" r="3.2" />
+      <path d="M3.5 20c.4-3.2 2.6-5 5.5-5s5.1 1.8 5.5 5" />
+      <path d="M16 5.2a3 3 0 0 1 0 5.6M17.5 15c1.9.5 3 2.1 3.2 4.6" />
+    </svg>
+  ),
+  service_integration: (
+    <svg
+      className="surface-tab-icon"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M9 7V3M15 7V3" />
+      <rect x="5" y="7" width="14" height="7" rx="2" />
+      <path d="M12 14v4a3 3 0 0 0 3 3h2" />
+    </svg>
+  ),
 };
 
 function SurfaceIcon({ surface }: { surface: SurfaceView }): ReactElement {
@@ -277,6 +348,8 @@ interface WorkbenchProps {
   onWorkspaceUnavailable: () => void;
   initialSurface?: SurfaceView;
   onSurfaceChange?: (surface: SurfaceView) => void;
+  /** Local-operator mode: no identity subsystem, no capability projection. */
+  legacy?: boolean;
 }
 
 const NOOP = (): void => undefined;
@@ -381,6 +454,7 @@ export default function App(): ReactElement {
         workspaces={[]}
         onSelectWorkspace={NOOP}
         onWorkspaceUnavailable={NOOP}
+        legacy
       />
     );
   }
@@ -599,11 +673,61 @@ function Workbench({
   onWorkspaceUnavailable,
   initialSurface,
   onSurfaceChange,
+  legacy = false,
 }: WorkbenchProps): ReactElement {
   const authRef = useRef(auth);
   authRef.current = auth;
   const client = useApiClient(config, authRef, workspace?.id ?? null);
-  const readOnly = workspace?.role === "viewer";
+  const capability = useWorkspaceCapabilities({
+    client: identityClient,
+    workspaceId: workspace?.id ?? null,
+    enabled: !legacy && workspace !== undefined,
+  });
+  const legacySnapshot = useMemo(() => (legacy ? legacyCapabilitySnapshot() : undefined), [legacy]);
+  const snapshot = legacy ? legacySnapshot : capability.snapshot;
+  const capabilityReady = snapshot?.trusted === true && (legacy || capability.status === "ready");
+  // A module entry and every affordance inside it come from the normalized
+  // snapshot, never from a role guess. Unknown actions are denied.
+  const moduleEntry = (module: CapabilityModule): boolean =>
+    capabilityReady && moduleEnterable(snapshot, module);
+  const tasksAccess: ModuleAccess | undefined = snapshot?.modules.tasks;
+  const membersAccess: ModuleAccess | undefined = snapshot?.modules.members;
+  const serviceAccess: ModuleAccess | undefined = snapshot?.modules.service_integration;
+  const canReadTasks =
+    capabilityReady && moduleEntry("tasks") && accessAllowed(tasksAccess, "view");
+  const taskStreamAllowed = accessAllowed(tasksAccess, "stream");
+  const taskArtifactAllowed = accessAllowed(tasksAccess, "artifacts");
+  const taskCreateAllowed = accessAllowed(tasksAccess, "create");
+  const taskRunAllowed = accessAllowed(tasksAccess, "run");
+  const taskManageAllowed = accessAllowed(tasksAccess, "manage");
+  const taskApproveAllowed = accessAllowed(tasksAccess, "approve");
+  const taskGates: TaskGates = {
+    stream: taskStreamAllowed,
+    artifacts: taskArtifactAllowed,
+    run: taskRunAllowed,
+    manage: taskManageAllowed,
+    approve: taskApproveAllowed,
+  };
+  const readOnly = !taskManageAllowed;
+  // A background projection failure drops the snapshot; forget the loaded
+  // task data at the same time so a retry never re-renders it.
+  useEffect(() => {
+    if (canReadTasks) return;
+    listRequestRef.current += 1;
+    taskDetailRequestRef.current += 1;
+    setTasks([]);
+    setSelectedTask(undefined);
+    setRuns([]);
+  }, [canReadTasks]);
+  // A server denial or a renewal notice means the projection may be stale.
+  useEffect(() => {
+    if (auth.notice) capability.refresh();
+  }, [auth.notice, capability.refresh]);
+  // A projection 404 means the locator is no longer this caller's workspace;
+  // re-read live memberships instead of pinning a dead surface.
+  useEffect(() => {
+    if (capability.error?.status === 404) onWorkspaceUnavailable();
+  }, [capability.error, onWorkspaceUnavailable]);
   // Callbacks key off this scalar, never the workspace object: a membership
   // refresh rebuilds the list and would otherwise re-run every load effect.
   const scoped = workspace !== undefined;
@@ -621,12 +745,9 @@ function Workbench({
     initialSurface ?? (workspace ? "home" : "tasks"),
   );
   const surfaceNavRef = useRef<HTMLElement | null>(null);
-  const surfaceIndicator = useSurfaceTabIndicator(surfaceNavRef, surface);
   const glassMode = useGlassMode();
   const topbarGlassRef = useLiquidGlass<HTMLElement>();
   const sidebarGlassRef = useLiquidGlass<HTMLElement>();
-  useScrollFade(surfaceNavRef, surface);
-  useEffect(() => onSurfaceChange?.(surface), [onSurfaceChange, surface]);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   /** 窄屏钻取视图：list ↔ detail（≤900px 生效，桌面始终双栏并存） */
   const [mobileView, setMobileView] = useState<"list" | "detail">("list");
@@ -653,9 +774,60 @@ function Workbench({
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showWorkspaces, setShowWorkspaces] = useState(false);
+  const [adminModule, setAdminModule] = useState<"members" | "service_integration" | undefined>();
   const [adminInitialTab, setAdminInitialTab] = useState<
     "members" | "teams" | "invitations" | "audit" | "integration"
   >("members");
+  const activeSurface: SurfaceView =
+    showWorkspaces && adminModule !== undefined ? adminModule : surface;
+  const surfaceIndicator = useSurfaceTabIndicator(surfaceNavRef, activeSurface);
+  useScrollFade(surfaceNavRef, activeSurface);
+  useEffect(() => onSurfaceChange?.(activeSurface), [onSurfaceChange, activeSurface]);
+
+  const openAdmin = useCallback(
+    (tab: "members" | "teams" | "invitations" | "audit" | "integration") => {
+      setAdminInitialTab(tab);
+      setAdminModule(tab === "integration" ? "service_integration" : "members");
+      setShowWorkspaces(true);
+    },
+    [],
+  );
+
+  const closeAdmin = useCallback((): void => {
+    setShowWorkspaces(false);
+    setAdminModule(undefined);
+    void auth.retry();
+    capability.refresh();
+  }, [auth, capability.refresh]);
+
+  // A stale or direct surface renders the gate instead of mounting the module,
+  // so no previously loaded module state survives a capability loss.
+  const renderModuleGate = (module: CapabilityModule): ReactElement => {
+    const readAction =
+      module === "security"
+        ? "case.read_redacted_status"
+        : module === "service_integration"
+          ? "view_metadata"
+          : "view";
+    if (!moduleVisible(snapshot, module)) {
+      return (
+        <ModuleDeniedScreen
+          module={module}
+          reason={snapshot?.modules[module].reason ?? null}
+          onHome={() => setSurface("home")}
+        />
+      );
+    }
+    return (
+      <ModuleNoDataScreen
+        module={module}
+        reason={
+          actionReason(snapshot, module, readAction) ?? snapshot?.modules[module].reason ?? null
+        }
+        onRetry={capability.refresh}
+      />
+    );
+  };
   // Bumped whenever the settings dialog closes so open pickers re-run
   // discovery against the (possibly changed) account set.
   const [settingsEpoch, setSettingsEpoch] = useState(0);
@@ -739,6 +911,7 @@ function Workbench({
 
   const loadTasks = useCallback(
     async (showConnecting = false): Promise<void> => {
+      if (!canReadTasks) return;
       const requestId = ++listRequestRef.current;
       if (showConnecting) setServiceStatus("connecting");
       try {
@@ -764,11 +937,11 @@ function Workbench({
         setServiceError(errorMessage(caught));
       }
     },
-    [client, onWorkspaceUnavailable, scoped],
+    [canReadTasks, client, onWorkspaceUnavailable, scoped],
   );
 
   const loadMoreTasks = useCallback(async (): Promise<void> => {
-    if (!nextCursor || isLoadingMore) return;
+    if (!canReadTasks || !nextCursor || isLoadingMore) return;
     const cursor = nextCursor;
     const listRequestId = listRequestRef.current;
     setIsLoadingMore(true);
@@ -785,15 +958,15 @@ function Workbench({
     } finally {
       setIsLoadingMore(false);
     }
-  }, [client, isLoadingMore, nextCursor, reportRequestError]);
+  }, [canReadTasks, client, isLoadingMore, nextCursor, reportRequestError]);
 
   useEffect(() => {
-    void loadTasks(true);
-  }, [loadTasks]);
+    if (canReadTasks) void loadTasks(true);
+  }, [canReadTasks, loadTasks]);
 
   const refreshSelectedTask = useCallback(async (): Promise<void> => {
     const requestedId = selectedIdRef.current;
-    if (!requestedId) return;
+    if (!requestedId || !canReadTasks) return;
     const requestId = ++taskDetailRequestRef.current;
     try {
       const [task, taskRuns] = await Promise.all([
@@ -814,7 +987,7 @@ function Workbench({
       }
       reportRequestError(caught);
     }
-  }, [client, reportRequestError]);
+  }, [canReadTasks, client, reportRequestError]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -837,7 +1010,7 @@ function Workbench({
   );
   const stream = useTaskStream(
     client,
-    selectedId,
+    taskStreamAllowed ? selectedId : undefined,
     handleStreamEvent,
     selectedTask ? TERMINAL_STATUSES.has(selectedTask.status) : false,
   );
@@ -920,6 +1093,7 @@ function Workbench({
   }
 
   function openCreateDialog(): void {
+    if (!taskCreateAllowed) return;
     setCreateError(undefined);
     setShowCreate(true);
   }
@@ -931,7 +1105,7 @@ function Workbench({
 
   async function handleCreate(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (readOnly || !form.summary.trim()) return;
+    if (!taskCreateAllowed || !form.summary.trim()) return;
     setIsCreating(true);
     setCreateError(undefined);
     try {
@@ -963,7 +1137,8 @@ function Workbench({
     action: "approve" | "reject" | "cancel",
     digest?: string,
   ): Promise<void> {
-    if (readOnly || !selectedTask) return;
+    if (!selectedTask) return;
+    if (action === "cancel" ? !taskManageAllowed : !taskApproveAllowed) return;
     const taskId = selectedTask.id;
     setActionBusy(action);
     setActionError(undefined);
@@ -1020,60 +1195,40 @@ function Workbench({
                 }}
               />
             )}
-            <button
-              type="button"
-              className={`surface-tab ${surface === "tasks" ? "surface-tab-active" : ""}`}
-              aria-current={surface === "tasks" ? "page" : undefined}
-              onClick={() => setSurface("tasks")}
-            >
-              <SurfaceIcon surface="tasks" />
-              Tasks
-            </button>
-            <button
-              type="button"
-              className={`surface-tab ${surface === "issues" ? "surface-tab-active" : ""}`}
-              aria-current={surface === "issues" ? "page" : undefined}
-              onClick={() => setSurface("issues")}
-            >
-              <SurfaceIcon surface="issues" />
-              Issues
-            </button>
-            <button
-              type="button"
-              className={`surface-tab ${surface === "memory" ? "surface-tab-active" : ""}`}
-              aria-current={surface === "memory" ? "page" : undefined}
-              onClick={() => setSurface("memory")}
-            >
-              <SurfaceIcon surface="memory" />
-              Memory
-            </button>
-            <button
-              type="button"
-              className={`surface-tab ${surface === "rsi" ? "surface-tab-active" : ""}`}
-              aria-current={surface === "rsi" ? "page" : undefined}
-              onClick={() => setSurface("rsi")}
-            >
-              <SurfaceIcon surface="rsi" />
-              RSI
-            </button>
-            <button
-              type="button"
-              className={`surface-tab ${surface === "dashboard" ? "surface-tab-active" : ""}`}
-              aria-current={surface === "dashboard" ? "page" : undefined}
-              onClick={() => setSurface("dashboard")}
-            >
-              <SurfaceIcon surface="dashboard" />
-              Dashboard
-            </button>
-            <button
-              type="button"
-              className={`surface-tab ${surface === "security" ? "surface-tab-active" : ""}`}
-              aria-current={surface === "security" ? "page" : undefined}
-              onClick={() => setSurface("security")}
-            >
-              <SurfaceIcon surface="security" />
-              Security
-            </button>
+            {MODULE_ORDER.map((module) => {
+              // The entry follows the projection's visibility. A visible
+              // module whose read action is denied still shows the no-data
+              // explanation instead of pretending the module does not exist.
+              const entryVisible =
+                capabilityReady &&
+                moduleVisible(snapshot, module) &&
+                (module === "security" || module === "service_integration"
+                  ? moduleEnterable(snapshot, module)
+                  : true);
+              if (!entryVisible) return null;
+              const active = activeSurface === module;
+              const adminTab =
+                module === "members"
+                  ? ("members" as const)
+                  : module === "service_integration"
+                    ? ("integration" as const)
+                    : undefined;
+              return (
+                <button
+                  key={module}
+                  type="button"
+                  className={`surface-tab ${active ? "surface-tab-active" : ""}`}
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => {
+                    if (adminTab !== undefined) openAdmin(adminTab);
+                    else setSurface(module);
+                  }}
+                >
+                  <SurfaceIcon surface={module} />
+                  {MODULE_LABELS[module]}
+                </button>
+              );
+            })}
           </nav>
           <div className="topbar-actions">
             {auth.session && (
@@ -1098,7 +1253,9 @@ function Workbench({
               }}
               aria-label="Home"
               aria-current={
-                surface === "home" || (surface === "tasks" && !selectedId) ? "page" : undefined
+                activeSurface === "home" || (activeSurface === "tasks" && !selectedId)
+                  ? "page"
+                  : undefined
               }
             >
               <svg
@@ -1139,7 +1296,10 @@ function Workbench({
               (auth.session.memberships.length > 0 || auth.session.enterprise_roles.length > 0) && (
                 <button
                   className="button button-quiet button-small"
-                  onClick={() => setShowWorkspaces(true)}
+                  onClick={() => {
+                    setAdminModule(undefined);
+                    setShowWorkspaces(true);
+                  }}
                   aria-label="Open workspace administration"
                 >
                   <svg
@@ -1177,7 +1337,7 @@ function Workbench({
           </div>
         </header>
 
-        {surface === "home" && workspace && (
+        {activeSurface === "home" && workspace && (
           <main className="workspace-home" aria-labelledby="workspace-home-title">
             <section className="workspace-home-card">
               <span className="eyebrow">Workspace</span>
@@ -1188,290 +1348,353 @@ function Workbench({
                 onSelect={onSelectWorkspace}
               />
               <div className="workspace-home-actions">
-                <button className="button button-primary" onClick={() => setSurface("tasks")}>
-                  Open Tasks
-                </button>
-                <button className="button button-secondary" onClick={() => setSurface("issues")}>
-                  Open Issues
-                </button>
+                {canReadTasks && (
+                  <button className="button button-primary" onClick={() => setSurface("tasks")}>
+                    Open Tasks
+                  </button>
+                )}
+                {moduleEntry("issues") && (
+                  <button className="button button-secondary" onClick={() => setSurface("issues")}>
+                    Open Issues
+                  </button>
+                )}
               </div>
+              {!capabilityReady && (
+                <p className="identity-meta" role="status">
+                  Module entries stay hidden until the service verifies this workspace&apos;s
+                  capability projection.
+                </p>
+              )}
             </section>
-            {(workspace.role === "owner" || workspace.role === "admin") && (
-              <section className="workspace-home-card" aria-labelledby="workspace-setup-title">
-                <span className="eyebrow">Get started</span>
-                <h2 id="workspace-setup-title">Set up your team</h2>
-                <div className="workspace-home-actions">
-                  <button
-                    className="button button-secondary"
-                    onClick={() => {
-                      setAdminInitialTab("invitations");
-                      setShowWorkspaces(true);
-                    }}
-                  >
-                    Invite members
-                  </button>
-                  <button
-                    className="button button-secondary"
-                    onClick={() => {
-                      setAdminInitialTab("teams");
-                      setShowWorkspaces(true);
-                    }}
-                  >
-                    Create a team
-                  </button>
-                  <button
-                    className="button button-quiet"
-                    onClick={() => {
-                      setAdminInitialTab("members");
-                      setShowWorkspaces(true);
-                    }}
-                  >
-                    Manage workspace
-                  </button>
-                </div>
-              </section>
-            )}
-            {auth.session && isEnterpriseAdmin(auth.session, workspace.enterprise_id) && (
-              <section
-                className="workspace-home-card"
-                aria-labelledby="workspace-integration-title"
-              >
-                <span className="eyebrow">Service integration</span>
-                <h2 id="workspace-integration-title">Repository connection</h2>
-                <div className="workspace-home-actions">
-                  <button
-                    className="button button-secondary"
-                    onClick={() => {
-                      setAdminInitialTab("integration");
-                      setShowWorkspaces(true);
-                    }}
-                  >
-                    Configure service integration
-                  </button>
-                </div>
-              </section>
-            )}
-          </main>
-        )}
-
-        <div
-          className="workspace"
-          data-view={mobileView}
-          data-scroll-lock={surface === "tasks" && !selectedId ? "true" : undefined}
-          hidden={surface !== "tasks"}
-        >
-          <aside className="sidebar glass" ref={sidebarGlassRef}>
-            <div className="sidebar-heading">
-              <div className="sidebar-heading-main">
-                <div className="sidebar-title-row">
-                  <h1>Tasks</h1>
-                  {!readOnly && (
-                    <button
-                      type="button"
-                      className="task-create"
-                      onClick={openCreateDialog}
-                      aria-label="New task"
-                      title="New task"
-                    >
-                      <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 14 14"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        aria-hidden="true"
+            {membersAccess !== undefined &&
+              (accessAllowed(membersAccess, "invite") ||
+                accessAllowed(membersAccess, "manage_teams") ||
+                accessAllowed(membersAccess, "manage_members")) && (
+                <section className="workspace-home-card" aria-labelledby="workspace-setup-title">
+                  <span className="eyebrow">Get started</span>
+                  <h2 id="workspace-setup-title">Set up your team</h2>
+                  <div className="workspace-home-actions">
+                    {accessAllowed(membersAccess, "invite") && (
+                      <button
+                        className="button button-secondary"
+                        onClick={() => openAdmin("invitations")}
                       >
-                        <path d="M7 1.5v11M1.5 7h11" />
-                      </svg>
-                    </button>
-                  )}
-                </div>
-              </div>
-              <span className="task-count">{visibleTasks.length}</span>
-            </div>
-            {workspace && surface === "tasks" && (
-              <WorkspaceSwitcher
-                workspace={workspace}
-                workspaces={workspaces}
-                onSelect={onSelectWorkspace}
-              />
-            )}
-            <div className="filter-row" role="group" aria-label="Task filters">
-              {STATUS_FILTERS.map((status) => (
-                <button
-                  className={`filter-chip ${filter === status ? "filter-chip-active" : ""}`}
-                  key={status}
-                  onClick={() => setFilter(status)}
-                >
-                  {status === "all" ? "All" : formatStatus(status)}
-                </button>
-              ))}
-            </div>
-            <div
-              ref={taskListRef}
-              className="task-list"
-              data-scroll={stackedScroll ? "stacked" : "normal"}
-            >
-              {visibleTasks.length === 0 ? (
-                <div className="empty-sidebar">
-                  <div className="empty-icon">⌁</div>
-                  <p>
-                    {serviceStatus === "offline"
-                      ? "Node service is offline."
-                      : readOnly
-                        ? "Viewer access is read-only."
-                        : "No tasks in this view."}
-                  </p>
-                  {!readOnly && (
-                    <button className="button button-quiet" onClick={openCreateDialog}>
-                      Start a task
-                    </button>
-                  )}
-                </div>
-              ) : (
-                visibleTasks.map((task) => (
-                  <TaskListItem
-                    key={task.id}
-                    task={task}
-                    selected={task.id === selectedId}
-                    readOnly={readOnly}
-                    onClick={() => selectTask(task)}
-                    onArchive={() => requestTaskAction(task, "archive")}
-                    onRecovery={() => requestTaskAction(task, "recovery")}
-                    busy={cancellingTaskId === task.id}
-                  />
-                ))
+                        Invite members
+                      </button>
+                    )}
+                    {accessAllowed(membersAccess, "manage_teams") && (
+                      <button
+                        className="button button-secondary"
+                        onClick={() => openAdmin("teams")}
+                      >
+                        Create a team
+                      </button>
+                    )}
+                    {accessAllowed(membersAccess, "manage_members") && (
+                      <button className="button button-quiet" onClick={() => openAdmin("members")}>
+                        Manage workspace
+                      </button>
+                    )}
+                  </div>
+                </section>
               )}
-              {nextCursor && (
-                <button
-                  className="button button-quiet button-small load-more"
-                  onClick={() => void loadMoreTasks()}
-                  disabled={isLoadingMore}
+            {serviceAccess !== undefined &&
+              accessAllowed(serviceAccess, "view_metadata") &&
+              accessAllowed(serviceAccess, "configure") && (
+                <section
+                  className="workspace-home-card"
+                  aria-labelledby="workspace-integration-title"
                 >
-                  {isLoadingMore ? "Loading…" : "Load more tasks"}
-                </button>
+                  <span className="eyebrow">Service integration</span>
+                  <h2 id="workspace-integration-title">Repository connection</h2>
+                  <div className="workspace-home-actions">
+                    <button
+                      className="button button-secondary"
+                      onClick={() => openAdmin("integration")}
+                    >
+                      Configure service integration
+                    </button>
+                  </div>
+                </section>
               )}
-            </div>
-            <div className="sidebar-footer">
-              <div className="security-note">
-                <span className="security-icon" aria-hidden="true">
-                  ◈
-                </span>
-                <div>
-                  <strong>Local-only control</strong>
-                  <span>Redacted evidence · no shell access</span>
-                </div>
-              </div>
-            </div>
-          </aside>
-
-          <main className="main-panel">
-            {auth.notice && (
-              <div className="connection-banner permission-banner" role="alert">
-                <span className="banner-dot" />
-                <div>
-                  <strong>Permission denied</strong>
-                  <span>{auth.notice}</span>
-                </div>
-                <button className="button button-quiet button-small" onClick={auth.dismissNotice}>
-                  Dismiss
-                </button>
-              </div>
-            )}
-            {serviceStatus === "offline" && (
-              <div className="connection-banner" role="alert">
-                <span className="banner-dot" />
-                <div>
-                  <strong>Node service unavailable</strong>
-                  <span>{serviceError ?? "Check the local service and try again."}</span>
-                </div>
-                <button
-                  className="button button-quiet button-small"
-                  onClick={() => void loadTasks(true)}
-                >
-                  Retry connection
-                </button>
-              </div>
-            )}
-            {actionError && (
-              <div
-                className="inline-error"
-                role="alert"
-                onMouseEnter={() => setIsActionErrorHovered(true)}
-                onMouseLeave={() => setIsActionErrorHovered(false)}
-              >
-                <span>{actionError}</span>
-                <button aria-label="Dismiss error" onClick={() => setActionError(undefined)}>
-                  ×
-                </button>
-              </div>
-            )}
-            {selectedTask ? (
-              <TaskDetail
-                key={selectedTask.id}
-                task={selectedTask}
-                workspaceName={workspace?.name}
-                readOnly={readOnly}
-                runs={runs}
-                events={stream.events.filter((event) => event.task_id === selectedTask.id)}
-                streamConnection={stream.connection}
-                streamError={stream.error}
-                client={client}
-                actionBusy={cancellingTaskId === selectedTask.id ? "cancel" : actionBusy}
-                onAction={handleTaskAction}
-                onCancel={() => requestTaskAction(selectedTask, "archive")}
-                onRefresh={() => void refreshSelectedTask()}
-                onBack={() => {
-                  setMobileView("list");
-                  selectTask(undefined);
-                }}
-              />
-            ) : (
-              <WelcomePanel
-                readOnly={readOnly}
-                onCreate={openCreateDialog}
-                onBack={() => setMobileView("list")}
-              />
-            )}
           </main>
-        </div>
+        )}
 
-        {surface === "issues" && (
-          <IssuesWorkbench
-            client={client}
-            currentUserId={auth.session?.user.id}
-            loadWorkspaces={loadWorkspaces}
+        {capabilityReady && activeSurface === "tasks" && !moduleVisible(snapshot, "tasks") && (
+          <ModuleDeniedScreen
+            module="tasks"
+            reason={snapshot?.modules.tasks.reason ?? null}
+            onHome={() => setSurface("home")}
           />
         )}
+        {capabilityReady &&
+          activeSurface === "tasks" &&
+          moduleVisible(snapshot, "tasks") &&
+          !canReadTasks && (
+            <ModuleNoDataScreen
+              module="tasks"
+              reason={actionReason(snapshot, "tasks", "view")}
+              onRetry={capability.refresh}
+            />
+          )}
+        {capabilityReady && moduleEntry("tasks") && canReadTasks && (
+          <div
+            className="workspace"
+            data-view={mobileView}
+            data-scroll-lock={activeSurface === "tasks" && !selectedId ? "true" : undefined}
+            hidden={activeSurface !== "tasks"}
+          >
+            <aside className="sidebar glass" ref={sidebarGlassRef}>
+              <div className="sidebar-heading">
+                <div className="sidebar-heading-main">
+                  <div className="sidebar-title-row">
+                    <h1>Tasks</h1>
+                    {taskCreateAllowed && (
+                      <button
+                        type="button"
+                        className="task-create"
+                        onClick={openCreateDialog}
+                        aria-label="New task"
+                        title="New task"
+                      >
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 14 14"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M7 1.5v11M1.5 7h11" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <span className="task-count">{visibleTasks.length}</span>
+              </div>
+              {workspace && activeSurface === "tasks" && (
+                <WorkspaceSwitcher
+                  workspace={workspace}
+                  workspaces={workspaces}
+                  onSelect={onSelectWorkspace}
+                />
+              )}
+              <div className="filter-row" role="group" aria-label="Task filters">
+                {STATUS_FILTERS.map((status) => (
+                  <button
+                    className={`filter-chip ${filter === status ? "filter-chip-active" : ""}`}
+                    key={status}
+                    onClick={() => setFilter(status)}
+                  >
+                    {status === "all" ? "All" : formatStatus(status)}
+                  </button>
+                ))}
+              </div>
+              <div
+                ref={taskListRef}
+                className="task-list"
+                data-scroll={stackedScroll ? "stacked" : "normal"}
+              >
+                {visibleTasks.length === 0 ? (
+                  <div className="empty-sidebar">
+                    <div className="empty-icon">⌁</div>
+                    <p>
+                      {serviceStatus === "offline"
+                        ? "Node service is offline."
+                        : readOnly
+                          ? "Viewer access is read-only."
+                          : "No tasks in this view."}
+                    </p>
+                    {taskCreateAllowed && (
+                      <button className="button button-quiet" onClick={openCreateDialog}>
+                        Start a task
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  visibleTasks.map((task) => (
+                    <TaskListItem
+                      key={task.id}
+                      task={task}
+                      selected={task.id === selectedId}
+                      readOnly={readOnly}
+                      onClick={() => selectTask(task)}
+                      onArchive={() => requestTaskAction(task, "archive")}
+                      onRecovery={() => requestTaskAction(task, "recovery")}
+                      busy={cancellingTaskId === task.id}
+                    />
+                  ))
+                )}
+                {nextCursor && (
+                  <button
+                    className="button button-quiet button-small load-more"
+                    onClick={() => void loadMoreTasks()}
+                    disabled={isLoadingMore}
+                  >
+                    {isLoadingMore ? "Loading…" : "Load more tasks"}
+                  </button>
+                )}
+              </div>
+              <div className="sidebar-footer">
+                <div className="security-note">
+                  <span className="security-icon" aria-hidden="true">
+                    ◈
+                  </span>
+                  <div>
+                    <strong>Local-only control</strong>
+                    <span>Redacted evidence · no shell access</span>
+                  </div>
+                </div>
+              </div>
+            </aside>
 
-        {surface === "memory" && (
-          <MemoryWorkbench
-            client={client}
-            session={auth.session}
-            loadTeams={loadMemoryTeams}
-            loadWorkspaces={loadWorkspaces}
-          />
+            <main className="main-panel">
+              {auth.notice && (
+                <div className="connection-banner permission-banner" role="alert">
+                  <span className="banner-dot" />
+                  <div>
+                    <strong>Permission denied</strong>
+                    <span>{auth.notice}</span>
+                  </div>
+                  <button className="button button-quiet button-small" onClick={auth.dismissNotice}>
+                    Dismiss
+                  </button>
+                </div>
+              )}
+              {serviceStatus === "offline" && (
+                <div className="connection-banner" role="alert">
+                  <span className="banner-dot" />
+                  <div>
+                    <strong>Node service unavailable</strong>
+                    <span>{serviceError ?? "Check the local service and try again."}</span>
+                  </div>
+                  <button
+                    className="button button-quiet button-small"
+                    onClick={() => void loadTasks(true)}
+                  >
+                    Retry connection
+                  </button>
+                </div>
+              )}
+              {actionError && (
+                <div
+                  className="inline-error"
+                  role="alert"
+                  onMouseEnter={() => setIsActionErrorHovered(true)}
+                  onMouseLeave={() => setIsActionErrorHovered(false)}
+                >
+                  <span>{actionError}</span>
+                  <button aria-label="Dismiss error" onClick={() => setActionError(undefined)}>
+                    ×
+                  </button>
+                </div>
+              )}
+              {selectedTask ? (
+                <TaskDetail
+                  key={selectedTask.id}
+                  task={selectedTask}
+                  workspaceName={workspace?.name}
+                  gates={taskGates}
+                  runs={runs}
+                  events={stream.events.filter((event) => event.task_id === selectedTask.id)}
+                  streamConnection={stream.connection}
+                  streamError={stream.error}
+                  client={client}
+                  actionBusy={cancellingTaskId === selectedTask.id ? "cancel" : actionBusy}
+                  onAction={handleTaskAction}
+                  onCancel={() => requestTaskAction(selectedTask, "archive")}
+                  onRefresh={() => void refreshSelectedTask()}
+                  onBack={() => {
+                    setMobileView("list");
+                    selectTask(undefined);
+                  }}
+                />
+              ) : (
+                <WelcomePanel
+                  readOnly={readOnly}
+                  onCreate={openCreateDialog}
+                  onBack={() => setMobileView("list")}
+                />
+              )}
+            </main>
+          </div>
         )}
 
-        {surface === "rsi" && (
-          <RsiWorkbench
-            client={client}
-            currentUserId={auth.session?.user.id}
-            loadWorkspaces={loadWorkspaces}
-          />
-        )}
+        {capabilityReady &&
+          activeSurface === "issues" &&
+          (moduleEntry("issues") ? (
+            <IssuesWorkbench
+              client={client}
+              currentUserId={auth.session?.user.id}
+              loadWorkspaces={loadWorkspaces}
+              access={snapshot?.modules.issues}
+            />
+          ) : (
+            renderModuleGate("issues")
+          ))}
 
-        {surface === "dashboard" && (
-          <DashboardWorkbench client={client} loadWorkspaces={loadWorkspaces} />
-        )}
+        {capabilityReady &&
+          activeSurface === "memory" &&
+          (moduleEntry("memory") ? (
+            <MemoryWorkbench
+              client={client}
+              session={auth.session}
+              loadTeams={loadMemoryTeams}
+              loadWorkspaces={loadWorkspaces}
+              access={snapshot?.modules.memory}
+            />
+          ) : (
+            renderModuleGate("memory")
+          ))}
 
-        {surface === "security" && (
-          <SecurityWorkbench
-            client={client}
-            session={auth.session}
-            loadWorkspaces={loadWorkspaces}
+        {capabilityReady &&
+          activeSurface === "rsi" &&
+          (moduleEntry("rsi") ? (
+            <RsiWorkbench
+              client={client}
+              currentUserId={auth.session?.user.id}
+              loadWorkspaces={loadWorkspaces}
+              access={snapshot?.modules.rsi}
+            />
+          ) : (
+            renderModuleGate("rsi")
+          ))}
+
+        {capabilityReady &&
+          activeSurface === "dashboard" &&
+          (moduleEntry("dashboard") ? (
+            <DashboardWorkbench
+              client={client}
+              loadWorkspaces={loadWorkspaces}
+              access={snapshot?.modules.dashboard}
+            />
+          ) : (
+            renderModuleGate("dashboard")
+          ))}
+
+        {capabilityReady &&
+          activeSurface === "security" &&
+          (moduleEntry("security") ? (
+            <SecurityWorkbench
+              client={client}
+              session={auth.session}
+              loadWorkspaces={loadWorkspaces}
+              access={snapshot?.modules.security}
+            />
+          ) : (
+            renderModuleGate("security")
+          ))}
+
+        {!capabilityReady && workspace !== undefined && !legacy && (
+          <CapabilityUnavailableScreen
+            status={capability.status}
+            error={capability.error}
+            workspaceName={workspace.name}
+            refreshing={capability.refreshing}
+            onRetry={capability.refresh}
           />
         )}
 
@@ -1532,10 +1755,7 @@ function Workbench({
             client={identityClient}
             session={auth.session}
             initialTab={adminInitialTab}
-            onClose={() => {
-              setShowWorkspaces(false);
-              void auth.retry();
-            }}
+            onClose={closeAdmin}
           />
         )}
       </div>
@@ -1728,10 +1948,18 @@ function WelcomePanel({
   );
 }
 
+interface TaskGates {
+  stream: boolean;
+  artifacts: boolean;
+  run: boolean;
+  manage: boolean;
+  approve: boolean;
+}
+
 interface TaskDetailProps {
   task: Task;
   workspaceName?: string;
-  readOnly: boolean;
+  gates: TaskGates;
   runs: RunSummary[];
   events: TaskEvent[];
   streamConnection: ReturnType<typeof useTaskStream>["connection"];
@@ -1748,7 +1976,7 @@ interface TaskDetailProps {
 function TaskDetail({
   task,
   workspaceName,
-  readOnly,
+  gates,
   runs,
   events,
   streamConnection,
@@ -1773,7 +2001,7 @@ function TaskDetail({
   const timelineRows = buildTimelineRows(events);
   const piSummary = resolvePiSummary(task, events);
   const percentage = progressPercent(task.progress.actions_completed, task.progress.actions_total);
-  const canCancel = !readOnly && !TERMINAL_STATUSES.has(task.status);
+  const canCancel = gates.manage && !TERMINAL_STATUSES.has(task.status);
 
   async function browseArtifact(metadata: ArtifactMetadata): Promise<void> {
     if (!metadata.available) return;
@@ -1850,7 +2078,7 @@ function TaskDetail({
               task={task}
               digest={digest}
               busy={actionBusy}
-              readOnly={readOnly}
+              readOnly={!gates.approve}
               onAction={onAction}
             />
           )}
@@ -1963,7 +2191,7 @@ function TaskDetail({
             )}
           </section>
 
-          {!TERMINAL_STATUSES.has(task.status) && !readOnly && (
+          {!TERMINAL_STATUSES.has(task.status) && gates.run && (
             <form
               className="card glass message-card"
               onSubmit={(event) => void submitMessage(event)}
@@ -2041,6 +2269,7 @@ function TaskDetail({
                     key={metadata.artifact_id}
                     metadata={metadata}
                     busy={artifactBusy === metadata.artifact_id}
+                    canBrowse={gates.artifacts}
                     onBrowse={() => void browseArtifact(metadata)}
                   />
                 ))
@@ -2187,10 +2416,12 @@ function TimelineEvent({ event }: { event: TaskEvent }): ReactElement {
 function ArtifactRow({
   metadata,
   busy,
+  canBrowse,
   onBrowse,
 }: {
   metadata: ArtifactMetadata;
   busy: boolean;
+  canBrowse: boolean;
   onBrowse: () => void;
 }): ReactElement {
   return (
@@ -2206,9 +2437,10 @@ function ArtifactRow({
       </div>
       <button
         className="icon-button"
-        disabled={!metadata.available || busy}
+        disabled={!metadata.available || busy || !canBrowse}
         onClick={onBrowse}
         aria-label={`Browse ${metadata.artifact_id}`}
+        title={canBrowse ? undefined : "Artifact access is not in your capability set."}
       >
         {busy ? "…" : "→"}
       </button>

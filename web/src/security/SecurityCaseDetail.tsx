@@ -45,6 +45,8 @@ interface SecurityCaseDetailProps {
   seed: SecurityCase | undefined;
   userId: string | undefined;
   canAdminister: boolean;
+  /** DAT-279 duty decision for inspecting raw quarantined context. */
+  canViewQuarantine?: boolean;
   onBack: () => void;
   onChanged: (next: SecurityCase) => void;
 }
@@ -62,6 +64,7 @@ export function SecurityCaseDetail({
   seed,
   userId,
   canAdminister,
+  canViewQuarantine = true,
   onBack,
   onChanged,
 }: SecurityCaseDetailProps): ReactElement {
@@ -92,6 +95,16 @@ export function SecurityCaseDetail({
   const [quarantineBusy, setQuarantineBusy] = useState<string>();
   const [quarantineError, setQuarantineError] = useState<SecurityErrorDescription>();
   const grantKeys = useRef(new CreateIdempotencyKeys());
+
+  // Losing the quarantine duty while a case is open removes any raw context
+  // that was already displayed; the next read needs a new grant and duty.
+  useEffect(() => {
+    if (canViewQuarantine) return;
+    setQuarantineContent({});
+    setAcknowledged({});
+    setViewGrantIds({});
+    setGrants({});
+  }, [canViewQuarantine]);
 
   const [approval, setApproval] = useState<SecurityRecoveryApproval>();
   const [approvalLookup, setApprovalLookup] = useState("");
@@ -235,6 +248,7 @@ export function SecurityCaseDetail({
   }
 
   async function inspectQuarantine(quarantineId: string): Promise<void> {
+    if (!canViewQuarantine) return;
     const grantId = (viewGrantIds[quarantineId] ?? "").trim();
     if (!grantId || !acknowledged[quarantineId]) return;
     setQuarantineBusy(`view:${quarantineId}`);
@@ -729,8 +743,14 @@ export function SecurityCaseDetail({
                               className="button button-secondary button-small"
                               disabled={
                                 quarantineBusy !== undefined ||
+                                !canViewQuarantine ||
                                 !(viewGrantIds[quarantineId] ?? "").trim() ||
                                 !acknowledged[quarantineId]
+                              }
+                              title={
+                                canViewQuarantine
+                                  ? undefined
+                                  : "Quarantine inspection requires a live handler or reviewer duty."
                               }
                               onClick={() => void inspectQuarantine(quarantineId)}
                             >
@@ -754,7 +774,7 @@ export function SecurityCaseDetail({
                               </button>
                             )}
                           </div>
-                          {content !== undefined && (
+                          {content !== undefined && canViewQuarantine && (
                             <pre className="quarantine-content" tabIndex={0}>
                               {content}
                             </pre>
