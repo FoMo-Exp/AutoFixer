@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import verified from "../../../docs/fixtures/capability-api-v1/projection-verified.json";
 import unverified from "../../../docs/fixtures/capability-api-v1/projection-unverified.json";
+import downgraded from "../../../docs/fixtures/capability-api-v1/projection-downgraded.json";
 import {
   CapabilityProjectionError,
   CAPABILITY_MODULES,
@@ -56,6 +57,18 @@ describe("workspace capability projection", () => {
     expect(actionAllowed(snapshot, "tasks", "view")).toBe(false);
     expect(actionAllowed(snapshot, "tasks", "create")).toBe(false);
     expect(moduleHasData(snapshot, "tasks")).toBe(false);
+  });
+
+  it("keeps a repository downgrade read-only while the module stays visible", () => {
+    const snapshot = parse(downgraded);
+    expect(snapshot.state).toBe("verified");
+    expect(snapshot.capabilities).toEqual(["code_read"]);
+    expect(moduleVisible(snapshot, "tasks")).toBe(true);
+    expect(actionAllowed(snapshot, "tasks", "view")).toBe(true);
+    expect(actionAllowed(snapshot, "tasks", "create")).toBe(false);
+    expect(actionAllowed(snapshot, "tasks", "manage")).toBe(false);
+    expect(actionAllowed(snapshot, "tasks", "approve")).toBe(false);
+    expect(actionAllowed(snapshot, "issues", "create")).toBe(false);
   });
 
   it("rejects an expired snapshot instead of treating it as a grant", () => {
