@@ -64,6 +64,16 @@ from nothing else. Every request remains authorized by the service.
   `view_financial`/`view_trace`, member administration, security duties, and
   service-integration metadata each read their own `allowed` flag. Security
   actions come only from human duties; a workspace role never substitutes.
+  Issue creation and comment are separate actions, so a comment-only writer
+  sees the comment form and no create control.
+- **Security duties are separated.** `case.read_redacted_status` alone gates
+  the case list; `case.handle`, `case.submit_for_review`, `case.review_decide`,
+  `case.terminate`, `case.request_termination`, `case.request_reassignment`,
+  `recovery.approve`, `recovery.revoke`, `recovery.reconcile`,
+  `quarantine.view`, `quarantine.grant_access`, `audit.read`, and
+  `audit.export` each gate their own control. Losing the case-read duty clears
+  the loaded cases and the open detail and issues no further case request,
+  while another duty (for example audit) keeps its own section.
 - **Fail closed.** The response is rejected on a wrong `schema_version`, a
   foreign `workspace_id`, or an unparseable freshness window. An expired
   projection, a failed re-read, an unknown module/action/ceiling, and a

@@ -199,6 +199,7 @@ export function MemoryWorkbench({
       : [
           access.dataCeiling,
           access.visible,
+          accessAllowed(access, "view"),
           accessAllowed(access, "view_confidential"),
           accessAllowed(access, "govern_workspace"),
           accessAllowed(access, "govern_team"),
@@ -211,7 +212,10 @@ export function MemoryWorkbench({
 
   const sessionRole = workspaceRoleFromSession(session, workspaceId);
   // The projection's data ceiling bounds which sensitivity filter is even
-  // meaningful; `restricted` never appears in the ordinary browse.
+  // meaningful; `restricted` never appears in the ordinary browse. A module
+  // whose ceiling is unverified (`none`) issues no read at all.
+  const canReadMemory =
+    access === undefined ? true : accessAllowed(access, "view") && access.dataCeiling !== "none";
   const ceilingAllows = (value: MemorySensitivity): boolean => {
     if (access === undefined) return value !== "restricted";
     if (value === "restricted") return accessAllowed(access, "restricted_access");
@@ -324,7 +328,12 @@ export function MemoryWorkbench({
   }, [loadWorkspaces, workspaceToken]);
 
   useEffect(() => {
-    if (!workspaceId) return;
+    if (!workspaceId || !canReadMemory) {
+      listRequestRef.current += 1;
+      setPage({ key: "", items: [], nextCursor: null });
+      setListLoading(false);
+      return;
+    }
     let active = true;
     const requestId = ++listRequestRef.current;
     const key = memoryQueryKey(workspaceId, kind, status, tier, trust, sensitivity, scope);
@@ -353,10 +362,21 @@ export function MemoryWorkbench({
     return () => {
       active = false;
     };
-  }, [client, workspaceId, kind, status, tier, trust, sensitivity, scope, listToken]);
+  }, [
+    client,
+    workspaceId,
+    kind,
+    status,
+    tier,
+    trust,
+    sensitivity,
+    scope,
+    listToken,
+    canReadMemory,
+  ]);
 
   const loadMore = useCallback(async (): Promise<void> => {
-    if (!workspaceId || !nextCursor || loadingMore) return;
+    if (!workspaceId || !canReadMemory || !nextCursor || loadingMore) return;
     const requestId = listRequestRef.current;
     const key = memoryQueryKey(workspaceId, kind, status, tier, trust, sensitivity, scope);
     setLoadingMore(true);
@@ -384,7 +404,19 @@ export function MemoryWorkbench({
     } finally {
       setLoadingMore(false);
     }
-  }, [client, workspaceId, nextCursor, loadingMore, kind, status, tier, trust, sensitivity, scope]);
+  }, [
+    client,
+    workspaceId,
+    nextCursor,
+    loadingMore,
+    kind,
+    status,
+    tier,
+    trust,
+    sensitivity,
+    scope,
+    canReadMemory,
+  ]);
 
   const activeWorkspaces = workspaces.filter((workspace) => workspace.status === "active");
   const selectedWorkspace = activeWorkspaces.find((workspace) => workspace.id === workspaceId);

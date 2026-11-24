@@ -101,7 +101,9 @@ export function RsiWorkbench({
   // The projection is the only action gate; the membership role remains the
   // fallback for the legacy local-operator mode (no projection).
   const canRead =
-    access !== undefined ? accessAllowed(access, "view") : role !== undefined && role !== "viewer";
+    access !== undefined
+      ? accessAllowed(access, "view") && access.dataCeiling !== "none"
+      : role !== undefined && role !== "viewer";
   const canApprove =
     access !== undefined ? accessAllowed(access, "approve") : role === "owner" || role === "admin";
   const canEvaluate = access !== undefined ? accessAllowed(access, "evaluate") : role === "owner";

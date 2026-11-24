@@ -402,6 +402,8 @@ export function capabilityReasonLabel(reason: string | null): string {
       return "This module requires enterprise administration.";
     case "capability_unverified":
       return "The repository capability set could not be verified, so no workspace data is available.";
+    case "data_ceiling_none":
+      return "The service reports no verified data ceiling for this module, so no data is read.";
     case "capability_ceiling_changed":
       return "Your capability ceiling changed; the workspace data scope was refreshed.";
     case "authority_unknown":

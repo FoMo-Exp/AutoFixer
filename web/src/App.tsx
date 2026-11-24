@@ -17,6 +17,7 @@ import {
   actionReason,
   legacyCapabilitySnapshot,
   moduleEnterable,
+  moduleHasData,
   moduleVisible,
 } from "./capabilities/projection";
 import type { CapabilityModule, ModuleAccess } from "./capabilities/projection";
@@ -687,14 +688,14 @@ function Workbench({
   const snapshot = legacy ? legacySnapshot : capability.snapshot;
   const capabilityReady = snapshot?.trusted === true && (legacy || capability.status === "ready");
   // A module entry and every affordance inside it come from the normalized
-  // snapshot, never from a role guess. Unknown actions are denied.
-  const moduleEntry = (module: CapabilityModule): boolean =>
-    capabilityReady && moduleEnterable(snapshot, module);
+  // snapshot, never from a role guess. Unknown actions and ceilings are
+  // denied, and data modules mount only when `moduleHasData` agrees.
+  const moduleDataReady = (module: CapabilityModule): boolean =>
+    capabilityReady && moduleHasData(snapshot, module);
   const tasksAccess: ModuleAccess | undefined = snapshot?.modules.tasks;
   const membersAccess: ModuleAccess | undefined = snapshot?.modules.members;
   const serviceAccess: ModuleAccess | undefined = snapshot?.modules.service_integration;
-  const canReadTasks =
-    capabilityReady && moduleEntry("tasks") && accessAllowed(tasksAccess, "view");
+  const canReadTasks = moduleDataReady("tasks");
   const taskStreamAllowed = accessAllowed(tasksAccess, "stream");
   const taskArtifactAllowed = accessAllowed(tasksAccess, "artifacts");
   const taskCreateAllowed = accessAllowed(tasksAccess, "create");
@@ -822,7 +823,11 @@ function Workbench({
       <ModuleNoDataScreen
         module={module}
         reason={
-          actionReason(snapshot, module, readAction) ?? snapshot?.modules[module].reason ?? null
+          actionReason(snapshot, module, readAction) ??
+          (snapshot?.modules[module].dataCeiling === "none"
+            ? "data_ceiling_none"
+            : snapshot?.modules[module].reason) ??
+          null
         }
         onRetry={capability.refresh}
       />
@@ -1213,6 +1218,7 @@ function Workbench({
                   : module === "service_integration"
                     ? ("integration" as const)
                     : undefined;
+              const dataReady = moduleDataReady(module);
               return (
                 <button
                   key={module}
@@ -1220,7 +1226,7 @@ function Workbench({
                   className={`surface-tab ${active ? "surface-tab-active" : ""}`}
                   aria-current={active ? "page" : undefined}
                   onClick={() => {
-                    if (adminTab !== undefined) openAdmin(adminTab);
+                    if (adminTab !== undefined && dataReady) openAdmin(adminTab);
                     else setSurface(module);
                   }}
                 >
@@ -1353,7 +1359,7 @@ function Workbench({
                     Open Tasks
                   </button>
                 )}
-                {moduleEntry("issues") && (
+                {moduleDataReady("issues") && (
                   <button className="button button-secondary" onClick={() => setSurface("issues")}>
                     Open Issues
                   </button>
@@ -1367,6 +1373,7 @@ function Workbench({
               )}
             </section>
             {membersAccess !== undefined &&
+              moduleDataReady("members") &&
               (accessAllowed(membersAccess, "invite") ||
                 accessAllowed(membersAccess, "manage_teams") ||
                 accessAllowed(membersAccess, "manage_members")) && (
@@ -1399,6 +1406,7 @@ function Workbench({
                 </section>
               )}
             {serviceAccess !== undefined &&
+              moduleDataReady("service_integration") &&
               accessAllowed(serviceAccess, "view_metadata") &&
               accessAllowed(serviceAccess, "configure") && (
                 <section
@@ -1433,11 +1441,17 @@ function Workbench({
           !canReadTasks && (
             <ModuleNoDataScreen
               module="tasks"
-              reason={actionReason(snapshot, "tasks", "view")}
+              reason={
+                actionReason(snapshot, "tasks", "view") ??
+                (snapshot?.modules.tasks.dataCeiling === "none"
+                  ? "data_ceiling_none"
+                  : snapshot?.modules.tasks.reason) ??
+                null
+              }
               onRetry={capability.refresh}
             />
           )}
-        {capabilityReady && moduleEntry("tasks") && canReadTasks && (
+        {capabilityReady && moduleDataReady("tasks") && canReadTasks && (
           <div
             className="workspace"
             data-view={mobileView}
@@ -1625,7 +1639,7 @@ function Workbench({
 
         {capabilityReady &&
           activeSurface === "issues" &&
-          (moduleEntry("issues") ? (
+          (moduleDataReady("issues") ? (
             <IssuesWorkbench
               client={client}
               currentUserId={auth.session?.user.id}
@@ -1638,7 +1652,7 @@ function Workbench({
 
         {capabilityReady &&
           activeSurface === "memory" &&
-          (moduleEntry("memory") ? (
+          (moduleDataReady("memory") ? (
             <MemoryWorkbench
               client={client}
               session={auth.session}
@@ -1652,7 +1666,7 @@ function Workbench({
 
         {capabilityReady &&
           activeSurface === "rsi" &&
-          (moduleEntry("rsi") ? (
+          (moduleDataReady("rsi") ? (
             <RsiWorkbench
               client={client}
               currentUserId={auth.session?.user.id}
@@ -1665,7 +1679,7 @@ function Workbench({
 
         {capabilityReady &&
           activeSurface === "dashboard" &&
-          (moduleEntry("dashboard") ? (
+          (moduleDataReady("dashboard") ? (
             <DashboardWorkbench
               client={client}
               loadWorkspaces={loadWorkspaces}
@@ -1677,7 +1691,7 @@ function Workbench({
 
         {capabilityReady &&
           activeSurface === "security" &&
-          (moduleEntry("security") ? (
+          (moduleDataReady("security") ? (
             <SecurityWorkbench
               client={client}
               session={auth.session}
@@ -1687,6 +1701,11 @@ function Workbench({
           ) : (
             renderModuleGate("security")
           ))}
+
+        {capabilityReady &&
+          (activeSurface === "members" || activeSurface === "service_integration") &&
+          !showWorkspaces &&
+          renderModuleGate(activeSurface)}
 
         {!capabilityReady && workspace !== undefined && !legacy && (
           <CapabilityUnavailableScreen

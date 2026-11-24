@@ -108,8 +108,20 @@ export function DashboardWorkbench({
     workspaceId === undefined
       ? ""
       : summaryKey(workspaceId, range.from, range.to, timezone, bucket, breakdown);
+  // The dashboard reads only when the projection grants `view` with a real
+  // data ceiling; `none` (unverified or unknown) issues no summary request.
+  const canReadDashboard =
+    access === undefined ? true : accessAllowed(access, "view") && access.dataCeiling !== "none";
   const summary = summaryState?.key === queryKey ? summaryState.summary : undefined;
   const visibleError = summaryError?.key === queryKey ? summaryError.error : undefined;
+
+  useEffect(() => {
+    if (canReadDashboard) return;
+    requestRef.current += 1;
+    setSummaryState(undefined);
+    setSummaryError(undefined);
+    setSummaryLoading(false);
+  }, [canReadDashboard]);
 
   useEffect(() => {
     let active = true;
@@ -139,7 +151,7 @@ export function DashboardWorkbench({
   }, [loadWorkspaces, workspaceToken]);
 
   useEffect(() => {
-    if (workspaceId === undefined) return;
+    if (workspaceId === undefined || !canReadDashboard) return;
     let active = true;
     const requestId = ++requestRef.current;
     const key = summaryKey(workspaceId, range.from, range.to, timezone, bucket, breakdown);
@@ -168,10 +180,26 @@ export function DashboardWorkbench({
     return () => {
       active = false;
     };
-  }, [client, workspaceId, range.from, range.to, timezone, bucket, breakdown, refreshToken]);
+  }, [
+    client,
+    workspaceId,
+    range.from,
+    range.to,
+    timezone,
+    bucket,
+    breakdown,
+    refreshToken,
+    canReadDashboard,
+  ]);
 
   const loadMoreBreakdown = useCallback(async (): Promise<void> => {
-    if (workspaceId === undefined || summary === undefined || breakdownLoadingMore) return;
+    if (
+      workspaceId === undefined ||
+      !canReadDashboard ||
+      summary === undefined ||
+      breakdownLoadingMore
+    )
+      return;
     const cursor = summary.breakdown.next_cursor;
     if (cursor === null) return;
     const requestId = requestRef.current;
@@ -225,6 +253,7 @@ export function DashboardWorkbench({
     bucket,
     breakdown,
     queryKey,
+    canReadDashboard,
   ]);
 
   function refresh(): void {

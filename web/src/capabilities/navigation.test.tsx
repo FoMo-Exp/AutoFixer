@@ -8,7 +8,7 @@ import type { Task } from "../api/client";
 import { IdentityClient } from "../api/identity";
 import type { Workspace, WorkspaceCapabilityProjection } from "../api/identity";
 import type { DesktopAuthState } from "../../electron/auth";
-import { capabilityProjection } from "./test-projection";
+import { capabilityProjection, withDataCeiling } from "./test-projection";
 
 const providers = [
   {
@@ -227,6 +227,27 @@ describe("capability-driven module navigation", () => {
     expect(
       screen.getByText(/could not be verified, so no workspace data is available/),
     ).toBeTruthy();
+    expect(ForgePilotClient.prototype.listTasks).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "New task" })).toBeNull();
+  });
+
+  it("treats an unknown data ceiling as no data even when the read action is allowed", async () => {
+    const projection = withDataCeiling(
+      capabilityProjection({
+        role: "member",
+        workspaceId: "ws_alpha",
+        enterpriseId: "ent_1",
+      }),
+      "tasks",
+      "cosmic",
+    );
+    vi.mocked(IdentityClient.prototype.getWorkspaceCapabilities).mockResolvedValue(projection);
+    vi.mocked(ForgePilotClient.prototype.listTasks).mockClear();
+    await renderApp();
+
+    await userEvent.click(within(nav()).getByRole("button", { name: "Tasks" }));
+    expect(await screen.findByRole("heading", { name: "Tasks", level: 1 })).toBeTruthy();
+    expect(screen.getByText(/no verified data ceiling/)).toBeTruthy();
     expect(ForgePilotClient.prototype.listTasks).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "New task" })).toBeNull();
   });

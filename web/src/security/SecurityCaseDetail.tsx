@@ -29,6 +29,7 @@ import {
   transitionLabel,
 } from "./security-format";
 import type { SecurityErrorDescription } from "./security-format";
+import type { ModuleAccess } from "../capabilities/projection";
 
 const CASE_HISTORY_PURPOSE = "case disposition: read the append-only security history";
 const TTL_OPTIONS = [
@@ -47,6 +48,8 @@ interface SecurityCaseDetailProps {
   canAdminister: boolean;
   /** DAT-279 duty decision for inspecting raw quarantined context. */
   canViewQuarantine?: boolean;
+  /** DAT-279 per-action duty decisions for this security module. */
+  actions?: ModuleAccess["actions"];
   onBack: () => void;
   onChanged: (next: SecurityCase) => void;
 }
@@ -65,6 +68,7 @@ export function SecurityCaseDetail({
   userId,
   canAdminister,
   canViewQuarantine = true,
+  actions,
   onBack,
   onChanged,
 }: SecurityCaseDetailProps): ReactElement {
@@ -167,6 +171,23 @@ export function SecurityCaseDetail({
 
   const independence = timelineError ? "unknown" : caseReviewIndependence(entries, userId);
   const canReview = independence === "independent";
+  const dutyAllowed = (name: string): boolean =>
+    actions === undefined || actions[name]?.allowed === true;
+  const canHandle = dutyAllowed("case.handle");
+  const canSubmitForReview = dutyAllowed("case.submit_for_review");
+  const canReviewDecision = dutyAllowed("case.review_decide");
+  const canTerminate = dutyAllowed("case.terminate");
+  const canRequestTermination = dutyAllowed("case.request_termination");
+  const canRequestReassignment = dutyAllowed("case.request_reassignment");
+  const canApproveRecovery = dutyAllowed("recovery.approve");
+  const canRevokeRecovery = dutyAllowed("recovery.revoke");
+  const canReconcileRecovery = dutyAllowed("recovery.reconcile");
+  const transitionDutyAllowed = (from: SecurityCaseState, to: SecurityCaseState): boolean => {
+    if (to === "terminated") return canTerminate;
+    if (isReviewTransition(from, to)) return canReviewDecision;
+    if (to === "awaiting_review") return canSubmitForReview;
+    return canHandle;
+  };
   const reviewBlockedCopy =
     independence === "self"
       ? "You handled this review round. An independent reviewer must decide; self-review is never available."
@@ -174,6 +195,7 @@ export function SecurityCaseDetail({
 
   async function submitTransition(to: SecurityCaseState): Promise<void> {
     if (!securityCase) return;
+    if (!transitionDutyAllowed(securityCase.state, to)) return;
     if (to === "terminated" && !armedTermination) {
       setArmedTermination(true);
       return;
@@ -204,6 +226,7 @@ export function SecurityCaseDetail({
   }
 
   async function submitOwnerRequest(kind: "termination" | "reassignment"): Promise<void> {
+    if (kind === "termination" ? !canRequestTermination : !canRequestReassignment) return;
     const body = note.trim() ? { note: note.trim() } : {};
     const key = ownerKeys.current.forInput({ kind, body });
     setBusy(`owner:${kind}`);
@@ -267,6 +290,7 @@ export function SecurityCaseDetail({
 
   async function approveRecovery(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+    if (!canApproveRecovery) return;
     const ttl = Number(recoveryDestination.ttl_seconds);
     if (
       !recoveryDestination.endpoint_id.trim() ||
@@ -325,7 +349,7 @@ export function SecurityCaseDetail({
   }
 
   async function revokeApproval(): Promise<void> {
-    if (!approval) return;
+    if (!approval || !canRevokeRecovery) return;
     const key = recoveryKeys.current.forInput({ revoke: approval.authorization_id });
     setRecoveryBusy("revoke");
     setRecoveryError(undefined);
@@ -347,6 +371,7 @@ export function SecurityCaseDetail({
 
   async function dispatchRecovery(): Promise<void> {
     if (
+      !canReconcileRecovery ||
       !approval ||
       !approvalDispatchable(approval) ||
       !dispatchWorker.trim() ||
@@ -596,7 +621,13 @@ export function SecurityCaseDetail({
               <div className="transition-actions">
                 {transitions.map((edge) => {
                   const reviewEdge = isReviewTransition(state, edge);
-                  const disabled = busy !== undefined || (reviewEdge && !canReview);
+                  const duty = transitionDutyAllowed(state, edge);
+                  const disabled = busy !== undefined || !duty || (reviewEdge && !canReview);
+                  const title = !duty
+                    ? "Your current security duty does not permit this transition."
+                    : reviewEdge && !canReview
+                      ? reviewBlockedCopy
+                      : undefined;
                   const label = transitionLabel(state, edge);
                   if (edge === "terminated" && armedTermination) {
                     return (
@@ -605,6 +636,7 @@ export function SecurityCaseDetail({
                         type="button"
                         className="button button-danger button-small"
                         disabled={disabled}
+                        title={title}
                         onClick={() => void submitTransition(edge)}
                       >
                         {busy === `transition:${edge}` ? "Terminating…" : "Confirm termination"}
@@ -621,7 +653,7 @@ export function SecurityCaseDetail({
                           : "button button-secondary button-small"
                       }
                       disabled={disabled}
-                      title={reviewEdge && !canReview ? reviewBlockedCopy : undefined}
+                      title={title}
                       onClick={() => void submitTransition(edge)}
                     >
                       {busy === `transition:${edge}` ? "Recording…" : label}
@@ -645,7 +677,10 @@ export function SecurityCaseDetail({
                 <button
                   type="button"
                   className="button button-quiet button-small"
-                  disabled={busy !== undefined}
+                  disabled={busy !== undefined || !canRequestTermination}
+                  title={
+                    canRequestTermination ? undefined : "This action requires the task-owner duty."
+                  }
                   onClick={() => void submitOwnerRequest("termination")}
                 >
                   {busy === "owner:termination" ? "Recording…" : "Request termination"}
@@ -653,7 +688,10 @@ export function SecurityCaseDetail({
                 <button
                   type="button"
                   className="button button-quiet button-small"
-                  disabled={busy !== undefined}
+                  disabled={busy !== undefined || !canRequestReassignment}
+                  title={
+                    canRequestReassignment ? undefined : "This action requires the task-owner duty."
+                  }
                   onClick={() => void submitOwnerRequest("reassignment")}
                 >
                   {busy === "owner:reassignment" ? "Recording…" : "Request reassignment"}
@@ -955,9 +993,15 @@ export function SecurityCaseDetail({
                     className="button button-primary button-small"
                     disabled={
                       recoveryBusy !== undefined ||
+                      !canReconcileRecovery ||
                       !approvalDispatchable(approval) ||
                       !dispatchWorker.trim() ||
                       !dispatchAcknowledged
+                    }
+                    title={
+                      canReconcileRecovery
+                        ? undefined
+                        : "Dispatch requires the security-handler or administrator duty."
                     }
                     onClick={() => void dispatchRecovery()}
                   >
@@ -968,7 +1012,16 @@ export function SecurityCaseDetail({
                   <button
                     type="button"
                     className="button button-quiet button-small"
-                    disabled={recoveryBusy !== undefined || approval.state !== "approved"}
+                    disabled={
+                      recoveryBusy !== undefined ||
+                      !canRevokeRecovery ||
+                      approval.state !== "approved"
+                    }
+                    title={
+                      canRevokeRecovery
+                        ? undefined
+                        : "Withdrawing requires the independent-reviewer or administrator duty."
+                    }
                     onClick={() => void revokeApproval()}
                   >
                     {recoveryBusy === "revoke" ? "Withdrawing…" : "Withdraw approval"}
@@ -1041,14 +1094,19 @@ export function SecurityCaseDetail({
                     type="submit"
                     className="button button-secondary button-small"
                     disabled={
-                      recoveryBusy !== undefined || state !== "awaiting_review" || !canReview
+                      recoveryBusy !== undefined ||
+                      !canApproveRecovery ||
+                      state !== "awaiting_review" ||
+                      !canReview
                     }
                     title={
-                      state !== "awaiting_review"
-                        ? "Recovery approval requires a case awaiting independent review."
-                        : canReview
-                          ? undefined
-                          : reviewBlockedCopy
+                      !canApproveRecovery
+                        ? "Recovery approval requires the independent-reviewer duty."
+                        : state !== "awaiting_review"
+                          ? "Recovery approval requires a case awaiting independent review."
+                          : canReview
+                            ? undefined
+                            : reviewBlockedCopy
                     }
                   >
                     {recoveryBusy === "approve" ? "Recording…" : "Record approval"}

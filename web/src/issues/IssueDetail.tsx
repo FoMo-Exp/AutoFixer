@@ -48,7 +48,8 @@ export interface IssueDetailProps {
   seed: Issue | undefined;
   currentUserId?: string;
   canMutate: boolean;
-  /** Candidate decisions and delivery are separate capability actions. */
+  /** Candidate decisions, delivery and comments are separate actions. */
+  canComment?: boolean;
   canDecide?: boolean;
   canDeliver?: boolean;
   onBack: () => void;
@@ -62,6 +63,7 @@ export function IssueDetail({
   seed,
   currentUserId,
   canMutate,
+  canComment = canMutate,
   canDecide = canMutate,
   canDeliver = canMutate,
   onBack,
@@ -330,6 +332,7 @@ export function IssueDetail({
               workspaceId={workspaceId}
               issue={issue}
               canMutate={canMutate}
+              canComment={canComment}
               onChanged={() => {
                 onChanged();
                 setReloadToken((value) => value + 1);

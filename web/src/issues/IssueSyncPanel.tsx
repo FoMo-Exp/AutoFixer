@@ -10,12 +10,15 @@ export function IssueSyncPanel({
   workspaceId,
   issue,
   canMutate,
+  canComment = canMutate,
   onChanged,
 }: {
   client: ForgePilotClient;
   workspaceId: string;
   issue: Issue;
   canMutate: boolean;
+  /** `comment` is a separate contract action from issue writes. */
+  canComment?: boolean;
   onChanged: () => void;
 }): ReactElement {
   const [versions, setVersions] = useState<IssueSyncVersion[]>([]);
@@ -78,7 +81,7 @@ export function IssueSyncPanel({
 
   async function submitComment(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (!comment.trim()) return;
+    if (!canComment || !comment.trim()) return;
     setBusy(true);
     setError(undefined);
     try {
@@ -217,13 +220,13 @@ export function IssueSyncPanel({
                 rows={3}
                 value={comment}
                 onChange={(event) => setComment(event.target.value)}
-                disabled={!canMutate || busy}
+                disabled={!canComment || busy}
               />
             </label>
             <button
               className="button button-quiet button-small"
               type="submit"
-              disabled={!canMutate || busy || !comment.trim()}
+              disabled={!canComment || busy || !comment.trim()}
             >
               Add comment
             </button>

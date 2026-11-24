@@ -75,6 +75,21 @@ export function IssuesWorkbench({
   const [newLabels, setNewLabels] = useState("");
   const createKeys = useRef(new CreateIdempotencyKeys());
 
+  // The issues module reads only with both the view action and a real data
+  // ceiling; an unknown ceiling ("none") never issues a read.
+  const canRead =
+    access === undefined ? true : accessAllowed(access, "view") && access.dataCeiling !== "none";
+
+  useEffect(() => {
+    if (canRead) return;
+    listRequestRef.current += 1;
+    setIssues([]);
+    setNextCursor(null);
+    setSelectedIssueId(undefined);
+    setSeedIssue(undefined);
+    setMobileView("list");
+  }, [canRead]);
+
   useEffect(() => {
     let active = true;
     setWorkspaceLoading(true);
@@ -102,9 +117,11 @@ export function IssuesWorkbench({
   }, [loadWorkspaces, workspaceToken]);
 
   useEffect(() => {
-    if (!workspaceId) {
+    if (!workspaceId || !canRead) {
+      listRequestRef.current += 1;
       setIssues([]);
       setNextCursor(null);
+      setListLoading(false);
       return;
     }
     let active = true;
@@ -131,7 +148,7 @@ export function IssuesWorkbench({
   }, [client, workspaceId, filter, listToken]);
 
   const loadMore = useCallback(async (): Promise<void> => {
-    if (!workspaceId || !nextCursor || loadingMore) return;
+    if (!workspaceId || !canRead || !nextCursor || loadingMore) return;
     const requestId = listRequestRef.current;
     setLoadingMore(true);
     try {
@@ -150,7 +167,7 @@ export function IssuesWorkbench({
     } finally {
       setLoadingMore(false);
     }
-  }, [client, workspaceId, nextCursor, loadingMore, filter]);
+  }, [client, workspaceId, nextCursor, loadingMore, filter, canRead]);
 
   const activeWorkspaces = workspaces.filter((workspace) => workspace.status === "active");
   const selectedWorkspace = activeWorkspaces.find((workspace) => workspace.id === workspaceId);
@@ -162,6 +179,7 @@ export function IssuesWorkbench({
       ? accessAllowed(access, "create")
       : selectedWorkspace === undefined || selectedWorkspace.role !== "viewer";
   const canOpenCreate = canMutate;
+  const canComment = access !== undefined ? accessAllowed(access, "comment") : canMutate;
   const canDecide = access !== undefined ? accessAllowed(access, "decide_candidate") : canMutate;
   const canDeliver = access !== undefined ? accessAllowed(access, "deliver") : canMutate;
 
@@ -406,6 +424,7 @@ export function IssuesWorkbench({
             seed={seedIssue}
             currentUserId={currentUserId}
             canMutate={canMutate}
+            canComment={canComment}
             canDecide={canDecide}
             canDeliver={canDeliver}
             onBack={backToList}

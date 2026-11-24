@@ -72,6 +72,8 @@ export function SecurityWorkbench({
   const [listError, setListError] = useState<SecurityErrorDescription>();
   const [listToken, setListToken] = useState(0);
   const listRequestRef = useRef(0);
+  const canReadCases =
+    access !== undefined ? accessAllowed(access, "case.read_redacted_status") : true;
 
   const [selection, setSelection] = useState<CaseSelection>();
   const selectedCase =
@@ -106,9 +108,13 @@ export function SecurityWorkbench({
   }, [loadWorkspaces, workspaceToken]);
 
   useEffect(() => {
-    if (!workspaceId) {
+    if (!workspaceId || !canReadCases) {
+      listRequestRef.current += 1;
       setCases([]);
       setNextCursor(null);
+      setSelection(undefined);
+      setListError(undefined);
+      setListLoading(false);
       return;
     }
     let active = true;
@@ -135,10 +141,10 @@ export function SecurityWorkbench({
     return () => {
       active = false;
     };
-  }, [client, workspaceId, stateFilter, runId, listToken]);
+  }, [client, workspaceId, stateFilter, runId, listToken, canReadCases]);
 
   const loadMore = useCallback(async (): Promise<void> => {
-    if (!workspaceId || !nextCursor || loadingMore) return;
+    if (!workspaceId || !canReadCases || !nextCursor || loadingMore) return;
     const requestId = listRequestRef.current;
     setLoadingMore(true);
     try {
@@ -155,7 +161,7 @@ export function SecurityWorkbench({
     } finally {
       setLoadingMore(false);
     }
-  }, [client, workspaceId, stateFilter, runId, nextCursor, loadingMore]);
+  }, [client, workspaceId, stateFilter, runId, nextCursor, loadingMore, canReadCases]);
 
   const activeWorkspaces = workspaces.filter((workspace) => workspace.status === "active");
   const selectedWorkspace = activeWorkspaces.find((workspace) => workspace.id === workspaceId);
@@ -453,6 +459,7 @@ export function SecurityWorkbench({
                 userId={session?.user.id}
                 canAdminister={canGrantQuarantine}
                 canViewQuarantine={canViewQuarantine}
+                actions={access?.actions}
                 onBack={() => setSelection(undefined)}
                 onChanged={handleChanged}
               />

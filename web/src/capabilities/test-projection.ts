@@ -251,6 +251,18 @@ export function expiredCapabilityProjection(
   return projection;
 }
 
+/** Replace one module's data ceiling in the raw fixture shape. */
+export function withDataCeiling(
+  projection: WorkspaceCapabilityProjection,
+  module: CapabilityModule,
+  ceiling: string,
+): WorkspaceCapabilityProjection {
+  // The test builder produced this value from the merged fixture shape.
+  const raw = projection as unknown as RawProjection;
+  raw.modules[module].data_ceiling = ceiling;
+  return projection;
+}
+
 /** The normalized `ModuleAccess` a component receives for one module. */
 export function accessOf(
   projection: WorkspaceCapabilityProjection,

@@ -188,6 +188,135 @@ describe("security case inbox", () => {
     expect(screen.getByText(/There is no per-call exemption/)).toBeTruthy();
   });
 
+  it("issues no case read when only another security duty is granted", async () => {
+    vi.mocked(ForgePilotClient.prototype.listSecurityCases).mockClear();
+    const auditOnly: ModuleAccess = {
+      visible: true,
+      dataCeiling: "audit",
+      reason: null,
+      actions: {
+        "audit.read": { allowed: true, required: "security_duty", reason: null },
+        "case.read_redacted_status": {
+          allowed: false,
+          required: "security_duty",
+          reason: "security_duty",
+        },
+      },
+    };
+    const client = makeClient();
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+        access={auditOnly}
+      />,
+    );
+
+    expect(await screen.findByRole("button", { name: "Audit" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cases" })).toBeNull();
+    expect(ForgePilotClient.prototype.listSecurityCases).not.toHaveBeenCalled();
+  });
+
+  it("clears loaded cases when the case-read duty is withdrawn", async () => {
+    const withCases: ModuleAccess = {
+      visible: true,
+      dataCeiling: "redacted",
+      reason: null,
+      actions: {
+        "case.read_redacted_status": { allowed: true, required: "security_duty", reason: null },
+        "audit.read": { allowed: true, required: "security_duty", reason: null },
+      },
+    };
+    const withoutCases: ModuleAccess = {
+      ...withCases,
+      actions: {
+        ...withCases.actions,
+        "case.read_redacted_status": {
+          allowed: false,
+          required: "security_duty",
+          reason: "security_duty",
+        },
+      },
+    };
+    const client = makeClient();
+    const { rerender } = render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+        access={withCases}
+      />,
+    );
+    await openCase();
+    expect(screen.getByRole("heading", { name: caseRecord.case_id })).toBeTruthy();
+
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+        access={withoutCases}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: new RegExp(caseRecord.case_id) })).toBeNull(),
+    );
+    expect(screen.queryByRole("heading", { name: caseRecord.case_id })).toBeNull();
+  });
+
+  it("gates transitions and recovery approval by their own duties", async () => {
+    vi.mocked(ForgePilotClient.prototype.readSecurityAuditTrail).mockResolvedValue(
+      auditPageWith([
+        historyEntry(1, "case.handled", "human_handler"),
+        historyEntry(2, "case.submitted_for_review", "human_handler"),
+      ]),
+    );
+    const readOnlyDuty: ModuleAccess = {
+      visible: true,
+      dataCeiling: "redacted",
+      reason: null,
+      actions: {
+        "case.read_redacted_status": { allowed: true, required: "security_duty", reason: null },
+        "case.handle": { allowed: false, required: "security_duty", reason: "security_duty" },
+        "case.review_decide": {
+          allowed: false,
+          required: "security_duty",
+          reason: "security_duty",
+        },
+        "case.terminate": { allowed: false, required: "security_duty", reason: "security_duty" },
+        "case.submit_for_review": {
+          allowed: false,
+          required: "security_duty",
+          reason: "security_duty",
+        },
+        "recovery.approve": { allowed: false, required: "security_duty", reason: "security_duty" },
+      },
+    };
+    const client = makeClient();
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={readOnlyDuty}
+      />,
+    );
+    await openCase();
+
+    expect(screen.getByRole("button", { name: "Approve & resolve" })).toHaveProperty(
+      "disabled",
+      true,
+    );
+    expect(screen.getByRole("button", { name: "Terminate case" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Record approval" })).toHaveProperty(
+      "disabled",
+      true,
+    );
+    expect(ForgePilotClient.prototype.transitionSecurityCase).toBeDefined();
+  });
+
   it("disables review for the handler of record and enables it for another reviewer", async () => {
     vi.mocked(ForgePilotClient.prototype.readSecurityAuditTrail).mockResolvedValue(
       auditPageWith([
