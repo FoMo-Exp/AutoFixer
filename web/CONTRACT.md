@@ -73,9 +73,14 @@ from nothing else. Every request remains authorized by the service.
   `quarantine.view`, `quarantine.grant_access`, `audit.read`, and
   `audit.export` each gate their own control. The recovery authorization
   lookup itself requires a recovery duty, and losing it clears the loaded
-  destination, approver, and state. Losing the case-read duty clears
-  the loaded cases and the open detail and issues no further case request,
-  while another duty (for example audit) keeps its own section.
+  destination, approver, and state. Every recovery operation (lookup,
+  approve, revoke, dispatch) captures an authority generation; a response
+  that settles after a duty revocation, a workspace/case change, or unmount
+  is discarded, and no follow-up authorization read runs. Re-granting the
+  duty never replays that older result; a new read is required. Losing the
+  case-read duty clears the loaded cases and the open detail and issues no
+  further case request, while another duty (for example audit) keeps its own
+  section.
 - **Fail closed.** The response is rejected on a wrong `schema_version`, a
   foreign `workspace_id`, or an unparseable freshness window. An expired
   projection, a failed re-read, an unknown module/action/ceiling, and a

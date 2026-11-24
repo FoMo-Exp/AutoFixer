@@ -183,6 +183,41 @@ export function SecurityCaseDetail({
   const canRevokeRecovery = dutyAllowed("recovery.revoke");
   const canReconcileRecovery = dutyAllowed("recovery.reconcile");
   const canReviewRecovery = canApproveRecovery || canRevokeRecovery || canReconcileRecovery;
+  // Every recovery operation captures this generation. A permission or
+  // workspace/case identity change advances it, so a response that settles
+  // afterwards cannot refill a cache the current authority may not render.
+  const recoveryAuthorityRef = useRef({
+    generation: 0,
+    canReview: canReviewRecovery,
+    workspaceId,
+    caseId,
+  });
+  if (
+    recoveryAuthorityRef.current.canReview !== canReviewRecovery ||
+    recoveryAuthorityRef.current.workspaceId !== workspaceId ||
+    recoveryAuthorityRef.current.caseId !== caseId
+  ) {
+    recoveryAuthorityRef.current = {
+      generation: recoveryAuthorityRef.current.generation + 1,
+      canReview: canReviewRecovery,
+      workspaceId,
+      caseId,
+    };
+  }
+  const isCurrentRecovery = (generation: number): boolean =>
+    recoveryAuthorityRef.current.generation === generation &&
+    recoveryAuthorityRef.current.canReview;
+  useEffect(
+    () => () => {
+      // Unmount invalidates anything still in flight.
+      recoveryAuthorityRef.current = {
+        ...recoveryAuthorityRef.current,
+        generation: recoveryAuthorityRef.current.generation + 1,
+        canReview: false,
+      };
+    },
+    [],
+  );
   // A recovered authorization carries destination, approver, and state data;
   // losing every recovery duty must drop it from render state immediately.
   useEffect(() => {
@@ -191,6 +226,7 @@ export function SecurityCaseDetail({
     setDispatchResult(undefined);
     setDispatchAcknowledged(false);
     setRecoveryError(undefined);
+    setRecoveryBusy(undefined);
     setApprovalLookup("");
   }, [canReviewRecovery]);
   const transitionDutyAllowed = (from: SecurityCaseState, to: SecurityCaseState): boolean => {
@@ -302,6 +338,7 @@ export function SecurityCaseDetail({
   async function approveRecovery(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (!canApproveRecovery) return;
+    const generation = recoveryAuthorityRef.current.generation;
     const ttl = Number(recoveryDestination.ttl_seconds);
     if (
       !recoveryDestination.endpoint_id.trim() ||
@@ -331,52 +368,57 @@ export function SecurityCaseDetail({
     setRecoveryError(undefined);
     try {
       const next = await client.approveSecurityRecovery(workspaceId, caseId, body, key);
+      if (!isCurrentRecovery(generation)) return;
       recoveryKeys.current.complete(body);
       setApproval(next);
       setDispatchResult(undefined);
       setDispatchAcknowledged(false);
       setTimelineToken((value) => value + 1);
     } catch (caught) {
+      if (!isCurrentRecovery(generation)) return;
       setRecoveryError(describeSecurityError(caught));
     } finally {
-      setRecoveryBusy(undefined);
+      if (isCurrentRecovery(generation)) setRecoveryBusy(undefined);
     }
   }
 
   async function loadApproval(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (!canReviewRecovery || !approvalLookup.trim()) return;
+    const generation = recoveryAuthorityRef.current.generation;
     setRecoveryBusy("load");
     setRecoveryError(undefined);
     try {
       const next = await client.getSecurityRecoveryApproval(workspaceId, approvalLookup.trim());
+      if (!isCurrentRecovery(generation)) return;
       setApproval(next);
       setDispatchResult(undefined);
     } catch (caught) {
+      if (!isCurrentRecovery(generation)) return;
       setRecoveryError(describeSecurityError(caught));
     } finally {
-      setRecoveryBusy(undefined);
+      if (isCurrentRecovery(generation)) setRecoveryBusy(undefined);
     }
   }
 
   async function revokeApproval(): Promise<void> {
     if (!approval || !canRevokeRecovery) return;
-    const key = recoveryKeys.current.forInput({ revoke: approval.authorization_id });
+    const generation = recoveryAuthorityRef.current.generation;
+    const authorizationId = approval.authorization_id;
+    const key = recoveryKeys.current.forInput({ revoke: authorizationId });
     setRecoveryBusy("revoke");
     setRecoveryError(undefined);
     try {
-      const next = await client.revokeSecurityRecoveryApproval(
-        workspaceId,
-        approval.authorization_id,
-        key,
-      );
-      recoveryKeys.current.complete({ revoke: approval.authorization_id });
+      const next = await client.revokeSecurityRecoveryApproval(workspaceId, authorizationId, key);
+      if (!isCurrentRecovery(generation)) return;
+      recoveryKeys.current.complete({ revoke: authorizationId });
       setApproval(next);
       setTimelineToken((value) => value + 1);
     } catch (caught) {
+      if (!isCurrentRecovery(generation)) return;
       setRecoveryError(describeSecurityError(caught));
     } finally {
-      setRecoveryBusy(undefined);
+      if (isCurrentRecovery(generation)) setRecoveryBusy(undefined);
     }
   }
 
@@ -390,31 +432,30 @@ export function SecurityCaseDetail({
     )
       return;
     const body = { worker_id: dispatchWorker.trim() };
-    const key = recoveryKeys.current.forInput({ dispatch: approval.authorization_id, body });
+    const authorizationId = approval.authorization_id;
+    const generation = recoveryAuthorityRef.current.generation;
+    const key = recoveryKeys.current.forInput({ dispatch: authorizationId, body });
     setRecoveryBusy("dispatch");
     setRecoveryError(undefined);
     try {
-      const result = await client.dispatchSecurityRecovery(
-        workspaceId,
-        approval.authorization_id,
-        body,
-        key,
-      );
-      recoveryKeys.current.complete({ dispatch: approval.authorization_id, body });
+      const result = await client.dispatchSecurityRecovery(workspaceId, authorizationId, body, key);
+      if (!isCurrentRecovery(generation)) return;
+      recoveryKeys.current.complete({ dispatch: authorizationId, body });
       setDispatchResult(result);
       setDispatchAcknowledged(false);
       setTimelineToken((value) => value + 1);
       try {
-        setApproval(
-          await client.getSecurityRecoveryApproval(workspaceId, approval.authorization_id),
-        );
+        const refreshed = await client.getSecurityRecoveryApproval(workspaceId, authorizationId);
+        if (!isCurrentRecovery(generation)) return;
+        setApproval(refreshed);
       } catch {
         // The dispatch result stands; the authorization refresh is informational.
       }
     } catch (caught) {
+      if (!isCurrentRecovery(generation)) return;
       setRecoveryError(describeSecurityError(caught));
     } finally {
-      setRecoveryBusy(undefined);
+      if (isCurrentRecovery(generation)) setRecoveryBusy(undefined);
     }
   }
 
