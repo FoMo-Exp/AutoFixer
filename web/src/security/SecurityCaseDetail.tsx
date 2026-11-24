@@ -182,6 +182,17 @@ export function SecurityCaseDetail({
   const canApproveRecovery = dutyAllowed("recovery.approve");
   const canRevokeRecovery = dutyAllowed("recovery.revoke");
   const canReconcileRecovery = dutyAllowed("recovery.reconcile");
+  const canReviewRecovery = canApproveRecovery || canRevokeRecovery || canReconcileRecovery;
+  // A recovered authorization carries destination, approver, and state data;
+  // losing every recovery duty must drop it from render state immediately.
+  useEffect(() => {
+    if (canReviewRecovery) return;
+    setApproval(undefined);
+    setDispatchResult(undefined);
+    setDispatchAcknowledged(false);
+    setRecoveryError(undefined);
+    setApprovalLookup("");
+  }, [canReviewRecovery]);
   const transitionDutyAllowed = (from: SecurityCaseState, to: SecurityCaseState): boolean => {
     if (to === "terminated") return canTerminate;
     if (isReviewTransition(from, to)) return canReviewDecision;
@@ -334,7 +345,7 @@ export function SecurityCaseDetail({
 
   async function loadApproval(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    if (!approvalLookup.trim()) return;
+    if (!canReviewRecovery || !approvalLookup.trim()) return;
     setRecoveryBusy("load");
     setRecoveryError(undefined);
     try {
@@ -890,8 +901,14 @@ export function SecurityCaseDetail({
                 onDismiss={() => setRecoveryError(undefined)}
               />
             )}
+            {!canReviewRecovery && (
+              <p className="security-hint" role="note">
+                Viewing or recording a recovery authorization requires an independent-reviewer,
+                security-handler, or administrator recovery duty.
+              </p>
+            )}
 
-            {!approval && (
+            {!approval && canReviewRecovery && (
               <form className="security-form" onSubmit={(event) => void loadApproval(event)}>
                 <label className="field-label" htmlFor="recovery-approval-lookup">
                   Load an existing authorization by id
@@ -915,7 +932,7 @@ export function SecurityCaseDetail({
               </form>
             )}
 
-            {approval ? (
+            {approval && canReviewRecovery ? (
               <div className="security-approval">
                 <div className="security-approval-head">
                   <span className="mono">{approval.authorization_id}</span>
@@ -1047,7 +1064,7 @@ export function SecurityCaseDetail({
                   </div>
                 )}
               </div>
-            ) : (
+            ) : canReviewRecovery ? (
               <form className="security-form" onSubmit={(event) => void approveRecovery(event)}>
                 <span className="field-label">
                   Record a recovery approval (independent reviewer)
@@ -1121,7 +1138,7 @@ export function SecurityCaseDetail({
                   <p className="security-warning">{reviewBlockedCopy}</p>
                 )}
               </form>
-            )}
+            ) : null}
           </section>
         </div>
 

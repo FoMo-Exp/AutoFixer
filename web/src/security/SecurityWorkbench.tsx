@@ -74,11 +74,34 @@ export function SecurityWorkbench({
   const listRequestRef = useRef(0);
   const canReadCases =
     access !== undefined ? accessAllowed(access, "case.read_redacted_status") : true;
+  const sections = useMemo<SecuritySection[]>(
+    () =>
+      access !== undefined
+        ? (
+            [
+              accessAllowed(access, "case.read_redacted_status") ? "cases" : null,
+              accessAllowed(access, "rule.propose") ||
+              accessAllowed(access, "rule.review") ||
+              accessAllowed(access, "rule.activate")
+                ? "rules"
+                : null,
+              accessAllowed(access, "audit.read") ? "audit" : null,
+            ] as Array<SecuritySection | null>
+          ).filter((entry): entry is SecuritySection => entry !== null)
+        : ["cases", "rules", "audit"],
+    [access],
+  );
 
   const [selection, setSelection] = useState<CaseSelection>();
+  // The render path derives the section and the case scope from the current
+  // projection; the state reset below is only housekeeping.
+  const effectiveSection: SecuritySection = sections.includes(section)
+    ? section
+    : (sections[0] ?? "cases");
+  const visibleCases = canReadCases ? cases : [];
   const selectedCase =
-    selection && selection.workspaceId === workspaceId
-      ? (cases.find((entry) => entry.case_id === selection.caseId) ?? selection.seed)
+    canReadCases && selection && selection.workspaceId === workspaceId
+      ? (visibleCases.find((entry) => entry.case_id === selection.caseId) ?? selection.seed)
       : undefined;
 
   useEffect(() => {
@@ -184,23 +207,6 @@ export function SecurityWorkbench({
   const canProposeRule = access !== undefined ? accessAllowed(access, "rule.propose") : true;
   const canReviewRule = access !== undefined ? accessAllowed(access, "rule.review") : true;
   const canViewQuarantine = access !== undefined ? accessAllowed(access, "quarantine.view") : true;
-  const sections = useMemo<SecuritySection[]>(
-    () =>
-      access !== undefined
-        ? (
-            [
-              accessAllowed(access, "case.read_redacted_status") ? "cases" : null,
-              accessAllowed(access, "rule.propose") ||
-              accessAllowed(access, "rule.review") ||
-              accessAllowed(access, "rule.activate")
-                ? "rules"
-                : null,
-              accessAllowed(access, "audit.read") ? "audit" : null,
-            ] as Array<SecuritySection | null>
-          ).filter((entry): entry is SecuritySection => entry !== null)
-        : ["cases", "rules", "audit"],
-    [access],
-  );
   useEffect(() => {
     if (!sections.includes(section)) setSection(sections[0] ?? "cases");
   }, [sections, section]);
@@ -219,8 +225,8 @@ export function SecurityWorkbench({
 
   return (
     <div
-      className={`security-surface ${workspaceId && section !== "audit" ? "has-sidebar" : ""}`}
-      data-scroll-lock={section === "cases" && !selectedCase ? "true" : undefined}
+      className={`security-surface ${workspaceId && effectiveSection !== "audit" ? "has-sidebar" : ""}`}
+      data-scroll-lock={effectiveSection === "cases" && !selectedCase ? "true" : undefined}
     >
       <div className="security-section-bar">
         <nav className="surface-nav" aria-label="Security views">
@@ -228,8 +234,8 @@ export function SecurityWorkbench({
             <button
               key={entry}
               type="button"
-              className={`surface-tab ${section === entry ? "surface-tab-active" : ""}`}
-              aria-current={section === entry ? "page" : undefined}
+              className={`surface-tab ${effectiveSection === entry ? "surface-tab-active" : ""}`}
+              aria-current={effectiveSection === entry ? "page" : undefined}
               onClick={() => setSection(entry)}
             >
               {SECTION_LABELS[entry]}
@@ -291,7 +297,7 @@ export function SecurityWorkbench({
         </div>
       )}
 
-      {workspaceId && section === "cases" && (
+      {workspaceId && canReadCases && effectiveSection === "cases" && (
         <div className="workspace security-workspace" data-view={selectedCase ? "detail" : "list"}>
           <aside className="sidebar glass security-sidebar" ref={sidebarGlassRef}>
             <div className="sidebar-heading">
@@ -299,7 +305,7 @@ export function SecurityWorkbench({
                 <h1>Security cases</h1>
               </div>
               <div className="memory-heading-actions">
-                <span className="task-count">{cases.length}</span>
+                <span className="task-count">{visibleCases.length}</span>
                 <button
                   type="button"
                   className="button button-quiet button-small"
@@ -373,7 +379,7 @@ export function SecurityWorkbench({
                 >
                   {listError.code}: {listError.message}
                 </SecurityEmptyState>
-              ) : cases.length === 0 ? (
+              ) : visibleCases.length === 0 ? (
                 <SecurityEmptyState>
                   {listLoading
                     ? "Reading security cases…"
@@ -381,7 +387,7 @@ export function SecurityWorkbench({
                 </SecurityEmptyState>
               ) : (
                 <>
-                  {cases.map((entry) => (
+                  {visibleCases.map((entry) => (
                     <article
                       key={entry.case_id}
                       className={`task-list-item security-case-item ${
@@ -483,7 +489,7 @@ export function SecurityWorkbench({
         </div>
       )}
 
-      {workspaceId && section === "rules" && (
+      {workspaceId && effectiveSection === "rules" && (
         <SecurityRulesPanel
           client={client}
           workspaceId={workspaceId}
@@ -494,7 +500,7 @@ export function SecurityWorkbench({
         />
       )}
 
-      {workspaceId && section === "audit" && (
+      {workspaceId && effectiveSection === "audit" && (
         <main className="main-panel security-audit-surface">
           <SecurityAuditPanel
             client={client}

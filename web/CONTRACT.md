@@ -71,7 +71,9 @@ from nothing else. Every request remains authorized by the service.
   `case.terminate`, `case.request_termination`, `case.request_reassignment`,
   `recovery.approve`, `recovery.revoke`, `recovery.reconcile`,
   `quarantine.view`, `quarantine.grant_access`, `audit.read`, and
-  `audit.export` each gate their own control. Losing the case-read duty clears
+  `audit.export` each gate their own control. The recovery authorization
+  lookup itself requires a recovery duty, and losing it clears the loaded
+  destination, approver, and state. Losing the case-read duty clears
   the loaded cases and the open detail and issues no further case request,
   while another duty (for example audit) keeps its own section.
 - **Fail closed.** The response is rejected on a wrong `schema_version`, a
