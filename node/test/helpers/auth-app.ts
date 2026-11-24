@@ -18,6 +18,7 @@ import {
 import type { ServiceIntegration } from "../../src/control-plane/index.js";
 import { createStaticServiceCredentialStore } from "../../src/provider-access/credentials.js";
 import type { ServiceCredentialStore } from "../../src/provider-access/credentials.js";
+import type { SecurityDutyDirectory } from "../../src/security/index.js";
 import type { DshServerHandle } from "./dsh-server.js";
 import { scriptedStream, TEST_MODEL } from "./scripted-stream.js";
 import { scriptedGateway } from "./test-gateway.js";
@@ -139,6 +140,11 @@ export interface AuthAppOptions {
     enterpriseId: string;
     workspaceId: string;
   }) => Partial<DashboardSources>;
+  /**
+   * Explicit security duty assignments for the capability projection
+   * (DAT-278). Unset grants nobody a security action.
+   */
+  securityDutyDirectory?: SecurityDutyDirectory;
 }
 
 let appCounter = 0;
@@ -253,6 +259,9 @@ export async function startAuthApp(options: AuthAppOptions): Promise<AuthApp> {
               workspaceId: workspace.id,
             }),
           }
+        : {}),
+      ...(options.securityDutyDirectory !== undefined
+        ? { securityDutyDirectory: options.securityDutyDirectory }
         : {}),
     });
   let orchestrator = buildOrchestrator();

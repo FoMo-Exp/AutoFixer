@@ -1,28 +1,268 @@
 {
-  "schema_version": "workspace-capability-v1",
+  "schema_version": "workspace-capability-v2",
   "enterprise_id": "ent_acme",
   "workspace_id": "ws_payments",
   "assigned_role": "member",
   "state": "verified",
   "blocked_reason": null,
   "capabilities": ["code_read", "issue_write", "repository_write"],
+  "modules": {
+    "tasks": {
+      "visible": true,
+      "data_ceiling": "repository",
+      "reason": null,
+      "actions": {
+        "view": { "allowed": true, "required": "code_read" },
+        "stream": { "allowed": true, "required": "code_read" },
+        "artifacts": { "allowed": true, "required": "code_read" },
+        "create": { "allowed": true, "required": "repository_write" },
+        "run": { "allowed": true, "required": "repository_write" },
+        "manage": { "allowed": true, "required": "repository_write" },
+        "approve": { "allowed": false, "required": "repository_write", "reason": "workspace_role" }
+      }
+    },
+    "issues": {
+      "visible": true,
+      "data_ceiling": "repository",
+      "reason": null,
+      "actions": {
+        "view": { "allowed": true, "required": "code_read" },
+        "create": { "allowed": true, "required": "issue_write" },
+        "comment": { "allowed": true, "required": "issue_write" },
+        "request_approval": { "allowed": true, "required": "repository_write" },
+        "decide_candidate": {
+          "allowed": false,
+          "required": "repository_write",
+          "reason": "workspace_role"
+        },
+        "deliver": { "allowed": true, "required": "repository_write" }
+      }
+    },
+    "memory": {
+      "visible": true,
+      "data_ceiling": "internal",
+      "reason": null,
+      "actions": {
+        "view": { "allowed": true, "required": "code_read" },
+        "view_confidential": {
+          "allowed": false,
+          "required": "workspace_role:admin",
+          "reason": "workspace_role"
+        },
+        "govern_team": { "allowed": false, "required": "team_leader", "reason": "team_leader" },
+        "govern_workspace": {
+          "allowed": false,
+          "required": "workspace_role:admin",
+          "reason": "workspace_role"
+        },
+        "restricted_access": {
+          "allowed": false,
+          "required": "separate_grant",
+          "reason": "action_policy"
+        }
+      }
+    },
+    "rsi": {
+      "visible": true,
+      "data_ceiling": "internal",
+      "reason": null,
+      "actions": {
+        "view": { "allowed": true, "required": "workspace_role:member" },
+        "propose": { "allowed": true, "required": "workspace_role:member" },
+        "approve": {
+          "allowed": false,
+          "required": "workspace_role:admin",
+          "reason": "workspace_role"
+        },
+        "evaluate": {
+          "allowed": false,
+          "required": "workspace_role:owner",
+          "reason": "workspace_role"
+        },
+        "replay": {
+          "allowed": false,
+          "required": "workspace_role:owner",
+          "reason": "workspace_role"
+        },
+        "canary": {
+          "allowed": false,
+          "required": "workspace_role:owner",
+          "reason": "workspace_role"
+        },
+        "rollback": {
+          "allowed": false,
+          "required": "workspace_role:owner",
+          "reason": "workspace_role"
+        },
+        "kill_switch": {
+          "allowed": false,
+          "required": "workspace_role:owner",
+          "reason": "workspace_role"
+        }
+      }
+    },
+    "dashboard": {
+      "visible": true,
+      "data_ceiling": "operational",
+      "reason": null,
+      "actions": {
+        "view": { "allowed": true, "required": "code_read" },
+        "view_trace": { "allowed": true, "required": "code_read" },
+        "view_financial": {
+          "allowed": false,
+          "required": "workspace_role:admin",
+          "reason": "workspace_role"
+        },
+        "audit": {
+          "allowed": false,
+          "required": "workspace_role:admin",
+          "reason": "workspace_role"
+        },
+        "export": {
+          "allowed": false,
+          "required": "workspace_role:admin",
+          "reason": "workspace_role"
+        }
+      }
+    },
+    "members": {
+      "visible": true,
+      "data_ceiling": "roster",
+      "reason": null,
+      "actions": {
+        "view": { "allowed": true, "required": "code_read" },
+        "manage_members": {
+          "allowed": false,
+          "required": "repository_manage",
+          "reason": "workspace_role"
+        },
+        "manage_teams": {
+          "allowed": false,
+          "required": "repository_manage",
+          "reason": "workspace_role"
+        },
+        "invite": {
+          "allowed": false,
+          "required": "repository_manage",
+          "reason": "workspace_role"
+        },
+        "manage_roles": {
+          "allowed": false,
+          "required": "repository_manage",
+          "reason": "workspace_role"
+        }
+      }
+    },
+    "security": {
+      "visible": false,
+      "data_ceiling": "none",
+      "reason": "security_duty",
+      "actions": {
+        "audit.export": { "allowed": false, "required": "security_duty", "reason": "security_duty" },
+        "audit.read": { "allowed": false, "required": "security_duty", "reason": "security_duty" },
+        "case.handle": { "allowed": false, "required": "security_duty", "reason": "security_duty" },
+        "case.read_redacted_status": {
+          "allowed": false,
+          "required": "security_duty",
+          "reason": "security_duty"
+        },
+        "case.request_reassignment": {
+          "allowed": false,
+          "required": "security_duty",
+          "reason": "security_duty"
+        },
+        "case.request_termination": {
+          "allowed": false,
+          "required": "security_duty",
+          "reason": "security_duty"
+        },
+        "case.review_decide": {
+          "allowed": false,
+          "required": "security_duty",
+          "reason": "security_duty"
+        },
+        "case.submit_for_review": {
+          "allowed": false,
+          "required": "security_duty",
+          "reason": "security_duty"
+        },
+        "case.terminate": {
+          "allowed": false,
+          "required": "security_duty",
+          "reason": "security_duty"
+        },
+        "endpoint.configure": {
+          "allowed": false,
+          "required": "security_duty",
+          "reason": "security_duty"
+        },
+        "quarantine.grant_access": {
+          "allowed": false,
+          "required": "security_duty",
+          "reason": "security_duty"
+        },
+        "quarantine.view": {
+          "allowed": false,
+          "required": "security_duty",
+          "reason": "security_duty"
+        },
+        "recovery.approve": {
+          "allowed": false,
+          "required": "security_duty",
+          "reason": "security_duty"
+        },
+        "recovery.reconcile": {
+          "allowed": false,
+          "required": "security_duty",
+          "reason": "security_duty"
+        },
+        "recovery.revoke": {
+          "allowed": false,
+          "required": "security_duty",
+          "reason": "security_duty"
+        },
+        "role.grant": { "allowed": false, "required": "security_duty", "reason": "security_duty" },
+        "rule.activate": {
+          "allowed": false,
+          "required": "security_duty",
+          "reason": "security_duty"
+        },
+        "rule.propose": { "allowed": false, "required": "security_duty", "reason": "security_duty" },
+        "rule.review": { "allowed": false, "required": "security_duty", "reason": "security_duty" },
+        "rule.rollback": {
+          "allowed": false,
+          "required": "security_duty",
+          "reason": "security_duty"
+        }
+      }
+    },
+    "service_integration": {
+      "visible": false,
+      "data_ceiling": "none",
+      "reason": "enterprise_admin",
+      "actions": {
+        "view_metadata": {
+          "allowed": false,
+          "required": "enterprise_admin",
+          "reason": "enterprise_admin"
+        },
+        "configure": {
+          "allowed": false,
+          "required": "enterprise_admin",
+          "reason": "enterprise_admin"
+        }
+      }
+    }
+  },
   "actions": {
     "read": { "allowed": true, "required": "code_read" },
     "stream": { "allowed": true, "required": "code_read" },
     "artifact_read": { "allowed": true, "required": "code_read" },
-    "approval": {
-      "allowed": false,
-      "required": "repository_write",
-      "reason": "workspace_role"
-    },
+    "approval": { "allowed": false, "required": "repository_write", "reason": "workspace_role" },
     "delivery": { "allowed": true, "required": "repository_write" },
     "write": { "allowed": true, "required": "repository_write" },
     "issue_sync": { "allowed": true, "required": "issue_write" },
-    "manage": {
-      "allowed": false,
-      "required": "repository_manage",
-      "reason": "capability_ceiling"
-    }
+    "manage": { "allowed": false, "required": "repository_manage", "reason": "workspace_role" }
   },
   "repositories": [
     {
@@ -48,6 +288,21 @@
     "stale_after_ms": 86400000,
     "set_version": 1,
     "repository_count": 1
+  },
+  "freshness": {
+    "checked_at": "2026-11-22T12:03:00.000Z",
+    "expires_at": "2026-11-22T12:18:00.000Z",
+    "stale_after": "2026-11-23T12:03:00.000Z",
+    "state": "fresh",
+    "invalidation": [
+      "authority_epoch_changed",
+      "capability_ceiling_changed",
+      "membership_changed",
+      "enterprise_status_changed",
+      "session_revoked",
+      "provider_reconciled",
+      "projection_expired"
+    ]
   },
   "checked_at": "2026-11-22T12:03:00.000Z"
 }

@@ -74,6 +74,23 @@ export type {
 } from "./access-gate.js";
 export { AccessDeniedError, createAccessGate, createAuthorityEpoch } from "./access-gate.js";
 
+export type {
+  CapabilityDataCeiling,
+  CapabilityModule,
+  ModuleActionView,
+  ModuleCapabilityInput,
+  ModuleCapabilityView,
+} from "./module-capabilities.js";
+export {
+  CAPABILITY_DATA_CEILINGS,
+  CAPABILITY_MODULES,
+  MODULE_ACTIONS,
+  PROJECTION_INVALIDATION_REASONS,
+  WORKSPACE_CAPABILITY_SCHEMA_VERSION,
+  WORKSPACE_ROLES,
+  computeModuleCapabilities,
+} from "./module-capabilities.js";
+
 export type { RevocationEffects, RevocationTarget } from "./revocation.js";
 export { revokeAuthority } from "./revocation.js";
 

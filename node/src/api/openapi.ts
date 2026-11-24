@@ -43,6 +43,18 @@ import { RSI_OPENAPI_SCHEMAS, rsiOpenApiPaths } from "./openapi-rsi.js";
 import { RUNTIME_OPENAPI_SCHEMAS, runtimeOpenApiPaths } from "./openapi-runtime.js";
 import { SECURITY_OPENAPI_SCHEMAS, securityOpenApiPaths } from "./openapi-security.js";
 import type { JsonObject } from "./openapi-types.js";
+import {
+  CAPABILITY_DATA_CEILINGS,
+  CAPABILITY_MODULES,
+  MODULE_ACTIONS,
+  PROJECTION_INVALIDATION_REASONS,
+  WORKSPACE_CAPABILITY_SCHEMA_VERSION,
+} from "../provider-access/module-capabilities.js";
+import {
+  ENTERPRISE_CAPABILITY_SCHEMA_VERSION,
+  ENTERPRISE_MODULES,
+  ENTERPRISE_MODULE_ACTIONS,
+} from "./enterprise-capability.js";
 
 /** Loosely-typed OpenAPI 3.1 document; schemas stay plain JSON objects. */
 export interface OpenApiDocument {
@@ -310,15 +322,112 @@ const capabilityActionSchema: JsonObject = {
   additionalProperties: false,
 };
 
+/**
+ * One module action (DAT-278). Unlike the legacy action map, `required` names
+ * the authority the module action needs — a repository capability, a workspace
+ * role, team leadership, a security duty, or enterprise administration — so a
+ * client can explain the denial without learning protected policy detail.
+ */
+const capabilityModuleActionSchema: JsonObject = {
+  type: "object",
+  required: ["allowed", "required"],
+  properties: {
+    allowed: { type: "boolean" },
+    required: { type: "string" },
+    reason: {
+      type: "string",
+      description:
+        "Safe machine reason (a gate reason, `workspace_role`, `team_leader`, " +
+        "`security_duty`, or `enterprise_admin`). Never names a repository, " +
+        "teammate, credential or sensitive policy value.",
+    },
+  },
+  additionalProperties: false,
+};
+
+function capabilityModuleSchema(actions: readonly string[]): JsonObject {
+  return {
+    type: "object",
+    required: ["visible", "data_ceiling", "reason", "actions"],
+    properties: {
+      visible: {
+        type: "boolean",
+        description:
+          "Role/duty-based module visibility. Visibility is never a grant: a " +
+          "visible module still denies each action separately.",
+      },
+      data_ceiling: {
+        type: "string",
+        enum: [...CAPABILITY_DATA_CEILINGS],
+        description:
+          "Highest data class this module may return. `restricted` is never " +
+          "produced for ordinary workspace roles; restricted Memory and " +
+          "quarantine need a separate grant.",
+      },
+      reason: { type: ["string", "null"] },
+      actions: {
+        type: "object",
+        required: [...actions],
+        properties: Object.fromEntries(
+          actions.map((action) => [
+            action,
+            { $ref: "#/components/schemas/CapabilityModuleAction" },
+          ]),
+        ),
+        additionalProperties: false,
+      },
+    },
+    additionalProperties: false,
+  };
+}
+
+const workspaceCapabilityModulesSchema: JsonObject = {
+  type: "object",
+  required: [...CAPABILITY_MODULES],
+  properties: Object.fromEntries(
+    CAPABILITY_MODULES.map((module) => [module, capabilityModuleSchema(MODULE_ACTIONS[module])]),
+  ),
+  additionalProperties: false,
+};
+
+const capabilityFreshnessSchema: JsonObject = {
+  type: "object",
+  description:
+    "Advisory lifetime of a projection. The server never accepts a projection " +
+    "as a grant; clients refetch at `expires_at` for navigation or " +
+    "`stale_after` for sensitive data and on any `invalidation` event. " +
+    "Unknown fields, an expired projection or a failed re-evaluation fail " +
+    "closed (hide module data and re-fetch).",
+  required: ["checked_at", "expires_at", "stale_after", "state", "invalidation"],
+  properties: {
+    checked_at: { type: "string", format: "date-time" },
+    expires_at: { type: "string", format: "date-time" },
+    stale_after: { type: "string", format: "date-time" },
+    state: { type: "string", enum: ["fresh"] },
+    invalidation: {
+      type: "array",
+      items: { type: "string", enum: [...PROJECTION_INVALIDATION_REASONS] },
+    },
+  },
+  additionalProperties: false,
+};
+
 const workspaceCapabilityProjectionSchema: JsonObject = {
   type: "object",
   description:
-    "Session-scoped, workspace-scoped capability projection (DAT-276, " +
+    "Session-scoped, workspace-scoped capability projection (DAT-278, " +
     "ADR-0011). Advisory for navigation only: every request is still checked " +
     "object by object against the verified provider capability intersection. " +
-    "An `unverified` state blocks every action until eligibility can be " +
-    "verified and is never recorded as a confirmed downgrade; `confirmed_loss` " +
-    "stays in force until an audited administrator reapproval.",
+    "It exposes eight modules with role/duty visibility, per-action decisions, " +
+    "the highest data class the caller may read, the verified repository " +
+    "capability intersection, and an explicit freshness/invalidation " +
+    "contract. An `unverified` state blocks every data action until " +
+    "eligibility can be verified and is never recorded as a confirmed " +
+    "downgrade; `confirmed_loss` stays in force until an audited " +
+    "administrator reapproval. Security actions come only from explicit " +
+    "human duties and survive an ordinary workspace demotion; service " +
+    "integration metadata comes only from enterprise administration and is " +
+    "never repository data access.",
   required: [
     "schema_version",
     "enterprise_id",
@@ -327,14 +436,16 @@ const workspaceCapabilityProjectionSchema: JsonObject = {
     "state",
     "blocked_reason",
     "capabilities",
+    "modules",
     "actions",
     "repositories",
     "ceiling",
     "authority",
+    "freshness",
     "checked_at",
   ],
   properties: {
-    schema_version: { type: "string", enum: ["workspace-capability-v1"] },
+    schema_version: { type: "string", enum: [WORKSPACE_CAPABILITY_SCHEMA_VERSION] },
     enterprise_id: { type: "string" },
     workspace_id: { type: "string" },
     assigned_role: {
@@ -351,6 +462,13 @@ const workspaceCapabilityProjectionSchema: JsonObject = {
       type: "array",
       items: { type: "string", enum: [...CAPABILITY_NAMES] },
       description: "Effective intersection (empty unless `verified`).",
+    },
+    modules: {
+      ...workspaceCapabilityModulesSchema,
+      description:
+        "The eight ADR-0011 modules. `visible` is role/duty based; each " +
+        "action is decided independently and `data_ceiling` is the highest " +
+        "data class the caller may read. A hidden button is never the control.",
     },
     actions: {
       type: "object",
@@ -411,6 +529,88 @@ const workspaceCapabilityProjectionSchema: JsonObject = {
       },
       additionalProperties: false,
     },
+    freshness: { $ref: "#/components/schemas/CapabilityProjectionFreshness" },
+    checked_at: { type: "string", format: "date-time" },
+  },
+  additionalProperties: false,
+};
+
+function enterpriseModuleSchema(actions: readonly string[]): JsonObject {
+  return {
+    type: "object",
+    required: ["visible", "data_ceiling", "reason", "actions"],
+    properties: {
+      visible: { type: "boolean" },
+      data_ceiling: { type: "string", enum: ["none", "directory", "audit", "metadata"] },
+      reason: { type: ["string", "null"] },
+      actions: {
+        type: "object",
+        required: [...actions],
+        properties: Object.fromEntries(
+          actions.map((action) => [
+            action,
+            { $ref: "#/components/schemas/CapabilityModuleAction" },
+          ]),
+        ),
+        additionalProperties: false,
+      },
+    },
+    additionalProperties: false,
+  };
+}
+
+const enterpriseCapabilityProjectionSchema: JsonObject = {
+  type: "object",
+  description:
+    "Session-scoped enterprise projection (DAT-278, ADR-0011). Gives an " +
+    "enterprise administrator the directory, identity-audit and " +
+    "service-integration metadata surfaces their separate grant covers, " +
+    "without any workspace repository data. `workspace_data_access` is always " +
+    "false: enterprise administration is not repository authority. A " +
+    "non-administrator enterprise member receives the same shape with every " +
+    "administrator action denied, never a filtered directory.",
+  required: [
+    "schema_version",
+    "enterprise_id",
+    "member",
+    "modules",
+    "workspace_data_access",
+    "freshness",
+    "checked_at",
+  ],
+  properties: {
+    schema_version: { type: "string", enum: [ENTERPRISE_CAPABILITY_SCHEMA_VERSION] },
+    enterprise_id: { type: "string" },
+    member: {
+      type: "object",
+      required: ["status", "role"],
+      properties: {
+        status: { type: "string", enum: ["active", "suspended"] },
+        role: { type: "string", enum: ["admin", "member"] },
+      },
+      additionalProperties: false,
+    },
+    modules: {
+      type: "object",
+      required: [...ENTERPRISE_MODULES],
+      properties: Object.fromEntries(
+        ENTERPRISE_MODULES.map((module) => [
+          module,
+          enterpriseModuleSchema(ENTERPRISE_MODULE_ACTIONS[module]),
+        ]),
+      ),
+      additionalProperties: false,
+    },
+    workspace_data_access: {
+      type: "object",
+      required: ["granted", "reason"],
+      properties: {
+        granted: { type: "boolean", enum: [false] },
+        reason: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+    freshness: { $ref: "#/components/schemas/CapabilityProjectionFreshness" },
     checked_at: { type: "string", format: "date-time" },
   },
   additionalProperties: false,
@@ -4118,17 +4318,52 @@ export function buildOpenApiDocument(): OpenApiDocument {
         },
       },
     },
+    "/api/v1/enterprises/{enterprise_id}/capabilities": {
+      get: {
+        operationId: "getEnterpriseCapabilityProjection",
+        summary: "Read the caller's enterprise-scoped capability projection",
+        description:
+          "Session-scoped, enterprise-scoped, advisory snapshot for an active " +
+          "enterprise membership. It covers the enterprise directory, identity " +
+          "audit and service-integration metadata only; " +
+          "`workspace_data_access.granted` is always false because enterprise " +
+          "administration is not repository authority. A non-administrator " +
+          "member receives the same shape with administrator actions denied. " +
+          "The path enterprise is a locator; another enterprise is " +
+          "indistinguishable from a missing one (404).",
+        parameters: [
+          {
+            name: "enterprise_id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        responses: {
+          200: {
+            description: "Enterprise capability projection",
+            ...jsonRef("#/components/schemas/EnterpriseCapabilityProjection"),
+          },
+          401: unauthorizedResponse(),
+          403: errorResponse("ENTERPRISE_MEMBERSHIP_REQUIRED / ENTERPRISE_MEMBERSHIP_SUSPENDED"),
+          404: errorResponse("Enterprise was not found"),
+        },
+      },
+    },
     "/api/v1/workspaces/{workspace_id}/capabilities": {
       get: {
         operationId: "getWorkspaceCapabilityProjection",
         summary: "Read the caller's workspace capability projection",
         description:
-          "Session-scoped, workspace-scoped, advisory snapshot of module and " +
-          "action permissions, the verified repository capability intersection, " +
-          "per-repository evidence freshness and any confirmed reduction. The " +
-          "path workspace is a locator: a caller without a live membership gets " +
-          "the same indistinguishable 404 as every other workspace route. The " +
-          "projection is never a bearer grant — every request is checked again.",
+          "Session-scoped, workspace-scoped, advisory snapshot of the eight " +
+          "ADR-0011 modules, each module's role/duty visibility and per-action " +
+          "decisions, the data-sensitivity ceiling, the verified repository " +
+          "capability intersection, per-repository evidence freshness, the " +
+          "confirmed reduction and an explicit expiry/invalidation contract. " +
+          "The path workspace is a locator: a caller without a live membership " +
+          "gets the same indistinguishable 404 as every other workspace route. " +
+          "The projection is never a bearer grant — every request is checked " +
+          "again, and an expired or failed projection fails closed.",
         parameters: [WORKSPACE_ID_PARAMETER],
         responses: {
           200: {
@@ -6275,7 +6510,10 @@ export function buildOpenApiDocument(): OpenApiDocument {
         EnterpriseUser: enterpriseUserSchema,
         CapabilityRepositoryEvidence: capabilityRepositoryEvidenceSchema,
         CapabilityAction: capabilityActionSchema,
+        CapabilityModuleAction: capabilityModuleActionSchema,
+        CapabilityProjectionFreshness: capabilityFreshnessSchema,
         WorkspaceCapabilityProjection: workspaceCapabilityProjectionSchema,
+        EnterpriseCapabilityProjection: enterpriseCapabilityProjectionSchema,
         MemberCapabilityCeiling: memberCapabilityCeilingSchema,
         MemberCapabilityCeilingView: memberCapabilityCeilingViewSchema,
         ReapproveCapabilityCeiling: reapproveCapabilityCeilingSchema,

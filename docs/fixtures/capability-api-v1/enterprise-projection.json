@@ -1,0 +1,93 @@
+{
+  "schema_version": "enterprise-capability-v1",
+  "enterprise_id": "ent_acme",
+  "member": { "status": "active", "role": "admin" },
+  "modules": {
+    "enterprise_directory": {
+      "visible": true,
+      "data_ceiling": "directory",
+      "reason": null,
+      "actions": {
+        "view": { "allowed": true, "required": "enterprise_admin" },
+        "add_user": { "allowed": true, "required": "enterprise_admin" },
+        "suspend_user": { "allowed": true, "required": "enterprise_admin" },
+        "restore_user": { "allowed": true, "required": "enterprise_admin" },
+        "change_role": { "allowed": true, "required": "enterprise_admin" }
+      }
+    },
+    "identity_audit": {
+      "visible": true,
+      "data_ceiling": "audit",
+      "reason": null,
+      "actions": {
+        "read": { "allowed": true, "required": "enterprise_admin" }
+      }
+    },
+    "service_integration": {
+      "visible": true,
+      "data_ceiling": "metadata",
+      "reason": null,
+      "actions": {
+        "view_metadata": { "allowed": true, "required": "enterprise_admin" },
+        "configure": { "allowed": true, "required": "enterprise_admin" }
+      }
+    },
+    "workspace_data": {
+      "visible": false,
+      "data_ceiling": "none",
+      "reason": "enterprise_administration_is_not_repository_authority",
+      "actions": {
+        "view_tasks": {
+          "allowed": false,
+          "required": "workspace_membership_and_repository_capability",
+          "reason": "enterprise_administration_is_not_repository_authority"
+        },
+        "view_issues": {
+          "allowed": false,
+          "required": "workspace_membership_and_repository_capability",
+          "reason": "enterprise_administration_is_not_repository_authority"
+        },
+        "view_memory": {
+          "allowed": false,
+          "required": "workspace_membership_and_repository_capability",
+          "reason": "enterprise_administration_is_not_repository_authority"
+        },
+        "view_rsi": {
+          "allowed": false,
+          "required": "workspace_membership_and_repository_capability",
+          "reason": "enterprise_administration_is_not_repository_authority"
+        },
+        "view_dashboard": {
+          "allowed": false,
+          "required": "workspace_membership_and_repository_capability",
+          "reason": "enterprise_administration_is_not_repository_authority"
+        },
+        "view_security": {
+          "allowed": false,
+          "required": "workspace_membership_and_repository_capability",
+          "reason": "enterprise_administration_is_not_repository_authority"
+        }
+      }
+    }
+  },
+  "workspace_data_access": {
+    "granted": false,
+    "reason": "enterprise_administration_is_not_repository_authority"
+  },
+  "freshness": {
+    "checked_at": "2026-11-22T12:03:00.000Z",
+    "expires_at": "2026-11-22T12:18:00.000Z",
+    "stale_after": "2026-11-23T12:03:00.000Z",
+    "state": "fresh",
+    "invalidation": [
+      "authority_epoch_changed",
+      "capability_ceiling_changed",
+      "membership_changed",
+      "enterprise_status_changed",
+      "session_revoked",
+      "provider_reconciled",
+      "projection_expired"
+    ]
+  },
+  "checked_at": "2026-11-22T12:03:00.000Z"
+}

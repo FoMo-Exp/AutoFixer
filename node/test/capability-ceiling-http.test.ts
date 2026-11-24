@@ -177,7 +177,7 @@ describe("capability ceiling over real HTTP", () => {
     const fixture = installIntegration(authApp, member.userId);
 
     const verified = await capabilityProjection(authApp, member);
-    expect(verified.schema_version).toBe("workspace-capability-v1");
+    expect(verified.schema_version).toBe("workspace-capability-v2");
     expect(verified.state).toBe("verified");
     expect(verified.capabilities).toEqual(["code_read", "issue_write", "repository_write"]);
     expect(verified.actions["read"]?.allowed).toBe(true);

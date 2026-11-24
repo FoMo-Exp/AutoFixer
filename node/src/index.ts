@@ -123,6 +123,7 @@ import {
 import type {
   QuarantineKeyProvider,
   SecurityAuditTrail,
+  SecurityDutyDirectory,
   SecurityRoleDirectory,
 } from "./security/index.js";
 import {
@@ -176,6 +177,12 @@ export interface OrchestratorOptions {
    * never a delivery: production wiring supplies nothing by default.
    */
   deliveryProviders?: Partial<Record<"github" | "gitlab", DeliveryProvider>>;
+  /**
+   * Explicit, human-only security duty assignments (DAT-278). Duties are
+   * granted only by listing; unset grants nobody a security action. The
+   * projection reads this directory, and workspace role changes never alter it.
+   */
+  securityDutyDirectory?: SecurityDutyDirectory;
   /**
    * Read-only pull-request governance reader (DAT-261). Unset uses the
    * reviewed GitHub reader over the integration's read-only source
@@ -712,6 +719,21 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       identities: identity.identities,
       enterpriseUsers: identity.enterpriseUsers,
       capabilityCeilings,
+      // The memory team-leader exception reads the live team rows; enterprise
+      // administration is checked from the separate enterprise grant.
+      teams: repos.teams,
+      isEnterpriseAdmin: (userId) =>
+        identity.enterpriseRoles.getByUser(config.enterpriseId, userId)?.role === "admin",
+      // Duties come only from explicit deployment/configuration listing. An
+      // ordinary role change never edits this directory.
+      securityDuties:
+        options.securityDutyDirectory ??
+        staticDutyDirectory({
+          taskOwners: config.securityTaskOwnerIds ?? [],
+          handlers: config.securityHandlerIds ?? [],
+          reviewers: config.securityReviewerIds ?? [],
+          admins: config.securityAdminIds ?? [],
+        }),
       epoch: providerEpoch,
       enterpriseId: config.enterpriseId,
       workspaceId: config.workspaceId,
