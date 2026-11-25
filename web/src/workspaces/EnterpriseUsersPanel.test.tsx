@@ -285,6 +285,30 @@ describe("EnterpriseUsersPanel", () => {
     expect(screen.queryByText(/not in the workspace/)).toBeNull();
   });
 
+  it("treats a repeated page cursor as an incomplete roster, never as absence", async () => {
+    const client = fakeClient();
+    client.listMemberCandidates
+      .mockResolvedValueOnce({
+        items: [candidateFor("999999")],
+        next_cursor: "cursor_loop",
+      })
+      .mockResolvedValueOnce({
+        items: [candidateFor("999998")],
+        next_cursor: "cursor_loop",
+      });
+    renderPanel(client);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Workspace access" }));
+    const grant = screen.getByLabelText("Workspace access");
+    await userEvent.click(within(grant).getByRole("combobox", { name: "Workspace to grant" }));
+    await userEvent.click(screen.getByRole("option", { name: "Acme Payments" }));
+
+    expect(await within(grant).findByText(/repeated a page cursor/i)).toBeTruthy();
+    expect(within(grant).queryByText(/not in the workspace/i)).toBeNull();
+    expect(within(grant).queryByText(/no verified eligibility/i)).toBeNull();
+    expect(client.listMemberCandidates).toHaveBeenCalledTimes(2);
+  });
+
   it("does not claim the person is absent the roster when the read failed", async () => {
     const client = fakeClient();
     client.listMemberCandidates.mockRejectedValue(

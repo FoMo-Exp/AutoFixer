@@ -92,7 +92,17 @@ export function EnterpriseWorkspaceGrant({
             return;
           }
           const next = page.next_cursor ?? undefined;
-          if (next === undefined || seen.has(next)) break;
+          if (next === undefined) break;
+          if (seen.has(next)) {
+            // A repeated non-null cursor is a pagination fault, not the end of
+            // the roster. Keep the loop bounded but never claim absence.
+            setError({
+              code: "PROVIDER_ROSTER_INCOMPLETE",
+              message:
+                "The provider roster repeated a page cursor, so it could not be read completely. Retry after reconciliation.",
+            });
+            return;
+          }
           seen.add(next);
           cursor = next;
         }

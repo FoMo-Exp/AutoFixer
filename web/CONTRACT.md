@@ -810,9 +810,10 @@ Surface boundaries:
   directory and grants one explicitly selected workspace at a time. Every page
   is read before absence is asserted: the workspace selector uses
   `listAllWorkspaces()`, and the grant search follows `next_cursor` for the
-  candidate roster. An unreadable roster never renders as "not in the roster".
-  The contract exposes no directory-search parameter, so directory search
-  filters only the loaded pages.
+  candidate roster. A repeated non-null cursor is a pagination fault and
+  renders an incomplete-roster refusal, and an unreadable roster never renders
+  as "not in the roster". The contract exposes no directory-search parameter,
+  so directory search filters only the loaded pages.
 - **Workspace joins are explicit.** The enterprise grant sends one workspace
   id and one role; the workspace's verified repository intersection bounds the
   role, and no other workspace is granted implicitly. `ROLE_NOT_ASSIGNABLE`,
