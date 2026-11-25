@@ -9,8 +9,11 @@ import { InvitationsPanel } from "./InvitationsPanel";
 import { MembersPanel } from "./MembersPanel";
 import { ServiceIntegrationPanel } from "./ServiceIntegrationPanel";
 import { TeamsPanel } from "./TeamsPanel";
+import { EnterpriseUsersPanel } from "./EnterpriseUsersPanel";
 import { accessAllowed } from "../capabilities/projection";
 import { useWorkspaceCapabilities } from "../capabilities/use-capabilities";
+import { enterpriseActionAllowed, enterpriseModuleVisible } from "../capabilities/enterprise";
+import { useEnterpriseCapabilities } from "../capabilities/use-enterprise-capabilities";
 
 interface WorkspaceAdminDialogProps {
   client: IdentityClient;
@@ -19,7 +22,7 @@ interface WorkspaceAdminDialogProps {
   initialTab?: AdminTab;
 }
 
-type AdminTab = "members" | "teams" | "invitations" | "audit" | "integration";
+type AdminTab = "members" | "teams" | "invitations" | "audit" | "integration" | "enterprise";
 
 export function WorkspaceAdminDialog({
   client,
@@ -107,6 +110,9 @@ export function WorkspaceAdminDialog({
   }, []);
 
   const workspace = workspaces.find((item) => item.id === selectedId);
+  // The directory is enterprise-scoped: with no selected workspace an
+  // administrator can still reach it through an administrator enterprise role.
+  const enterpriseId = workspace?.enterprise_id ?? session.enterprise_roles[0]?.enterprise_id;
   // Every administration affordance is decided by the projection for the
   // selected workspace. The legacy local mode (no identity) never opens this
   // dialog. While the projection loads or fails, writes stay hidden.
@@ -125,7 +131,40 @@ export function WorkspaceAdminDialog({
   const canViewMembers = accessAllowed(members, "view");
   const canViewIntegration = accessAllowed(service, "view_metadata");
   const canConfigureIntegration = accessAllowed(service, "configure");
-  const enterpriseAdmin = workspace ? isEnterpriseAdmin(session, workspace.enterprise_id) : false;
+  const enterpriseAdmin = enterpriseId ? isEnterpriseAdmin(session, enterpriseId) : false;
+  // Enterprise directory entry and actions come from the enterprise projection,
+  // never from the session's role list; the role only decides whether the
+  // surface is offered at all.
+  const enterpriseCapabilities = useEnterpriseCapabilities({
+    client,
+    enterpriseId: enterpriseId ?? null,
+    enabled: enterpriseAdmin && enterpriseId !== undefined,
+  });
+  const enterpriseSnapshot =
+    enterpriseCapabilities.status === "ready" ? enterpriseCapabilities.snapshot : undefined;
+  const canViewEnterprise =
+    enterpriseModuleVisible(enterpriseSnapshot, "enterprise_directory") &&
+    enterpriseActionAllowed(enterpriseSnapshot, "enterprise_directory", "view");
+  const canAddEnterpriseUser = enterpriseActionAllowed(
+    enterpriseSnapshot,
+    "enterprise_directory",
+    "add_user",
+  );
+  const canSuspendEnterpriseUser = enterpriseActionAllowed(
+    enterpriseSnapshot,
+    "enterprise_directory",
+    "suspend_user",
+  );
+  const canRestoreEnterpriseUser = enterpriseActionAllowed(
+    enterpriseSnapshot,
+    "enterprise_directory",
+    "restore_user",
+  );
+  const canChangeEnterpriseRole = enterpriseActionAllowed(
+    enterpriseSnapshot,
+    "enterprise_directory",
+    "change_role",
+  );
   const tabAllowed = (tab: AdminTab): boolean => {
     switch (tab) {
       case "members":
@@ -137,13 +176,15 @@ export function WorkspaceAdminDialog({
         return enterpriseAdmin;
       case "integration":
         return canViewIntegration;
+      case "enterprise":
+        return canViewEnterprise;
     }
   };
   const visibleTab: AdminTab = tabAllowed(activeTab)
     ? activeTab
-    : ((["members", "teams", "invitations", "audit", "integration"] as AdminTab[]).find(
-        tabAllowed,
-      ) ?? "members");
+    : ((
+        ["members", "teams", "invitations", "audit", "integration", "enterprise"] as AdminTab[]
+      ).find(tabAllowed) ?? "members");
   const canManage = canManageMembers || canManageTeams || canInvite || canManageRoles;
 
   return (
@@ -170,9 +211,9 @@ export function WorkspaceAdminDialog({
           </button>
         </div>
         {error && <ErrorNotice error={error} onDismiss={() => setError(undefined)} />}
-        {loading && workspaces.length === 0 ? (
+        {loading && workspaces.length === 0 && !canViewEnterprise ? (
           <p className="card-empty">Loading workspaces…</p>
-        ) : workspaces.length === 0 ? (
+        ) : workspaces.length === 0 && !canViewEnterprise ? (
           <p className="card-empty">No workspaces are visible to your memberships.</p>
         ) : (
           <div className="admin-layout">
@@ -196,20 +237,41 @@ export function WorkspaceAdminDialog({
                   </span>
                 </button>
               ))}
+              {workspaces.length === 0 && (
+                <p className="card-empty">No workspaces are visible to your memberships.</p>
+              )}
+              {canViewEnterprise && (
+                <button
+                  className={`admin-workspace${selectedId === undefined ? " active" : ""}`}
+                  aria-current={selectedId === undefined ? "true" : undefined}
+                  onClick={() => {
+                    setSelectedId(undefined);
+                    setActiveTab("enterprise");
+                  }}
+                >
+                  <span className="admin-workspace-name">Enterprise people</span>
+                  <span className="admin-workspace-meta">
+                    <span className="identity-badge">Directory</span>
+                  </span>
+                </button>
+              )}
             </nav>
-            {workspace && (
+            {(workspace !== undefined || (canViewEnterprise && visibleTab === "enterprise")) && (
               <div className="admin-detail">
                 <div className="admin-detail-heading">
                   <div>
-                    <h3>{workspace.name}</h3>
+                    <h3>{workspace?.name ?? "Enterprise people"}</h3>
                     <span className="identity-meta">
-                      {`${workspace.repository.provider_type} · ${workspace.repository.repository_id}`}
-                      {` · Updated ${formatTimestamp(workspace.updated_at)}`}
+                      {workspace
+                        ? `${workspace.repository.provider_type} · ${workspace.repository.repository_id} · Updated ${formatTimestamp(workspace.updated_at)}`
+                        : "Enterprise directory, roles, enterprise-scoped suspension, and explicit workspace access."}
                     </span>
                   </div>
-                  {!canManage && <span className="identity-badge">Read-only</span>}
+                  {workspace !== undefined && !canManage && (
+                    <span className="identity-badge">Read-only</span>
+                  )}
                 </div>
-                {capabilities.status !== "ready" && (
+                {workspace !== undefined && capabilities.status !== "ready" && (
                   <p className="identity-panel-status" role="status">
                     {capabilities.status === "error"
                       ? "The capability projection could not be read, so administration stays read-only."
@@ -217,7 +279,7 @@ export function WorkspaceAdminDialog({
                   </p>
                 )}
                 <div className="settings-tabs" role="tablist" aria-label="Workspace sections">
-                  {canViewMembers && (
+                  {workspace !== undefined && canViewMembers && (
                     <button
                       id="admin-tab-members"
                       type="button"
@@ -229,7 +291,7 @@ export function WorkspaceAdminDialog({
                       Members
                     </button>
                   )}
-                  {canViewMembers && (
+                  {workspace !== undefined && canViewMembers && (
                     <button
                       id="admin-tab-teams"
                       type="button"
@@ -241,7 +303,7 @@ export function WorkspaceAdminDialog({
                       Teams
                     </button>
                   )}
-                  {canInvite && (
+                  {workspace !== undefined && canInvite && (
                     <button
                       id="admin-tab-invitations"
                       type="button"
@@ -253,7 +315,7 @@ export function WorkspaceAdminDialog({
                       Invitations
                     </button>
                   )}
-                  {enterpriseAdmin && (
+                  {workspace !== undefined && enterpriseAdmin && (
                     <button
                       id="admin-tab-audit"
                       type="button"
@@ -265,7 +327,7 @@ export function WorkspaceAdminDialog({
                       Audit
                     </button>
                   )}
-                  {canViewIntegration && (
+                  {workspace !== undefined && canViewIntegration && (
                     <button
                       id="admin-tab-integration"
                       type="button"
@@ -277,14 +339,37 @@ export function WorkspaceAdminDialog({
                       Integration
                     </button>
                   )}
+                  {canViewEnterprise && (
+                    <button
+                      id="admin-tab-enterprise"
+                      type="button"
+                      role="tab"
+                      className={`settings-tab${visibleTab === "enterprise" ? " active" : ""}`}
+                      aria-selected={visibleTab === "enterprise"}
+                      onClick={() => setActiveTab("enterprise")}
+                    >
+                      Enterprise people
+                    </button>
+                  )}
                 </div>
-                {capabilities.status === "ready" &&
+                {workspace !== undefined &&
+                  capabilities.status === "ready" &&
                   !tabAllowed("members") &&
                   !tabAllowed("invitations") &&
                   !tabAllowed("audit") &&
-                  !tabAllowed("integration") && (
+                  !tabAllowed("integration") &&
+                  !tabAllowed("enterprise") && (
                     <p className="card-empty" role="status">
                       No administration module is available from the current capability projection.
+                    </p>
+                  )}
+                {visibleTab === "enterprise" &&
+                  canViewEnterprise &&
+                  enterpriseCapabilities.status !== "ready" && (
+                    <p className="identity-panel-status" role="status">
+                      {enterpriseCapabilities.status === "error"
+                        ? "The enterprise capability projection could not be read, so no directory data is shown."
+                        : "Verifying enterprise capabilities before showing the directory…"}
                     </p>
                   )}
                 <div
@@ -293,16 +378,17 @@ export function WorkspaceAdminDialog({
                   role="tabpanel"
                   aria-labelledby={`admin-tab-${visibleTab}`}
                 >
-                  {visibleTab === "members" && canViewMembers && (
+                  {workspace !== undefined && visibleTab === "members" && canViewMembers && (
                     <MembersPanel
                       key={`members-${workspace.id}`}
                       client={client}
                       workspace={workspace}
                       canManage={canManageMembers}
                       canManageRoles={canManageRoles}
+                      canViewVerification={enterpriseAdmin && canManageMembers}
                     />
                   )}
-                  {visibleTab === "teams" && canViewMembers && (
+                  {workspace !== undefined && visibleTab === "teams" && canViewMembers && (
                     <TeamsPanel
                       key={`teams-${workspace.id}`}
                       client={client}
@@ -310,28 +396,45 @@ export function WorkspaceAdminDialog({
                       canManage={canManageTeams}
                     />
                   )}
-                  {visibleTab === "invitations" && canInvite && (
+                  {workspace !== undefined && visibleTab === "invitations" && canInvite && (
                     <InvitationsPanel
                       key={`invitations-${workspace.id}`}
                       client={client}
                       workspace={workspace}
                     />
                   )}
-                  {visibleTab === "audit" && enterpriseAdmin && (
+                  {workspace !== undefined && visibleTab === "audit" && enterpriseAdmin && (
                     <AuditPanel
                       key={`audit-${workspace.id}`}
                       client={client}
                       workspace={workspace}
                     />
                   )}
-                  {visibleTab === "integration" && canViewIntegration && (
-                    <ServiceIntegrationPanel
-                      key={`integration-${workspace.id}`}
-                      client={client}
-                      workspace={workspace}
-                      canConfigure={canConfigureIntegration}
-                    />
-                  )}
+                  {workspace !== undefined &&
+                    visibleTab === "integration" &&
+                    canViewIntegration && (
+                      <ServiceIntegrationPanel
+                        key={`integration-${workspace.id}`}
+                        client={client}
+                        workspace={workspace}
+                        canConfigure={canConfigureIntegration}
+                      />
+                    )}
+                  {visibleTab === "enterprise" &&
+                    canViewEnterprise &&
+                    enterpriseId !== undefined && (
+                      <EnterpriseUsersPanel
+                        key={`enterprise-${enterpriseId}`}
+                        client={client}
+                        enterpriseId={enterpriseId}
+                        workspaces={workspaces}
+                        canAddUser={canAddEnterpriseUser}
+                        canSuspendUser={canSuspendEnterpriseUser}
+                        canRestoreUser={canRestoreEnterpriseUser}
+                        canChangeRole={canChangeEnterpriseRole}
+                        canGrantWorkspace={canViewEnterprise}
+                      />
+                    )}
                 </div>
               </div>
             )}

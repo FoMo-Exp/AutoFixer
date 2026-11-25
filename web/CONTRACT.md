@@ -752,3 +752,75 @@ Surface boundaries:
   listed as a non-pass. `blocked` and `unknown` render as refusals, and an
   unreadable unresolved count is never shown as zero. There is no approve,
   merge, dismiss, or check-waiver control on this surface.
+
+## Enterprise user administration and workspace membership (DAT-280)
+
+Baseline `main` at `9345543` (DAT-279 #108, OpenAPI `0.10.0`), carrying
+DAT-273 #101 `456a961`, DAT-275 #103 `8bcf49e`, DAT-281 #104 `e537178`,
+DAT-276 #105 `a0e1d68`, DAT-277 #106 `28df0ff`, DAT-278 #107 `ed62e28`, and
+DAT-279 #108 `9345543`. Fixtures are the merged captures under
+`docs/fixtures/identity-api-v1/` and
+`docs/fixtures/capability-api-v1/`; no field is invented.
+
+| Endpoint                                                                                                        | Request fields                     | Response type                             | Status |
+| --------------------------------------------------------------------------------------------------------------- | ---------------------------------- | ----------------------------------------- | ------ |
+| `GET /api/v1/enterprises/{enterprise_id}/capabilities`                                                          | path id                            | `EnterpriseCapabilityProjection`          | ✅     |
+| `GET /api/v1/admin/enterprises/{enterprise_id}/users`                                                           | optional `status`, `cursor`        | `{items: EnterpriseUser[], next_cursor}`  | ✅     |
+| `POST /api/v1/admin/enterprises/{enterprise_id}/users`                                                          | `provider_instance_id`, `subject`  | `{enterprise_user, created}` (`201`)      | ✅     |
+| `GET /api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}`                                      | path ids                           | `EnterpriseUser`                          | ✅     |
+| `POST /api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}/suspend`                             | `version`                          | `EnterpriseUser`                          | ✅     |
+| `POST /api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}/restore`                             | `version`                          | `EnterpriseUser`                          | ✅     |
+| `PUT /api/v1/admin/enterprises/{enterprise_id}/users/{enterprise_user_id}/role`                                 | `role`, `version`                  | `EnterpriseUser`                          | ✅     |
+| `GET /api/v1/workspaces/{workspace_id}/member-candidates`                                                       | optional `cursor`                  | `{items: MemberCandidate[], next_cursor}` | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/members`                                                                | `user_id`, `role`                  | `Membership` (`201`)                      | ✅     |
+| `PATCH /api/v1/workspaces/{workspace_id}/members/{membership_id}`                                               | `role`, `version`                  | `Membership`                              | ✅     |
+| `DELETE /api/v1/workspaces/{workspace_id}/members/{membership_id}`                                              | path ids                           | `204`                                     | ✅     |
+| `PUT /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}`                     | `role`                             | `Membership`                              | ✅     |
+| `GET /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}/capability-ceiling`  | path ids                           | `MemberCapabilityCeilingView`             | ✅     |
+| `POST /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}/capability-ceiling` | `version`, optional `capabilities` | `MemberCapabilityCeiling`                 | ✅     |
+| `GET /api/v1/admin/enterprises/{enterprise_id}/auth-audit`                                                      | optional `limit`                   | `{items: AuthAuditRecord[]}`              | ✅     |
+| `GET /api/v1/auth/providers`                                                                                    | none                               | `{items: LoginProvider[]}`                | ✅     |
+
+Surface boundaries:
+
+- **Enterprise administration is projection-gated.** The enterprise
+  directory entry is offered only to an enterprise administrator, and each
+  control reads its own `add_user` / `suspend_user` / `restore_user` /
+  `change_role` decision from `EnterpriseCapabilityProjection`. An expired,
+  foreign, unverified, or unparseable projection renders no directory data and
+  no write. The directory remains reachable with no visible workspace; its
+  `enterprise_id` falls back to the session's administrator enterprise.
+- **Suspension is enterprise-scoped.** The directory renders
+  `pending_claim` / `active` / `suspended` with the explicit statement that a
+  suspension here never changes a global account. The refusal
+  `409 LAST_ENTERPRISE_ADMIN` keeps the last active administrator, and
+  `409 USER_NOT_CLAIMED` explains that role changes wait for sign-in.
+  `409 VERSION_CONFLICT` reloads the page before any retry.
+- **Identity is never matched by email.** Adding a person sends only an
+  approved `provider_instance_id` and the stable `subject`; email, login, and
+  display name are display-only. The provider list comes from the login
+  provider surface because the contract exposes no enterprise provider list.
+- **Candidates are evidence, not a roster substitute.** Every candidate shows
+  provider role, provenance, eligibility, `max_role`, and its refusal code.
+  `PROVIDER_ROSTER_INCOMPLETE`, `authority_stale`, `no_code_read`, and the
+  other refusal codes render as refusals, never as an empty list. A candidate
+  carries provider identities but no account id, so the workspace-side grant
+  takes the already-signed-in account id and the service re-verifies
+  eligibility; an enterprise administrator resolves the account through the
+  directory and grants one explicitly selected workspace at a time. The
+  contract exposes no directory-search parameter, so directory search filters
+  only the loaded pages.
+- **Workspace joins are explicit.** The enterprise grant sends one workspace
+  id and one role; the workspace's verified repository intersection bounds the
+  role, and no other workspace is granted implicitly. `ROLE_NOT_ASSIGNABLE`,
+  `TARGET_NOT_ELIGIBLE`, `MEMBERSHIP_CONFLICT`,
+  `ENTERPRISE_MEMBERSHIP_SUSPENDED`, and `404 NOT_FOUND` render their envelope
+  refusal.
+- **Ceilings only move down automatically.** The verification panel lists each
+  repository's state, proven capabilities, reason, and verification time. The
+  persisted ceiling and its `available_ceiling` are shown separately from the
+  role, and only `promotion_available` with verified repository management
+  offers the audited reapproval (`version` only), which never exceeds the
+  current intersection and never changes the role. `LAST_WORKSPACE_OWNER`,
+  `CAPABILITY_CEILING_*`, `CAPABILITY_MANAGEMENT_REQUIRED`, and version
+  conflicts render their stable codes.
