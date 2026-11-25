@@ -33,10 +33,35 @@ export type WorkspaceRole = Workspace["role"];
 export type MembershipRole = Membership["role"];
 export type InvitationStatus = Invitation["status"];
 
+export type EnterpriseUser = components["schemas"]["EnterpriseUser"];
+export type EnterpriseUserStatus = EnterpriseUser["status"];
+export type EnterpriseUserRole = EnterpriseUser["role"];
+export type MemberCandidate = components["schemas"]["MemberCandidate"];
+export type MemberCapabilityCeiling = components["schemas"]["MemberCapabilityCeiling"];
+export type MemberCapabilityCeilingView = components["schemas"]["MemberCapabilityCeilingView"];
+export type EnterpriseCapabilityProjection =
+  components["schemas"]["EnterpriseCapabilityProjection"];
+
 export type WorkspacePage =
   operations["listWorkspaces"]["responses"][200]["content"]["application/json"];
 export type MembershipPage =
   operations["listWorkspaceMembers"]["responses"][200]["content"]["application/json"];
+export type EnterpriseUserPage =
+  operations["listEnterpriseUsers"]["responses"][200]["content"]["application/json"];
+export type MemberCandidatePage =
+  operations["listMemberCandidates"]["responses"][200]["content"]["application/json"];
+export type AddEnterpriseUserBody =
+  operations["addEnterpriseUser"]["requestBody"]["content"]["application/json"];
+export type CreatedEnterpriseUser =
+  operations["addEnterpriseUser"]["responses"][201]["content"]["application/json"];
+export type SetEnterpriseUserRoleBody =
+  operations["setEnterpriseUserRole"]["requestBody"]["content"]["application/json"];
+export type AddWorkspaceMemberBody =
+  operations["addWorkspaceMember"]["requestBody"]["content"]["application/json"];
+export type GrantWorkspaceMemberBody =
+  operations["grantMembership"]["requestBody"]["content"]["application/json"];
+export type ReapproveCapabilityCeilingBody =
+  operations["reapproveMemberCapabilityCeiling"]["requestBody"]["content"]["application/json"];
 export type TeamPage =
   operations["listWorkspaceTeams"]["responses"][200]["content"]["application/json"];
 export type InvitationPage =
@@ -234,6 +259,170 @@ export class IdentityClient extends ApiTransport {
     );
   }
 
+  /**
+   * Session-scoped enterprise projection (DAT-278). It is the only source for
+   * the enterprise-directory entry and its per-action decisions; the response
+   * is validated by `capabilities/enterprise.ts` before any decision.
+   */
+  async getEnterpriseCapabilities(
+    enterpriseId: string,
+    options: RequestOptions = {},
+  ): Promise<EnterpriseCapabilityProjection> {
+    return this.request<EnterpriseCapabilityProjection>(
+      `/api/v1/enterprises/${encodeURIComponent(enterpriseId)}/capabilities`,
+      { signal: options.signal },
+    );
+  }
+
+  async listEnterpriseUsers(
+    enterpriseId: string,
+    filters: { status?: EnterpriseUserStatus; cursor?: string } = {},
+    options: RequestOptions = {},
+  ): Promise<EnterpriseUserPage> {
+    const params = new URLSearchParams();
+    if (filters.status !== undefined) params.set("status", filters.status);
+    if (filters.cursor !== undefined) params.set("cursor", filters.cursor);
+    const query = params.toString();
+    return this.request<EnterpriseUserPage>(
+      `/api/v1/admin/enterprises/${encodeURIComponent(enterpriseId)}/users${query ? `?${query}` : ""}`,
+      { signal: options.signal },
+    );
+  }
+
+  async addEnterpriseUser(
+    enterpriseId: string,
+    body: AddEnterpriseUserBody,
+    options: RequestOptions = {},
+  ): Promise<CreatedEnterpriseUser> {
+    return this.request<CreatedEnterpriseUser>(
+      `/api/v1/admin/enterprises/${encodeURIComponent(enterpriseId)}/users`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: options.signal,
+      },
+    );
+  }
+
+  /** Enterprise-scoped suspension; the global account is never changed. */
+  async setEnterpriseUserStatus(
+    enterpriseId: string,
+    enterpriseUserId: string,
+    status: "active" | "suspended",
+    version: number,
+    options: RequestOptions = {},
+  ): Promise<EnterpriseUser> {
+    const action = status === "suspended" ? "suspend" : "restore";
+    return this.request<EnterpriseUser>(
+      `/api/v1/admin/enterprises/${encodeURIComponent(enterpriseId)}/users/${encodeURIComponent(enterpriseUserId)}/${action}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version }),
+        signal: options.signal,
+      },
+    );
+  }
+
+  async setEnterpriseUserRole(
+    enterpriseId: string,
+    enterpriseUserId: string,
+    body: SetEnterpriseUserRoleBody,
+    options: RequestOptions = {},
+  ): Promise<EnterpriseUser> {
+    return this.request<EnterpriseUser>(
+      `/api/v1/admin/enterprises/${encodeURIComponent(enterpriseId)}/users/${encodeURIComponent(enterpriseUserId)}/role`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: options.signal,
+      },
+    );
+  }
+
+  async listMemberCandidates(
+    workspaceId: string,
+    cursor?: string,
+    options: RequestOptions = {},
+  ): Promise<MemberCandidatePage> {
+    return this.request<MemberCandidatePage>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/member-candidates${cursorQuery(cursor)}`,
+      { signal: options.signal },
+    );
+  }
+
+  async addWorkspaceMember(
+    workspaceId: string,
+    body: AddWorkspaceMemberBody,
+    options: RequestOptions = {},
+  ): Promise<Membership> {
+    return this.request<Membership>(
+      `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/members`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: options.signal,
+      },
+    );
+  }
+
+  /**
+   * Enterprise-administrator grant of one workspace membership. The caller
+   * chooses the workspace explicitly; the service still enforces repository
+   * verification, the capability ceiling and the last-owner rule.
+   */
+  async grantWorkspaceMember(
+    enterpriseId: string,
+    workspaceId: string,
+    userId: string,
+    body: GrantWorkspaceMemberBody,
+    options: RequestOptions = {},
+  ): Promise<Membership> {
+    return this.request<Membership>(
+      `/api/v1/admin/enterprises/${encodeURIComponent(enterpriseId)}/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: options.signal,
+      },
+    );
+  }
+
+  async getMemberCapability(
+    enterpriseId: string,
+    workspaceId: string,
+    userId: string,
+    options: RequestOptions = {},
+  ): Promise<MemberCapabilityCeilingView> {
+    return this.request<MemberCapabilityCeilingView>(
+      memberCapabilityPath(enterpriseId, workspaceId, userId),
+      { signal: options.signal },
+    );
+  }
+
+  /** Audited reapproval inside the current verified intersection. */
+  async reapproveMemberCapability(
+    enterpriseId: string,
+    workspaceId: string,
+    userId: string,
+    body: ReapproveCapabilityCeilingBody,
+    options: RequestOptions = {},
+  ): Promise<MemberCapabilityCeiling> {
+    return this.request<MemberCapabilityCeiling>(
+      memberCapabilityPath(enterpriseId, workspaceId, userId),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: options.signal,
+      },
+    );
+  }
+
   async listInvitations(
     workspaceId: string,
     cursor?: string,
@@ -370,4 +559,8 @@ function cursorQuery(cursor?: string): string {
 
 function serviceIntegrationPath(enterpriseId: string, workspaceId: string): string {
   return `/api/v1/admin/enterprises/${encodeURIComponent(enterpriseId)}/workspaces/${encodeURIComponent(workspaceId)}/service-integration`;
+}
+
+function memberCapabilityPath(enterpriseId: string, workspaceId: string, userId: string): string {
+  return `/api/v1/admin/enterprises/${encodeURIComponent(enterpriseId)}/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}/capability-ceiling`;
 }

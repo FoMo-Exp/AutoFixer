@@ -1,7 +1,10 @@
 import { ApiError } from "../api/client";
 import type {
+  EnterpriseUserRole,
+  EnterpriseUserStatus,
   InvitationStatus,
   MemberAuthority,
+  MemberCandidate,
   Membership,
   Workspace,
   WorkspaceRole,
@@ -32,6 +35,57 @@ export const INVITATION_STATUS_LABELS: Record<InvitationStatus, string> = {
   consumed: "Consumed",
   revoked: "Revoked",
   expired: "Expired",
+};
+
+export const ENTERPRISE_STATUS_LABELS: Record<EnterpriseUserStatus, string> = {
+  pending_claim: "Pending sign-in",
+  active: "Active",
+  suspended: "Suspended in this enterprise",
+};
+
+export const ENTERPRISE_ROLE_LABELS: Record<EnterpriseUserRole, string> = {
+  admin: "Enterprise admin",
+  member: "Member",
+};
+
+export const CAPABILITY_LABELS: Record<string, string> = {
+  code_read: "Read code",
+  issue_write: "Write issues",
+  repository_write: "Write repository",
+  repository_manage: "Manage repository",
+};
+
+export const REPOSITORY_EVIDENCE_LABELS: Record<string, string> = {
+  verified: "Verified",
+  unverified: "Unverified",
+  removed: "Access removed",
+  confirmed_loss: "Confirmed loss",
+};
+
+/** Every candidate refusal is a refusal; none is rendered as eligibility. */
+export const INELIGIBLE_REASON_LABELS: Record<
+  NonNullable<MemberCandidate["ineligible_reason"]>,
+  string
+> = {
+  identity_unlinked: "The provider subject has not signed in yet.",
+  already_member: "Already a member of this workspace.",
+  workspace_archived: "The workspace is archived.",
+  repository_missing: "A workspace repository is missing.",
+  repository_set_unsupported: "The repository set is not supported.",
+  repository_binding_inconsistent: "The repository binding is inconsistent.",
+  installation_not_approved: "The provider installation is not approved.",
+  provider_instance_unapproved: "The provider instance is not approved.",
+  subject_missing: "The provider subject is missing.",
+  authority_unknown: "Provider authority is unknown.",
+  authority_stale: "Provider authority is stale; reconciliation is pending.",
+  verification_expired: "Capability verification expired.",
+  permission_visibility_none: "The provider grants no observable permission.",
+  permission_visibility_partial: "Provider permissions are only partially observable.",
+  role_missing: "No provider role is recorded.",
+  unsupported_role: "The provider role cannot be mapped to a workspace role.",
+  repository_access_removed: "Repository access was removed by the provider.",
+  no_code_read: "Code read is not proven on every repository.",
+  capability_store_unavailable: "The capability store is unavailable.",
 };
 
 export interface ErrorDescription {
@@ -67,6 +121,30 @@ const ERROR_COPY: Record<string, string> = {
   SERVICE_INTEGRATION_AUDIT_UNAVAILABLE:
     "The audit trail is unavailable, so nothing changed. Retry when it recovers.",
   WORKSPACE_ARCHIVED: "Archived workspaces cannot carry a service integration.",
+  LAST_ENTERPRISE_ADMIN:
+    "This is the last active enterprise administrator. Grant another administrator first.",
+  USER_NOT_CLAIMED:
+    "This person has not signed in yet, so the enterprise role cannot change until the identity is claimed.",
+  LAST_WORKSPACE_OWNER:
+    "This is the workspace's last owner. Assign another owner before removing or demoting them.",
+  TARGET_NOT_ELIGIBLE:
+    "The provider facts do not currently prove access for this person in every workspace repository.",
+  MEMBERSHIP_CONFLICT: "This person is already a member of this workspace.",
+  ENTERPRISE_MEMBERSHIP_SUSPENDED:
+    "This person's enterprise membership is suspended. Restore it in the enterprise directory first.",
+  CAPABILITY_MANAGEMENT_REQUIRED:
+    "Repository management must be verified across every workspace repository to read or change this ceiling.",
+  CAPABILITY_ADMIN_REQUIRED: "Only an enterprise administrator may reapprove a capability ceiling.",
+  CAPABILITY_CEILING_UNAVAILABLE:
+    "Current provider evidence is missing or stale, so no ceiling decision can be made yet.",
+  CAPABILITY_CEILING_EXCEEDS_VERIFIED:
+    "The requested capabilities exceed the provider-verified intersection.",
+  CAPABILITY_CEILING_NOT_ELIGIBLE:
+    "The verified intersection lacks code read, so this member cannot be approved.",
+  CAPABILITY_CEILING_MISMATCH:
+    "Provider evidence changed while you were editing. Reload the verification and decide again.",
+  AUTHORITY_RECHECK_REQUIRED: "Provider authority is being rechecked. Retry after reconciliation.",
+  INVALID_CURSOR: "The page cursor is no longer valid. Reload the list.",
 };
 
 export function describeError(caught: unknown): ErrorDescription {

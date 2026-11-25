@@ -10,21 +10,35 @@ import { ApiError } from "../api/client";
 import type { components } from "../api/contracts/schema";
 import type {
   CreatedInvitation,
+  EnterpriseUserPage,
   IdentityClient,
+  LoginProvider,
+  MemberCandidate,
+  MemberCapabilityCeilingView,
   Membership,
   SessionInfo,
   Workspace,
 } from "../api/identity";
 import { WorkspaceAdminDialog } from "./WorkspaceAdminDialog";
 import { capabilityProjection } from "../capabilities/test-projection";
+import { enterpriseProjection } from "../capabilities/test-enterprise-projection";
 
 const fixtureDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../../docs/fixtures/identity-api-v1",
 );
 
+const capabilityFixtureDir = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../../docs/fixtures/capability-api-v1",
+);
+
 function fixture<T>(name: string): T {
   return JSON.parse(readFileSync(path.join(fixtureDir, name), "utf8")) as T;
+}
+
+function capabilityFixture<T>(name: string): T {
+  return JSON.parse(readFileSync(path.join(capabilityFixtureDir, name), "utf8")) as T;
 }
 
 const workspace = fixture<Workspace>("workspace.json");
@@ -32,6 +46,25 @@ const session = fixture<SessionInfo>("session.json");
 const memberPage = fixture<{ items: Membership[]; next_cursor: string | null }>(
   "membership-page.json",
 );
+const enterpriseUserPage: EnterpriseUserPage = {
+  items: [fixture("enterprise-user.json")],
+  next_cursor: null,
+};
+const enterpriseUser = enterpriseUserPage.items[0];
+const loginProvider = fixture<LoginProvider>("login-provider.json");
+const candidate = fixture<MemberCandidate>("member-candidate.json");
+const secondWorkspace: Workspace = {
+  ...workspace,
+  id: "ws_01J8Z1C3D5",
+  name: "Second Payments",
+  repository: { ...workspace.repository, repository_id: "987654321" },
+};
+const capabilityView = capabilityFixture<MemberCapabilityCeilingView>(
+  "member-capability-ceiling.json",
+);
+const managedCapabilityView = structuredClone(capabilityView);
+managedCapabilityView.capability_ceiling.can_manage = true;
+managedCapabilityView.capability_ceiling.ceiling.promotion_available = true;
 const team = fixture<components["schemas"]["Team"]>("team.json");
 const serviceIntegration = fixture<components["schemas"]["ServiceIntegration"]>(
   "service-integration.json",
@@ -57,7 +90,7 @@ function errorPayload(code: string): components["schemas"]["Error"] {
 }
 
 interface FakeClient {
-  listWorkspaces: Mock;
+  listAllWorkspaces: Mock;
   listWorkspaceMembers: Mock;
   updateWorkspaceMember: Mock;
   removeWorkspaceMember: Mock;
@@ -73,11 +106,22 @@ interface FakeClient {
   initializeServiceIntegration: Mock;
   deactivateServiceIntegration: Mock;
   getWorkspaceCapabilities: Mock;
+  getEnterpriseCapabilities: Mock;
+  listEnterpriseUsers: Mock;
+  addEnterpriseUser: Mock;
+  setEnterpriseUserRole: Mock;
+  setEnterpriseUserStatus: Mock;
+  listLoginProviders: Mock;
+  listMemberCandidates: Mock;
+  addWorkspaceMember: Mock;
+  grantWorkspaceMember: Mock;
+  getMemberCapability: Mock;
+  reapproveMemberCapability: Mock;
 }
 
 function fakeClient(): FakeClient {
   return {
-    listWorkspaces: vi.fn().mockResolvedValue({ items: [workspace], next_cursor: null }),
+    listAllWorkspaces: vi.fn().mockResolvedValue([workspace]),
     listWorkspaceMembers: vi.fn().mockResolvedValue(memberPage),
     updateWorkspaceMember: vi.fn(),
     removeWorkspaceMember: vi.fn().mockResolvedValue(undefined),
@@ -114,6 +158,27 @@ function fakeClient(): FakeClient {
         enterpriseAdmin: true,
       }),
     ),
+    getEnterpriseCapabilities: vi
+      .fn()
+      .mockResolvedValue(enterpriseProjection({ enterpriseId: workspace.enterprise_id })),
+    listEnterpriseUsers: vi.fn().mockResolvedValue(enterpriseUserPage),
+    addEnterpriseUser: vi.fn().mockResolvedValue({
+      enterprise_user: enterpriseUser,
+      created: true,
+    }),
+    setEnterpriseUserRole: vi.fn(),
+    setEnterpriseUserStatus: vi.fn(),
+    listLoginProviders: vi.fn().mockResolvedValue([loginProvider]),
+    listMemberCandidates: vi.fn().mockResolvedValue({
+      items: [candidate],
+      next_cursor: null,
+    }),
+    addWorkspaceMember: vi.fn().mockResolvedValue(memberPage.items[0]),
+    grantWorkspaceMember: vi.fn().mockResolvedValue(memberPage.items[0]),
+    getMemberCapability: vi.fn().mockResolvedValue(managedCapabilityView),
+    reapproveMemberCapability: vi
+      .fn()
+      .mockResolvedValue(managedCapabilityView.capability_ceiling.evaluation.ceiling),
   };
 }
 
@@ -202,10 +267,7 @@ describe("WorkspaceAdminDialog", () => {
 
   it("keeps a non-manager read-only and never requests the invitation list", async () => {
     const client = fakeClient();
-    client.listWorkspaces.mockResolvedValue({
-      items: [{ ...workspace, role: "member" }],
-      next_cursor: null,
-    });
+    client.listAllWorkspaces.mockResolvedValue([{ ...workspace, role: "member" }]);
     client.getWorkspaceCapabilities.mockResolvedValue(
       capabilityProjection({
         role: "member",
@@ -356,6 +418,184 @@ describe("WorkspaceAdminDialog", () => {
     expect(client.getServiceIntegration).toHaveBeenCalledWith(
       workspace.enterprise_id,
       workspace.id,
+    );
+  });
+
+  it("offers the enterprise directory only to enterprise administrators", async () => {
+    const client = fakeClient();
+    const admin = renderDialog(client);
+
+    await userEvent.click(await screen.findByRole("tab", { name: "Enterprise people" }));
+    expect(await screen.findByText("Ada Lovelace")).toBeTruthy();
+    expect(client.listEnterpriseUsers).toHaveBeenCalledWith(workspace.enterprise_id, {});
+    expect(client.getEnterpriseCapabilities.mock.calls[0][0]).toBe(workspace.enterprise_id);
+    admin.unmount();
+
+    renderDialog(client, nonAdminSession);
+    expect(screen.queryByRole("tab", { name: "Enterprise people" })).toBeNull();
+  });
+
+  it("reads per-repository evidence and reapproves inside the verified intersection", async () => {
+    const client = fakeClient();
+    renderDialog(client);
+
+    const row = (await screen.findByText("Ada Lovelace")).closest("li") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: "Verification" }));
+
+    expect(await screen.findByText("github:acme/payments")).toBeTruthy();
+    expect(client.getMemberCapability).toHaveBeenCalledWith(
+      workspace.enterprise_id,
+      workspace.id,
+      "usr_01J8Z5N4P7",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Reapprove verified ceiling" }));
+    await waitFor(() =>
+      expect(client.reapproveMemberCapability).toHaveBeenCalledWith(
+        workspace.enterprise_id,
+        workspace.id,
+        "usr_01J8Z5N4P7",
+        { version: 2 },
+      ),
+    );
+  });
+
+  it("shows candidate eligibility and grants only the selected account and role", async () => {
+    const client = fakeClient();
+    renderDialog(client);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Provider candidates" }));
+    expect(await screen.findByText("Grace Hopper")).toBeTruthy();
+    expect(client.listMemberCandidates).toHaveBeenCalledWith(workspace.id, undefined);
+
+    await userEvent.type(screen.getByPlaceholderText("usr_…"), "usr_01J8Z8R3S5");
+    await userEvent.click(screen.getByRole("button", { name: "Grant membership" }));
+    await waitFor(() =>
+      expect(client.addWorkspaceMember).toHaveBeenCalledWith(workspace.id, {
+        user_id: "usr_01J8Z8R3S5",
+        role: "member",
+      }),
+    );
+  });
+
+  it("renders a provider refusal as ineligibility, never as an empty roster", async () => {
+    const client = fakeClient();
+    client.listMemberCandidates.mockResolvedValue({
+      items: [
+        {
+          ...candidate,
+          eligible: false,
+          max_role: null,
+          assignable_roles: [],
+          ineligible_reason: "authority_stale",
+        },
+      ],
+      next_cursor: null,
+    });
+    renderDialog(client);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Provider candidates" }));
+    expect(await screen.findByText(/Provider authority is stale/i)).toBeTruthy();
+    expect(screen.queryByText(/^Eligible up to/)).toBeNull();
+  });
+
+  it("explains the last-owner refusal and keeps the member", async () => {
+    const client = fakeClient();
+    client.removeWorkspaceMember.mockRejectedValue(
+      new ApiError(409, errorPayload("LAST_WORKSPACE_OWNER"), "Denied"),
+    );
+    renderDialog(client);
+
+    const row = (await screen.findByText("Grace Hopper")).closest("li") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: "Remove" }));
+    await userEvent.click(within(row).getByRole("button", { name: "Remove" }));
+
+    expect(
+      await screen.findByText(
+        "This is the workspace's last owner. Assign another owner before removing or demoting them.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("Grace Hopper")).toBeTruthy();
+  });
+
+  it("reaches the enterprise directory without any visible workspace", async () => {
+    const client = fakeClient();
+    client.listAllWorkspaces.mockResolvedValue([]);
+    renderDialog(client);
+
+    const nav = await screen.findByRole("navigation", { name: "Workspaces" });
+    await userEvent.click(within(nav).getByRole("button", { name: /Enterprise people/ }));
+
+    expect(await screen.findByText("Ada Lovelace")).toBeTruthy();
+    expect(client.listEnterpriseUsers).toHaveBeenCalledWith(workspace.enterprise_id, {});
+  });
+
+  it("renders an incomplete provider roster as a refusal, not an empty list", async () => {
+    const client = fakeClient();
+    client.listMemberCandidates.mockRejectedValue(
+      new ApiError(409, errorPayload("PROVIDER_ROSTER_INCOMPLETE"), "Denied"),
+    );
+    renderDialog(client);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Provider candidates" }));
+    expect(
+      await screen.findByText("The provider roster is incomplete. Retry after reconciliation."),
+    ).toBeTruthy();
+  });
+
+  it("keeps a cross-enterprise directory read non-enumerating", async () => {
+    const client = fakeClient();
+    client.listEnterpriseUsers.mockRejectedValue(
+      new ApiError(404, errorPayload("NOT_FOUND"), "Denied"),
+    );
+    renderDialog(client);
+
+    await userEvent.click(await screen.findByRole("tab", { name: "Enterprise people" }));
+    expect(
+      await screen.findByText("The requested resource was not found in your visible scope."),
+    ).toBeTruthy();
+  });
+
+  it("offers workspaces beyond the first page and grants only the chosen one", async () => {
+    const client = fakeClient();
+    client.listAllWorkspaces.mockResolvedValue([workspace, secondWorkspace]);
+    client.listMemberCandidates.mockResolvedValue({
+      items: [
+        {
+          ...candidate,
+          user: {
+            display_name: "Ada Lovelace",
+            identities: [
+              {
+                provider_instance_id: enterpriseUser.provider_instance_id,
+                provider_type: "github",
+                subject_id: enterpriseUser.subject,
+              },
+            ],
+          },
+        },
+      ],
+      next_cursor: null,
+    });
+    renderDialog(client);
+
+    const nav = await screen.findByRole("navigation", { name: "Workspaces" });
+    expect(within(nav).getByRole("button", { name: /Second Payments/ })).toBeTruthy();
+    await userEvent.click(within(nav).getByRole("button", { name: /Enterprise people/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Workspace access" }));
+
+    const grant = screen.getByLabelText("Workspace access");
+    await userEvent.click(within(grant).getByRole("combobox", { name: "Workspace to grant" }));
+    await userEvent.click(screen.getByRole("option", { name: "Second Payments" }));
+    expect(await within(grant).findByText(/Eligible up to Member/)).toBeTruthy();
+    await userEvent.click(within(grant).getByRole("button", { name: "Grant Member" }));
+
+    await waitFor(() =>
+      expect(client.grantWorkspaceMember).toHaveBeenCalledWith(
+        workspace.enterprise_id,
+        secondWorkspace.id,
+        enterpriseUser.user_id,
+        { role: "member" },
+      ),
     );
   });
 });
