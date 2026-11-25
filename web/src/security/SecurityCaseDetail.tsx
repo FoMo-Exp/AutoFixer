@@ -183,52 +183,69 @@ export function SecurityCaseDetail({
   const canRevokeRecovery = dutyAllowed("recovery.revoke");
   const canReconcileRecovery = dutyAllowed("recovery.reconcile");
   const canReviewRecovery = canApproveRecovery || canRevokeRecovery || canReconcileRecovery;
-  // Every recovery operation captures this generation. A permission or
-  // workspace/case identity change advances it, so a response that settles
-  // afterwards cannot refill a cache the current authority may not render.
+  // Every recovery operation captures this generation. Any change to the
+  // individual recovery duties or to the workspace/case identity advances it,
+  // so an operation whose own duty was revoked cannot settle into state even
+  // while another recovery duty remains.
   const recoveryAuthorityRef = useRef({
     generation: 0,
-    canReview: canReviewRecovery,
+    approve: canApproveRecovery,
+    revoke: canRevokeRecovery,
+    reconcile: canReconcileRecovery,
     workspaceId,
     caseId,
   });
   if (
-    recoveryAuthorityRef.current.canReview !== canReviewRecovery ||
+    recoveryAuthorityRef.current.approve !== canApproveRecovery ||
+    recoveryAuthorityRef.current.revoke !== canRevokeRecovery ||
+    recoveryAuthorityRef.current.reconcile !== canReconcileRecovery ||
     recoveryAuthorityRef.current.workspaceId !== workspaceId ||
     recoveryAuthorityRef.current.caseId !== caseId
   ) {
     recoveryAuthorityRef.current = {
       generation: recoveryAuthorityRef.current.generation + 1,
-      canReview: canReviewRecovery,
+      approve: canApproveRecovery,
+      revoke: canRevokeRecovery,
+      reconcile: canReconcileRecovery,
       workspaceId,
       caseId,
     };
   }
   const isCurrentRecovery = (generation: number): boolean =>
-    recoveryAuthorityRef.current.generation === generation &&
-    recoveryAuthorityRef.current.canReview;
+    recoveryAuthorityRef.current.generation === generation;
+  const isCurrentRecoveryFor = (
+    generation: number,
+    duty: "approve" | "revoke" | "reconcile",
+  ): boolean =>
+    recoveryAuthorityRef.current.generation === generation && recoveryAuthorityRef.current[duty];
   useEffect(
     () => () => {
       // Unmount invalidates anything still in flight.
       recoveryAuthorityRef.current = {
         ...recoveryAuthorityRef.current,
         generation: recoveryAuthorityRef.current.generation + 1,
-        canReview: false,
+        approve: false,
+        revoke: false,
+        reconcile: false,
       };
     },
     [],
   );
   // A recovered authorization carries destination, approver, and state data;
-  // losing every recovery duty must drop it from render state immediately.
+  // losing every recovery duty drops it immediately. Losing the reconcile
+  // duty also drops a dispatch result, whose follow-up read is reconcile-only.
   useEffect(() => {
-    if (canReviewRecovery) return;
-    setApproval(undefined);
-    setDispatchResult(undefined);
-    setDispatchAcknowledged(false);
-    setRecoveryError(undefined);
     setRecoveryBusy(undefined);
-    setApprovalLookup("");
-  }, [canReviewRecovery]);
+    if (!canReconcileRecovery) {
+      setDispatchResult(undefined);
+      setDispatchAcknowledged(false);
+    }
+    if (!canApproveRecovery && !canRevokeRecovery && !canReconcileRecovery) {
+      setApproval(undefined);
+      setRecoveryError(undefined);
+      setApprovalLookup("");
+    }
+  }, [canApproveRecovery, canRevokeRecovery, canReconcileRecovery]);
   const transitionDutyAllowed = (from: SecurityCaseState, to: SecurityCaseState): boolean => {
     if (to === "terminated") return canTerminate;
     if (isReviewTransition(from, to)) return canReviewDecision;
@@ -368,14 +385,14 @@ export function SecurityCaseDetail({
     setRecoveryError(undefined);
     try {
       const next = await client.approveSecurityRecovery(workspaceId, caseId, body, key);
-      if (!isCurrentRecovery(generation)) return;
+      if (!isCurrentRecoveryFor(generation, "approve")) return;
       recoveryKeys.current.complete(body);
       setApproval(next);
       setDispatchResult(undefined);
       setDispatchAcknowledged(false);
       setTimelineToken((value) => value + 1);
     } catch (caught) {
-      if (!isCurrentRecovery(generation)) return;
+      if (!isCurrentRecoveryFor(generation, "approve")) return;
       setRecoveryError(describeSecurityError(caught));
     } finally {
       if (isCurrentRecovery(generation)) setRecoveryBusy(undefined);
@@ -410,12 +427,12 @@ export function SecurityCaseDetail({
     setRecoveryError(undefined);
     try {
       const next = await client.revokeSecurityRecoveryApproval(workspaceId, authorizationId, key);
-      if (!isCurrentRecovery(generation)) return;
+      if (!isCurrentRecoveryFor(generation, "revoke")) return;
       recoveryKeys.current.complete({ revoke: authorizationId });
       setApproval(next);
       setTimelineToken((value) => value + 1);
     } catch (caught) {
-      if (!isCurrentRecovery(generation)) return;
+      if (!isCurrentRecoveryFor(generation, "revoke")) return;
       setRecoveryError(describeSecurityError(caught));
     } finally {
       if (isCurrentRecovery(generation)) setRecoveryBusy(undefined);
@@ -439,20 +456,20 @@ export function SecurityCaseDetail({
     setRecoveryError(undefined);
     try {
       const result = await client.dispatchSecurityRecovery(workspaceId, authorizationId, body, key);
-      if (!isCurrentRecovery(generation)) return;
+      if (!isCurrentRecoveryFor(generation, "reconcile")) return;
       recoveryKeys.current.complete({ dispatch: authorizationId, body });
       setDispatchResult(result);
       setDispatchAcknowledged(false);
       setTimelineToken((value) => value + 1);
       try {
         const refreshed = await client.getSecurityRecoveryApproval(workspaceId, authorizationId);
-        if (!isCurrentRecovery(generation)) return;
+        if (!isCurrentRecoveryFor(generation, "reconcile")) return;
         setApproval(refreshed);
       } catch {
         // The dispatch result stands; the authorization refresh is informational.
       }
     } catch (caught) {
-      if (!isCurrentRecovery(generation)) return;
+      if (!isCurrentRecoveryFor(generation, "reconcile")) return;
       setRecoveryError(describeSecurityError(caught));
     } finally {
       if (isCurrentRecovery(generation)) setRecoveryBusy(undefined);

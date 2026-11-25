@@ -74,10 +74,13 @@ from nothing else. Every request remains authorized by the service.
   `audit.export` each gate their own control. The recovery authorization
   lookup itself requires a recovery duty, and losing it clears the loaded
   destination, approver, and state. Every recovery operation (lookup,
-  approve, revoke, dispatch) captures an authority generation; a response
-  that settles after a duty revocation, a workspace/case change, or unmount
-  is discarded, and no follow-up authorization read runs. Re-granting the
-  duty never replays that older result; a new read is required. Losing the
+  approve, revoke, dispatch) captures an authority generation built from the
+  individual `recovery.approve` / `recovery.revoke` / `recovery.reconcile`
+  decisions plus the workspace/case identity. Revoking one duty invalidates
+  the operations that depended on it even while another recovery duty
+  remains. A response that settles after that change, or after unmount, is
+  discarded, and no follow-up authorization read runs. Re-granting the duty
+  never replays that older result; a new read is required. Losing the
   case-read duty clears the loaded cases and the open detail and issues no
   further case request, while another duty (for example audit) keeps its own
   section.
