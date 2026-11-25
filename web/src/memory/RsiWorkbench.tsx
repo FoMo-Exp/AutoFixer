@@ -28,6 +28,8 @@ import {
 } from "./rsi-format";
 import type { RsiError } from "./rsi-format";
 import { RsiProposalDetail } from "./RsiProposalDetail";
+import { accessAllowed } from "../capabilities/projection";
+import type { ModuleAccess } from "../capabilities/projection";
 
 type StatusFilter = "all" | RsiProposalStatus;
 type RiskFilter = "all" | RsiRisk;
@@ -36,11 +38,14 @@ export function RsiWorkbench({
   client,
   currentUserId,
   loadWorkspaces,
+  access,
 }: {
   client: ForgePilotClient;
   currentUserId?: string;
   /** The caller's live workspace directory, owned by the identity surface. */
   loadWorkspaces: () => Promise<Workspace[]>;
+  /** DAT-279 capability decisions for the RSI module. */
+  access?: ModuleAccess;
 }): ReactElement {
   const sidebarGlassRef = useLiquidGlass<HTMLElement>();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -93,11 +98,20 @@ export function RsiWorkbench({
   const activeWorkspaces = workspaces.filter((workspace) => workspace.status === "active");
   const selectedWorkspace = activeWorkspaces.find((workspace) => workspace.id === workspaceId);
   const role = selectedWorkspace?.role;
-  // The read routes require the member role, so a viewer is refused by the
-  // service before any list is returned. Do not issue a request that is known
-  // to be denied; explain the role instead.
-  const canRead = role === "member" || role === "admin" || role === "owner";
-  const canOperate = role === "owner";
+  // The projection is the only action gate; the membership role remains the
+  // fallback for the legacy local-operator mode (no projection).
+  const canRead =
+    access !== undefined
+      ? accessAllowed(access, "view") && access.dataCeiling !== "none"
+      : role !== undefined && role !== "viewer";
+  const canApprove =
+    access !== undefined ? accessAllowed(access, "approve") : role === "owner" || role === "admin";
+  const canEvaluate = access !== undefined ? accessAllowed(access, "evaluate") : role === "owner";
+  const canCanary = access !== undefined ? accessAllowed(access, "canary") : role === "owner";
+  const canRollback = access !== undefined ? accessAllowed(access, "rollback") : role === "owner";
+  const canKillSwitch =
+    access !== undefined ? accessAllowed(access, "kill_switch") : role === "owner";
+  const canOperate = canEvaluate;
 
   useEffect(() => {
     if (!workspaceId || !canRead) {
@@ -382,6 +396,10 @@ export function RsiWorkbench({
             role={role}
             currentUserId={currentUserId}
             status={status}
+            canApprove={canApprove}
+            canEvaluate={canEvaluate}
+            canCanary={canCanary}
+            canRollback={canRollback}
             onBack={backToList}
             onChanged={refreshAll}
           />
@@ -390,6 +408,7 @@ export function RsiWorkbench({
             workspaceRole={role}
             canRead={canRead}
             canOperate={canOperate}
+            canKillSwitch={canKillSwitch}
             status={status}
             loading={dataLoading}
             error={dataError}
@@ -451,6 +470,7 @@ function RsiOverview({
   workspaceRole,
   canRead,
   canOperate,
+  canKillSwitch,
   status,
   loading,
   error,
@@ -465,6 +485,7 @@ function RsiOverview({
   workspaceRole: Workspace["role"] | undefined;
   canRead: boolean;
   canOperate: boolean;
+  canKillSwitch: boolean;
   status: RsiStatus | undefined;
   loading: boolean;
   error: RsiError | undefined;
@@ -522,6 +543,7 @@ function RsiOverview({
             <RsiControlCard
               status={status}
               canOperate={canOperate}
+              canKillSwitch={canKillSwitch}
               busy={controlBusy}
               error={controlError}
               onDismissError={onDismissControlError}
@@ -548,6 +570,7 @@ function RsiOverview({
 function RsiControlCard({
   status,
   canOperate,
+  canKillSwitch,
   busy,
   error,
   onDismissError,
@@ -556,6 +579,7 @@ function RsiControlCard({
 }: {
   status: RsiStatus;
   canOperate: boolean;
+  canKillSwitch: boolean;
   busy: boolean;
   error: string | undefined;
   onDismissError: () => void;
@@ -715,7 +739,7 @@ function RsiControlCard({
             className={`button button-small ${
               controls.kill_switch ? "button-secondary" : "button-danger"
             }`}
-            disabled={!canOperate || busy}
+            disabled={!canKillSwitch || busy}
             onClick={() => setKillSwitchOpen(true)}
           >
             {controls.kill_switch ? "Release kill switch" : "Engage kill switch"}
@@ -723,7 +747,7 @@ function RsiControlCard({
         </div>
         {!canOperate && (
           <p className="stage-terminal-note" role="status">
-            Owner role required to change RSI controls.
+            Owner capability required to change RSI controls.
           </p>
         )}
       </form>

@@ -48,6 +48,10 @@ export interface IssueDetailProps {
   seed: Issue | undefined;
   currentUserId?: string;
   canMutate: boolean;
+  /** Candidate decisions, delivery and comments are separate actions. */
+  canComment?: boolean;
+  canDecide?: boolean;
+  canDeliver?: boolean;
   onBack: () => void;
   onChanged: () => void;
 }
@@ -59,6 +63,9 @@ export function IssueDetail({
   seed,
   currentUserId,
   canMutate,
+  canComment = canMutate,
+  canDecide = canMutate,
+  canDeliver = canMutate,
   onBack,
   onChanged,
 }: IssueDetailProps): ReactElement {
@@ -325,6 +332,7 @@ export function IssueDetail({
               workspaceId={workspaceId}
               issue={issue}
               canMutate={canMutate}
+              canComment={canComment}
               onChanged={() => {
                 onChanged();
                 setReloadToken((value) => value + 1);
@@ -423,7 +431,7 @@ export function IssueDetail({
               workspaceId={workspaceId}
               issueId={issueId}
               currentUserId={currentUserId}
-              canMutate={canMutate}
+              canMutate={canDecide}
               candidates={candidates}
               approvals={approvals}
               loading={reviewLoading}
@@ -442,7 +450,7 @@ export function IssueDetail({
               approvals={approvals}
               loading={reviewLoading}
               error={reviewError}
-              canMutate={canMutate}
+              canMutate={canDeliver}
               onRetry={() => setReloadToken((value) => value + 1)}
               onDeliveryUpdated={applyDelivery}
               onChanged={onChanged}

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, ForgePilotClient } from "../api/client";
 import type { MemoryItem, MemoryItemPage, Workspace } from "../api/client";
 import { MemoryWorkbench } from "./MemoryWorkbench";
+import { accessOf, capabilityProjection, withDataCeiling } from "../capabilities/test-projection";
 
 const fixtureDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -91,6 +92,31 @@ describe("memory workbench", () => {
     expect(screen.getAllByText("2 citations").length).toBeGreaterThan(0);
     expect(screen.queryByText(/Restricted item/)).toBeNull();
     expect(client.listMemoryItems).toHaveBeenCalledWith(workspace.id, {});
+  });
+
+  it("issues no memory read when the projection reports no data ceiling", async () => {
+    const projection = withDataCeiling(
+      capabilityProjection({
+        role: "member",
+        workspaceId: workspace.id,
+        enterpriseId: workspace.enterprise_id,
+      }),
+      "memory",
+      "none",
+    );
+    vi.mocked(ForgePilotClient.prototype.listMemoryItems).mockClear();
+    const client = makeClient();
+    render(
+      <MemoryWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        access={accessOf(projection, "memory")}
+      />,
+    );
+
+    await waitFor(() => expect(screen.queryByText("Resolving workspace scope…")).toBeNull());
+    await waitFor(() => expect(ForgePilotClient.prototype.listMemoryItems).not.toHaveBeenCalled());
+    expect(screen.queryByText(statementOf(firstPage.items[0]))).toBeNull();
   });
 
   it("opens item detail from the list view data with evidence and applicability", async () => {

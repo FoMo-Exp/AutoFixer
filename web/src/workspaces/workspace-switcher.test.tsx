@@ -7,6 +7,7 @@ import { ApiError, ForgePilotClient } from "../api/client";
 import type { Task } from "../api/client";
 import { IdentityClient } from "../api/identity";
 import type { Workspace } from "../api/identity";
+import { capabilityProjection } from "../capabilities/test-projection";
 import type { DesktopAuthState } from "../../electron/auth";
 
 const providers = [
@@ -107,6 +108,14 @@ beforeEach(() => {
   installDesktopAuth();
   window.localStorage.setItem(storedKey, "ws_alpha");
   vi.spyOn(IdentityClient.prototype, "listAllWorkspaces").mockResolvedValue([alpha, beta]);
+  vi.spyOn(IdentityClient.prototype, "getWorkspaceCapabilities").mockImplementation(
+    async (workspaceId) =>
+      capabilityProjection({
+        role: workspaceId === "ws_view" ? "viewer" : workspaceId === "ws_beta" ? "admin" : "member",
+        workspaceId,
+        enterpriseId: "ent_1",
+      }),
+  );
   vi.spyOn(ForgePilotClient.prototype, "listTasks").mockResolvedValue({
     items: [],
     next_cursor: null,

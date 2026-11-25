@@ -11,6 +11,8 @@ import type {
   Workspace,
 } from "../api/client";
 import type { Team } from "../api/identity";
+import { accessAllowed } from "../capabilities/projection";
+import type { ModuleAccess } from "../capabilities/projection";
 import { formatDate } from "../ui/format";
 import { redactText } from "../ui/redaction";
 import { Select } from "../ui/Select";
@@ -131,6 +133,8 @@ export interface MemoryWorkbenchProps {
   loadTeams?: (workspaceId: string) => Promise<Team[]>;
   /** The caller's live workspace directory, owned by the identity surface. */
   loadWorkspaces: () => Promise<Workspace[]>;
+  /** DAT-279 capability decisions for the memory module. */
+  access?: ModuleAccess;
 }
 
 /**
@@ -144,6 +148,7 @@ export function MemoryWorkbench({
   session,
   loadTeams,
   loadWorkspaces,
+  access,
 }: MemoryWorkbenchProps): ReactElement {
   const sidebarGlassRef = useLiquidGlass<HTMLElement>();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -185,16 +190,70 @@ export function MemoryWorkbench({
     selection !== undefined && selection.workspaceId === workspaceId ? selection.item : undefined;
   const selectedItemId = selectedItem?.item_id;
 
+  // A capability change (ceiling, governance, or visibility) invalidates the
+  // items already in render state; they are dropped before the next read so a
+  // stricter projection never re-renders the previous scope's content.
+  const accessKey =
+    access === undefined
+      ? "legacy"
+      : [
+          access.dataCeiling,
+          access.visible,
+          accessAllowed(access, "view"),
+          accessAllowed(access, "view_confidential"),
+          accessAllowed(access, "govern_workspace"),
+          accessAllowed(access, "govern_team"),
+        ].join(":");
+  useEffect(() => {
+    setPage({ key: "", items: [], nextCursor: null });
+    setSelection(undefined);
+    setListToken((value) => value + 1);
+  }, [accessKey]);
+
   const sessionRole = workspaceRoleFromSession(session, workspaceId);
+  // The projection's data ceiling bounds which sensitivity filter is even
+  // meaningful; `restricted` never appears in the ordinary browse. A module
+  // whose ceiling is unverified (`none`) issues no read at all.
+  const canReadMemory =
+    access === undefined ? true : accessAllowed(access, "view") && access.dataCeiling !== "none";
+  const ceilingAllows = (value: MemorySensitivity): boolean => {
+    if (access === undefined) return value !== "restricted";
+    if (value === "restricted") return accessAllowed(access, "restricted_access");
+    if (value === "confidential") return accessAllowed(access, "view_confidential");
+    return access.dataCeiling !== "none";
+  };
+  const sensitivityOptions = SENSITIVITY_OPTIONS.filter((option) =>
+    ceilingAllows(option.value as MemorySensitivity),
+  );
+  const canConfidential = access === undefined ? true : accessAllowed(access, "view_confidential");
+  useEffect(() => {
+    if (sensitivity === "restricted") setSensitivity("all");
+    else if (sensitivity === "confidential" && !canConfidential) setSensitivity("all");
+  }, [canConfidential, sensitivity]);
+  const governanceGates =
+    access === undefined
+      ? undefined
+      : {
+          governWorkspace: accessAllowed(access, "govern_workspace"),
+          governTeam: accessAllowed(access, "govern_team"),
+        };
   const [ledTeamIds, setLedTeamIds] = useState<ReadonlySet<string>>(new Set());
   const [teamState, setTeamState] = useState<"idle" | "loading" | "ready" | "failed">("idle");
 
   // Team leadership is not a workspace role, so it must be looked up from the
-  // workspace's teams. Only a member can gain standing this way; an owner or
-  // admin is never limited to a team, and a viewer never governs.
+  // workspace's teams. Only a member whose projection allows `govern_team` can
+  // gain standing this way; an owner or admin is never limited to a team, and
+  // a viewer never governs.
+  const canLookUpTeamLeadership = governanceGates === undefined || governanceGates.governTeam;
   useEffect(() => {
     let active = true;
-    if (!workspaceId || !session || sessionRole !== "member" || !loadTeams) {
+    if (
+      !workspaceId ||
+      !session ||
+      sessionRole !== "member" ||
+      !loadTeams ||
+      !canLookUpTeamLeadership
+    ) {
       setLedTeamIds(new Set());
       setTeamState("ready");
       return () => {
@@ -220,12 +279,12 @@ export function MemoryWorkbench({
     return () => {
       active = false;
     };
-  }, [workspaceId, session, sessionRole, loadTeams]);
+  }, [workspaceId, session, sessionRole, loadTeams, canLookUpTeamLeadership]);
 
   const standing: MemoryStanding | undefined =
     selectedItem && sessionRole
       ? (() => {
-          const base = memoryStanding(sessionRole, ledTeamIds, selectedItem);
+          const base = memoryStanding(sessionRole, ledTeamIds, selectedItem, governanceGates);
           if (base.scope === "workspace") return base;
           if (sessionRole === "member" && teamState !== "ready") {
             return {
@@ -269,7 +328,12 @@ export function MemoryWorkbench({
   }, [loadWorkspaces, workspaceToken]);
 
   useEffect(() => {
-    if (!workspaceId) return;
+    if (!workspaceId || !canReadMemory) {
+      listRequestRef.current += 1;
+      setPage({ key: "", items: [], nextCursor: null });
+      setListLoading(false);
+      return;
+    }
     let active = true;
     const requestId = ++listRequestRef.current;
     const key = memoryQueryKey(workspaceId, kind, status, tier, trust, sensitivity, scope);
@@ -298,10 +362,21 @@ export function MemoryWorkbench({
     return () => {
       active = false;
     };
-  }, [client, workspaceId, kind, status, tier, trust, sensitivity, scope, listToken]);
+  }, [
+    client,
+    workspaceId,
+    kind,
+    status,
+    tier,
+    trust,
+    sensitivity,
+    scope,
+    listToken,
+    canReadMemory,
+  ]);
 
   const loadMore = useCallback(async (): Promise<void> => {
-    if (!workspaceId || !nextCursor || loadingMore) return;
+    if (!workspaceId || !canReadMemory || !nextCursor || loadingMore) return;
     const requestId = listRequestRef.current;
     const key = memoryQueryKey(workspaceId, kind, status, tier, trust, sensitivity, scope);
     setLoadingMore(true);
@@ -329,7 +404,19 @@ export function MemoryWorkbench({
     } finally {
       setLoadingMore(false);
     }
-  }, [client, workspaceId, nextCursor, loadingMore, kind, status, tier, trust, sensitivity, scope]);
+  }, [
+    client,
+    workspaceId,
+    nextCursor,
+    loadingMore,
+    kind,
+    status,
+    tier,
+    trust,
+    sensitivity,
+    scope,
+    canReadMemory,
+  ]);
 
   const activeWorkspaces = workspaces.filter((workspace) => workspace.status === "active");
   const selectedWorkspace = activeWorkspaces.find((workspace) => workspace.id === workspaceId);
@@ -520,7 +607,7 @@ export function MemoryWorkbench({
               }}
               options={[
                 { value: "all", label: "All visible sensitivities" },
-                ...SENSITIVITY_OPTIONS,
+                ...sensitivityOptions,
               ]}
             />
           </div>

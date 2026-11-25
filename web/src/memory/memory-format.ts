@@ -287,34 +287,52 @@ export interface MemoryStanding {
   note: string;
 }
 
+export interface MemoryGovernanceGates {
+  governWorkspace: boolean;
+  governTeam: boolean;
+}
+
 /**
  * Client-side mirror of the governance permission matrix. It only decides
  * which affordances to show; the service stays the authority and every 403 is
- * reported as a denial, never retried.
+ * reported as a denial, never retried. When the capability projection is
+ * available its `govern_workspace` / `govern_team` decisions override the
+ * role mirror; without one (legacy local mode) the role mirror remains.
  */
 export function memoryStanding(
   role: WorkspaceRole | undefined,
   ledTeamIds: ReadonlySet<string>,
   item: Pick<MemoryItem, "applicability" | "sensitivity">,
+  gates?: MemoryGovernanceGates,
 ): MemoryStanding {
   if (role === "owner" || role === "admin") {
+    const canGovern =
+      item.sensitivity !== "restricted" && (gates === undefined || gates.governWorkspace);
     return {
       role,
-      canGovern: item.sensitivity !== "restricted",
+      canGovern,
       scope: "workspace",
       note:
         item.sensitivity === "restricted"
           ? "Restricted items are not governable through this surface."
-          : "Workspace-wide governance applies to every item in this workspace.",
+          : canGovern
+            ? "Workspace-wide governance applies to every item in this workspace."
+            : "Your workspace role could govern, but the capability projection does not allow it right now.",
     };
   }
   const teamId = item.applicability.team_id;
   if (teamId !== undefined && ledTeamIds.has(teamId)) {
+    const canGovern =
+      item.sensitivity !== "restricted" && (gates === undefined || gates.governTeam);
     return {
       role,
-      canGovern: item.sensitivity !== "restricted",
+      canGovern,
       scope: "team",
-      note: `Team leadership grants governance for ${teamId} only.`,
+      note: canGovern
+        ? `Team leadership grants governance for ${teamId} only.`
+        : gates !== undefined && !gates.governTeam
+          ? "Team leadership is not in the current capability projection."
+          : "This team item is not governable through this surface.",
     };
   }
   return {

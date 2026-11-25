@@ -98,6 +98,27 @@ describe("memoryStanding", () => {
       memoryStanding("owner", new Set(), { ...item, sensitivity: "restricted" }).canGovern,
     ).toBe(false);
   });
+
+  it("lets the capability projection withdraw a role's governance", () => {
+    expect(
+      memoryStanding("admin", new Set(), item, {
+        governWorkspace: false,
+        governTeam: false,
+      }).canGovern,
+    ).toBe(false);
+    expect(
+      memoryStanding("member", new Set(["tem_a"]), item, {
+        governWorkspace: false,
+        governTeam: false,
+      }).canGovern,
+    ).toBe(false);
+    expect(
+      memoryStanding("member", new Set(["tem_a"]), item, {
+        governWorkspace: false,
+        governTeam: true,
+      }).canGovern,
+    ).toBe(true);
+  });
 });
 
 describe("memoryActionOffers", () => {

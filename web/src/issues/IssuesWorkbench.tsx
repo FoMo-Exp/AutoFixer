@@ -16,6 +16,8 @@ import { IssueDetail } from "./IssueDetail";
 import { describeIssueError } from "./errors";
 import type { IssueError } from "./errors";
 import { CreateIdempotencyKeys } from "../api/idempotency";
+import { accessAllowed } from "../capabilities/projection";
+import type { ModuleAccess } from "../capabilities/projection";
 
 type IssueFilter = "all" | ProductState;
 
@@ -37,11 +39,14 @@ export function IssuesWorkbench({
   client,
   currentUserId,
   loadWorkspaces,
+  access,
 }: {
   client: ForgePilotClient;
   currentUserId?: string;
   /** The caller's live workspace directory, owned by the identity surface. */
   loadWorkspaces: () => Promise<Workspace[]>;
+  /** DAT-279 capability decisions for the issues module. */
+  access?: ModuleAccess;
 }): ReactElement {
   const sidebarGlassRef = useLiquidGlass<HTMLElement>();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -70,6 +75,21 @@ export function IssuesWorkbench({
   const [newLabels, setNewLabels] = useState("");
   const createKeys = useRef(new CreateIdempotencyKeys());
 
+  // The issues module reads only with both the view action and a real data
+  // ceiling; an unknown ceiling ("none") never issues a read.
+  const canRead =
+    access === undefined ? true : accessAllowed(access, "view") && access.dataCeiling !== "none";
+
+  useEffect(() => {
+    if (canRead) return;
+    listRequestRef.current += 1;
+    setIssues([]);
+    setNextCursor(null);
+    setSelectedIssueId(undefined);
+    setSeedIssue(undefined);
+    setMobileView("list");
+  }, [canRead]);
+
   useEffect(() => {
     let active = true;
     setWorkspaceLoading(true);
@@ -97,9 +117,11 @@ export function IssuesWorkbench({
   }, [loadWorkspaces, workspaceToken]);
 
   useEffect(() => {
-    if (!workspaceId) {
+    if (!workspaceId || !canRead) {
+      listRequestRef.current += 1;
       setIssues([]);
       setNextCursor(null);
+      setListLoading(false);
       return;
     }
     let active = true;
@@ -126,7 +148,7 @@ export function IssuesWorkbench({
   }, [client, workspaceId, filter, listToken]);
 
   const loadMore = useCallback(async (): Promise<void> => {
-    if (!workspaceId || !nextCursor || loadingMore) return;
+    if (!workspaceId || !canRead || !nextCursor || loadingMore) return;
     const requestId = listRequestRef.current;
     setLoadingMore(true);
     try {
@@ -145,12 +167,21 @@ export function IssuesWorkbench({
     } finally {
       setLoadingMore(false);
     }
-  }, [client, workspaceId, nextCursor, loadingMore, filter]);
+  }, [client, workspaceId, nextCursor, loadingMore, filter, canRead]);
 
   const activeWorkspaces = workspaces.filter((workspace) => workspace.status === "active");
   const selectedWorkspace = activeWorkspaces.find((workspace) => workspace.id === workspaceId);
-  const canMutate = selectedWorkspace !== undefined && selectedWorkspace.role !== "viewer";
-  const canOpenCreate = selectedWorkspace?.role !== "viewer";
+  // The projection is advisory for affordances only; every request is still
+  // re-authorized by the service. Without a projection (legacy local mode) the
+  // membership role remains the gate.
+  const canMutate =
+    access !== undefined
+      ? accessAllowed(access, "create")
+      : selectedWorkspace === undefined || selectedWorkspace.role !== "viewer";
+  const canOpenCreate = canMutate;
+  const canComment = access !== undefined ? accessAllowed(access, "comment") : canMutate;
+  const canDecide = access !== undefined ? accessAllowed(access, "decide_candidate") : canMutate;
+  const canDeliver = access !== undefined ? accessAllowed(access, "deliver") : canMutate;
 
   function selectIssue(issue: Issue): void {
     setSelectedIssueId(issue.issue_id);
@@ -393,6 +424,9 @@ export function IssuesWorkbench({
             seed={seedIssue}
             currentUserId={currentUserId}
             canMutate={canMutate}
+            canComment={canComment}
+            canDecide={canDecide}
+            canDeliver={canDeliver}
             onBack={backToList}
             onChanged={refreshList}
           />

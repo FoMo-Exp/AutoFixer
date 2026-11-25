@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, ForgePilotClient } from "../api/client";
@@ -20,6 +20,8 @@ import type {
 import type { WorkspaceSession } from "../api/identity";
 import type { components } from "../api/contracts/schema";
 import { SecurityWorkbench } from "./SecurityWorkbench";
+import { SecurityCaseDetail } from "./SecurityCaseDetail";
+import type { ModuleAccess } from "../capabilities/projection";
 
 const fixtureDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -64,6 +66,30 @@ function sessionFor(userId: string, admin = false): WorkspaceSession {
     memberships: [
       { enterprise_id: workspace.enterprise_id, workspace_id: workspace.id, role: "member" },
     ],
+  };
+}
+
+/** Case-read access plus the requested recovery duties. */
+function recoveryDutyAccess(options: {
+  approve?: boolean;
+  revoke?: boolean;
+  reconcile?: boolean;
+}): ModuleAccess {
+  const allowed = (value: boolean | undefined) => ({
+    allowed: value === true,
+    required: "security_duty",
+    reason: value === true ? null : "security_duty",
+  });
+  return {
+    visible: true,
+    dataCeiling: "redacted",
+    reason: null,
+    actions: {
+      "case.read_redacted_status": { allowed: true, required: "security_duty", reason: null },
+      "recovery.approve": allowed(options.approve),
+      "recovery.revoke": allowed(options.revoke),
+      "recovery.reconcile": allowed(options.reconcile),
+    },
   };
 }
 
@@ -185,6 +211,134 @@ describe("security case inbox", () => {
     expect(screen.queryByRole("button", { name: /override/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /skip (checks|review)/i })).toBeNull();
     expect(screen.getByText(/There is no per-call exemption/)).toBeTruthy();
+  });
+
+  it("issues no case read when only another security duty is granted", async () => {
+    vi.mocked(ForgePilotClient.prototype.listSecurityCases).mockClear();
+    const auditOnly: ModuleAccess = {
+      visible: true,
+      dataCeiling: "audit",
+      reason: null,
+      actions: {
+        "audit.read": { allowed: true, required: "security_duty", reason: null },
+        "case.read_redacted_status": {
+          allowed: false,
+          required: "security_duty",
+          reason: "security_duty",
+        },
+      },
+    };
+    const client = makeClient();
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+        access={auditOnly}
+      />,
+    );
+
+    expect(await screen.findByRole("button", { name: "Audit" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cases" })).toBeNull();
+    expect(ForgePilotClient.prototype.listSecurityCases).not.toHaveBeenCalled();
+  });
+
+  it("clears loaded cases when the case-read duty is withdrawn", async () => {
+    const withCases: ModuleAccess = {
+      visible: true,
+      dataCeiling: "redacted",
+      reason: null,
+      actions: {
+        "case.read_redacted_status": { allowed: true, required: "security_duty", reason: null },
+        "audit.read": { allowed: true, required: "security_duty", reason: null },
+      },
+    };
+    const withoutCases: ModuleAccess = {
+      ...withCases,
+      actions: {
+        ...withCases.actions,
+        "case.read_redacted_status": {
+          allowed: false,
+          required: "security_duty",
+          reason: "security_duty",
+        },
+      },
+    };
+    const client = makeClient();
+    const { rerender } = render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+        access={withCases}
+      />,
+    );
+    await openCase();
+    expect(screen.getByRole("heading", { name: caseRecord.case_id })).toBeTruthy();
+
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+        access={withoutCases}
+      />,
+    );
+
+    // The render path itself must drop the revoked scope; no intermediate
+    // paint of the cached list or open detail is allowed.
+    expect(screen.queryByRole("button", { name: new RegExp(caseRecord.case_id) })).toBeNull();
+    expect(screen.queryByRole("heading", { name: caseRecord.case_id })).toBeNull();
+    expect(screen.getByRole("button", { name: "Audit" })).toBeTruthy();
+  });
+
+  it("gates transitions and recovery approval by their own duties", async () => {
+    vi.mocked(ForgePilotClient.prototype.readSecurityAuditTrail).mockResolvedValue(
+      auditPageWith([
+        historyEntry(1, "case.handled", "human_handler"),
+        historyEntry(2, "case.submitted_for_review", "human_handler"),
+      ]),
+    );
+    const readOnlyDuty: ModuleAccess = {
+      visible: true,
+      dataCeiling: "redacted",
+      reason: null,
+      actions: {
+        "case.read_redacted_status": { allowed: true, required: "security_duty", reason: null },
+        "case.handle": { allowed: false, required: "security_duty", reason: "security_duty" },
+        "case.review_decide": {
+          allowed: false,
+          required: "security_duty",
+          reason: "security_duty",
+        },
+        "case.terminate": { allowed: false, required: "security_duty", reason: "security_duty" },
+        "case.submit_for_review": {
+          allowed: false,
+          required: "security_duty",
+          reason: "security_duty",
+        },
+        "recovery.approve": { allowed: false, required: "security_duty", reason: "security_duty" },
+      },
+    };
+    const client = makeClient();
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={readOnlyDuty}
+      />,
+    );
+    await openCase();
+
+    expect(screen.getByRole("button", { name: "Approve & resolve" })).toHaveProperty(
+      "disabled",
+      true,
+    );
+    expect(screen.getByRole("button", { name: "Terminate case" })).toHaveProperty("disabled", true);
+    expect(screen.queryByRole("button", { name: "Record approval" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Load authorization" })).toBeNull();
+    expect(screen.getByText(/requires an independent-reviewer/)).toBeTruthy();
   });
 
   it("disables review for the handler of record and enables it for another reviewer", async () => {
@@ -352,6 +506,70 @@ describe("quarantine access", () => {
     expect(screen.queryByText("sk-live-raw-context")).toBeNull();
   });
 
+  it("drops displayed quarantine content when the duty is withdrawn", async () => {
+    vi.spyOn(ForgePilotClient.prototype, "grantSecurityQuarantineAccess").mockResolvedValue(grant);
+    vi.spyOn(ForgePilotClient.prototype, "viewQuarantinedContext").mockResolvedValue({
+      quarantine_id: "q_3c1d",
+      content: "sk-live-raw-context",
+      viewed_at: new Date().toISOString(),
+    });
+    const allowed: ModuleAccess = {
+      visible: true,
+      dataCeiling: "redacted",
+      reason: null,
+      actions: {
+        "case.read_redacted_status": { allowed: true, required: "security_duty", reason: null },
+        "case.handle": { allowed: true, required: "security_duty", reason: null },
+        "quarantine.view": { allowed: true, required: "security_duty", reason: null },
+        "quarantine.grant_access": { allowed: true, required: "security_duty", reason: null },
+      },
+    };
+    const denied: ModuleAccess = {
+      ...allowed,
+      actions: {
+        ...allowed.actions,
+        "quarantine.view": { allowed: false, required: "security_duty", reason: "security_duty" },
+      },
+    };
+    const client = makeClient();
+    const { rerender } = render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_admin", true)}
+        access={allowed}
+      />,
+    );
+    await openCase();
+
+    const section = screen
+      .getByRole("heading", { name: "Quarantine" })
+      .closest("section") as HTMLElement;
+    await userEvent.click(within(section).getByRole("combobox"));
+    await userEvent.click(screen.getByRole("option", { name: "q_3c1d" }));
+    await userEvent.type(within(section).getByLabelText("Grant subject"), "human_handler");
+    await userEvent.click(within(section).getByRole("button", { name: "Issue grant" }));
+    await userEvent.click(within(section).getByRole("checkbox"));
+    await userEvent.click(
+      within(section).getByRole("button", { name: "Inspect quarantined context" }),
+    );
+    expect(await screen.findByText("sk-live-raw-context")).toBeTruthy();
+
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_admin", true)}
+        access={denied}
+      />,
+    );
+
+    await waitFor(() => expect(screen.queryByText("sk-live-raw-context")).toBeNull());
+    expect(
+      within(section).getByRole("button", { name: "Inspect quarantined context" }),
+    ).toHaveProperty("disabled", true);
+  });
+
   it("surfaces an expired grant as an actionable refusal", async () => {
     vi.spyOn(ForgePilotClient.prototype, "viewQuarantinedContext").mockRejectedValue(
       apiError("QUARANTINE_ACCESS_GRANT_EXPIRED", 410, "expired"),
@@ -381,6 +599,578 @@ describe("quarantine access", () => {
 });
 
 describe("recovery authorization", () => {
+  it("does not query or render a recovery authorization without a recovery duty", async () => {
+    const client = makeClient();
+    const getApproval = vi.spyOn(ForgePilotClient.prototype, "getSecurityRecoveryApproval");
+    const caseOnly: ModuleAccess = {
+      visible: true,
+      dataCeiling: "redacted",
+      reason: null,
+      actions: {
+        "case.read_redacted_status": { allowed: true, required: "security_duty", reason: null },
+        "recovery.approve": { allowed: false, required: "security_duty", reason: "security_duty" },
+        "recovery.revoke": { allowed: false, required: "security_duty", reason: "security_duty" },
+        "recovery.reconcile": {
+          allowed: false,
+          required: "security_duty",
+          reason: "security_duty",
+        },
+      },
+    };
+    render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+        access={caseOnly}
+      />,
+    );
+    await openCase();
+
+    expect(screen.queryByLabelText(/Load an existing authorization/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Load authorization" })).toBeNull();
+    expect(screen.getByText(/requires an independent-reviewer/)).toBeTruthy();
+    expect(getApproval).not.toHaveBeenCalled();
+  });
+
+  it("clears a loaded authorization when the recovery duty is withdrawn", async () => {
+    const loaded = approval();
+    vi.spyOn(ForgePilotClient.prototype, "getSecurityRecoveryApproval").mockResolvedValue(loaded);
+    const reviewer: ModuleAccess = {
+      visible: true,
+      dataCeiling: "redacted",
+      reason: null,
+      actions: {
+        "case.read_redacted_status": { allowed: true, required: "security_duty", reason: null },
+        "recovery.approve": { allowed: true, required: "security_duty", reason: null },
+      },
+    };
+    const caseOnly: ModuleAccess = {
+      ...reviewer,
+      actions: {
+        ...reviewer.actions,
+        "recovery.approve": { allowed: false, required: "security_duty", reason: "security_duty" },
+      },
+    };
+    const client = makeClient();
+    const { rerender } = render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={reviewer}
+      />,
+    );
+    await openCase();
+
+    await userEvent.type(
+      screen.getByLabelText(/Load an existing authorization/),
+      loaded.authorization_id,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Load authorization" }));
+    expect(await screen.findByText(loaded.authorization_id)).toBeTruthy();
+
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={caseOnly}
+      />,
+    );
+
+    expect(screen.queryByText(loaded.authorization_id)).toBeNull();
+    expect(screen.queryByLabelText(/Load an existing authorization/)).toBeNull();
+    expect(screen.getByText(/requires an independent-reviewer/)).toBeTruthy();
+  });
+
+  it("ignores a recovery lookup that settles after the duty is withdrawn", async () => {
+    const loaded = approval();
+    const pending = Promise.withResolvers<SecurityRecoveryApproval>();
+    const getApproval = vi
+      .spyOn(ForgePilotClient.prototype, "getSecurityRecoveryApproval")
+      .mockReturnValue(pending.promise);
+    const reviewer = recoveryDutyAccess({ approve: true });
+    const caseOnly = recoveryDutyAccess({});
+    const client = makeClient();
+    const { rerender } = render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={reviewer}
+      />,
+    );
+    await openCase();
+    await userEvent.type(
+      screen.getByLabelText(/Load an existing authorization/),
+      loaded.authorization_id,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Load authorization" }));
+
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={caseOnly}
+      />,
+    );
+    await act(async () => pending.resolve(loaded));
+
+    expect(screen.queryByText(loaded.authorization_id)).toBeNull();
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={reviewer}
+      />,
+    );
+    expect(screen.queryByText(loaded.authorization_id)).toBeNull();
+    expect(getApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a lookup result when the case identity changes", async () => {
+    const loaded = approval();
+    const pending = Promise.withResolvers<SecurityRecoveryApproval>();
+    const getApproval = vi
+      .spyOn(ForgePilotClient.prototype, "getSecurityRecoveryApproval")
+      .mockReturnValue(pending.promise);
+    const client = makeClient();
+    const actions = recoveryDutyAccess({ approve: true }).actions;
+    const { rerender } = render(
+      <SecurityCaseDetail
+        client={client}
+        workspaceId={workspace.id}
+        caseId={caseRecord.case_id}
+        seed={caseRecord}
+        userId="human_reviewer"
+        canAdminister={false}
+        actions={actions}
+        onBack={() => undefined}
+        onChanged={() => undefined}
+      />,
+    );
+    await screen.findByRole("heading", { name: caseRecord.case_id });
+    await userEvent.type(
+      screen.getByLabelText(/Load an existing authorization/),
+      loaded.authorization_id,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Load authorization" }));
+
+    rerender(
+      <SecurityCaseDetail
+        client={client}
+        workspaceId={workspace.id}
+        caseId="case_other"
+        seed={{ ...caseRecord, case_id: "case_other" }}
+        userId="human_reviewer"
+        canAdminister={false}
+        actions={actions}
+        onBack={() => undefined}
+        onChanged={() => undefined}
+      />,
+    );
+    await act(async () => pending.resolve(loaded));
+
+    expect(screen.queryByText(loaded.authorization_id)).toBeNull();
+    rerender(
+      <SecurityCaseDetail
+        client={client}
+        workspaceId={workspace.id}
+        caseId={caseRecord.case_id}
+        seed={caseRecord}
+        userId="human_reviewer"
+        canAdminister={false}
+        actions={actions}
+        onBack={() => undefined}
+        onChanged={() => undefined}
+      />,
+    );
+    expect(screen.queryByText(loaded.authorization_id)).toBeNull();
+    expect(getApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores an approval response that settles after the duty is withdrawn", async () => {
+    const loaded = approval();
+    const pending = Promise.withResolvers<SecurityRecoveryApproval>();
+    vi.spyOn(ForgePilotClient.prototype, "approveSecurityRecovery").mockReturnValue(
+      pending.promise,
+    );
+    vi.mocked(ForgePilotClient.prototype.readSecurityAuditTrail).mockResolvedValue(
+      auditPageWith([
+        historyEntry(1, "case.handled", "human_handler"),
+        historyEntry(2, "case.submitted_for_review", "human_handler"),
+      ]),
+    );
+    const reviewer = recoveryDutyAccess({ approve: true });
+    const caseOnly = recoveryDutyAccess({});
+    const client = makeClient();
+    const { rerender } = render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={reviewer}
+      />,
+    );
+    await openCase();
+    const section = screen
+      .getByRole("heading", { name: "Recovery authorization" })
+      .closest("section") as HTMLElement;
+    await userEvent.type(
+      within(section).getByLabelText("Destination endpoint id"),
+      "ep_anthropic_primary",
+    );
+    await userEvent.type(
+      within(section).getByLabelText("Destination model id"),
+      "claude-sonnet-5-5",
+    );
+    await userEvent.click(within(section).getByRole("button", { name: "Record approval" }));
+
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={caseOnly}
+      />,
+    );
+    await act(async () => pending.resolve(loaded));
+
+    expect(screen.queryByText(loaded.authorization_id)).toBeNull();
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={reviewer}
+      />,
+    );
+    expect(screen.queryByText(loaded.authorization_id)).toBeNull();
+  });
+
+  it("ignores a revoke response that settles after the duty is withdrawn", async () => {
+    const loaded = approval();
+    const pending = Promise.withResolvers<SecurityRecoveryApproval>();
+    vi.spyOn(ForgePilotClient.prototype, "getSecurityRecoveryApproval").mockResolvedValue(loaded);
+    vi.spyOn(ForgePilotClient.prototype, "revokeSecurityRecoveryApproval").mockReturnValue(
+      pending.promise,
+    );
+    const reviewer = recoveryDutyAccess({ revoke: true });
+    const caseOnly = recoveryDutyAccess({});
+    const client = makeClient();
+    const { rerender } = render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={reviewer}
+      />,
+    );
+    await openCase();
+    await userEvent.type(
+      screen.getByLabelText(/Load an existing authorization/),
+      loaded.authorization_id,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Load authorization" }));
+    await screen.findByText(loaded.authorization_id);
+    await userEvent.click(screen.getByRole("button", { name: "Withdraw approval" }));
+
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={caseOnly}
+      />,
+    );
+    await act(async () => pending.resolve({ ...loaded, state: "revoked" }));
+
+    expect(screen.queryByText(loaded.authorization_id)).toBeNull();
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={reviewer}
+      />,
+    );
+    expect(screen.queryByText(loaded.authorization_id)).toBeNull();
+  });
+
+  it("drops a lookup result when only its own recovery duty changes", async () => {
+    const loaded = approval();
+    const pending = Promise.withResolvers<SecurityRecoveryApproval>();
+    const getApproval = vi
+      .spyOn(ForgePilotClient.prototype, "getSecurityRecoveryApproval")
+      .mockReturnValue(pending.promise);
+    const both = recoveryDutyAccess({ approve: true, revoke: true });
+    const revokeOnly = recoveryDutyAccess({ revoke: true });
+    const client = makeClient();
+    const { rerender } = render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={both}
+      />,
+    );
+    await openCase();
+    await userEvent.type(
+      screen.getByLabelText(/Load an existing authorization/),
+      loaded.authorization_id,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Load authorization" }));
+
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={revokeOnly}
+      />,
+    );
+    await act(async () => pending.resolve(loaded));
+
+    expect(screen.queryByText(loaded.authorization_id)).toBeNull();
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={both}
+      />,
+    );
+    expect(screen.queryByText(loaded.authorization_id)).toBeNull();
+    expect(getApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops an approve result when approve is revoked but revoke remains", async () => {
+    const loaded = approval();
+    const pending = Promise.withResolvers<SecurityRecoveryApproval>();
+    vi.spyOn(ForgePilotClient.prototype, "approveSecurityRecovery").mockReturnValue(
+      pending.promise,
+    );
+    vi.mocked(ForgePilotClient.prototype.readSecurityAuditTrail).mockResolvedValue(
+      auditPageWith([
+        historyEntry(1, "case.handled", "human_handler"),
+        historyEntry(2, "case.submitted_for_review", "human_handler"),
+      ]),
+    );
+    const both = recoveryDutyAccess({ approve: true, revoke: true });
+    const revokeOnly = recoveryDutyAccess({ revoke: true });
+    const client = makeClient();
+    const { rerender } = render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={both}
+      />,
+    );
+    await openCase();
+    const section = screen
+      .getByRole("heading", { name: "Recovery authorization" })
+      .closest("section") as HTMLElement;
+    await userEvent.type(
+      within(section).getByLabelText("Destination endpoint id"),
+      "ep_anthropic_primary",
+    );
+    await userEvent.type(
+      within(section).getByLabelText("Destination model id"),
+      "claude-sonnet-5-5",
+    );
+    await userEvent.click(within(section).getByRole("button", { name: "Record approval" }));
+
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={revokeOnly}
+      />,
+    );
+    await act(async () => pending.resolve(loaded));
+
+    expect(screen.queryByText(loaded.authorization_id)).toBeNull();
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={both}
+      />,
+    );
+    expect(screen.queryByText(loaded.authorization_id)).toBeNull();
+  });
+
+  it("drops a revoke result when revoke is revoked but approve remains", async () => {
+    const loaded = approval();
+    const pending = Promise.withResolvers<SecurityRecoveryApproval>();
+    vi.spyOn(ForgePilotClient.prototype, "getSecurityRecoveryApproval").mockResolvedValue(loaded);
+    vi.spyOn(ForgePilotClient.prototype, "revokeSecurityRecoveryApproval").mockReturnValue(
+      pending.promise,
+    );
+    const both = recoveryDutyAccess({ approve: true, revoke: true });
+    const approveOnly = recoveryDutyAccess({ approve: true });
+    const client = makeClient();
+    const { rerender } = render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={both}
+      />,
+    );
+    await openCase();
+    await userEvent.type(
+      screen.getByLabelText(/Load an existing authorization/),
+      loaded.authorization_id,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Load authorization" }));
+    await screen.findByText(loaded.authorization_id);
+    await userEvent.click(screen.getByRole("button", { name: "Withdraw approval" }));
+
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_reviewer")}
+        access={approveOnly}
+      />,
+    );
+    await act(async () => pending.resolve({ ...loaded, state: "revoked" }));
+
+    const section = screen
+      .getByRole("heading", { name: "Recovery authorization" })
+      .closest("section") as HTMLElement;
+    expect(within(section).queryByText("revoked")).toBeNull();
+    expect(screen.getByText(loaded.authorization_id)).toBeTruthy();
+  });
+
+  it("drops a dispatch result when reconcile is revoked but approve remains", async () => {
+    const loaded = approval();
+    const pending = Promise.withResolvers<SecurityRecoveryDispatch>();
+    const getApproval = vi
+      .spyOn(ForgePilotClient.prototype, "getSecurityRecoveryApproval")
+      .mockResolvedValue(loaded);
+    const dispatch = vi
+      .spyOn(ForgePilotClient.prototype, "dispatchSecurityRecovery")
+      .mockReturnValue(pending.promise);
+    const both = recoveryDutyAccess({ approve: true, reconcile: true });
+    const approveOnly = recoveryDutyAccess({ approve: true });
+    const client = makeClient();
+    const { rerender } = render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+        access={both}
+      />,
+    );
+    await openCase();
+    await userEvent.type(
+      screen.getByLabelText(/Load an existing authorization/),
+      loaded.authorization_id,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Load authorization" }));
+    await screen.findByText(loaded.authorization_id);
+    const section = screen
+      .getByRole("heading", { name: "Recovery authorization" })
+      .closest("section") as HTMLElement;
+    await userEvent.type(within(section).getByLabelText("Dispatch worker id"), "worker_1");
+    await userEvent.click(within(section).getByRole("checkbox"));
+    await userEvent.click(
+      within(section).getByRole("button", { name: "Recheck complete request & dispatch once" }),
+    );
+
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+        access={approveOnly}
+      />,
+    );
+    await act(async () => pending.resolve(dispatchFixture));
+
+    expect(screen.queryByText(/Dispatch outcome/)).toBeNull();
+    expect(getApproval).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+        access={both}
+      />,
+    );
+    expect(screen.queryByText(/Dispatch outcome/)).toBeNull();
+  });
+
+  it("ignores a dispatch result and skips its refresh after the duty is withdrawn", async () => {
+    const loaded = approval();
+    const pending = Promise.withResolvers<SecurityRecoveryDispatch>();
+    const getApproval = vi
+      .spyOn(ForgePilotClient.prototype, "getSecurityRecoveryApproval")
+      .mockResolvedValue(loaded);
+    const dispatch = vi
+      .spyOn(ForgePilotClient.prototype, "dispatchSecurityRecovery")
+      .mockReturnValue(pending.promise);
+    const reviewer = recoveryDutyAccess({ reconcile: true });
+    const caseOnly = recoveryDutyAccess({});
+    const client = makeClient();
+    const { rerender } = render(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+        access={reviewer}
+      />,
+    );
+    await openCase();
+    await userEvent.type(
+      screen.getByLabelText(/Load an existing authorization/),
+      loaded.authorization_id,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Load authorization" }));
+    await screen.findByText(loaded.authorization_id);
+    const section = screen
+      .getByRole("heading", { name: "Recovery authorization" })
+      .closest("section") as HTMLElement;
+    await userEvent.type(within(section).getByLabelText("Dispatch worker id"), "worker_1");
+    await userEvent.click(within(section).getByRole("checkbox"));
+    await userEvent.click(
+      within(section).getByRole("button", { name: "Recheck complete request & dispatch once" }),
+    );
+
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+        access={caseOnly}
+      />,
+    );
+    await act(async () => pending.resolve(dispatchFixture));
+
+    expect(screen.queryByText(/Dispatch outcome/)).toBeNull();
+    expect(getApproval).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    rerender(
+      <SecurityWorkbench
+        loadWorkspaces={loadWorkspaceDirectory}
+        client={client}
+        session={sessionFor("human_handler")}
+        access={reviewer}
+      />,
+    );
+    expect(screen.queryByText(/Dispatch outcome/)).toBeNull();
+    expect(screen.queryByText(loaded.authorization_id)).toBeNull();
+  });
+
   it("records an approval bound to a destination and then dispatches it once", async () => {
     const approved = approval();
     vi.mocked(ForgePilotClient.prototype.readSecurityAuditTrail).mockResolvedValue(

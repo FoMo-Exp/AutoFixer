@@ -32,6 +32,90 @@ outside this baseline.
 | `POST /api/v1/auth/desktop/flows`                                               | optional `provider_instance_id`                                                                                        | `DesktopFlow`                       | ✅     |
 | `POST /api/v1/auth/desktop/flows/{flow_id}/exchange`                            | `secret`                                                                                                               | session grant                       | ✅     |
 
+## Eight-module capability projection (DAT-279)
+
+Baseline `main` at `ed62e28310b571d689439a3c3d1864eac859bd08` (DAT-278 #107,
+OpenAPI `0.10.0`). Fixtures are the merged-capture shapes under
+`docs/fixtures/capability-api-v1/`; the UI validates the response and invents
+no field.
+
+| Endpoint                                             | Request fields | Response type                   | Status |
+| ---------------------------------------------------- | -------------- | ------------------------------- | ------ |
+| `GET /api/v1/workspaces/{workspace_id}/capabilities` | path id        | `WorkspaceCapabilityProjection` | ✅     |
+
+The workbench draws navigation and action affordances from this projection and
+from nothing else. Every request remains authorized by the service.
+
+- **Navigation is projection-driven.** The strip shows `tasks`, `issues`,
+  `memory`, `rsi`, `dashboard`, `members`, `security`, and
+  `service_integration` in contract order, and only when the module is
+  `visible`. Members/teams and service integration open the existing
+  administration surface; every tab and write inside it uses the projection's
+  own `manage_members` / `manage_teams` / `invite` / `manage_roles` /
+  `view_metadata` / `configure` decisions.
+- **Visibility is not data.** A visible module whose read action is denied
+  (for example an `unverified` provider intersection with `data_ceiling:
+"none"`) renders an explicit "no verified data" panel and issues no read
+  request. An empty list is never used to imply a permission decision.
+- **Actions are per module.** Task create/run/manage/approve, issue
+  create/comment/request_approval/decide_candidate/deliver, memory
+  `view_confidential`/`govern_workspace`/`govern_team`, RSI
+  propose/approve/evaluate/canary/rollback/kill_switch, dashboard
+  `view_financial`/`view_trace`, member administration, security duties, and
+  service-integration metadata each read their own `allowed` flag. Security
+  actions come only from human duties; a workspace role never substitutes.
+  Issue creation and comment are separate actions, so a comment-only writer
+  sees the comment form and no create control.
+- **Security duties are separated.** `case.read_redacted_status` alone gates
+  the case list; `case.handle`, `case.submit_for_review`, `case.review_decide`,
+  `case.terminate`, `case.request_termination`, `case.request_reassignment`,
+  `recovery.approve`, `recovery.revoke`, `recovery.reconcile`,
+  `quarantine.view`, `quarantine.grant_access`, `audit.read`, and
+  `audit.export` each gate their own control. The recovery authorization
+  lookup itself requires a recovery duty, and losing it clears the loaded
+  destination, approver, and state. Every recovery operation (lookup,
+  approve, revoke, dispatch) captures an authority generation built from the
+  individual `recovery.approve` / `recovery.revoke` / `recovery.reconcile`
+  decisions plus the workspace/case identity. Revoking one duty invalidates
+  the operations that depended on it even while another recovery duty
+  remains. A response that settles after that change, or after unmount, is
+  discarded, and no follow-up authorization read runs. Re-granting the duty
+  never replays that older result; a new read is required. Losing the
+  case-read duty clears the loaded cases and the open detail and issues no
+  further case request, while another duty (for example audit) keeps its own
+  section.
+- **Fail closed.** The response is rejected on a wrong `schema_version`, a
+  foreign `workspace_id`, or an unparseable freshness window. An expired
+  projection, a failed re-read, an unknown module/action/ceiling, and a
+  `capability_unverified` state all remove data and action affordances. A
+  background re-read failure drops the previous snapshot rather than keeping
+  a stale grant visible.
+- **Freshness and invalidation.** The snapshot is re-read at `expires_at`, on
+  window focus, on `online`, when the document becomes visible, after a server
+  `403` notice, and on an explicit retry. A workspace switch clears the
+  previous snapshot before the new request renders, so another workspace's
+  modules never flash.
+- **Cached data is dropped with the capability.** An `unverified` or expired
+  snapshot clears task lists/details and aborts the task stream; memory clears
+  its page, selection, and sensitivity filter; the dashboard clears cost
+  pages and closes the ledger/trace panes; security unmounts the case, rules,
+  and audit panels and clears any displayed quarantined context; RSI unmounts
+  when its module is no longer visible. Nothing is reconstructed from a
+  client cache.
+- **Deep surfaces are gated.** A surface selected while authorized renders the
+  module-denial or no-data state after a downgrade instead of mounting the
+  module. The projection 404 re-reads live memberships, and the existing 401
+  auth gate is unchanged.
+- **No credential is rendered.** The projection carries roles, capability
+  names, safe reasons, and identifiers only; the workbench renders no token,
+  repository permission internals, or teammate data from it.
+
+The local-operator `legacy` seam has no identity subsystem and therefore no
+projection; it keeps the pre-DAT-279 task/issues/memory/RSI/dashboard
+surfaces and the Node service remains its only authorization point. Identity
+deployments never take that path, so an unknown projection always fails
+closed there.
+
 ### Workspace switching
 
 `GET /api/v1/workspaces` is the switcher's only source: it returns exactly the

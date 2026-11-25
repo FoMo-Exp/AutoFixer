@@ -18,6 +18,7 @@ import type {
   Workspace,
 } from "../api/client";
 import { IssuesWorkbench } from "./IssuesWorkbench";
+import { accessOf, capabilityProjection } from "../capabilities/test-projection";
 
 const repoFixtureDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -97,6 +98,76 @@ describe("issue workbench", () => {
     expect(create.closest(".sidebar-title-row")).not.toBeNull();
     await userEvent.click(create);
     expect(await screen.findByText(/No active workspace is available/)).toBeTruthy();
+  });
+
+  it("maps the comment action separately from issue create", async () => {
+    const providerIssue: Issue = {
+      ...issue,
+      sync_state: "synced",
+      provider: {
+        provider_type: "github",
+        issue_id: "ext_1",
+        issue_number: "12",
+        url: "https://github.com/acme/payments-api/issues/12",
+        state: "open",
+        last_synced_at: "2026-11-02T00:00:00Z",
+      },
+    };
+    vi.mocked(ForgePilotClient.prototype.listIssues).mockResolvedValue({
+      items: [providerIssue],
+      next_cursor: null,
+    });
+    const projection = capabilityProjection({
+      role: "member",
+      workspaceId: activeWorkspace.id,
+      enterpriseId: activeWorkspace.enterprise_id,
+    });
+    const base = accessOf(projection, "issues");
+    const client = makeClient();
+    mockDetail(client);
+    vi.mocked(client.getIssue).mockResolvedValue(providerIssue);
+    streamReplay(client, []);
+    render(
+      <IssuesWorkbench
+        client={client}
+        loadWorkspaces={loadWorkspaceDirectory}
+        access={{
+          ...base,
+          actions: {
+            ...base.actions,
+            comment: { allowed: false, required: "issue_write", reason: "workspace_role" },
+          },
+        }}
+      />,
+    );
+    await openIssue();
+    await userEvent.type(screen.getByLabelText("Comment"), "A bounded comment");
+    expect(screen.getByRole("button", { name: "Add comment" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Save fields" })).toHaveProperty("disabled", false);
+
+    cleanup();
+    const commentOnlyClient = makeClient();
+    mockDetail(commentOnlyClient);
+    vi.mocked(commentOnlyClient.getIssue).mockResolvedValue(providerIssue);
+    streamReplay(commentOnlyClient, []);
+    render(
+      <IssuesWorkbench
+        client={commentOnlyClient}
+        loadWorkspaces={loadWorkspaceDirectory}
+        access={{
+          ...base,
+          actions: {
+            ...base.actions,
+            create: { allowed: false, required: "issue_write", reason: "workspace_role" },
+            comment: { allowed: true, required: "issue_write", reason: null },
+          },
+        }}
+      />,
+    );
+    await openIssue();
+    expect(screen.queryByRole("button", { name: "New issue" })).toBeNull();
+    await userEvent.type(screen.getByLabelText("Comment"), "A bounded comment");
+    expect(screen.getByRole("button", { name: "Add comment" })).toHaveProperty("disabled", false);
   });
 
   it("loads the frozen candidate review for the named human approver", async () => {

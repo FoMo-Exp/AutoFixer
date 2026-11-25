@@ -17,9 +17,16 @@ interface MembersPanelProps {
   client: IdentityClient;
   workspace: Workspace;
   canManage: boolean;
+  /** Role changes are a separate capability from member removal. */
+  canManageRoles?: boolean;
 }
 
-export function MembersPanel({ client, workspace, canManage }: MembersPanelProps): ReactElement {
+export function MembersPanel({
+  client,
+  workspace,
+  canManage,
+  canManageRoles = canManage,
+}: MembersPanelProps): ReactElement {
   const [members, setMembers] = useState<Membership[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -111,7 +118,7 @@ export function MembersPanel({ client, workspace, canManage }: MembersPanelProps
                   <span className="identity-meta">{authoritySummary(membership)}</span>
                 </div>
                 <div className="identity-row-actions">
-                  {canManage ? (
+                  {canManageRoles ? (
                     <Select
                       value={membership.role}
                       options={ROLE_OPTIONS}

@@ -22,6 +22,9 @@ export function useAmbientDrift(ref: RefObject<HTMLDivElement | null>): void {
         easing: "ease-in-out",
         fill: "forwards",
       });
+      // Cancelling an animation rejects `finished`; the drift is decorative,
+      // so the cancellation is not an error and must not surface as one.
+      animation.finished.catch(() => undefined);
       animation.onfinish = () => {
         current = next;
         animation?.cancel();
@@ -45,7 +48,13 @@ export function useAmbientDrift(ref: RefObject<HTMLDivElement | null>): void {
     reducedMotion.addEventListener("change", updatePreference);
     document.addEventListener("visibilitychange", updateVisibility);
     return () => {
-      animation?.cancel();
+      // A finished animation has already been cancelled by `onfinish`; a
+      // teardown after that must not surface its cancellation as an error.
+      try {
+        animation?.cancel();
+      } catch {
+        /* already finished or the host does not support Animation.cancel */
+      }
       reducedMotion.removeEventListener("change", updatePreference);
       document.removeEventListener("visibilitychange", updateVisibility);
     };

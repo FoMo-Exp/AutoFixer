@@ -31,6 +31,9 @@ interface SecurityRulesPanelProps {
   workspaceId: string;
   userId: string | undefined;
   canAdminister: boolean;
+  /** DAT-279 duty decisions; default true keeps the legacy local mode. */
+  canPropose?: boolean;
+  canReview?: boolean;
 }
 
 interface RuleSelection {
@@ -60,6 +63,8 @@ export function SecurityRulesPanel({
   workspaceId,
   userId,
   canAdminister,
+  canPropose = true,
+  canReview = true,
 }: SecurityRulesPanelProps): ReactElement {
   const sidebarGlassRef = useLiquidGlass<HTMLElement>();
   const [status, setStatus] = useState<SecurityRuleStatus | "all">("all");
@@ -317,7 +322,8 @@ export function SecurityRulesPanel({
   const previous = selected ? previousRevision(items, selected) : undefined;
   const diffRows = selected ? ruleDiff(previous, selected) : [];
   const authorIsSelf = Boolean(selected && userId && selected.author_id === userId);
-  const reviewable = selected?.status === "proposed" && !selected.review && !authorIsSelf;
+  const reviewable =
+    canReview && selected?.status === "proposed" && !selected.review && !authorIsSelf;
   const lineageHasActive = lineageRevisions.some(
     (entry) => entry.status === "activated" || entry.status === "applied",
   );
@@ -382,13 +388,15 @@ export function SecurityRulesPanel({
               options={[{ value: "all", label: "All statuses" }, ...SECURITY_RULE_STATUS_OPTIONS]}
             />
           </div>
-          <button
-            type="button"
-            className="button button-secondary button-small"
-            onClick={() => setShowProposal((current) => !current)}
-          >
-            {showProposal ? "Close proposal form" : "Propose correction"}
-          </button>
+          {canPropose && (
+            <button
+              type="button"
+              className="button button-secondary button-small"
+              onClick={() => setShowProposal((current) => !current)}
+            >
+              {showProposal ? "Close proposal form" : "Propose correction"}
+            </button>
+          )}
         </div>
 
         <p className="security-list-note">{RULE_LIST_LIMIT_COPY}</p>
@@ -480,7 +488,7 @@ export function SecurityRulesPanel({
           </p>
         )}
 
-        {showProposal && (
+        {showProposal && canPropose && (
           <section className="card security-card">
             <div className="card-heading">
               <div>
