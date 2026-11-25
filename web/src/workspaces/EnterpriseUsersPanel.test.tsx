@@ -260,4 +260,49 @@ describe("EnterpriseUsersPanel", () => {
     );
     expect(await screen.findByText(/was granted access to Acme Payments/)).toBeTruthy();
   });
+
+  it("finds a candidate on a later page instead of declaring the roster exhausted", async () => {
+    const client = fakeClient();
+    client.listMemberCandidates
+      .mockResolvedValueOnce({
+        items: [candidateFor("999999")],
+        next_cursor: "cursor_page_2",
+      })
+      .mockResolvedValueOnce({
+        items: [candidateFor(activeUser.subject)],
+        next_cursor: null,
+      });
+    renderPanel(client);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Workspace access" }));
+    const grant = screen.getByLabelText("Workspace access");
+    await userEvent.click(within(grant).getByRole("combobox", { name: "Workspace to grant" }));
+    await userEvent.click(screen.getByRole("option", { name: "Acme Payments" }));
+
+    expect(await within(grant).findByText(/Eligible up to Member/)).toBeTruthy();
+    expect(client.listMemberCandidates).toHaveBeenNthCalledWith(1, workspace.id, undefined);
+    expect(client.listMemberCandidates).toHaveBeenNthCalledWith(2, workspace.id, "cursor_page_2");
+    expect(screen.queryByText(/not in the workspace/)).toBeNull();
+  });
+
+  it("does not claim the person is absent the roster when the read failed", async () => {
+    const client = fakeClient();
+    client.listMemberCandidates.mockRejectedValue(
+      new ApiError(409, errorPayload("PROVIDER_ROSTER_INCOMPLETE"), "Denied"),
+    );
+    renderPanel(client);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Workspace access" }));
+    const grant = screen.getByLabelText("Workspace access");
+    await userEvent.click(within(grant).getByRole("combobox", { name: "Workspace to grant" }));
+    await userEvent.click(screen.getByRole("option", { name: "Acme Payments" }));
+
+    expect(
+      await within(grant).findByText(
+        "The provider roster is incomplete. Retry after reconciliation.",
+      ),
+    ).toBeTruthy();
+    expect(within(grant).queryByText(/not in the workspace/i)).toBeNull();
+    expect(within(grant).queryByText(/no verified eligibility/i)).toBeNull();
+  });
 });

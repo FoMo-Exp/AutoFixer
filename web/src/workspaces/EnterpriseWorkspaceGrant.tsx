@@ -44,6 +44,7 @@ export function EnterpriseWorkspaceGrant({
 }: EnterpriseWorkspaceGrantProps): ReactElement {
   const [workspaceId, setWorkspaceId] = useState("");
   const [candidate, setCandidate] = useState<MemberCandidate>();
+  const [rosterRead, setRosterRead] = useState(false);
   const [role, setRole] = useState("");
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -64,30 +65,45 @@ export function EnterpriseWorkspaceGrant({
   useEffect(() => {
     if (workspaceId === "") {
       setCandidate(undefined);
+      setRosterRead(false);
       setRole("");
       return;
     }
     let active = true;
     setLoading(true);
     setCandidate(undefined);
+    setRosterRead(false);
     setRole("");
     setError(undefined);
-    void client
-      .listMemberCandidates(workspaceId)
-      .then((page) => {
-        if (!active) return;
-        const match = matchingCandidate(page.items);
-        setCandidate(match);
-        if (match !== undefined && match.eligible) {
-          setRole(match.max_role ?? match.assignable_roles[0] ?? "");
+    void (async () => {
+      try {
+        // The candidate page is cursor-paginated; a match beyond the first page
+        // must still be found before the roster is declared exhausted.
+        const seen = new Set<string>();
+        let cursor: string | undefined;
+        for (;;) {
+          const page = await client.listMemberCandidates(workspaceId, cursor);
+          if (!active) return;
+          const match = matchingCandidate(page.items);
+          if (match !== undefined) {
+            setCandidate(match);
+            setRosterRead(true);
+            if (match.eligible) setRole(match.max_role ?? match.assignable_roles[0] ?? "");
+            return;
+          }
+          const next = page.next_cursor ?? undefined;
+          if (next === undefined || seen.has(next)) break;
+          seen.add(next);
+          cursor = next;
         }
-      })
-      .catch((caught) => {
+        setCandidate(undefined);
+        setRosterRead(true);
+      } catch (caught) {
         if (active) setError(describeError(caught));
-      })
-      .finally(() => {
+      } finally {
         if (active) setLoading(false);
-      });
+      }
+    })();
     return () => {
       active = false;
     };
@@ -148,12 +164,16 @@ export function EnterpriseWorkspaceGrant({
         </span>
       )}
       {loading && <p className="card-empty">Reading this workspace&apos;s provider roster…</p>}
-      {!loading && workspace !== undefined && candidate === undefined && (
-        <p className="card-empty" role="status">
-          This person is not in the workspace&apos;s provider roster, so no verified eligibility
-          exists. Nothing is granted.
-        </p>
-      )}
+      {!loading &&
+        workspace !== undefined &&
+        rosterRead &&
+        error === undefined &&
+        candidate === undefined && (
+          <p className="card-empty" role="status">
+            This person is not in the workspace&apos;s provider roster, so no verified eligibility
+            exists. Nothing is granted.
+          </p>
+        )}
       {!loading && candidate !== undefined && workspace !== undefined && (
         <div className="identity-row-main">
           <span className="identity-meta">

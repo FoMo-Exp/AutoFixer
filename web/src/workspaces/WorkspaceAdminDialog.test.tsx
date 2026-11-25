@@ -53,6 +53,12 @@ const enterpriseUserPage: EnterpriseUserPage = {
 const enterpriseUser = enterpriseUserPage.items[0];
 const loginProvider = fixture<LoginProvider>("login-provider.json");
 const candidate = fixture<MemberCandidate>("member-candidate.json");
+const secondWorkspace: Workspace = {
+  ...workspace,
+  id: "ws_01J8Z1C3D5",
+  name: "Second Payments",
+  repository: { ...workspace.repository, repository_id: "987654321" },
+};
 const capabilityView = capabilityFixture<MemberCapabilityCeilingView>(
   "member-capability-ceiling.json",
 );
@@ -84,7 +90,7 @@ function errorPayload(code: string): components["schemas"]["Error"] {
 }
 
 interface FakeClient {
-  listWorkspaces: Mock;
+  listAllWorkspaces: Mock;
   listWorkspaceMembers: Mock;
   updateWorkspaceMember: Mock;
   removeWorkspaceMember: Mock;
@@ -115,7 +121,7 @@ interface FakeClient {
 
 function fakeClient(): FakeClient {
   return {
-    listWorkspaces: vi.fn().mockResolvedValue({ items: [workspace], next_cursor: null }),
+    listAllWorkspaces: vi.fn().mockResolvedValue([workspace]),
     listWorkspaceMembers: vi.fn().mockResolvedValue(memberPage),
     updateWorkspaceMember: vi.fn(),
     removeWorkspaceMember: vi.fn().mockResolvedValue(undefined),
@@ -261,10 +267,7 @@ describe("WorkspaceAdminDialog", () => {
 
   it("keeps a non-manager read-only and never requests the invitation list", async () => {
     const client = fakeClient();
-    client.listWorkspaces.mockResolvedValue({
-      items: [{ ...workspace, role: "member" }],
-      next_cursor: null,
-    });
+    client.listAllWorkspaces.mockResolvedValue([{ ...workspace, role: "member" }]);
     client.getWorkspaceCapabilities.mockResolvedValue(
       capabilityProjection({
         role: "member",
@@ -516,7 +519,7 @@ describe("WorkspaceAdminDialog", () => {
 
   it("reaches the enterprise directory without any visible workspace", async () => {
     const client = fakeClient();
-    client.listWorkspaces.mockResolvedValue({ items: [], next_cursor: null });
+    client.listAllWorkspaces.mockResolvedValue([]);
     renderDialog(client);
 
     const nav = await screen.findByRole("navigation", { name: "Workspaces" });
@@ -550,5 +553,49 @@ describe("WorkspaceAdminDialog", () => {
     expect(
       await screen.findByText("The requested resource was not found in your visible scope."),
     ).toBeTruthy();
+  });
+
+  it("offers workspaces beyond the first page and grants only the chosen one", async () => {
+    const client = fakeClient();
+    client.listAllWorkspaces.mockResolvedValue([workspace, secondWorkspace]);
+    client.listMemberCandidates.mockResolvedValue({
+      items: [
+        {
+          ...candidate,
+          user: {
+            display_name: "Ada Lovelace",
+            identities: [
+              {
+                provider_instance_id: enterpriseUser.provider_instance_id,
+                provider_type: "github",
+                subject_id: enterpriseUser.subject,
+              },
+            ],
+          },
+        },
+      ],
+      next_cursor: null,
+    });
+    renderDialog(client);
+
+    const nav = await screen.findByRole("navigation", { name: "Workspaces" });
+    expect(within(nav).getByRole("button", { name: /Second Payments/ })).toBeTruthy();
+    await userEvent.click(within(nav).getByRole("button", { name: /Enterprise people/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Workspace access" }));
+
+    const grant = screen.getByLabelText("Workspace access");
+    await userEvent.click(within(grant).getByRole("combobox", { name: "Workspace to grant" }));
+    await userEvent.click(screen.getByRole("option", { name: "Second Payments" }));
+    expect(await within(grant).findByText(/Eligible up to Member/)).toBeTruthy();
+    await userEvent.click(within(grant).getByRole("button", { name: "Grant Member" }));
+
+    await waitFor(() =>
+      expect(client.grantWorkspaceMember).toHaveBeenCalledWith(
+        workspace.enterprise_id,
+        secondWorkspace.id,
+        enterpriseUser.user_id,
+        { role: "member" },
+      ),
+    );
   });
 });

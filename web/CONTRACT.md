@@ -807,9 +807,12 @@ Surface boundaries:
   carries provider identities but no account id, so the workspace-side grant
   takes the already-signed-in account id and the service re-verifies
   eligibility; an enterprise administrator resolves the account through the
-  directory and grants one explicitly selected workspace at a time. The
-  contract exposes no directory-search parameter, so directory search filters
-  only the loaded pages.
+  directory and grants one explicitly selected workspace at a time. Every page
+  is read before absence is asserted: the workspace selector uses
+  `listAllWorkspaces()`, and the grant search follows `next_cursor` for the
+  candidate roster. An unreadable roster never renders as "not in the roster".
+  The contract exposes no directory-search parameter, so directory search
+  filters only the loaded pages.
 - **Workspace joins are explicit.** The enterprise grant sends one workspace
   id and one role; the workspace's verified repository intersection bounds the
   role, and no other workspace is granted implicitly. `ROLE_NOT_ASSIGNABLE`,

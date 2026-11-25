@@ -42,12 +42,14 @@ export function WorkspaceAdminDialog({
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
     try {
-      const page = await client.listWorkspaces();
-      setWorkspaces(page.items);
+      // The switcher and the grant selector must see every page: a workspace
+      // beyond the first page is still a legal and explicit join target.
+      const items = await client.listAllWorkspaces();
+      setWorkspaces(items);
       setSelectedId((current) =>
-        current && page.items.some((item) => item.id === current)
+        current && items.some((item) => item.id === current)
           ? current
-          : (page.items[0]?.id ?? undefined),
+          : (items[0]?.id ?? undefined),
       );
       setError(undefined);
     } catch (caught) {
