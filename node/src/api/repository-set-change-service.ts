@@ -22,7 +22,6 @@
  * atomicity and the rollout gate all stay in the domain layer.
  */
 
-import { RepositorySetChangeError, WorkspaceRepositorySetError } from "../control-plane/errors.js";
 import type { RepositoryCapability } from "../control-plane/member-capability-types.js";
 import type { ControlPlaneRepositories } from "../control-plane/repositories.js";
 import type {
@@ -38,6 +37,7 @@ import type {
   WorkspaceScope,
 } from "../control-plane/types.js";
 import { ApiError } from "./errors.js";
+import { resolveWorkspaceScope, rethrowRepositoryDomainError } from "./workspace-locator.js";
 import type {
   RepositorySetAdditionPreview,
   RepositorySetChangeService,
@@ -198,23 +198,10 @@ export class WorkspaceRepositorySetChangeService {
   /**
    * The path workspace is a locator: an unknown workspace, a workspace in
    * another enterprise and a workspace the caller holds no membership in are
-   * one indistinguishable 404.
+   * one indistinguishable 404 (see `resolveWorkspaceScope`).
    */
   #scope(actorUserId: UserId, workspaceId: string): WorkspaceScope {
-    if (workspaceId.length === 0) {
-      throw new ApiError(404, "NOT_FOUND", "Workspace was not found");
-    }
-    const scope: WorkspaceScope = {
-      enterprise_id: this.#enterpriseId,
-      workspace_id: workspaceId,
-      actor_id: actorUserId,
-    };
-    const workspace = this.#repos.workspaces.getById(scope, workspaceId);
-    const membership = this.#repos.memberships.getByUser(scope, actorUserId);
-    if (workspace === undefined || membership === undefined) {
-      throw new ApiError(404, "NOT_FOUND", "Workspace was not found");
-    }
-    return scope;
+    return resolveWorkspaceScope(this.#repos, this.#enterpriseId, actorUserId, workspaceId);
   }
 
   /**
@@ -225,16 +212,7 @@ export class WorkspaceRepositorySetChangeService {
     try {
       return run();
     } catch (error) {
-      if (error instanceof ApiError) {
-        throw error;
-      }
-      if (error instanceof RepositorySetChangeError) {
-        throw new ApiError(error.status, error.code, error.message, error.details);
-      }
-      if (error instanceof WorkspaceRepositorySetError) {
-        throw new ApiError(error.status, error.code, error.message, error.details);
-      }
-      throw error;
+      return rethrowRepositoryDomainError(error);
     }
   }
 }

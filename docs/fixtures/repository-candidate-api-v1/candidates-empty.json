@@ -1,0 +1,27 @@
+{
+  "enterprise_id": "ent_captured_1",
+  "workspace_id": "wsp_captured_2",
+  "set_version": 1,
+  "discovered_at": "2026-11-26T12:00:00.000Z",
+  "coverage": {
+    "completeness": "bounded",
+    "sources": [
+      "registered_service_integrations"
+    ],
+    "unsupported_sources": [
+      "provider_repository_enumeration"
+    ],
+    "limits": [
+      "provider_repository_enumeration_unsupported",
+      "installation_scoped_to_workspace"
+    ]
+  },
+  "items": [],
+  "next_cursor": null,
+  "totals": {
+    "discovered": 0,
+    "proposable": 0,
+    "restricted": 0,
+    "already_bound": 1
+  }
+}

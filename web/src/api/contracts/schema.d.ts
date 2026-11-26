@@ -2530,6 +2530,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspace_id}/repository-candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Discover repositories that may be added to a workspace
+         * @description Lists the repositories an authorized repository manager may select for this workspace, each with the provider instance, the repository-scoped active service integration (`installation_ref`) and the immutable repository id a repository-addition proposal needs. Authority is the same repository-administration rule the preview/confirm/commit surface applies: an active account with an active enterprise membership, a workspace owner/admin assignment and verified `repository_manage` across every current repository. A caller who could not decide the change cannot enumerate its candidates. The list is built only from installations registered for this workspace in this enterprise, so it is always `bounded` and names the source it cannot use; a repository that is unknown, uninstalled, unobservable or truncated is never reported as approved. Repositories already bound (active or retired) are excluded and counted, because an addition never re-binds. Discovery writes nothing and grants nothing: submitting a candidate still runs the full preview → confirmation → commit chain, which re-verifies the caller, the installation, the whole member impact and the observed set version.
+         */
+        get: operations["listRepositoryCandidates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5534,6 +5554,84 @@ export interface components {
             effective_owners: string[];
             /** Format: date-time */
             committed_at: string;
+        };
+        RepositoryCandidateVerification: {
+            /** @description Subjects this installation holds an authority row for. */
+            subjects: number;
+            /**
+             * Format: date-time
+             * @description Most recent per-subject verification, or null when none was recorded. Advisory: the preview decides whether each member's evidence is current.
+             */
+            latest_verified_at: string | null;
+            /**
+             * @description `fresh` within the one-day authority bound, `stale` beyond it, `never_verified` when no subject was ever verified.
+             * @enum {string}
+             */
+            freshness: "fresh" | "stale" | "never_verified";
+            /**
+             * Format: date-time
+             * @description Start (or finish) of the last reconciliation attempt, when one ran.
+             */
+            last_reconcile_at: string | null;
+            /** @description The failure code of the last reconciliation attempt, when it failed. */
+            last_failure: string | null;
+        };
+        RepositoryCandidate: {
+            /** @description An instance registered for this enterprise; the proposal's provider. */
+            provider_instance_id: string;
+            /**
+             * @description The registered instance's provider type; null while the instance is not registered for this enterprise (a restricted candidate is reported, never hidden, and its type is never inferred from the repository id).
+             * @enum {string|null}
+             */
+            provider_type: "github" | "gitlab" | null;
+            /** @description The repository-scoped active service integration (`service_integration.id`) that would have to vouch for this repository. This is the `installation_ref` a repository-addition proposal carries. */
+            installation_ref: string;
+            /** @description Immutable provider-assigned repository id; the only authority-bearing identity. */
+            repository_id: string;
+            /** @description Display metadata from the registered installation. Never stored in a confirmation, a binding or an audit row and never used for authorization. */
+            repository_name: string | null;
+            /** @enum {string} */
+            install_status: "active" | "suspended" | "uninstalled";
+            /** @enum {string} */
+            permission_visibility: "full" | "partial" | "none";
+            verification: components["schemas"]["RepositoryCandidateVerification"];
+            /** @description True only when no restriction applies. It means 'selectable for the preview', never 'approved', 'granted' or 'will commit'. */
+            proposable: boolean;
+            /** @description Every reason this installation cannot be proposed, in canonical order. */
+            restriction_reasons: ("installation_inactive" | "provider_instance_unapproved" | "permission_visibility_none" | "permission_visibility_partial" | "provider_unavailable" | "roster_incomplete")[];
+        };
+        RepositoryDiscoveryCoverage: {
+            /**
+             * @description Always `bounded`. No response ever claims to be the complete set of repositories the provider would allow.
+             * @enum {string}
+             */
+            completeness: "bounded";
+            /** @description The stores this list was built from. */
+            sources: "registered_service_integrations"[];
+            /** @description Sources this build cannot enumerate. Reported so a missing repository is never mistaken for a repository the provider would refuse. */
+            unsupported_sources: "provider_repository_enumeration"[];
+            /** @description Why the list is bounded, in canonical order. */
+            limits: ("provider_repository_enumeration_unsupported" | "installation_scoped_to_workspace")[];
+        };
+        RepositoryDiscoveryTotals: {
+            /** @description Unbound repositories whose installation was readable. */
+            discovered: number;
+            proposable: number;
+            restricted: number;
+            /** @description Repositories already bound in this workspace (active or retired) and therefore not offered: a proposal only adds. Counted over the whole set so an empty page is explainable. */
+            already_bound: number;
+        };
+        RepositoryCandidatePage: {
+            enterprise_id: string;
+            workspace_id: string;
+            /** @description Current repository-set version; pass it as `expected_set_version` when previewing the selected candidates so a set change invalidates the decision. */
+            set_version: number;
+            /** Format: date-time */
+            discovered_at: string;
+            coverage: components["schemas"]["RepositoryDiscoveryCoverage"];
+            items: components["schemas"]["RepositoryCandidate"][];
+            next_cursor: string | null;
+            totals: components["schemas"]["RepositoryDiscoveryTotals"];
         };
         Error: {
             /** @description The shared versioned error envelope (ADR-0008, DAT-226 alignment): a stable machine code, the processing stage, the outcome category, a safe localizable user message, service-decided retryability, retry-after where applicable, the request_id trace/case reference, safe-only structured details, and the authorized next action. No field ever carries secrets, credentials, invitation tokens, or sensitive diagnostics; those stay behind separate access checks. */
@@ -15164,6 +15262,77 @@ export interface operations {
             };
             /** @description REPOSITORY_SET_CHANGE_AUDIT_FAILED — the whole change was rolled back */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    listRepositoryCandidates: {
+        parameters: {
+            query?: {
+                /** @description Opaque cursor returned as `next_cursor` by the previous page. An unknown cursor is 400 INVALID_CURSOR, never a silently restarted page. */
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace locator, resolved against the caller's live membership. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of candidates with the installation state and bounded-coverage disclosure. Nothing was written. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepositoryCandidatePage"];
+                };
+            };
+            /** @description INVALID_CURSOR — an unknown cursor, never a restarted page */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED — not an active workspace owner/admin with verified repository management across the current set */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — unknown workspace or no live membership */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description REPOSITORY_SET_VERSION_CONFLICT / REPOSITORY_BINDING_* / INSTALLATION_NOT_APPROVED / FEATURE_GATE_UNREADABLE — the workspace repository set cannot be read, so no candidate is offered */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

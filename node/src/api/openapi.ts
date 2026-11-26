@@ -46,6 +46,10 @@ import {
   REPOSITORY_SET_OPENAPI_SCHEMAS,
   repositorySetOpenApiPaths,
 } from "./openapi-repository-set.js";
+import {
+  REPOSITORY_CANDIDATE_OPENAPI_SCHEMAS,
+  repositoryCandidateOpenApiPaths,
+} from "./openapi-repository-candidates.js";
 import type { JsonObject } from "./openapi-types.js";
 import {
   CAPABILITY_DATA_CEILINGS,
@@ -6408,6 +6412,12 @@ export function buildOpenApiDocument(): OpenApiDocument {
   // multi-repository gate.
   Object.assign(paths, repositorySetOpenApiPaths());
 
+  // Approved-repository discovery (DAT-289, ADR-0011): which repositories an
+  // authorized repository manager may select for a workspace, with the
+  // installation each one would have to be proposed through. A read: it writes
+  // nothing and never opens the multi-repository gate.
+  Object.assign(paths, repositoryCandidateOpenApiPaths());
+
   // Stamp the security requirement and 401 response onto every operation so
   // auth coverage cannot silently miss an endpoint.
   stampAuth(paths);
@@ -6541,6 +6551,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
         ...SECURITY_OPENAPI_SCHEMAS,
         ...RUNTIME_OPENAPI_SCHEMAS,
         ...REPOSITORY_SET_OPENAPI_SCHEMAS,
+        ...REPOSITORY_CANDIDATE_OPENAPI_SCHEMAS,
         Error: errorSchema,
       },
       securitySchemes: {
