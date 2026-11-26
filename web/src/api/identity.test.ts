@@ -7,15 +7,28 @@ import { ApiError } from "./client";
 import type { JsonFetch } from "./client";
 import type { components } from "./contracts/schema";
 import { IdentityClient } from "./identity";
-import type { WorkspacePage } from "./identity";
+import type {
+  RepositorySetAdditionCommitResult,
+  RepositorySetAdditionConfirmation,
+  RepositorySetAdditionPreview,
+  WorkspacePage,
+} from "./identity";
 
 const fixtureDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../../docs/fixtures/identity-api-v1",
 );
+const repositorySetFixtureDir = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../../docs/fixtures/repository-set-api-v1",
+);
 
 function fixture<T>(name: string): T {
   return JSON.parse(readFileSync(path.join(fixtureDir, name), "utf8")) as T;
+}
+
+function repositorySetFixture<T>(name: string): T {
+  return JSON.parse(readFileSync(path.join(repositorySetFixtureDir, name), "utf8")) as T;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -223,6 +236,75 @@ describe("IdentityClient", () => {
       second.items[0]?.id,
     ]);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("previews and confirms a repository addition with the contract body only", async () => {
+    const preview = repositorySetFixture<RepositorySetAdditionPreview>(
+      "addition-preview-reduction.json",
+    );
+    const confirmation = repositorySetFixture<RepositorySetAdditionConfirmation>(
+      "addition-confirmation.json",
+    );
+    const proposal = [
+      {
+        provider_instance_id: "pri_captured_3",
+        installation_ref: "sint_captured_3",
+        repository_id: "gitlab:repo:9100",
+      },
+    ];
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(json(preview))
+      .mockResolvedValueOnce(json(confirmation, 201));
+    const api = client(fetchImpl, { token: "local-secret" });
+
+    await expect(
+      api.previewRepositorySetAddition("ws_1", { additional_repositories: proposal }),
+    ).resolves.toEqual(preview);
+
+    const [previewUrl, previewInit] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(previewUrl).toBe(
+      "http://127.0.0.1:4567/api/v1/workspaces/ws_1/repository-set-additions/preview",
+    );
+    expect(previewInit.method).toBe("POST");
+    expect(JSON.parse(previewInit.body as string)).toEqual({
+      additional_repositories: proposal,
+    });
+
+    await api.confirmRepositorySetAddition("ws_1", {
+      expected_set_version: preview.set_version,
+      additional_repositories: proposal,
+      confirmed_reductions: preview.reductions_required,
+    });
+
+    const [confirmUrl, confirmInit] = fetchImpl.mock.calls[1] as [string, RequestInit];
+    expect(confirmUrl).toBe(
+      "http://127.0.0.1:4567/api/v1/workspaces/ws_1/repository-set-additions/confirmations",
+    );
+    expect(JSON.parse(confirmInit.body as string)).toEqual({
+      expected_set_version: preview.set_version,
+      additional_repositories: proposal,
+      confirmed_reductions: preview.reductions_required,
+    });
+  });
+
+  it("commits a repository addition by confirmation id without a request body", async () => {
+    const committed = repositorySetFixture<RepositorySetAdditionCommitResult>(
+      "addition-commit-result.json",
+    );
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json(committed));
+    const result = await client(fetchImpl, { token: "local-secret" }).commitRepositorySetAddition(
+      "ws_1",
+      "rsc_1",
+    );
+
+    expect(result).toEqual(committed);
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      "http://127.0.0.1:4567/api/v1/workspaces/ws_1/repository-set-additions/confirmations/rsc_1/commit",
+    );
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeUndefined();
   });
 
   it("builds the sign-in URL on the configured API origin, not the page origin", () => {

@@ -828,3 +828,54 @@ Surface boundaries:
   current intersection and never changes the role. `LAST_WORKSPACE_OWNER`,
   `CAPABILITY_CEILING_*`, `CAPABILITY_MANAGEMENT_REQUIRED`, and version
   conflicts render their stable codes.
+
+## Workspace repository additions (DAT-287)
+
+Baseline `main` at `4b839c0` (DAT-286 #114, OpenAPI `0.10.0`), which carries
+the merged repository-addition contract. Fixtures are the real captured
+responses under `docs/fixtures/repository-set-api-v1/`; the UI invents no field
+and never derives an admission verdict, a capability or an effective owner.
+
+| Endpoint                                                                                    | Request fields                                                                                                                                                                  | Response type                               | Status |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- | ------ |
+| `POST /api/v1/workspaces/{workspace_id}/repository-set-additions/preview`                   | optional `expected_set_version`, `additional_repositories[]` (`provider_instance_id`, `installation_ref`, `repository_id`, optional display `repository_name`/`repository_url`) | `RepositorySetAdditionPreview`              | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/repository-set-additions/confirmations`             | `expected_set_version`, `additional_repositories[]`, `confirmed_reductions[]`, optional `ttl_ms`                                                                                | `RepositorySetAdditionConfirmation` (`201`) | ✅     |
+| `POST /api/v1/workspaces/{workspace_id}/repository-set-additions/confirmations/{id}/commit` | path ids                                                                                                                                                                        | `RepositorySetAdditionCommitResult`         | ✅     |
+
+Surface boundaries:
+
+- **Preview first, and only for the whole impact.** The surface opens from the
+  Repositories tab, which `manage_members` (verified repository management plus
+  an admin role) gates. A preview is rendered as a preview: it writes nothing
+  and always says `authorizes_access: false`. A `403`
+  `REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED` is shown as a refusal, never as a
+  redacted impact.
+- **Assigned role and verified capabilities are separate.** Each member row
+  shows the assigned workspace role beside the current/proposed provider
+  capabilities. `reduction` is shown as a before/after; the role is never
+  rewritten by the UI.
+- **Unknown is not a confirmed loss.** A member whose `evidence_complete` is
+  false renders "Access not verified" with its `evidence_classes`, not "Loses
+  access" and not an empty capability set that implies revocation.
+- **Every blocked reason is explicit.** `MULTI_REPOSITORY_GATE_DISABLED`,
+  `CURRENT_SET_UNUSABLE`, `MEMBER_ADMISSION_NOT_RETAINED`,
+  `LAST_EFFECTIVE_OWNER_MISSING`, the rollout-gate state, the current set's
+  refusal and every non-effective owner reason render their own statement, and
+  the confirm control is absent when `committable` is false.
+- **A reduction is acknowledged member by member.** Confirmation is sent with
+  exactly the preview's `reductions_required`; each entry needs an explicit
+  checkbox with the affected capabilities. The confirmation carries the
+  preview's `set_version` as `expected_set_version`; `ttl_ms` is not widened.
+- **No stale decision.** Editing any proposal field drops the preview and the
+  acknowledgement. A conflict, stale, expired, consumed or not-admissible
+  response drops the confirmation and the preview, so the next action is a
+  fresh preview; the old confirmation is never resent.
+- **Commit is the only write.** The commit is sent by `confirmation_id` with
+  no body and re-authorizes server-side. A success shows the version
+  transition, the committed immutable identities, reduced members, revoked
+  grants, and effective owners, and states that reopening Workspaces re-reads
+  the binding.
+- **No discovery endpoint is invented.** The contract accepts immutable
+  provider identity, so the form collects `provider_instance_id`,
+  `installation_ref` and `repository_id` (prefilling the workspace's current
+  provider instance) and sends optional display metadata only when entered.

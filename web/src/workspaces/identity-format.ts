@@ -145,6 +145,29 @@ const ERROR_COPY: Record<string, string> = {
     "Provider evidence changed while you were editing. Reload the verification and decide again.",
   AUTHORITY_RECHECK_REQUIRED: "Provider authority is being rechecked. Retry after reconciliation.",
   INVALID_CURSOR: "The page cursor is no longer valid. Reload the list.",
+  REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED:
+    "Only an active owner or admin whose repository management is verified on every current repository can decide this addition.",
+  REPOSITORY_SET_CHANGE_INVALID_PROPOSAL:
+    "This proposal cannot be applied. Check that each repository is not already bound and that its installation is approved.",
+  REPOSITORY_SET_CHANGE_NOT_ADMISSIBLE:
+    "The addition is refused: a protected member would lose access, evidence is not verified, or no effective owner would survive.",
+  REPOSITORY_SET_VERSION_CONFLICT:
+    "The repository set changed while you were deciding. Preview the addition again.",
+  REPOSITORY_SET_CHANGE_CONFIRMATION_REQUIRED:
+    "Preview and confirm the impact before committing this addition.",
+  REPOSITORY_SET_CHANGE_CONFIRMATION_STALE:
+    "The confirmed impact no longer matches the current facts. Preview and confirm again.",
+  REPOSITORY_SET_CHANGE_CONFIRMATION_EXPIRED:
+    "This confirmation expired. Preview and confirm the addition again.",
+  REPOSITORY_SET_CHANGE_CONFIRMATION_CONSUMED:
+    "This confirmation was already used. Preview and confirm the addition again.",
+  REPOSITORY_SET_CHANGE_CONFLICT:
+    "Membership or provider facts changed during the commit. Nothing was applied; preview and confirm again.",
+  REPOSITORY_SET_CHANGE_AUDIT_FAILED:
+    "The audit trail was unavailable, so nothing changed. Retry when it recovers.",
+  SCOPE_MUTATION_DISABLED:
+    "Repository additions are disabled until the multi-repository rollout gate opens.",
+  FEATURE_GATE_UNREADABLE: "The rollout gate could not be read, so the change is refused.",
 };
 
 export function describeError(caught: unknown): ErrorDescription {

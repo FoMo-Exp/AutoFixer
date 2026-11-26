@@ -7,6 +7,7 @@ import type { ErrorDescription } from "./identity-format";
 import { ROLE_LABELS, describeError, isEnterpriseAdmin, formatTimestamp } from "./identity-format";
 import { InvitationsPanel } from "./InvitationsPanel";
 import { MembersPanel } from "./MembersPanel";
+import { RepositorySetAdditionPanel } from "./RepositorySetAdditionPanel";
 import { ServiceIntegrationPanel } from "./ServiceIntegrationPanel";
 import { TeamsPanel } from "./TeamsPanel";
 import { EnterpriseUsersPanel } from "./EnterpriseUsersPanel";
@@ -22,7 +23,8 @@ interface WorkspaceAdminDialogProps {
   initialTab?: AdminTab;
 }
 
-type AdminTab = "members" | "teams" | "invitations" | "audit" | "integration" | "enterprise";
+type AdminTab =
+  "members" | "repositories" | "teams" | "invitations" | "audit" | "integration" | "enterprise";
 
 export function WorkspaceAdminDialog({
   client,
@@ -172,6 +174,10 @@ export function WorkspaceAdminDialog({
       case "members":
       case "teams":
         return canViewMembers;
+      case "repositories":
+        // The preview requires verified repository management plus an admin
+        // role; `manage_members` is exactly that projection decision.
+        return canManageMembers;
       case "invitations":
         return canInvite;
       case "audit":
@@ -185,7 +191,15 @@ export function WorkspaceAdminDialog({
   const visibleTab: AdminTab = tabAllowed(activeTab)
     ? activeTab
     : ((
-        ["members", "teams", "invitations", "audit", "integration", "enterprise"] as AdminTab[]
+        [
+          "members",
+          "repositories",
+          "teams",
+          "invitations",
+          "audit",
+          "integration",
+          "enterprise",
+        ] as AdminTab[]
       ).find(tabAllowed) ?? "members");
   const canManage = canManageMembers || canManageTeams || canInvite || canManageRoles;
 
@@ -293,6 +307,18 @@ export function WorkspaceAdminDialog({
                       Members
                     </button>
                   )}
+                  {workspace !== undefined && canManageMembers && (
+                    <button
+                      id="admin-tab-repositories"
+                      type="button"
+                      role="tab"
+                      className={`settings-tab${visibleTab === "repositories" ? " active" : ""}`}
+                      aria-selected={visibleTab === "repositories"}
+                      onClick={() => setActiveTab("repositories")}
+                    >
+                      Repositories
+                    </button>
+                  )}
                   {workspace !== undefined && canViewMembers && (
                     <button
                       id="admin-tab-teams"
@@ -357,6 +383,7 @@ export function WorkspaceAdminDialog({
                 {workspace !== undefined &&
                   capabilities.status === "ready" &&
                   !tabAllowed("members") &&
+                  !tabAllowed("repositories") &&
                   !tabAllowed("invitations") &&
                   !tabAllowed("audit") &&
                   !tabAllowed("integration") &&
@@ -388,6 +415,14 @@ export function WorkspaceAdminDialog({
                       canManage={canManageMembers}
                       canManageRoles={canManageRoles}
                       canViewVerification={enterpriseAdmin && canManageMembers}
+                    />
+                  )}
+                  {workspace !== undefined && visibleTab === "repositories" && canManageMembers && (
+                    <RepositorySetAdditionPanel
+                      key={`repositories-${workspace.id}`}
+                      client={client}
+                      workspace={workspace}
+                      canManage={canManageMembers}
                     />
                   )}
                   {workspace !== undefined && visibleTab === "teams" && canViewMembers && (
