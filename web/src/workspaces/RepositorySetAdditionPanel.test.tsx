@@ -110,6 +110,33 @@ const expectedProposal = [
   },
 ];
 
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+function proposalControls(): {
+  installation: HTMLInputElement;
+  repository: HTMLInputElement;
+  add: HTMLButtonElement;
+  preview: HTMLButtonElement;
+} {
+  return {
+    installation: screen.getByLabelText("Installation reference") as HTMLInputElement,
+    repository: screen.getByLabelText("Repository id") as HTMLInputElement,
+    add: screen.getByRole("button", { name: "Add another repository" }) as HTMLButtonElement,
+    preview: screen.getByRole("button", { name: /^Preview/ }) as HTMLButtonElement,
+  };
+}
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -271,6 +298,79 @@ describe("RepositorySetAdditionPanel", () => {
     expect(screen.queryByText("Confirm the impact")).toBeNull();
     expect(screen.queryByRole("button", { name: "Confirm impact" })).toBeNull();
     expect(client.confirmRepositorySetAddition).not.toHaveBeenCalled();
+  });
+
+  it("locks the proposal while a preview is in flight and still shows its result", async () => {
+    const user = userEvent.setup();
+    const client = fakeClient();
+    const pending = deferred<RepositorySetAdditionPreview>();
+    client.previewRepositorySetAddition.mockReturnValue(pending.promise);
+    renderPanel(client);
+
+    await proposeRepositories(user);
+    await user.click(screen.getByRole("button", { name: "Preview impact" }));
+
+    const controls = proposalControls();
+    expect(controls.installation.disabled).toBe(true);
+    expect(controls.repository.disabled).toBe(true);
+    expect(controls.add.disabled).toBe(true);
+    expect(controls.preview.disabled).toBe(true);
+
+    pending.resolve(reductionPreview);
+    expect(await screen.findByText("Impact preview")).toBeTruthy();
+    expect(controls.repository.value).toBe("gitlab:repo:9100");
+  });
+
+  it("locks the proposal while a confirmation is in flight and still shows the result", async () => {
+    const user = userEvent.setup();
+    const client = fakeClient();
+    const pending = deferred<RepositorySetAdditionConfirmation>();
+    client.confirmRepositorySetAddition.mockReturnValue(pending.promise);
+    renderPanel(client);
+
+    await proposeRepositories(user);
+    await user.click(screen.getByRole("button", { name: "Preview impact" }));
+    await screen.findByText("Impact preview");
+    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("button", { name: "Confirm impact" }));
+
+    const controls = proposalControls();
+    expect(controls.installation.disabled).toBe(true);
+    expect(controls.repository.disabled).toBe(true);
+    expect(controls.add.disabled).toBe(true);
+    expect(controls.preview.disabled).toBe(true);
+    expect(controls.repository.value).toBe("gitlab:repo:9100");
+
+    pending.resolve(confirmation);
+    expect(await screen.findByText("Confirmation recorded")).toBeTruthy();
+    expect(controls.repository.value).toBe("gitlab:repo:9100");
+  });
+
+  it("keeps an in-flight commit observable instead of dropping its result", async () => {
+    const user = userEvent.setup();
+    const client = fakeClient();
+    const pending = deferred<RepositorySetAdditionCommitResult>();
+    client.commitRepositorySetAddition.mockReturnValue(pending.promise);
+    renderPanel(client);
+
+    await proposeRepositories(user);
+    await user.click(screen.getByRole("button", { name: "Preview impact" }));
+    await screen.findByText("Impact preview");
+    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("button", { name: "Confirm impact" }));
+    await screen.findByText("Confirmation recorded");
+    await user.click(screen.getByRole("button", { name: "Commit addition" }));
+
+    const controls = proposalControls();
+    expect(controls.installation.disabled).toBe(true);
+    expect(controls.repository.disabled).toBe(true);
+    expect(controls.add.disabled).toBe(true);
+    expect(controls.preview.disabled).toBe(true);
+    expect(controls.repository.value).toBe("gitlab:repo:9100");
+
+    pending.resolve(commitResult);
+    expect(await screen.findByText("Addition committed")).toBeTruthy();
+    expect(screen.getByText(/Set version 1 → 2/)).toBeTruthy();
   });
 
   it("never reuses a confirmation the server refused as stale", async () => {

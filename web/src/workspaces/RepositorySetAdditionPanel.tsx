@@ -125,7 +125,8 @@ export function RepositorySetAdditionPanel({
   const acknowledgedAll = requiredReductions.every(
     (reduction) => acknowledged[reduction.membership_id] === true,
   );
-  const canSubmit = canManage && busy === undefined;
+  const proposalLocked = busy !== undefined;
+  const canSubmit = canManage && !proposalLocked;
   const canConfirm =
     canManage &&
     preview?.committable === true &&
@@ -146,12 +147,16 @@ export function RepositorySetAdditionPanel({
   }
 
   function updateRow(id: string, patch: Partial<RepositoryDraft>): void {
+    // A preview/confirm/commit is in flight; the request cannot be cancelled,
+    // so its result must stay visible instead of being invalidated by an edit.
+    if (proposalLocked) return;
     setError(undefined);
     startNewProposal();
     setRows((current) => current.map((row) => (row.id === id ? { ...row, ...patch } : row)));
   }
 
   function addRow(): void {
+    if (proposalLocked) return;
     setError(undefined);
     startNewProposal();
     const id = `repo-${nextRowId.current}`;
@@ -163,6 +168,7 @@ export function RepositorySetAdditionPanel({
   }
 
   function removeRow(id: string): void {
+    if (proposalLocked) return;
     setError(undefined);
     startNewProposal();
     setRows((current) => current.filter((row) => row.id !== id));
@@ -280,7 +286,11 @@ export function RepositorySetAdditionPanel({
         {rows.map((row, index) => {
           const rowIssues = showValidation ? (validation.issues[row.id] ?? {}) : {};
           return (
-            <fieldset className="repository-set-row" key={row.id} disabled={!canManage}>
+            <fieldset
+              className="repository-set-row"
+              key={row.id}
+              disabled={!canManage || proposalLocked}
+            >
               <legend>Repository {index + 1}</legend>
               <div className="identity-form-grid">
                 <RepositoryField
@@ -290,7 +300,7 @@ export function RepositorySetAdditionPanel({
                   onChange={(value) => updateRow(row.id, { providerInstanceId: value })}
                   hint="Must be an instance this enterprise approved."
                   error={rowIssues.providerInstanceId}
-                  disabled={!canManage}
+                  disabled={!canManage || proposalLocked}
                 />
                 <RepositoryField
                   id={`${row.id}-installation`}
@@ -299,7 +309,7 @@ export function RepositorySetAdditionPanel({
                   onChange={(value) => updateRow(row.id, { installationRef: value })}
                   hint="The approved, active installation that observes this repository."
                   error={rowIssues.installationRef}
-                  disabled={!canManage}
+                  disabled={!canManage || proposalLocked}
                 />
                 <RepositoryField
                   id={`${row.id}-repository`}
@@ -308,21 +318,21 @@ export function RepositorySetAdditionPanel({
                   onChange={(value) => updateRow(row.id, { repositoryId: value })}
                   hint="The provider-assigned immutable id; a URL is not an identity."
                   error={rowIssues.repositoryId}
-                  disabled={!canManage}
+                  disabled={!canManage || proposalLocked}
                 />
                 <RepositoryField
                   id={`${row.id}-name`}
                   label="Display name (optional)"
                   value={row.repositoryName}
                   onChange={(value) => updateRow(row.id, { repositoryName: value })}
-                  disabled={!canManage}
+                  disabled={!canManage || proposalLocked}
                 />
                 <RepositoryField
                   id={`${row.id}-url`}
                   label="Repository URL (optional)"
                   value={row.repositoryUrl}
                   onChange={(value) => updateRow(row.id, { repositoryUrl: value })}
-                  disabled={!canManage}
+                  disabled={!canManage || proposalLocked}
                 />
               </div>
               {rows.length > 1 && (
@@ -330,6 +340,7 @@ export function RepositorySetAdditionPanel({
                   <button
                     type="button"
                     className="button button-small button-quiet identity-destructive"
+                    disabled={!canManage || proposalLocked}
                     onClick={() => removeRow(row.id)}
                   >
                     Remove repository
@@ -343,7 +354,7 @@ export function RepositorySetAdditionPanel({
           <button
             type="button"
             className="button button-small button-quiet"
-            disabled={!canManage || busy !== undefined}
+            disabled={!canManage || proposalLocked}
             onClick={addRow}
           >
             Add another repository
@@ -526,7 +537,7 @@ export function RepositorySetAdditionPanel({
           {preview.committable && (
             <fieldset
               className="repository-set-section repository-set-ack"
-              disabled={!canManage || confirmation !== undefined}
+              disabled={!canManage || proposalLocked || confirmation !== undefined}
             >
               <legend>Confirm the impact</legend>
               {requiredReductions.length === 0 ? (
