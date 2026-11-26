@@ -97,6 +97,16 @@ export {
 } from "./member-admission.js";
 
 export type {
+  RepositorySetChangeDeps,
+  RepositorySetChangeService,
+} from "./repository-set-change.js";
+export {
+  DEFAULT_CONFIRMATION_TTL_MS,
+  MAX_CONFIRMATION_TTL_MS,
+  createRepositorySetChangeService,
+} from "./repository-set-change.js";
+
+export type {
   AccessGate,
   AccessGateDeps,
   AccessRequest,

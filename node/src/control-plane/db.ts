@@ -1698,6 +1698,61 @@ const MIGRATIONS: Migration[] = [
         ON workspace_member_capability(enterprise_id, user_id)`,
     ],
   },
+  {
+    // Durable repository-set change confirmations (DAT-284, ADR-0011).
+    //
+    // Adding a repository changes every member's capability intersection, so
+    // ADR-0011 requires an authorized actor to preview and explicitly confirm
+    // the *exact* affected members and reductions before the change commits.
+    // This row is that decision's durable evidence: the actor, workspace,
+    // proposed immutable repository identities, the observed set version, the
+    // exact member/owner facts and reductions, and a bounded expiry.
+    //
+    // It is not an authorization grant. The commit re-authorizes the actor and
+    // re-derives every fact inside one transaction; any difference refuses the
+    // change (`REPOSITORY_SET_CHANGE_CONFIRMATION_STALE`) instead of applying a
+    // stale decision. `consumed_at` makes a confirmation single-use; the
+    // trigger refuses rewriting it once set.
+    //
+    // No credentials, provider subjects or repository URLs are stored here or
+    // in the accompanying `auth_audit` row — only immutable identifiers and
+    // the disclosable impact summary.
+    version: 22,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS workspace_repository_set_confirmation (
+        id TEXT PRIMARY KEY,
+        enterprise_id TEXT NOT NULL REFERENCES enterprise(id),
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        actor_user_id TEXT NOT NULL,
+        set_version INTEGER NOT NULL CHECK (set_version >= 1),
+        proposed_bindings TEXT NOT NULL,
+        members TEXT NOT NULL,
+        owners TEXT NOT NULL,
+        impact TEXT NOT NULL,
+        last_owner_survives INTEGER NOT NULL CHECK (last_owner_survives IN (0, 1)),
+        all_members_retain_admission INTEGER NOT NULL
+          CHECK (all_members_retain_admission IN (0, 1)),
+        evidence_complete INTEGER NOT NULL CHECK (evidence_complete IN (0, 1)),
+        checked_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        consumed_by_set_version INTEGER,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_workspace_set_confirmation_scope
+        ON workspace_repository_set_confirmation(enterprise_id, workspace_id, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_workspace_set_confirmation_actor
+        ON workspace_repository_set_confirmation(enterprise_id, actor_user_id, created_at)`,
+      // A confirmation is consumed at most once. Re-consuming would let a
+      // replayed decision commit after later changes.
+      `CREATE TRIGGER IF NOT EXISTS workspace_repository_set_confirmation_single_use
+        BEFORE UPDATE OF consumed_at ON workspace_repository_set_confirmation
+        WHEN OLD.consumed_at IS NOT NULL
+        BEGIN SELECT RAISE(ABORT, 'workspace_repository_set_confirmation rows are single-use'); END`,
+    ],
+  },
 ];
 
 /** Highest schema version this build knows how to run. */
