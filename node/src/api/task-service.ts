@@ -25,6 +25,7 @@ import {
 } from "../errors/index.js";
 import type { DiagnosticAccessPolicy, SensitiveDiagnostics } from "../errors/index.js";
 import { createDshRequestActionTool } from "../pi/dsh-request-action-tool.js";
+import type { StepAuthorityDecision } from "../pi/dsh-request-action-tool.js";
 import { createCompletePreparationTool } from "../pi/completion-tool.js";
 import { createTurnSummaryReportTool } from "../pi/turn-report-tool.js";
 import { piSystemPrompt, taskPrompt } from "../pi/prompts.js";
@@ -40,6 +41,7 @@ import type { PiSummary } from "./pi-summary.js";
 import type {
   TaskRecord,
   TaskEvent,
+  TaskRequester,
   TaskResource,
   TimelineItem,
   TaskStore,
@@ -105,7 +107,54 @@ export interface WorkspaceRunBinding {
   repositoryUrl: string;
   baseRef: string;
   baseSha: string;
+  /**
+   * Version of the workspace's repository set this binding was validated
+   * against (DAT-285). Every later worker step is refused if the set has
+   * moved on, so a run never keeps acting against the set it was created
+   * under. `null` is the deployment-owned legacy seam, which has no versioned
+   * set.
+   */
+  setVersion: number | null;
 }
+
+/**
+ * One worker step's re-authorization input (DAT-285).
+ *
+ * A remediation run outlives the request that created it: the requester's
+ * membership, provider capabilities and the workspace's repository set can
+ * all change while it is executing. This is the durable evidence every
+ * sensitive step (`dsh_request_action`) is checked against, immediately
+ * before dispatch, in whichever process runs it.
+ */
+export interface RunStepAuthorityInput {
+  enterprise_id: string;
+  workspace_id: string;
+  repository_id: string;
+  /** The run's recorded requester; `null` on records that predate it. */
+  requested_by: TaskRequester | null;
+  /** The set version the run was bound to; `null` for the legacy seam. */
+  repository_set_version: number | null;
+}
+
+/** One step decision. A denial never dispatches anything. */
+export interface RunStepAuthorityResult {
+  allowed: boolean;
+  /** Safe machine code recorded on the denied step (never raw detail). */
+  code?: string;
+  /** Safe reason code for operators, mirroring the access decision. */
+  reason?: string;
+  /**
+   * True for a confirmed loss: the run is stopped after the denial instead of
+   * being left to recover when a transient verification failure clears.
+   */
+  terminal?: boolean;
+}
+
+/**
+ * Re-authorization of one sensitive worker step. Implementations re-read
+ * live durable state on every call; there is nothing to invalidate.
+ */
+export type RunStepAuthority = (input: RunStepAuthorityInput) => RunStepAuthorityResult;
 
 /**
  * Resolve a workspace locator to its run binding, or fail closed.
@@ -138,6 +187,8 @@ export function deploymentRunBinding(config: OrchestratorConfig): WorkspaceRunBi
     repositoryUrl: config.repositoryUrl,
     baseRef: config.baseRef,
     baseSha: config.baseSha,
+    // The legacy seam predates the versioned set; it has no set to pin.
+    setVersion: null,
   };
 }
 
@@ -225,6 +276,14 @@ export interface TaskServiceDeps {
    * configured in minimal deployments).
    */
   preparation?: Pick<PreparationBridge, "observe">;
+  /**
+   * Sensitive worker-step re-authorization (DAT-285). Set when the deployment
+   * has provider authority: every `dsh_request_action` dispatch re-reads the
+   * requester's live membership and repository-capability intersection and the
+   * versioned repository set before anything leaves the process. Unset keeps
+   * the identity-less deployment, where the dsh grant is the only boundary.
+   */
+  runStepAuthority?: RunStepAuthority;
 }
 
 /**
@@ -566,6 +625,12 @@ export class TaskService {
     // any dsh state exists (DAT-242): an unresolvable scope fails the request
     // here (401/403 via RequestScopeError), never a half-created run.
     const scopeBinding = this.deps.runScope(principal ?? null);
+    // Who asked for this run, persisted so later worker steps can re-verify
+    // that person's live authority (DAT-285). The legacy local-operator seam
+    // records the deployment credential, not a user.
+    const requestedBy: TaskRequester = principal
+      ? { kind: "session", user_id: principal.user_id }
+      : { kind: "deployment" };
     const summary = input.summary;
     const acceptanceCriteria = input.acceptance_criteria ?? [];
     const taskId = newTaskId();
@@ -611,6 +676,7 @@ export class TaskService {
         sourceReference,
         acceptanceCriteria,
         created,
+        requestedBy,
       );
       if (created.state === "approved" && created.grant) {
         this.startPi(record, created.grant, scopeBinding);
@@ -627,6 +693,7 @@ export class TaskService {
           sourceReference,
           acceptanceCriteria,
           error,
+          requestedBy,
         );
         throw prohibitedRefusal(record.id, error.code);
       }
@@ -906,6 +973,75 @@ export class TaskService {
     this.runtimes.delete(taskId);
   }
 
+  /**
+   * Re-authorize one sensitive worker step (DAT-285), immediately before its
+   * dispatch. The check is the deployment's durable authority boundary: the
+   * run's recorded requester must still hold current membership and verified
+   * repository capability in the run's workspace, and the workspace's
+   * repository set must still be the version the run was bound to. Nothing is
+   * cached, so the answer is the state at this instant — in this process or
+   * any other, after a restart included.
+   */
+  private authorizeRunStep(record: TaskRecord): StepAuthorityDecision {
+    const check = this.deps.runStepAuthority;
+    if (check === undefined) {
+      return { allowed: true };
+    }
+    let result: RunStepAuthorityResult;
+    try {
+      result = check({
+        enterprise_id: record.enterpriseId,
+        workspace_id: record.workspaceId,
+        repository_id: record.repository.id,
+        requested_by: record.requestedBy ?? null,
+        repository_set_version: record.repositorySetVersion ?? null,
+      });
+    } catch {
+      // A check that cannot be evaluated is a denial: never dispatch on an
+      // authority state that could not be established.
+      result = { allowed: false, code: "AUTHORITY_RECHECK_REQUIRED" };
+    }
+    if (result.allowed) {
+      return { allowed: true };
+    }
+    if (result.terminal === true) {
+      queueMicrotask(() => this.stopRunForAuthority(record));
+    }
+    return {
+      allowed: false,
+      code: result.code ?? "AUTHORITY_RECHECK_REQUIRED",
+      message:
+        "The run's repository authority no longer permits this action; nothing was dispatched.",
+    };
+  }
+
+  /**
+   * Stop a run whose requester's confirmed loss was observed mid-run: abort
+   * the local session so no further step can even be attempted, and let dsh
+   * record the authoritative cancellation. A dispatch that never happened is
+   * the actual enforcement — the local abort only ends the loop sooner.
+   */
+  private stopRunForAuthority(record: TaskRecord): void {
+    if (record.terminal || record.runId === null) {
+      return;
+    }
+    const reason = "repository authority no longer permits this run";
+    this.disposeRuntime(record.id);
+    void this.deps.dsh
+      .cancelRun(record.runId, {
+        requested_by: {
+          actor_id: this.deps.config.actorId,
+          identity: this.deps.config.approverIdentity,
+        },
+        reason,
+      })
+      .then((response) => this.projectDshState(record, response.state, reason))
+      .catch(() => {
+        // dsh unreachable: the denied dispatch already blocks every action;
+        // the projection stays as-is rather than inventing a terminal state.
+      });
+  }
+
   disposeAll(): void {
     for (const taskId of [...this.runtimes.keys()]) {
       this.disposeRuntime(taskId);
@@ -949,6 +1085,7 @@ export class TaskService {
       risk_assessment: { risk_class: string; decision_code: string };
       required_action: { type: string; scope_digest: string } | null;
     },
+    requestedBy: TaskRequester,
   ): TaskRecord {
     const record = createTaskRecord({
       id: taskId,
@@ -963,6 +1100,8 @@ export class TaskService {
       summary,
       sourceReference,
       acceptanceCriteria,
+      requestedBy,
+      repositorySetVersion: binding.setVersion,
     });
     record.runId = created.run_id;
     record.runs.push({
@@ -999,6 +1138,7 @@ export class TaskService {
     sourceReference: string | null,
     acceptanceCriteria: string[],
     error: DshError,
+    requestedBy: TaskRequester,
   ): TaskRecord {
     const record = createTaskRecord({
       id: taskId,
@@ -1013,6 +1153,8 @@ export class TaskService {
       summary,
       sourceReference,
       acceptanceCriteria,
+      requestedBy,
+      repositorySetVersion: binding.setVersion,
     });
     const runId = typeof error.details["run_id"] === "string" ? error.details["run_id"] : null;
     record.runId = runId;
@@ -1094,6 +1236,11 @@ export class TaskService {
       sessionId,
       getTurnId: () => sessionRef?.currentTurnId() ?? "turn_0",
       diagnostics: this.diagnostics,
+      // Every dispatch re-reads the run's durable authority (DAT-285): a
+      // downgrade, revocation, outage or repository-set change observed while
+      // this run was executing stops the next action before it leaves the
+      // process, in this process or any other.
+      authorizeStep: () => this.authorizeRunStep(record),
       // Run deadline and retry backoff for the controlled retry entry
       // (DAT-226): the governor authorizes at most this run's wall clock,
       // and an authorized retry waits out the service-imposed delay.

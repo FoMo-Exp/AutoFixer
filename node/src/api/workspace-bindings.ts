@@ -108,6 +108,9 @@ export function createWorkspaceRunBindingResolver(
         repositoryUrl: deps.config.repositoryUrl,
         baseRef: deps.config.baseRef,
         baseSha: deps.config.baseSha,
+        // The verified set version is part of the binding: every later worker
+        // step re-reads it, so the run cannot outlive a set change (DAT-285).
+        setVersion: scoped.set_version,
       };
     },
   };

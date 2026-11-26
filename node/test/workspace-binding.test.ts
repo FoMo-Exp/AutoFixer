@@ -39,6 +39,7 @@ const BETA: WorkspaceRunBinding = {
   repositoryUrl: "https://github.com/acme/Beta.git",
   baseRef: "trunk",
   baseSha: "b".repeat(40),
+  setVersion: 1,
 };
 
 function runResponse(taskId: string, runId: string): DshRunResponse {

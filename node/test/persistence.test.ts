@@ -271,7 +271,7 @@ describe("durable task projection (M3 persistence)", () => {
     const dir = tempDir();
     const stateFile = path.join(dir, "task-state.json");
     writeFileSync(stateFile, JSON.stringify({ schema_version: 99, tasks: [] }), "utf8");
-    expect(() => new TaskStore({ persistencePath: stateFile })).toThrow(/newer than 3/);
+    expect(() => new TaskStore({ persistencePath: stateFile })).toThrow(/newer than 4/);
   });
 
   test("a corrupt projection fails startup rather than dropping history", () => {
