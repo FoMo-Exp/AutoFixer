@@ -276,7 +276,32 @@ export interface TaskRecord {
   piSummary: PiSummary | null;
   /** Memory/policy pin taken at run start (DAT-238); null when memory is off. */
   memory: TaskMemoryRef | null;
+  /**
+   * Who requested this run (DAT-285). Persisted so every sensitive worker
+   * step can be re-authorized against the requester's *current* repository
+   * authority, across a restart and from another process, instead of trusting
+   * the grant issued when the run was created. `deployment` is the
+   * deployment's own credential (local operator); `null` only appears on
+   * records persisted before this field existed, and such a run has no
+   * requester whose authority can be re-established.
+   */
+  requestedBy: TaskRequester | null;
+  /**
+   * The versioned repository set this run was bound to (DAT-285); a set
+   * change makes the run's dispatch decision stale, so further steps are
+   * refused until a new run is created. `null` for the legacy
+   * deployment-owned seam, which predates the versioned set.
+   */
+  repositorySetVersion: number | null;
 }
+
+/**
+ * Who requested a run. `session` is an authenticated enterprise user whose
+ * authority must be re-verified before every worker step; `deployment` is
+ * the deployment's own local-operator credential, which provider membership
+ * does not govern.
+ */
+export type TaskRequester = { kind: "session"; user_id: string } | { kind: "deployment" };
 
 export function newTaskId(): string {
   return `tsk_${randomUUID().replaceAll("-", "")}`;
@@ -290,6 +315,8 @@ export function createTaskRecord(input: {
   summary: string;
   sourceReference: string | null;
   acceptanceCriteria: string[];
+  requestedBy?: TaskRequester | null;
+  repositorySetVersion?: number | null;
 }): TaskRecord {
   const now = new Date().toISOString();
   return {
@@ -324,6 +351,8 @@ export function createTaskRecord(input: {
     actionsInFlight: 0,
     piSummary: null,
     memory: null,
+    requestedBy: input.requestedBy ?? null,
+    repositorySetVersion: input.repositorySetVersion ?? null,
   };
 }
 
@@ -603,7 +632,7 @@ interface PersistedState {
   idempotency: Record<string, CreateIdempotencyRecord>;
 }
 
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SCHEMA_VERSION = 4;
 
 /** Version-0 was the unversioned M2 shape; migrate it before deserializing. */
 function migratePersistedState(raw: unknown): PersistedState {
@@ -669,5 +698,12 @@ function deserializeTask(
   // Projections persisted before DAT-191 predate the summary field.
   record.piSummary ??= null;
   record.memory ??= null;
+  // Schema < 4 predates the run requester and the bound repository-set
+  // version (DAT-285). Neither is invented: a missing requester stays null
+  // (the run cannot be re-authorized as an enterprise user) and a missing set
+  // version stays unpinned, so an enforcing workspace refuses further steps
+  // instead of assuming the deployment credential.
+  record.requestedBy ??= null;
+  record.repositorySetVersion ??= null;
   return record;
 }

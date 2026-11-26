@@ -21,6 +21,7 @@ import type { ServiceCredentialStore } from "../../src/provider-access/credentia
 import type { SecurityDutyDirectory } from "../../src/security/index.js";
 import type { DshServerHandle } from "./dsh-server.js";
 import { scriptedStream, TEST_MODEL } from "./scripted-stream.js";
+import type { ScriptedTurn } from "./scripted-stream.js";
 import { scriptedGateway } from "./test-gateway.js";
 import { cookieValue, getJson, getRaw } from "./http.js";
 import type { RawResponse } from "./http.js";
@@ -117,6 +118,12 @@ export interface AuthAppOptions {
   provider?: FakeProvider;
   configOverrides?: Partial<OrchestratorConfig>;
   lookup?: (hostname: string) => Promise<string[]>;
+  /**
+   * Scripted Pi turns this app's model plays (empty by default: the identity
+   * surfaces never run a live turn on their own). Worker-step tests script a
+   * tool call so the real dsh/tool path executes.
+   */
+  turns?: ScriptedTurn[];
   /** Rate-limit overrides for the invitation surface (tests). */
   invitationRateLimits?: InvitationRateLimits;
   /**
@@ -229,12 +236,17 @@ export async function startAuthApp(options: AuthAppOptions): Promise<AuthApp> {
     ...options.configOverrides,
   };
 
-  const scripted = scriptedStream([]);
+  const scripted = scriptedStream(options.turns ?? []);
   const buildOrchestrator = () =>
     createOrchestrator({
       config,
       model: TEST_MODEL,
-      gateway: scriptedGateway(TEST_MODEL, scripted.streamFn),
+      // The scripted policy is registered for this app's seeded scope, so a
+      // scripted turn passes the real egress policy checks instead of dying
+      // at POLICY_UNAVAILABLE.
+      gateway: scriptedGateway(TEST_MODEL, scripted.streamFn, {
+        scope: { enterpriseId: enterprise.id, workspaceId: workspace.id },
+      }),
       authFetchImpl: provider.fetchImpl,
       authDnsLookup: options.lookup ?? (async () => ["104.16.0.1"]),
       ...(options.invitationRateLimits !== undefined

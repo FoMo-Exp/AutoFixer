@@ -54,6 +54,19 @@ export interface ApprovalDirectoryDeps {
   /** Verification age beyond which repository access is no longer current. */
   staleAfterMs?: number;
   clock?: () => Date;
+  /**
+   * Current full-set action decision for one member (DAT-285). The provider
+   * roster check below proves access to the issue's *single* repository; ADR
+   * 0011 makes the workspace-wide intersection the ceiling on every workspace
+   * action, so an approval (or the broker's re-observation of the approving
+   * human) must also hold it. Wired to the request authority in the running
+   * service; absent only in unit fixtures that predate the set intersection.
+   */
+  workspaceActionAllowed?: (input: {
+    user_id: string;
+    workspace_id: string;
+    action: "approval";
+  }) => boolean;
 }
 
 function controlPlaneScope(scope: WorkspaceScope): WorkspaceScope & { actor_id: string } {
@@ -83,7 +96,11 @@ export function createApprovalDirectory(deps: ApprovalDirectoryDeps): ApprovalDi
    * verification inside the stale bound on an active integration bound to the
    * issue's repository. A partial or unverifiable roster grants nothing.
    */
-  function repositoryAccess(scope: WorkspaceScope, repositoryId: string, userId: string): boolean {
+  function repositoryAuthority(
+    scope: WorkspaceScope,
+    repositoryId: string,
+    userId: string,
+  ): boolean {
     const identities = deps.identities.listByUser(userId);
     const at = now();
     for (const integration of activeIntegrations(scope, repositoryId)) {
@@ -109,6 +126,34 @@ export function createApprovalDirectory(deps: ApprovalDirectoryDeps): ApprovalDi
       return true;
     }
     return false;
+  }
+
+  /**
+   * Repository access for a workspace action: the issue's repository must be
+   * proven *and*, when the full-set gate is wired, the workspace-wide
+   * intersection must still permit the action. A member who kept write on
+   * repository A but lost it on B is not an eligible approver for either —
+   * the intersection is the ceiling, never the best single repository.
+   */
+  function repositoryAccess(scope: WorkspaceScope, repositoryId: string, userId: string): boolean {
+    if (!repositoryAuthority(scope, repositoryId, userId)) {
+      return false;
+    }
+    const allowed = deps.workspaceActionAllowed;
+    if (allowed === undefined) {
+      return true;
+    }
+    try {
+      return allowed({
+        user_id: userId,
+        workspace_id: scope.workspace_id,
+        action: "approval",
+      });
+    } catch {
+      // A check that cannot be evaluated is a denial: an approval must never
+      // rest on authority that could not be established.
+      return false;
+    }
   }
 
   function factFor(

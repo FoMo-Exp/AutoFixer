@@ -148,11 +148,13 @@ export function scriptedGateway(
     scanner?: SecretScanner;
     scanPolicy?: SecretScanPolicy;
     usageLedger?: UsageLedgerSink;
+    /** Scope the policy applies to; defaults to {@link TEST_SCOPE}. */
+    scope?: GatewayScope;
   } = {},
 ): ModelGateway {
   return createModelGateway({
     policyResolver: createScopeBackedPolicyResolver([
-      { scope: TEST_SCOPE, policy: extras.policy ?? testPolicyFor(model) },
+      { scope: extras.scope ?? TEST_SCOPE, policy: extras.policy ?? testPolicyFor(model) },
     ]),
     credentials: createStaticCredentialStore(
       extras.credentials ?? { [TEST_CREDENTIAL_REF]: TEST_CREDENTIAL },

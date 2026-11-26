@@ -33,11 +33,13 @@ import type { RequestAuthority } from "./api/request-authority.js";
 import { createServiceIntegrationService } from "./api/service-integration-service.js";
 import type { ServiceIntegrationService } from "./api/service-integration-service.js";
 import { TaskService } from "./api/task-service.js";
+import type { RunStepAuthority } from "./api/task-service.js";
 import { TaskStore } from "./api/task-store.js";
 import {
   createConfiguredWorkspaceRunBindingResolver,
   createWorkspaceRunBindingResolver,
 } from "./api/workspace-bindings.js";
+import { createRunStepAuthority } from "./api/run-step-authority.js";
 import type { OrchestratorConfig } from "./config.js";
 import { configFromEnv, defaultSecurityStatePath } from "./config.js";
 import type { ControlPlaneDb } from "./control-plane/index.js";
@@ -581,6 +583,13 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let invitations: InvitationService | undefined;
   let controlPlane: ControlPlaneDb | undefined;
   let providerAuthority: RequestAuthority | undefined;
+  /**
+   * Sensitive worker-step re-authorization (DAT-285). Set with the identity
+   * surface so every `dsh_request_action` re-reads the requester's current
+   * authority and the versioned set before dispatch; unset in the
+   * identity-less deployment, where the dsh grant is the only boundary.
+   */
+  let runStepAuthority: RunStepAuthority | undefined;
   let members: WorkspaceMemberService | undefined;
   let workspaceBindings = createConfiguredWorkspaceRunBindingResolver(config);
   let requestScopeDeps: RequestScopeDeps | undefined;
@@ -750,6 +759,19 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       enterpriseId: config.enterpriseId,
       workspaceId: config.workspaceId,
     });
+    // Sensitive worker steps (DAT-285). A remediation run outlives the request
+    // that created it, so every `dsh_request_action` re-asks the live boundary:
+    // the bound repository set must still be the version the run was created
+    // against, and the recorded requester must still hold `write` authority in
+    // that workspace. Both reads are durable, so a revocation or downgrade
+    // observed by another process (or before a restart) applies here too.
+    runStepAuthority = createRunStepAuthority({
+      enterpriseId: config.enterpriseId,
+      actorId: config.actorId,
+      repositorySets: workspaceRepositorySets,
+      authority: providerAuthority,
+    });
+
     // Workspace membership (DAT-277) is decided from the caller's live role
     // plus the target's verified provider capabilities, and every mutation
     // commits with its audit row. It shares the request authority and the
@@ -803,6 +825,13 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       users: identity.users,
       identities: identity.identities,
       access: providerAccess,
+      // Approval eligibility is a workspace action: the issue repository's
+      // roster fact alone is not enough once the workspace has a repository
+      // set, so the gate's verified intersection decides (DAT-285).
+      workspaceActionAllowed: (input) => {
+        const decision = providerAuthority?.check(input.user_id, "approval", input.workspace_id);
+        return decision?.allowed === true;
+      },
     });
     // The delivery provider is the only write path to a repository, and the
     // read-only observer of the human merge (DAT-266). Both use the same
@@ -1018,6 +1047,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     preparation,
     ...(memory !== undefined && rsi !== undefined ? { memory: { memory, rsi } } : {}),
     ...(memoryCapture !== undefined ? { capture: memoryCapture } : {}),
+    ...(runStepAuthority !== undefined ? { runStepAuthority } : {}),
   });
   // Workspace dashboard (DAT-230): a read-only projection over the ledger,
   // budget journal, trace and task event log. It is only served when the

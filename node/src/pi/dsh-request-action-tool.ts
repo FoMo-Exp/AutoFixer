@@ -84,6 +84,25 @@ export interface ActionObservation {
 
 export type ActionObserver = (observation: ActionObservation) => void;
 
+/**
+ * One service re-authorization of a sensitive step (DAT-285).
+ *
+ * The caller evaluates it immediately before dispatch from durable state; the
+ * tool only honours the answer. A denial never consumes a retry attempt and
+ * never reaches dsh. `terminal` is the caller's stop policy (a confirmed loss
+ * ends the run); the tool does not interpret it beyond reporting the denial.
+ */
+export type StepAuthorityDecision =
+  | { allowed: true }
+  | {
+      allowed: false;
+      /** Safe machine code recorded on the denied step. */
+      code: string;
+      /** Safe message rendered to the model; never raw detail. */
+      message: string;
+      terminal?: boolean;
+    };
+
 export interface DshRequestActionToolOptions {
   client: DshClient;
   runId: string;
@@ -119,6 +138,14 @@ export interface DshRequestActionToolOptions {
    * (SANDBOX_UNAVAILABLE) retry; absent means the conservative answer.
    */
   uncertainMutation?: boolean;
+  /**
+   * Service re-authorization of this sensitive step (DAT-285), evaluated on
+   * every dispatch attempt from durable state. A denial is recorded as a
+   * denied step and thrown before the request reaches dsh; it never spends a
+   * retry attempt. Absent keeps the identity-less deployment, where the dsh
+   * grant is the only boundary.
+   */
+  authorizeStep?: () => StepAuthorityDecision;
 }
 
 /** Stable identity of the intent being retried: same tool, arguments and scope. */
@@ -352,6 +379,25 @@ export function createDshRequestActionTool(
       const actionId = `act_${randomUUID().replace(/-/g, "")}`;
       const caseId = intentCaseId(options.runId, params);
       const networkDestinations = params.network_destinations ?? [];
+
+      // Service re-authorization (DAT-285): the requester's durable authority
+      // and the bound repository set are re-read here, after cancellation and
+      // before the retry claim, so a denial dispatches nothing and costs no
+      // attempt. The observation makes the refusal visible on the timeline;
+      // the thrown error stops the model from believing the action ran.
+      const authority = options.authorizeStep?.() ?? { allowed: true };
+      if (!authority.allowed) {
+        options.observe({
+          toolCallId,
+          toolId: params.tool_id,
+          pathScope: params.path_scope,
+          outcome: "denied",
+          actionId,
+          errorCode: authority.code,
+          errorMessage: authority.message,
+        });
+        throw new Error(authority.message);
+      }
 
       // Controlled retry entry (DAT-226). The gate is synchronous — claim
       // and reservation are atomic within the process — so no interleaving
