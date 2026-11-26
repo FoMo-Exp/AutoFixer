@@ -25,18 +25,32 @@ import type {
 } from "./types.js";
 
 /**
- * One repository proposed for addition.
+ * The immutable identity of one proposed repository — the only fields that
+ * participate in authorization, revalidation or persistence.
  *
- * Only `provider_instance_id`, `installation_ref` and `repository_id` carry
- * authority; the URL and name are display metadata and are never consulted by
- * an authorization decision. A new binding must name an approved instance and
- * an active installation for exactly that repository — a null installation is
- * accepted only for the legacy backfill, never for a new addition.
+ * A confirmation stores exactly these fields. Display metadata (repository URL
+ * and name) is never recorded there: a committed binding takes its name from
+ * the verified installation it references, so a private repository address
+ * never enters a decision record or an audit row.
  */
-export interface RepositorySetAdditionBinding {
+export interface RepositorySetAdditionIdentity {
   provider_instance_id: ProviderInstanceId;
   installation_ref: string | null;
   repository_id: string;
+}
+
+/**
+ * One repository proposed for addition.
+ *
+ * Only the identity fields carry authority. `repository_url` and
+ * `repository_name` are display metadata a caller may send with a proposal;
+ * they are never persisted in the confirmation and never used for the
+ * committed binding — its name is read from the verified installation.
+ * A new binding must name an approved instance and an active installation for
+ * exactly that repository — a null installation is accepted only for the
+ * legacy backfill, never for a new addition.
+ */
+export interface RepositorySetAdditionBinding extends RepositorySetAdditionIdentity {
   repository_url?: string | null;
   repository_name?: string | null;
 }
@@ -95,8 +109,11 @@ export interface RepositorySetAdditionConfirmation {
   actor_user_id: UserId;
   /** Stored set version the confirmation was formed against. */
   set_version: number;
-  /** The exact repositories proposed for addition (authority fields only). */
-  proposed_bindings: RepositorySetAdditionBinding[];
+  /**
+   * The exact repositories proposed for addition, as immutable identities
+   * only. Display metadata is deliberately absent.
+   */
+  proposed_bindings: RepositorySetAdditionIdentity[];
   /** Every protected member's confirmed post-change facts, sorted by membership. */
   members: ConfirmedMemberImpact[];
   /** Owner assignments and their effectiveness over the proposed set. */

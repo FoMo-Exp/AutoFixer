@@ -264,6 +264,7 @@ export type {
   RecordRepositorySetAdditionConfirmationInput,
   RepositorySetAdditionBinding,
   RepositorySetAdditionConfirmation,
+  RepositorySetAdditionIdentity,
   RepositorySetChangeImpactSummary,
 } from "./repository-set-change-types.js";
 export { REPOSITORY_SET_CHANGE_AUDIT_EVENTS } from "./repository-set-change-types.js";

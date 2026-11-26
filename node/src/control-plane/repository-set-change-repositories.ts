@@ -25,10 +25,11 @@
  *
  * ## What is never stored
  *
- * No credentials, provider subjects, repository URLs or tokens enter the
- * confirmation or the audit row. Credential *references* stay on the
- * `service_integration` row; the change records only immutable identifiers and
- * the disclosable impact summary.
+ * No credentials, provider subjects, repository URLs or repository names enter
+ * the confirmation or the audit row: a confirmation holds the proposed
+ * repositories' immutable identities only. The committed binding takes its
+ * display name from the verified installation it references, so caller-supplied
+ * metadata can neither leak into the decision record nor override the binding.
  */
 
 import type { ControlPlaneDb } from "./db.js";
@@ -39,8 +40,8 @@ import { REPOSITORY_CAPABILITIES } from "./member-capability-types.js";
 import type {
   ConfirmedMemberImpact,
   ConfirmedOwnerImpact,
-  RepositorySetAdditionBinding,
   RepositorySetAdditionConfirmation,
+  RepositorySetAdditionIdentity,
   RepositorySetChangeImpactSummary,
 } from "./repository-set-change-types.js";
 import type { UserId, WorkspaceScope } from "./types.js";
@@ -62,12 +63,15 @@ interface MemberCeilingSnapshot {
   version: number;
 }
 
+/**
+ * One binding to insert. Display metadata is not an input: the name is read
+ * from the verified installation and the URL is not stored for a new addition,
+ * so caller-supplied metadata can never reach the binding row.
+ */
 export interface InsertWorkspaceRepositoryBindingInput {
   provider_instance_id: string;
   installation_ref: string;
   repository_id: string;
-  repository_url?: string | null;
-  repository_name?: string | null;
   position: number;
 }
 
@@ -118,7 +122,9 @@ export interface RepositorySetChangeRepository {
   /**
    * Insert one active binding after validating that its instance is approved
    * for the enterprise and its installation is active for exactly this
-   * workspace, instance and repository. Assumes the caller's transaction.
+   * workspace, instance and repository. The binding's display name is read
+   * from that verified installation; no caller-supplied metadata is stored.
+   * Assumes the caller's transaction.
    */
   insertBinding(
     scope: WorkspaceScope,
@@ -219,16 +225,23 @@ function parseStored<T>(raw: string, field: string): T {
 }
 
 function toConfirmation(row: ConfirmationRow): RepositorySetAdditionConfirmation {
+  const stored = parseStored<RepositorySetAdditionIdentity[]>(
+    row.proposed_bindings,
+    "proposed_bindings",
+  );
   return {
     id: row.id,
     enterprise_id: row.enterprise_id,
     workspace_id: row.workspace_id,
     actor_user_id: row.actor_user_id,
     set_version: row.set_version,
-    proposed_bindings: parseStored<RepositorySetAdditionBinding[]>(
-      row.proposed_bindings,
-      "proposed_bindings",
-    ),
+    // Re-project to the identity fields: a row written by any other build can
+    // never smuggle display metadata (or anything else) into a decision.
+    proposed_bindings: stored.map((binding) => ({
+      provider_instance_id: binding.provider_instance_id,
+      installation_ref: binding.installation_ref ?? null,
+      repository_id: binding.repository_id,
+    })),
     members: parseStored<ConfirmedMemberImpact[]>(row.members, "members"),
     owners: parseStored<ConfirmedOwnerImpact[]>(row.owners, "owners"),
     impact: parseStored<RepositorySetChangeImpactSummary>(row.impact, "impact"),
@@ -404,7 +417,7 @@ class SqliteRepositorySetChangeRepository implements RepositorySetChangeReposito
     // that the authorization path would refuse.
     const installation = this.db
       .prepare(
-        `SELECT id FROM service_integration
+        `SELECT id, repository_name FROM service_integration
           WHERE id = ? AND enterprise_id = ? AND workspace_id = ?
             AND provider_instance_id = ? AND repository_id = ?
             AND install_status = 'active'`,
@@ -415,7 +428,7 @@ class SqliteRepositorySetChangeRepository implements RepositorySetChangeReposito
         scope.workspace_id,
         input.provider_instance_id,
         input.repository_id,
-      ) as { id: string } | undefined;
+      ) as { id: string; repository_name: string } | undefined;
     if (installation === undefined) {
       throw new WorkspaceRepositorySetError(
         "INSTALLATION_NOT_APPROVED",
@@ -443,8 +456,10 @@ class SqliteRepositorySetChangeRepository implements RepositorySetChangeReposito
           input.provider_instance_id,
           input.installation_ref,
           input.repository_id,
-          input.repository_url ?? null,
-          input.repository_name ?? null,
+          // No URL is invented for a new addition; the name is the verified
+          // installation's display metadata.
+          null,
+          installation.repository_name,
           input.position,
           now,
           now,

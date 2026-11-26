@@ -523,12 +523,13 @@ export function createRepositorySetChangeService(
         workspace_id: scope.workspace_id,
         actor_user_id: input.actor_user_id,
         set_version: set.set_version,
+        // Immutable identities only: a decision record must never retain a
+        // private repository URL or name. The committed binding takes its name
+        // from the verified installation instead.
         proposed_bindings: input.additional_repositories.map((binding) => ({
           provider_instance_id: binding.provider_instance_id,
           installation_ref: binding.installation_ref,
           repository_id: binding.repository_id,
-          repository_url: binding.repository_url ?? null,
-          repository_name: binding.repository_name ?? null,
         })),
         members,
         owners,
@@ -628,8 +629,6 @@ export function createRepositorySetChangeService(
           provider_instance_id: binding.provider_instance_id,
           installation_ref: binding.installation_ref ?? "",
           repository_id: binding.repository_id,
-          repository_url: binding.repository_url ?? null,
-          repository_name: binding.repository_name ?? null,
           position: positions[index]!,
         }),
       );

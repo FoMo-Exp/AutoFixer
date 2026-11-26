@@ -43,6 +43,11 @@ import { NOW, REPO_ID, addMember, setupFixture, type Fixture } from "./helpers/p
 
 const REPO_B = "gitlab:repo:9100";
 const REPO_B_NAME = "acme/service-b";
+const REPO_B_URL = "https://gitlab.com/acme/service-b";
+// Display metadata a caller may send with a proposal. It is never persisted:
+// the committed binding takes its name from the verified installation.
+const CALLER_SUPPLIED_NAME = "caller-supplied/name";
+const CALLER_SUPPLIED_URL = "https://gitlab.com/caller-supplied/name";
 const HOUR_MS = 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
@@ -189,7 +194,8 @@ function setupAddition(
         provider_instance_id: gitlab.id,
         installation_ref: integrationB.id,
         repository_id: REPO_B,
-        repository_name: REPO_B_NAME,
+        repository_name: CALLER_SUPPLIED_NAME,
+        repository_url: CALLER_SUPPLIED_URL,
       },
     ],
   };
@@ -424,6 +430,31 @@ describe("repository addition confirmation", () => {
     expect(details["set_version"]).toBe(1);
   });
 
+  test("the confirmation stores immutable identities only, never URLs or names", () => {
+    const confirmation = confirm(fx);
+
+    // The decision record carries exactly the authority fields.
+    for (const binding of confirmation.proposed_bindings) {
+      expect(Object.keys(binding).sort()).toEqual([
+        "installation_ref",
+        "provider_instance_id",
+        "repository_id",
+      ]);
+    }
+
+    const stored = String(confirmationRow(fx, confirmation.id)!["proposed_bindings"]);
+    for (const metadata of [REPO_B_URL, REPO_B_NAME, CALLER_SUPPLIED_URL, CALLER_SUPPLIED_NAME]) {
+      expect(stored).not.toContain(metadata);
+    }
+
+    // Neither does the disclosable audit summary.
+    const audit = String(auditRows(fx, "repository_set.addition_confirmed")[0]!["details"]);
+    expect(audit).not.toContain(REPO_B_URL);
+    expect(audit).not.toContain(REPO_B_NAME);
+    expect(audit).not.toContain(CALLER_SUPPLIED_URL);
+    expect(audit).not.toContain(CALLER_SUPPLIED_NAME);
+  });
+
   test("a member projected to lose admission rejects the whole addition", () => {
     // No GitLab identity/roster fact: repository B cannot prove read, so the
     // member must not be admitted to the proposed set.
@@ -583,7 +614,10 @@ describe("repository addition commit", () => {
     expect(added["position"]).toBe(2);
     expect(added["provider_instance_id"]).toBe(fx.gitlabInstanceId);
     expect(added["installation_ref"]).toBe(fx.integrationB);
+    // Display metadata comes from the verified installation, never from the
+    // caller's proposal or the confirmation record.
     expect(added["repository_name"]).toBe(REPO_B_NAME);
+    expect(added["repository_url"]).toBeNull();
     expect(added["created_by"]).toBe(fx.actor.userId);
     expect(setVersion(fx)).toBe(2);
 
