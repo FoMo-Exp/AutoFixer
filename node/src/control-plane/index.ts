@@ -24,13 +24,18 @@ export {
   ControlPlaneError,
   LastOwnerError,
   NotFoundError,
+  RepositorySetChangeError,
   RequestScopeError,
   ScopeError,
   ValidationError,
   VersionConflictError,
   WorkspaceRepositorySetError,
 } from "./errors.js";
-export type { CapabilityCeilingErrorCode, RequestScopeErrorCode } from "./errors.js";
+export type {
+  CapabilityCeilingErrorCode,
+  RepositorySetChangeErrorCode,
+  RequestScopeErrorCode,
+} from "./errors.js";
 
 export type {
   ControlPlaneRepositories,
@@ -249,3 +254,24 @@ export type {
   MemberCapabilityRepository,
 } from "./member-capability-repositories.js";
 export { createMemberCapabilityRepository } from "./member-capability-repositories.js";
+
+export type {
+  CommitRepositorySetAdditionInput,
+  CommitRepositorySetAdditionResult,
+  ConfirmedMemberImpact,
+  ConfirmedOwnerImpact,
+  ConfirmedReduction,
+  RecordRepositorySetAdditionConfirmationInput,
+  RepositorySetAdditionBinding,
+  RepositorySetAdditionConfirmation,
+  RepositorySetAdditionIdentity,
+  RepositorySetChangeImpactSummary,
+} from "./repository-set-change-types.js";
+export { REPOSITORY_SET_CHANGE_AUDIT_EVENTS } from "./repository-set-change-types.js";
+export type {
+  InsertWorkspaceRepositoryBindingInput,
+  PersistCeilingReductionInput,
+  RepositorySetChangeActor,
+  RepositorySetChangeRepository,
+} from "./repository-set-change-repositories.js";
+export { createRepositorySetChangeRepository } from "./repository-set-change-repositories.js";

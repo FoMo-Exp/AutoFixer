@@ -15,6 +15,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, test } from "vitest";
 
 import {
+  CURRENT_SCHEMA_VERSION,
   createIdentityRepositories,
   createMemberCapabilityRepository,
   createProviderAccessRepositories,
@@ -770,7 +771,7 @@ describe("schema", () => {
     const versions = db
       .prepare("SELECT version FROM schema_migrations ORDER BY version")
       .all() as Array<{ version: number }>;
-    expect(versions.at(-1)?.version).toBe(21);
+    expect(versions.at(-1)?.version).toBe(CURRENT_SCHEMA_VERSION);
     migrate(db);
     const again = db
       .prepare("SELECT version FROM schema_migrations ORDER BY version")

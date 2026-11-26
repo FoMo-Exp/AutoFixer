@@ -194,6 +194,69 @@ export class CapabilityCeilingError extends ControlPlaneError {
 }
 
 /**
+ * A repository-set change was refused, or its required audit could not be
+ * written (DAT-284, ADR-0011).
+ *
+ * These codes are stable and each one is a refusal of the whole change: no
+ * binding, set version, ceiling reduction, revocation or confirmation
+ * consumption survives a refusal. `status` states the later request-path
+ * semantics: 403 is an actor who may not decide this, 409 is a confirmation or
+ * guarded write that no longer holds, and 500 is a required audit failure that
+ * blocks the sensitive action instead of committing it unaudited.
+ *
+ * - `REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED` (403) — the actor is not an
+ *   active workspace owner/admin with verified repository management
+ *   capability across every current repository.
+ * - `REPOSITORY_SET_CHANGE_CONFIRMATION_REQUIRED` (409) — no confirmation with
+ *   that id exists for this actor and workspace. Other actors' confirmations
+ *   are indistinguishable from missing ones.
+ * - `REPOSITORY_SET_CHANGE_CONFIRMATION_CONSUMED` (409) — the confirmation was
+ *   already used; a change commits at most once.
+ * - `REPOSITORY_SET_CHANGE_CONFIRMATION_EXPIRED` (409) — the bounded validity
+ *   window passed; a fresh preview and confirmation are required.
+ * - `REPOSITORY_SET_CHANGE_CONFIRMATION_STALE` (409) — the repository set,
+ *   membership/role state, provider evidence or exact reductions changed since
+ *   the confirmation, so the decision no longer describes the commit.
+ * - `REPOSITORY_SET_CHANGE_INVALID_PROPOSAL` (409) — the proposal is empty,
+ *   repeats a bound repository, or carries an invalid validity window.
+ * - `REPOSITORY_SET_CHANGE_NOT_ADMISSIBLE` (409) — the proposed set would lose
+ *   a protected member's admission, leave evidence unverified, or leave no
+ *   effective owner. The whole addition is refused; no member is removed.
+ * - `REPOSITORY_SET_CHANGE_CONFLICT` (409) — a guarded write lost to a
+ *   concurrent change and the transaction rolled back.
+ * - `REPOSITORY_SET_CHANGE_AUDIT_FAILED` (500) — the required audit row could
+ *   not be written, so the change was rolled back.
+ */
+export type RepositorySetChangeErrorCode =
+  | "REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED"
+  | "REPOSITORY_SET_CHANGE_CONFIRMATION_REQUIRED"
+  | "REPOSITORY_SET_CHANGE_CONFIRMATION_CONSUMED"
+  | "REPOSITORY_SET_CHANGE_CONFIRMATION_EXPIRED"
+  | "REPOSITORY_SET_CHANGE_CONFIRMATION_STALE"
+  | "REPOSITORY_SET_CHANGE_INVALID_PROPOSAL"
+  | "REPOSITORY_SET_CHANGE_NOT_ADMISSIBLE"
+  | "REPOSITORY_SET_CHANGE_CONFLICT"
+  | "REPOSITORY_SET_CHANGE_AUDIT_FAILED";
+
+export class RepositorySetChangeError extends ControlPlaneError {
+  readonly status: 403 | 409 | 500;
+
+  constructor(
+    code: RepositorySetChangeErrorCode,
+    message: string,
+    status: 403 | 409 | 500 = 409,
+    readonly details: Record<string, unknown> = {},
+    options: { cause?: unknown } = {},
+  ) {
+    super(code, message);
+    this.status = status;
+    if (options.cause !== undefined) {
+      this.cause = options.cause;
+    }
+  }
+}
+
+/**
  * Request-scope resolution failed (DAT-241). `status` states the request-path
  * semantics: 401 = there is no valid authenticated session (authenticate
  * again); 403 = the caller is authenticated but no scope is available to them
