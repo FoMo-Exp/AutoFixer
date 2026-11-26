@@ -35,12 +35,15 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
   CURRENT_SCHEMA_VERSION,
   MULTI_REPOSITORY_GATE_KEY,
+  assertSchemaSupported,
   createIdentityRepositories,
   createProviderAccessRepositories,
   createRepositories,
   createWorkspaceRepositorySetRepository,
   seedProviderInstance,
 } from "../src/control-plane/index.js";
+import { WorkspaceRepositorySetError } from "../src/control-plane/errors.js";
+import { createRunStepAuthority } from "../src/api/run-step-authority.js";
 import type {
   ControlPlaneDb,
   EnterpriseScope,
@@ -51,11 +54,11 @@ import type {
   WorkspaceScope,
 } from "../src/control-plane/index.js";
 import { buildOpenApiDocument } from "../src/api/openapi.js";
-import { cookieSessionHeaders, startAuthApp, webLogin } from "./helpers/auth-app.js";
+import { cookieSessionHeaders, REPOSITORY_ID, startAuthApp, webLogin } from "./helpers/auth-app.js";
 import type { AuthApp, LoggedInSession } from "./helpers/auth-app.js";
 import { startDshServer } from "./helpers/dsh-server.js";
 import type { DshServerHandle } from "./helpers/dsh-server.js";
-import { postJson, setAuthToken } from "./helpers/http.js";
+import { getJson, postJson, setAuthToken } from "./helpers/http.js";
 
 // ajv-formats ships CJS: NodeNext types its default import as the module
 // namespace while the runtime binding is the plugin function itself.
@@ -1164,3 +1167,207 @@ describe("repository-set addition API", () => {
 function ceilingsForMember(fx: ChangeFixture): Array<Record<string, unknown>> {
   return ceilingRows(fx).filter((row) => row["user_id"] === fx.memberUserId);
 }
+
+// ---------------------------------------------------------------------------
+// DAT-288: full-chain acceptance gate
+//
+// The repository-addition decision above is only safe if every other path
+// refuses the resulting multi-repository scope in this build. These tests pin
+// that closure at the real HTTP boundary, across a process restart, in the
+// worker-step policy, and against the mixed-version guards. They do not open
+// the gate: the gate is a rollout decision, and this build has no
+// multi-repository execution target binding.
+// ---------------------------------------------------------------------------
+
+interface ProjectionBody {
+  state: string;
+  blocked_reason: string | null;
+  capabilities: string[];
+  modules: Record<
+    string,
+    {
+      visible: boolean;
+      data_ceiling: string;
+      reason: string | null;
+      actions: Record<string, { allowed: boolean; reason?: string }>;
+    }
+  >;
+  authority: { set_version: number; repository_count: number };
+}
+
+async function expectEveryProtectedPathClosed(fx: ChangeFixture): Promise<void> {
+  const cookie = cookieSessionHeaders(fx.actor);
+  const workspace = `${fx.app.base}/api/v1/workspaces/${fx.app.workspaceId}`;
+
+  // The projection is advisory, and its own answer is "no verified data":
+  // tasks stay visible (the role exists) but carry no ceiling and no action.
+  const projection = await getJson<ProjectionBody>(`${workspace}/capabilities`, cookie);
+  expect(projection.status).toBe(200);
+  expect(projection.body).toMatchObject({
+    state: "unverified",
+    blocked_reason: "repository_set_unsupported",
+    capabilities: [],
+    authority: { set_version: 2, repository_count: 2 },
+  });
+  const tasks = projection.body.modules["tasks"]!;
+  expect(tasks).toMatchObject({ visible: true, data_ceiling: "none" });
+  expect(tasks.actions["view"]).toMatchObject({ allowed: false });
+  expect(tasks.actions["create"]).toMatchObject({ allowed: false });
+  expect(tasks.actions["stream"]).toMatchObject({ allowed: false });
+
+  // Every action class, the legacy task seam, and the collaboration delivery
+  // seam deny before any route body runs.
+  const probes: Array<["GET" | "POST", string, unknown]> = [
+    ["GET", `${workspace}/tasks`, undefined],
+    ["POST", `${workspace}/tasks`, { repository_id: REPO_B, base_ref: "main", summary: "probe" }],
+    ["GET", `${workspace}/tasks/task_probe`, undefined],
+    ["GET", `${workspace}/tasks/task_probe/stream`, undefined],
+    ["GET", `${workspace}/tasks/task_probe/artifacts/art_probe`, undefined],
+    ["POST", `${workspace}/tasks/task_probe/approvals`, { decision: "approved" }],
+    ["POST", `${workspace}/tasks/task_probe/messages`, { mode: "follow_up", content: "probe" }],
+    ["GET", `${workspace}/issues`, undefined],
+    ["POST", `${workspace}/issues/issue_probe/deliveries`, {}],
+    ["GET", `${fx.app.base}/api/v1/tasks`, undefined],
+  ];
+  for (const [method, url, body] of probes) {
+    const response =
+      method === "GET"
+        ? await getJson<ErrorBody>(url, cookie)
+        : await postJson<ErrorBody>(url, body ?? {}, cookie);
+    expect(response.status, `${method} ${url}`).toBe(403);
+    expect(response.body.error.code, `${method} ${url}`).toBe("AUTHORITY_RECHECK_REQUIRED");
+  }
+}
+
+describe("full-chain acceptance gate (DAT-288)", () => {
+  test("the committed set denies every protected path before and after a restart", async () => {
+    const fx = await startFixture({
+      member: { github: "write", gitlab: "reporter" },
+    });
+    const { confirmed } = await previewAndConfirm(fx);
+    const committed = await commit(
+      fx,
+      (confirmed.body as unknown as ConfirmationBody).confirmation_id,
+    );
+    expect(committed.status).toBe(200);
+
+    await expectEveryProtectedPathClosed(fx);
+
+    // No second change can even be previewed on top of a set this build
+    // cannot enforce: the manager's own capability intersection is unverified,
+    // so the surface refuses instead of disclosing an impact it cannot act on.
+    const after = await preview(fx, proposalBody(fx, 2));
+    expect(after.status).toBe(403);
+    expect((after.body as unknown as ErrorBody).error.code).toBe(
+      "REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED",
+    );
+
+    // A process restart re-reads the gate and the set from durable storage;
+    // nothing was cached, so the answer is the same.
+    await fx.app.restart();
+    await expectEveryProtectedPathClosed(fx);
+
+    const restartedDb = fx.app.orchestrator.controlPlane as ControlPlaneDb;
+    const set = createWorkspaceRepositorySetRepository(restartedDb).getSet(fx.scope);
+    expect(set.multi_repository).toBe(true);
+    expect(set.set_version).toBe(2);
+    expect(set.bindings).toHaveLength(2);
+    expect(set.blocked_reason).toBe("MULTI_REPOSITORY_SCOPE_UNSUPPORTED");
+  });
+
+  test("a worker step bound to the old set is terminal, and the new set grants nothing", async () => {
+    const fx = await startFixture({
+      member: { github: "write", gitlab: "reporter" },
+    });
+    const { confirmed } = await previewAndConfirm(fx);
+    const committed = await commit(
+      fx,
+      (confirmed.body as unknown as ConfirmationBody).confirmation_id,
+    );
+    expect(committed.status).toBe(200);
+
+    const authority = fx.app.orchestrator.providerAuthority;
+    expect(authority).toBeDefined();
+    const policy = createRunStepAuthority({
+      enterpriseId: fx.scope.enterprise_id,
+      actorId: "usr_acceptance",
+      repositorySets: fx.sets,
+      authority: authority!,
+    });
+    const stepBase = {
+      enterprise_id: fx.scope.enterprise_id,
+      workspace_id: fx.scope.workspace_id,
+      repository_id: REPOSITORY_ID,
+      requested_by: { kind: "session" as const, user_id: fx.actor.userId },
+    };
+
+    // A run created against set 1 must not keep acting after the addition.
+    expect(policy({ ...stepBase, repository_set_version: 1 })).toMatchObject({
+      allowed: false,
+      code: "REPOSITORY_SET_VERSION_CONFLICT",
+      terminal: true,
+    });
+    // A run created against set 2 matches its target but this build cannot
+    // authorize a multi-repository workspace, so the step is refused too.
+    const current = policy({ ...stepBase, repository_set_version: 2 });
+    expect(current.allowed).toBe(false);
+    expect(current.code).toBe("AUTHORITY_RECHECK_REQUIRED");
+    expect(current.reason).toBe("capability_unverified");
+    expect(current.terminal).toBe(false);
+  });
+
+  test("another tenant and an unknown workspace never expose the set or its preview", async () => {
+    const fx = await startFixture({
+      member: { github: "write", gitlab: "reporter" },
+    });
+    const foreignSet = {
+      enterprise_id: "ent_other",
+      workspace_id: fx.app.workspaceId,
+      actor_id: "usr_other",
+    };
+    expect(() => fx.sets.getSet(foreignSet)).toThrow(/not found/i);
+    expect(() => fx.sets.listBindings(foreignSet)).toThrow(/not found/i);
+
+    const response = await postJson<ErrorBody>(
+      `${fx.app.base}/api/v1/workspaces/wsp_other/repository-set-additions/preview`,
+      proposalBody(fx, 1),
+      cookieSessionHeaders(fx.actor),
+    );
+    expect(response.status).toBe(404);
+    expect(response.body.error.code).toBe("NOT_FOUND");
+  });
+
+  test("an older build or a newer rollout decision refuses to establish authority", async () => {
+    const fx = await startFixture();
+
+    // An older build (lower supported schema) may not serve this database at
+    // all: it would ignore the repository set it cannot enforce.
+    expect(() => assertSchemaSupported(fx.db, CURRENT_SCHEMA_VERSION - 1)).toThrow(
+      /newer than this build/,
+    );
+
+    // A gate row decided by a newer schema is unreadable, not "enabled".
+    fx.db
+      .prepare(
+        `INSERT INTO deployment_feature_gate
+           (key, min_schema_version, state, reason, created_at, created_by)
+         VALUES (?, ?, 'enabled', ?, ?, ?)`,
+      )
+      .run(
+        MULTI_REPOSITORY_GATE_KEY,
+        CURRENT_SCHEMA_VERSION + 1,
+        "future rollout this build does not understand",
+        nowIso(),
+        "usr_auth_system",
+      );
+
+    let refused: unknown;
+    try {
+      fx.sets.gate();
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused).toBeInstanceOf(WorkspaceRepositorySetError);
+    expect((refused as WorkspaceRepositorySetError).code).toBe("FEATURE_GATE_UNREADABLE");
+  });
+});
