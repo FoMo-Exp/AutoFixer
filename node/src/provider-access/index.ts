@@ -61,9 +61,40 @@ export type {
   CapabilityCeilingEvaluation,
   CapabilityCeilingService,
   CapabilityCeilingView,
+  CapabilityEvaluationOptions,
+  ProposedRepositoryBindingInput,
   ReapproveCeilingRequest,
 } from "./capability-ceiling.js";
 export { capabilityBlockSummary, createCapabilityCeilingService } from "./capability-ceiling.js";
+
+export type {
+  AdmissionEvidenceClass,
+  EffectiveOwnerReason,
+  EffectiveOwnerStatus,
+  MemberAdmission,
+  MemberAdmissionCeiling,
+  MemberAdmissionDeps,
+  MemberAdmissionService,
+  MemberAdmissionState,
+  MemberExclusionReason,
+  MemberRepositoryAdmission,
+  MemberRoleCeiling,
+  OwnerRemovalCheck,
+  ProposedMemberAdmission,
+  ProposedOwnerStatus,
+  ProposedRepositoryBinding,
+  ProposedSetAdmissionPreview,
+  ProposedSetInput,
+  WorkspaceAdmissionCounts,
+  WorkspaceAdmissionMember,
+  WorkspaceAdmissionReport,
+} from "./member-admission.js";
+export {
+  ADMISSION_EVIDENCE_CLASSES,
+  AdmissionPreviewError,
+  createMemberAdmissionService,
+  memberRoleCeiling,
+} from "./member-admission.js";
 
 export type {
   AccessGate,

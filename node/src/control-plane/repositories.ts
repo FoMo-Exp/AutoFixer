@@ -123,6 +123,19 @@ export interface MembershipBlockedAudit {
   action: "remove" | "demote";
 }
 
+/**
+ * Verified answer to "what would this owner change cost?" (DAT-283).
+ *
+ * `target_effective` is whether the membership being removed/demoted is an
+ * effective owner right now; `other_effective` is whether another effective
+ * owner remains. Both come from verified provider facts, never from the role
+ * column alone.
+ */
+export interface OwnerRemovalVerdict {
+  target_effective: boolean;
+  other_effective: boolean;
+}
+
 export interface MembershipMutationOptions {
   /** Required: a last-owner refusal must be audited atomically. */
   blockedAudit: MembershipBlockedAudit;
@@ -133,6 +146,20 @@ export interface MembershipMutationOptions {
    * role that justified it.
    */
   applyEffects?: (membership: Membership) => void;
+  /**
+   * Verified effective-owner probe (DAT-283, ADR-0011).
+   *
+   * Called *inside* the transaction when the change would remove or demote an
+   * `owner`. An effective owner has an active account, an active enterprise
+   * membership, an owner assignment **and** verified repository management
+   * capability across every active repository; unknown authority proves
+   * nothing either way.
+   *
+   * The role-count guard stays in force as a floor, so this probe can only make
+   * the refusal stricter, never weaker. A probe failure answers "no other
+   * effective owner": an unprovable owner is not a proven one.
+   */
+  verifyOwnerRemoval?: (scope: WorkspaceScope, target: Membership) => OwnerRemovalVerdict;
 }
 
 export interface MembershipRepository {
@@ -1080,14 +1107,13 @@ class SqliteMembershipRepository implements MembershipRepository {
       const existing = requireRow("Membership", id, this.getById(scope, id));
       // Evaluated inside the transaction as the write: two concurrent
       // demotions cannot both see a second *effective* owner and both succeed.
-      if (
-        existing.role === "owner" &&
-        role !== "owner" &&
-        this.#isEffectiveMember(scope, existing.user_id) &&
-        this.countByRole(scope, "owner") <= 1
-      ) {
-        this.#appendBlockedAudit(scope, existing, options.blockedAudit);
-        return { blocked: true as const, membership: existing };
+      const refusal =
+        existing.role === "owner" && role !== "owner"
+          ? this.#lastOwnerRefusal(scope, existing, options)
+          : null;
+      if (refusal !== null) {
+        this.#appendBlockedAudit(scope, existing, options.blockedAudit, refusal);
+        return { blocked: true as const, membership: existing, reason: refusal };
       }
       const updated = this.updateRole(scope, id, role, expectedVersion);
       this.#appendAudit(scope, audit);
@@ -1098,6 +1124,7 @@ class SqliteMembershipRepository implements MembershipRepository {
       throw new LastOwnerError(scope.workspace_id, "demote", {
         membership_id: id,
         user_id: outcome.membership.user_id,
+        reason: outcome.reason,
       });
     }
     return outcome.membership;
@@ -1121,13 +1148,11 @@ class SqliteMembershipRepository implements MembershipRepository {
   ): Membership {
     const outcome = runInTransaction(this.db, () => {
       const existing = requireRow("Membership", id, this.getById(scope, id));
-      if (
-        existing.role === "owner" &&
-        this.#isEffectiveMember(scope, existing.user_id) &&
-        this.countByRole(scope, "owner") <= 1
-      ) {
-        this.#appendBlockedAudit(scope, existing, options.blockedAudit);
-        return { blocked: true as const, membership: existing };
+      const refusal =
+        existing.role === "owner" ? this.#lastOwnerRefusal(scope, existing, options) : null;
+      if (refusal !== null) {
+        this.#appendBlockedAudit(scope, existing, options.blockedAudit, refusal);
+        return { blocked: true as const, membership: existing, reason: refusal };
       }
       this.remove(scope, id);
       this.#appendAudit(scope, audit);
@@ -1138,9 +1163,57 @@ class SqliteMembershipRepository implements MembershipRepository {
       throw new LastOwnerError(scope.workspace_id, "remove", {
         membership_id: id,
         user_id: outcome.membership.user_id,
+        reason: outcome.reason,
       });
     }
     return outcome.membership;
+  }
+
+  /**
+   * Would this change leave the workspace without an owner anyone can act as?
+   *
+   * Two independent refusals, both evaluated inside the transaction:
+   *
+   * - `last_workspace_owner` — the role-count floor: removing or demoting the
+   *   only effective member holding `owner` is always refused.
+   * - `last_effective_owner` — verified check (DAT-283): the target *is* an
+   *   effective owner and no other one remains. Another `owner` row that proves
+   *   nothing (no verified repository management capability, inactive account,
+   *   inactive enterprise membership) is not a substitute, because ADR-0011
+   *   protects the last *effective* owner, not the last role assignment.
+   *
+   * A target that is not an effective owner is governed by the role-count floor
+   * only: removing an owner nobody could act as does not reduce effective
+   * ownership, and the deployment recovery path must stay usable.
+   *
+   * A probe failure answers "no other effective owner": fail closed.
+   */
+  #lastOwnerRefusal(
+    scope: WorkspaceScope,
+    existing: Membership,
+    options: MembershipMutationOptions,
+  ): "last_workspace_owner" | "last_effective_owner" | null {
+    if (!this.#isEffectiveMember(scope, existing.user_id)) {
+      return null;
+    }
+    const count = this.countByRole(scope, "owner");
+    if (options.verifyOwnerRemoval === undefined) {
+      return count <= 1 ? "last_workspace_owner" : null;
+    }
+    let verdict: OwnerRemovalVerdict;
+    try {
+      verdict = options.verifyOwnerRemoval(scope, existing);
+    } catch {
+      // A failed probe cannot prove an effective owner, so it fails closed.
+      return count <= 1 ? "last_workspace_owner" : "last_effective_owner";
+    }
+    if (count <= 1) {
+      return "last_workspace_owner";
+    }
+    if (!verdict.target_effective) {
+      return null;
+    }
+    return verdict.other_effective ? null : "last_effective_owner";
   }
 
   /**
@@ -1182,6 +1255,7 @@ class SqliteMembershipRepository implements MembershipRepository {
     scope: WorkspaceScope,
     existing: Membership,
     blocked: MembershipBlockedAudit,
+    reason: "last_workspace_owner" | "last_effective_owner" = "last_workspace_owner",
   ): void {
     this.#insertAudit({
       event: "membership.owner_change_blocked",
@@ -1193,7 +1267,7 @@ class SqliteMembershipRepository implements MembershipRepository {
         workspace_id: scope.workspace_id,
         membership_id: existing.id,
         action: blocked.action,
-        reason: "last_workspace_owner",
+        reason,
         role: existing.role,
       },
     });

@@ -74,6 +74,11 @@ import type { WorkspaceRepositoryBinding } from "../control-plane/workspace-repo
 import type { WorkspaceRepositorySetRepository } from "../control-plane/workspace-repository-repositories.js";
 import type { AuthorityEpoch } from "../provider-access/access-gate.js";
 import type { CapabilityCeilingService } from "../provider-access/capability-ceiling.js";
+import type {
+  MemberAdmissionService,
+  OwnerRemovalCheck,
+} from "../provider-access/member-admission.js";
+import { memberRoleCeiling as admissionRoleCeiling } from "../provider-access/member-admission.js";
 import {
   intersectRepositoryCapabilities,
   providerRoleCapabilities,
@@ -156,6 +161,8 @@ export interface WorkspaceMemberServiceDeps {
   access: ProviderAccessRepositories;
   repositorySets: WorkspaceRepositorySetRepository;
   capabilityCeilings: CapabilityCeilingService;
+  /** Admission and effective-owner evaluation (DAT-283). */
+  admission: MemberAdmissionService;
   /** Provider-authority request boundary; the `manage`/`read` checks use it. */
   authority: RequestAuthority;
   hub: AuthEventHub;
@@ -214,7 +221,8 @@ function isWorkspaceRole(value: unknown): value is WorkspaceRole {
 export function memberRoleCeiling(
   capabilities: readonly RepositoryCapability[],
 ): MemberRoleCeiling {
-  return capabilities.includes("repository_write") ? "member" : "viewer";
+  // One rule, defined next to the admission decision it bounds.
+  return admissionRoleCeiling(capabilities);
 }
 
 /**
@@ -254,6 +262,7 @@ export class WorkspaceMemberService {
   readonly #access: ProviderAccessRepositories;
   readonly #repositorySets: WorkspaceRepositorySetRepository;
   readonly #capabilityCeilings: CapabilityCeilingService;
+  readonly #admission: MemberAdmissionService;
   readonly #authority: RequestAuthority;
   readonly #hub: AuthEventHub;
   readonly #epoch: AuthorityEpoch;
@@ -266,6 +275,7 @@ export class WorkspaceMemberService {
     this.#access = deps.access;
     this.#repositorySets = deps.repositorySets;
     this.#capabilityCeilings = deps.capabilityCeilings;
+    this.#admission = deps.admission;
     this.#authority = deps.authority;
     this.#hub = deps.hub;
     this.#epoch = deps.epoch;
@@ -405,6 +415,12 @@ export class WorkspaceMemberService {
             actor_user_id: actorUserId,
             action: "demote",
           },
+          // A demotion out of `owner` may not leave the workspace without an
+          // owner who can actually administer it (DAT-283). Evaluated inside
+          // the membership transaction, so concurrent changes cannot both
+          // observe a second effective owner.
+          verifyOwnerRemoval: (scope, existing) =>
+            this.#verifyOwnerRemoval(scope, existing.user_id),
           ...(downgraded
             ? {
                 applyEffects: (): void => {
@@ -1036,6 +1052,10 @@ export class WorkspaceMemberService {
             ...(actorUserId !== null ? { actor_user_id: actorUserId } : {}),
             action: "remove",
           },
+          // Removing an owner is only allowed when another *effective* owner
+          // remains; verified inside the same transaction as the delete.
+          verifyOwnerRemoval: (scope, existing) =>
+            this.#verifyOwnerRemoval(scope, existing.user_id),
           // Grants and their cleanup audit belong to the same transaction as
           // the membership removal: the request path already denies without
           // the membership, and no live grant may outlive it.
@@ -1054,6 +1074,19 @@ export class WorkspaceMemberService {
       user_id: removed.user_id,
       workspace_id: ctx.workspace.id,
     });
+  }
+
+  /**
+   * The effective-owner probe handed to the membership transaction.
+   *
+   * Runs inside the transaction and is read-only on purpose: an admission
+   * evaluation never persists a ceiling, so a refusal cannot itself change
+   * authority. A thrown evaluation has already been answered "no other
+   * effective owner" by the store, because unknown authority is not proof of an
+   * owner (ADR-0011).
+   */
+  #verifyOwnerRemoval(scope: WorkspaceScope, userId: UserId): OwnerRemovalCheck {
+    return this.#admission.verifyOwnerRemoval(scope, userId, { now: this.#clock() });
   }
 
   #revokeAllGrants(scope: WorkspaceScope, userId: UserId): number {

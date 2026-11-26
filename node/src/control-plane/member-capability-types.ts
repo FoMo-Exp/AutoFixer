@@ -65,7 +65,9 @@ export const CAPABILITY_GRANT_KINDS = ["checkout_read", "delivery_write"] as con
  * - `repository_binding_inconsistent` — bindings disagree with the workspace's
  *   immutable repository identity; reported, never resolved by guessing.
  * - `installation_not_approved` — a binding's installation is missing,
- *   suspended or uninstalled.
+ *   suspended, uninstalled, or was created for another provider instance or
+ *   another repository than the binding names (evidence may only come from the
+ *   installation that observes the binding's own instance and repository).
  * - `provider_instance_unapproved` — a binding names an unregistered provider
  *   instance.
  * - `subject_missing` — the member has no provider subject on the binding's

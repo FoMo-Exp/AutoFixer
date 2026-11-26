@@ -40,6 +40,7 @@ import type {
 import type { ControlPlaneDb } from "../src/control-plane/db.js";
 import { createAuthorityEpoch } from "../src/provider-access/access-gate.js";
 import { createCapabilityCeilingService } from "../src/provider-access/capability-ceiling.js";
+import { createMemberAdmissionService } from "../src/provider-access/member-admission.js";
 import { AuthEventHub } from "../src/api/auth-service.js";
 import type { RequestAuthority } from "../src/api/request-authority.js";
 import {
@@ -856,6 +857,62 @@ describe("workspace members (DAT-277)", () => {
     expect(
       remaining.body.items.filter((entry) => entry.role === "owner").length,
     ).toBeGreaterThanOrEqual(1);
+  });
+
+  test("an owner on paper does not satisfy the last-owner guard", async () => {
+    const f = await fixture();
+    // Bob holds an owner membership, but the provider proves `write` only: he
+    // can read and write the repository, not administer it. He is not an
+    // *effective* owner (DAT-283, ADR-0011).
+    expect((await addMember(f, f.owner, f.bob.userId, "owner")).status).toBe(201);
+
+    const ownerMembership = (await listMembers(f, f.owner)).body.items.find(
+      (entry) => entry.user_id === f.owner.userId,
+    )!;
+    const demoted = await request<ErrorBody>(
+      f.app,
+      "PATCH",
+      `${membersPath(f.app)}/${ownerMembership.id}`,
+      f.owner,
+      { role: "admin", version: ownerMembership.version },
+    );
+    expect(demoted.status).toBe(409);
+    expect(demoted.body.error.code).toBe("LAST_WORKSPACE_OWNER");
+    expect(demoted.body.error.details?.reason).toBe("last_effective_owner");
+
+    const removed = await request<ErrorBody>(
+      f.app,
+      "DELETE",
+      `${membersPath(f.app)}/${ownerMembership.id}`,
+      f.owner,
+    );
+    expect(removed.status).toBe(409);
+    expect(removed.body.error.details?.reason).toBe("last_effective_owner");
+
+    // Demoting the on-paper owner is allowed: it removes an assignment nobody
+    // could act on, and the effective owner remains.
+    const bobMembership = (await listMembers(f, f.owner)).body.items.find(
+      (entry) => entry.user_id === f.bob.userId,
+    )!;
+    const bobDemoted = await request<MembershipView>(
+      f.app,
+      "PATCH",
+      `${membersPath(f.app)}/${bobMembership.id}`,
+      f.owner,
+      { role: "member", version: bobMembership.version },
+    );
+    expect(bobDemoted.status).toBe(200);
+
+    // With one owner left it is the last role assignment as well as the last
+    // effective owner: the original refusal keeps its code and reason.
+    const lastOwner = await request<ErrorBody>(
+      f.app,
+      "DELETE",
+      `${membersPath(f.app)}/${ownerMembership.id}`,
+      f.owner,
+    );
+    expect(lastOwner.status).toBe(409);
+    expect(lastOwner.body.error.details?.reason).toBe("last_workspace_owner");
   });
 
   test("stale, unknown and removed provider facts fail closed and recover on reconciliation", async () => {
@@ -1772,6 +1829,13 @@ describe("provider-derived role ceiling", () => {
       capabilities: createMemberCapabilityRepository(db),
       epoch: createAuthorityEpoch(),
     });
+    const admission = createMemberAdmissionService({
+      repositorySets,
+      access,
+      memberships: repos.memberships,
+      identity,
+      capabilityCeilings,
+    });
     const permissiveAuthority = {
       isEnforcing: () => true,
       require: () => undefined,
@@ -1782,6 +1846,7 @@ describe("provider-derived role ceiling", () => {
       access,
       repositorySets,
       capabilityCeilings,
+      admission,
       authority: permissiveAuthority,
       hub: new AuthEventHub(),
       epoch: createAuthorityEpoch(),

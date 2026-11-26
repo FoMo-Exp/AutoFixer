@@ -103,9 +103,16 @@ export class ValidationError extends ControlPlaneError {
 
 /**
  * A workspace membership change would leave the workspace without an owner
- * (DAT-277, ADR-0011). The check and the write run in the same transaction, so
- * two concurrent removals/demotions cannot both observe a second owner and
- * both succeed: exactly one leaves at least one owner in place.
+ * anyone can act as (DAT-277, DAT-283, ADR-0011). The check and the write run in
+ * the same transaction, so two concurrent removals/demotions cannot both
+ * observe a second owner and both succeed: exactly one leaves at least one
+ * owner in place.
+ *
+ * `details.reason` distinguishes the two refusals: `last_workspace_owner` is the
+ * role-count floor (the only remaining `owner` row), `last_effective_owner`
+ * means other owner rows exist but none proves active account, active enterprise
+ * membership and verified repository management capability across every active
+ * repository.
  */
 export class LastOwnerError extends ControlPlaneError {
   constructor(
