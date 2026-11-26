@@ -829,6 +829,46 @@ describe("repository addition preview", () => {
     expect(entry.blockers).toEqual(["unknown"]);
   });
 
+  test("an installation is only evidence for the provider instance it was created for", () => {
+    const owner = addMember(fixture, { subject: "7606", login: "cf", role: "owner" });
+    applyRoster([{ subject: "7606", userId: owner.userId, provider_role: "admin" }]);
+    const cross = crossProvider([{ userId: owner.userId, subject: "7606" }]);
+    // Both providers report the same subject value, and repo B's roster says
+    // `owner`. Pairing an approved instance with the *other* instance's
+    // installation would read B's roster as A's evidence whenever the subject
+    // values coincide.
+    applyGitlabRoster(cross.integrationB, [
+      { subject: "7606", userId: owner.userId, provider_role: "owner" },
+    ]);
+
+    const mismatched = fixture.admission.previewProposedSet(fixture.scope, {
+      additional_repositories: [
+        {
+          provider_instance_id: fixture.providerInstanceId, // GitHub instance
+          installation_ref: cross.integrationB, // GitLab installation
+          repository_id: REPO_B,
+        },
+      ],
+    });
+    const blocked = mismatched.members.find((item) => item.user_id === owner.userId)!;
+    expect(blocked.retains_admission).toBe(false);
+    expect(blocked.reason).toBe("installation_not_approved");
+    expect(blocked.blockers).toEqual(["unknown"]);
+    expect(blocked.proposed_capabilities).toEqual([]);
+    // Crucially, the mismatch cannot make an effective owner appear to survive.
+    expect(mismatched.owners_after.find((item) => item.user_id === owner.userId)?.effective).toBe(
+      false,
+    );
+    expect(mismatched.last_owner_survives).toBe(false);
+
+    // The same repository through the installation's own instance verifies.
+    const matched = propose(cross);
+    const verified = matched.members.find((item) => item.user_id === owner.userId)!;
+    expect(verified.retains_admission).toBe(true);
+    expect(verified.proposed_capabilities).toContain("repository_manage");
+    expect(matched.last_owner_survives).toBe(true);
+  });
+
   test("the preview refuses a duplicate repository and a stale set version", () => {
     const cross = crossProvider([]);
     expect(() =>

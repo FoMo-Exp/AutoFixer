@@ -292,7 +292,13 @@ export function createCapabilityCeilingService(
     if (
       integration === undefined ||
       integration.install_status !== "active" ||
-      integration.repository_id !== binding.repository_id
+      integration.repository_id !== binding.repository_id ||
+      // The installation must observe *this* binding's provider instance. An
+      // approved instance paired with another instance's installation for the
+      // same repository would read B's roster as A's evidence whenever the two
+      // providers happen to use the same subject value, so an installation is
+      // only approved for the binding whose instance it was created for.
+      integration.provider_instance_id !== binding.provider_instance_id
     ) {
       return { ...base, state: "unverified", reason: "installation_not_approved" };
     }
