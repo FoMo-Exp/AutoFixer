@@ -95,17 +95,59 @@ an audit event. Reauthorization after a confirmed downgrade follows the rule
 below; provider recovery alone does not elevate a member. An uncertain check
 may recover without promotion when the previously approved facts are verified.
 
-Adding or removing a repository changes every member's intersection. The
-mutation must be authorized, audited and serialized against membership and
-access checks using a versioned repository set; no request may authorize
-against an old set after the change commits. Before adding, preview affected
-members and revalidate all current memberships. Until the product decides
-whether a change that would exclude current members should be rejected or
-applied with their access suspended, reject that addition; unknown results also
-block it. Never silently remove members or expand access. Repository removal
-must not automatically promote previously reduced authority; retain the
-existing audited reapproval rule. If an external change affects the last owner,
-use the audited recovery path below rather than retaining unauthorized access.
+Adding or removing a repository changes every member's intersection. For this
+decision a **current effective member** is an active workspace membership with
+an active enterprise membership, previously admitted and not confirmed revoked
+or removed. Include such a member even when present provider evidence is
+temporarily unavailable: otherwise an outage could silently remove that member
+from the protection set. Pending invitations and inactive, suspended, removed
+or confirmed-revoked memberships are not current effective members; they must
+meet the full admission rules before later activation. A **current effective
+owner** is such a member with an active owner assignment and verified necessary
+repository management capabilities across every active repository, subject to
+the existing role, policy and duty constraints. Unknown authority does not prove
+an effective owner; it must not be treated as a confirmed revocation either.
+
+Before adding a repository, compute the proposed full-set intersection for
+every current effective member. Reject the entire addition if any member is
+confirmed to lack code read, or any necessary evidence is missing, stale,
+incomplete, ambiguous, unsupported or unavailable. Do not convert unknown
+evidence into a confirmed denial or remove a member to make the change pass.
+If all retain admission, a verified reduction of their effective capability
+ceiling may proceed only after an authorized actor previews and explicitly
+confirms the exact affected members and reductions. The assigned workspace
+role remains unchanged; the approved ceiling is reduced, and normal action,
+policy and duty checks still apply. Reject the addition if no effective owner
+would retain all necessary management capabilities across the proposed set,
+even if everyone retains read and the reductions are confirmed. This protects
+the last effective owner, not merely an owner role assignment.
+
+The preview is scoped to the actor's existing authority: never disclose a
+member, repository, permission or other protected detail the actor cannot
+see. If the actor cannot view enough detail to make an informed confirmation,
+return a safe denial or require an appropriately authorized actor; a redacted
+preview is not consent to undisclosed reductions. Bind confirmation to the
+actor, workspace, proposed immutable repository identities and set version,
+membership/role state, evidence and exact reductions, with a bounded expiry;
+it is not an authorization grant. At commit reauthorize the actor and
+revalidate the complete current membership, repository set, owner and fresh
+provider permissions. If any relevant fact, result or confirmation has changed
+or expired, reject and require a fresh preview and confirmation. Serialize or
+use equivalent version checks against concurrent repository, membership, role
+and authority changes; stale decisions cannot commit. A provider change not
+yet observable remains subject to the documented freshness and reconciliation
+limits, not a promise of instantaneous detection.
+
+Commit the repository-set version, approved ceiling reductions, required
+revocations and durable audit evidence atomically. Failure of authorization,
+revalidation, concurrency control or required audit leaves none of the
+addition or its reductions committed. Invalidate old decisions and ensure no
+request authorizes against the old set after commit; propagate revocations to
+streams, worker steps and delivery using durable cross-process mechanisms.
+Never silently remove members or expand access. Repository removal must not
+automatically promote previously reduced authority; retain the audited
+reapproval rule. If an external change affects the last owner, use the audited
+recovery path below rather than retaining unauthorized access.
 
 Workspace-wide membership does not authorize a multi-repository remediation
 run. Existing single-repository tasks must explicitly bind their target to an
@@ -256,10 +298,12 @@ frontend cannot rely on a process-local signal as its security boundary.
 Use a guarded forward migration; never edit a previously published migration.
 Backfill each existing workspace's single repository as its first binding,
 preserving its immutable provider and repository identity and uniqueness.
-Do not expose multi-repository membership until all authorization paths,
-including legacy APIs, background workers, streams, artifacts, memory and
-delivery, enforce the complete set. Make mixed-version rollout fail closed;
-never let an older single-repository server accept a multi-repository scope.
+Keep multi-repository binding changes and the feature disabled until all
+authorization paths, including legacy APIs, background workers, streams,
+artifacts, memory and delivery, enforce the complete set, end-to-end tests
+pass, and mixed-version protection is verified. Only then may a controlled
+rollout enable the feature. Make mixed-version rollout fail closed; never let an
+older single-repository server accept a multi-repository scope.
 Backfill enterprise memberships from authoritative existing workspace
 memberships and enterprise-admin records, not provider identity alone. A
 preexisting global suspension is not silently lifted. Report ambiguous or
@@ -280,6 +324,11 @@ invitation values or protected content.
 - Provider roles are capability evidence, not AutoFixer roles. This avoids
   accidental management grants but requires per-provider capability adapters
   and explicit handling for custom or unobservable roles.
+- Rejecting an addition that loses admission or cannot be verified preserves
+  existing members during a change they did not initiate; verified reductions
+  can still proceed with informed confirmation. Last-effective-owner protection
+  avoids creating a workspace no authorized owner can administer, at the cost
+  of delaying additions until provider authority is repaired.
 - Capability projections simplify consistent browser/desktop navigation but
   add synchronization and contract costs; independent server checks remain
   mandatory. We reject client-authored role assertions and frontend-only gates.
@@ -324,11 +373,18 @@ invitation values or protected content.
     cannot leak data through old decisions, caches, streams, legacy endpoints or
     worker grants. Previously reduced access is never silently promoted.
     Existing one-repository records migrate without changing their access.
-
-## Open product question
-
-When adding a repository would make an existing member ineligible, should the
-operation be rejected until access is fixed, or proceed while that member's
-workspace access is suspended? Recommend rejecting the addition with an
-affected-member preview. This does not alter the confirmed rule that every
-active repository participates in the intersection.
+11. Addition rejects the whole change for any effective member's confirmed
+    no-read or unknown, stale, incomplete or unavailable evidence, including a
+    temporarily unverifiable existing member. A verified write-to-read
+    reduction requires an authorized, sufficiently informative preview and
+    explicit confirmation; the assigned role remains and the reduced ceiling
+    persists through provider recovery until audited reapproval. An outage alone
+    does not persist a downgrade. Independently granted Security duties follow
+    their own contract and do not become ordinary workspace authority.
+12. Adding a repository that would leave no effective owner with all required
+    management capabilities fails even with confirmed read and consent. Test
+    concurrent last-owner, membership, permission and repository changes,
+    expired or changed previews, incomplete disclosure, audit failure and
+    rollback; no stale approval, partial mutation or old-set authorization
+    succeeds. Feature activation requires all-path end-to-end and mixed-version
+    fail-closed verification before a controlled rollout.
