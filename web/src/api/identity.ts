@@ -42,6 +42,21 @@ export type MemberCapabilityCeilingView = components["schemas"]["MemberCapabilit
 export type EnterpriseCapabilityProjection =
   components["schemas"]["EnterpriseCapabilityProjection"];
 
+export type RepositorySetAdditionRepository =
+  components["schemas"]["RepositorySetAdditionRepository"];
+export type RepositorySetAdditionPreview = components["schemas"]["RepositorySetAdditionPreview"];
+export type RepositorySetAdditionPreviewMember =
+  components["schemas"]["RepositorySetAdditionPreviewMember"];
+export type RepositorySetAdditionPreviewOwner =
+  components["schemas"]["RepositorySetAdditionPreviewOwner"];
+export type ConfirmedReduction = components["schemas"]["ConfirmedReduction"];
+export type RepositorySetAdditionConfirmation =
+  components["schemas"]["RepositorySetAdditionConfirmation"];
+export type RepositorySetAdditionConfirmationMember =
+  components["schemas"]["RepositorySetAdditionConfirmationMember"];
+export type RepositorySetAdditionCommitResult =
+  components["schemas"]["RepositorySetAdditionCommitResult"];
+
 export type WorkspacePage =
   operations["listWorkspaces"]["responses"][200]["content"]["application/json"];
 export type MembershipPage =
@@ -81,6 +96,10 @@ export type UpdateMemberBody =
   operations["updateWorkspaceMember"]["requestBody"]["content"]["application/json"];
 export type InitializeServiceIntegrationBody =
   operations["initializeServiceIntegration"]["requestBody"]["content"]["application/json"];
+export type RepositorySetAdditionPreviewBody =
+  operations["previewRepositorySetAddition"]["requestBody"]["content"]["application/json"];
+export type RepositorySetAdditionConfirmBody =
+  operations["confirmRepositorySetAddition"]["requestBody"]["content"]["application/json"];
 
 interface RequestOptions {
   signal?: AbortSignal;
@@ -539,6 +558,62 @@ export class IdentityClient extends ApiTransport {
   }
 
   /**
+   * The full-set member impact of adding repositories. It writes nothing and
+   * never authorizes access; a caller who cannot see the whole impact is
+   * refused instead of shown a redacted preview.
+   */
+  async previewRepositorySetAddition(
+    workspaceId: string,
+    body: RepositorySetAdditionPreviewBody,
+    options: RequestOptions = {},
+  ): Promise<RepositorySetAdditionPreview> {
+    return this.request<RepositorySetAdditionPreview>(
+      `${repositorySetAdditionsPath(workspaceId)}/preview`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: options.signal,
+      },
+    );
+  }
+
+  /**
+   * Records the actor-bound, expiring confirmation of exactly this previewed
+   * impact. No binding is written: a confirmation is evidence of a decision.
+   */
+  async confirmRepositorySetAddition(
+    workspaceId: string,
+    body: RepositorySetAdditionConfirmBody,
+    options: RequestOptions = {},
+  ): Promise<RepositorySetAdditionConfirmation> {
+    return this.request<RepositorySetAdditionConfirmation>(
+      `${repositorySetAdditionsPath(workspaceId)}/confirmations`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: options.signal,
+      },
+    );
+  }
+
+  /**
+   * Commits one confirmed addition atomically. A conflict, expiry or changed
+   * fact refuses the whole change, so a stale confirmation never commits.
+   */
+  async commitRepositorySetAddition(
+    workspaceId: string,
+    confirmationId: string,
+    options: RequestOptions = {},
+  ): Promise<RepositorySetAdditionCommitResult> {
+    return this.request<RepositorySetAdditionCommitResult>(
+      `${repositorySetAdditionsPath(workspaceId)}/confirmations/${encodeURIComponent(confirmationId)}/commit`,
+      { method: "POST", signal: options.signal },
+    );
+  }
+
+  /**
    * Absolute sign-in URL on the configured API origin. The workbench and a
    * loopback API may live on different origins; a relative `/api/v1/auth/login`
    * would navigate the renderer's origin and never reach the auth service.
@@ -559,6 +634,10 @@ function cursorQuery(cursor?: string): string {
 
 function serviceIntegrationPath(enterpriseId: string, workspaceId: string): string {
   return `/api/v1/admin/enterprises/${encodeURIComponent(enterpriseId)}/workspaces/${encodeURIComponent(workspaceId)}/service-integration`;
+}
+
+function repositorySetAdditionsPath(workspaceId: string): string {
+  return `/api/v1/workspaces/${encodeURIComponent(workspaceId)}/repository-set-additions`;
 }
 
 function memberCapabilityPath(enterpriseId: string, workspaceId: string, userId: string): string {

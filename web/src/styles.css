@@ -3699,6 +3699,124 @@ p {
   align-self: flex-start;
 }
 
+/* ── Repository-set addition: preview, acknowledgement, commit ── */
+
+.repository-set-row {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  min-width: 0;
+  padding: var(--sp-3);
+}
+
+.repository-set-row legend {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  padding: 0 var(--sp-1);
+}
+
+.repository-set-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.repository-set-section {
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin: 0;
+  min-width: 0;
+  padding: var(--sp-3);
+}
+
+.repository-set-section h4,
+.repository-set-section h5 {
+  margin: 0;
+}
+
+.repository-set-section h5 {
+  font-size: var(--fs-meta);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.repository-set-summary {
+  display: grid;
+  gap: var(--sp-2);
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin: 0;
+}
+
+.repository-set-summary > div {
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.repository-set-summary dt {
+  color: var(--muted);
+  font-size: var(--fs-meta);
+}
+
+.repository-set-summary dd {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  margin: 0;
+}
+
+.repository-set-member {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.repository-set-blocked {
+  border-left: 2px solid rgb(var(--amber-rgb));
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding-left: var(--sp-3);
+}
+
+.repository-set-blocked ul {
+  margin: 0;
+  padding-left: var(--sp-4);
+}
+
+.repository-set-ack {
+  gap: var(--sp-2);
+}
+
+.repository-set-ack label {
+  align-items: flex-start;
+  color: var(--text);
+  display: flex;
+  flex-direction: row;
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  gap: var(--sp-2);
+}
+
+.repository-set-ack input {
+  accent-color: var(--accent);
+  margin-top: 3px;
+  width: auto;
+}
+
 .error-case {
   color: var(--faint);
   display: block;

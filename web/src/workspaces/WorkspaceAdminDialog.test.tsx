@@ -208,6 +208,7 @@ describe("WorkspaceAdminDialog", () => {
     expect(screen.getByText("Grace Hopper")).toBeTruthy();
     expect(screen.getByText(/Inherited role/)).toBeTruthy();
     expect(screen.getAllByRole("combobox")).toHaveLength(2);
+    expect(screen.getByRole("tab", { name: "Repositories" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Invitations" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Audit" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Integration" })).toBeTruthy();
@@ -278,6 +279,7 @@ describe("WorkspaceAdminDialog", () => {
     renderDialog(client, nonAdminSession);
 
     expect(await screen.findByText("Read-only roster")).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "Repositories" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Invitations" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Audit" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Integration" })).toBeNull();
