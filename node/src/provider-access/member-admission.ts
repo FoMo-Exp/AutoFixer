@@ -196,6 +196,15 @@ export type EffectiveOwnerReason =
   | "admission_revoked"
   | "management_missing";
 
+/** Canonical order for reporting, matching the type above one-for-one. */
+export const EFFECTIVE_OWNER_REASONS: readonly EffectiveOwnerReason[] = Object.freeze([
+  "user_inactive",
+  "enterprise_inactive",
+  "admission_unverifiable",
+  "admission_revoked",
+  "management_missing",
+]);
+
 export interface EffectiveOwnerStatus {
   user_id: UserId;
   membership_id: string;
@@ -281,6 +290,11 @@ export interface ProposedMemberAdmission {
   role: WorkspaceRole;
   /** True when admission survives the proposed set. */
   retains_admission: boolean;
+  /**
+   * Intersection over the *current* set, for a before/after disclosure. It is
+   * the verified effective ceiling today and never a provider role name.
+   */
+  current_capabilities: RepositoryCapability[];
   /** Intersection over the proposed set; empty unless it is fully verified. */
   proposed_capabilities: RepositoryCapability[];
   /** Effective capabilities the proposal would take away, canonical order. */
@@ -877,6 +891,7 @@ export function createMemberAdmissionService(deps: MemberAdmissionDeps): MemberA
         membership_id: member.membership_id,
         role: member.role,
         retains_admission: retains,
+        current_capabilities: normalizeCapabilitySet(member.capabilities),
         proposed_capabilities: retains ? proposedEffective : [],
         reduction: retains ? difference(member.capabilities, proposedEffective) : [],
         blockers: admission.evidence_classes.filter((entry) => entry !== "verified"),

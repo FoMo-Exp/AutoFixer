@@ -251,6 +251,71 @@ administrator surface itself stays reachable).
 | `PUT /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/service-integration` | `source_credential_ref`, optional `checkout_credential_ref`, `delivery_credential_ref` | `201` created, `200` identical replay, `409 SERVICE_INTEGRATION_EXISTS` / `SERVICE_INTEGRATION_BINDING_INVALID`, `503` audit unavailable |
 | `DELETE /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/service-integration` | none | `204`; `503` audit unavailable |
 
+## Workspace repository additions (DAT-286)
+
+Adding a repository to a workspace changes every current effective member's
+capability intersection, so ADR-0011 never applies it as a side effect. The
+surface is three operations over one decision:
+
+1. **Preview** every current effective member's intersection over the proposed
+   set. It writes nothing, `authorizes_access` is always `false`, and it reports
+   the exact before/after capabilities, the surviving effective owners, the
+   reductions a confirmation must acknowledge, and every reason the addition
+   cannot be committed.
+2. **Confirm** exactly that impact. The confirmation is bound to the actor,
+   workspace, proposed immutable repository identities, the observed set
+   version, the membership/role facts, the provider evidence and the exact
+   reductions, with a bounded expiry (default fifteen minutes, maximum one
+   day). It is evidence of a decision, never a grant.
+3. **Commit** re-authorizes the actor and revalidates the complete current
+   membership, repository set, effective owner and fresh provider evidence
+   inside one transaction, then writes the bindings, the new set version, the
+   approved ceiling reductions, the required grant revocations, the required
+   audit row and the confirmation's consumption together.
+
+The whole addition is refused when any current effective member is confirmed to
+lack code read on the proposed set, or when any necessary evidence is missing,
+unknown, expired, truncated, ambiguous or unavailable. Unknown evidence is
+never converted into a confirmed removal and no member is removed to make the
+change pass. A verified capability reduction may proceed only after the
+confirmation names the exact affected members and capabilities; the assigned
+workspace role is preserved and only the effective ceiling is reduced. The
+addition is also refused when no effective owner would retain every necessary
+management capability over the proposed set, even if everyone retains read.
+
+Any change after the preview — set version, membership, role, provider
+evidence, exact reductions, expiry — refuses the commit and requires a fresh
+preview and confirmation; a stale decision never commits and a confirmation
+commits at most once. A required-audit failure rolls the whole change back, so
+failure never leaves a partial addition. Nothing here opens the
+multi-repository gate: while it is `disabled`, `preview` still reports its
+impact and `commit_blocked_reasons` names `MULTI_REPOSITORY_GATE_DISABLED`, and
+`confirm`/`commit` refuse with `403 SCOPE_MUTATION_DISABLED`.
+
+Responses are disclosed only to an actor whose verified repository management
+covers every current repository; a caller who cannot see the whole impact is
+refused rather than shown a redacted preview, because a redacted preview is not
+informed consent. Responses carry no credentials, provider subjects, repository
+URLs or repository names — the committed binding takes its name from the
+verified installation.
+
+| Request | Request body | Response |
+|---|---|---|
+| `POST /api/v1/workspaces/{workspace_id}/repository-set-additions/preview` | optional `expected_set_version`, `additional_repositories[]` (`provider_instance_id`, `installation_ref`, `repository_id`, optional display `repository_url`/`repository_name`) | `200 RepositorySetAdditionPreview`; `403 REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED`; `404 NOT_FOUND`; `409 REPOSITORY_SET_VERSION_CONFLICT` / `REPOSITORY_SET_CHANGE_INVALID_PROPOSAL` |
+| `POST /api/v1/workspaces/{workspace_id}/repository-set-additions/confirmations` | `expected_set_version`, `additional_repositories[]`, `confirmed_reductions[]` (`membership_id`, `user_id`, `capabilities[]`), optional `ttl_ms` | `201 RepositorySetAdditionConfirmation`; `403 REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED` / `SCOPE_MUTATION_DISABLED`; `409 REPOSITORY_SET_CHANGE_NOT_ADMISSIBLE` / `REPOSITORY_SET_CHANGE_CONFIRMATION_STALE` / `REPOSITORY_SET_VERSION_CONFLICT`; `500 REPOSITORY_SET_CHANGE_AUDIT_FAILED` |
+| `POST /api/v1/workspaces/{workspace_id}/repository-set-additions/confirmations/{confirmation_id}/commit` | none | `200 RepositorySetAdditionCommitResult`; `403 REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED` / `SCOPE_MUTATION_DISABLED`; `409 REPOSITORY_SET_CHANGE_CONFIRMATION_REQUIRED`/`_CONSUMED`/`_EXPIRED`/`_STALE`, `REPOSITORY_SET_CHANGE_NOT_ADMISSIBLE`, `REPOSITORY_SET_CHANGE_CONFLICT`; `500 REPOSITORY_SET_CHANGE_AUDIT_FAILED` |
+
+| Field | Meaning |
+|---|---|
+| `members[].current_capabilities` / `proposed_capabilities` | the verified intersection today and over the proposed set; both are capabilities, never provider role names |
+| `members[].retains_admission` | `true` only when the member keeps verified code read on every proposed repository |
+| `members[].reduction` | the effective capabilities the addition takes away; empty when nothing is lost |
+| `members[].evidence_classes` | every non-`verified` evidence class behind a missing verdict (`unknown`, `expired`, `truncated`, `provider_unavailable`, `confirmed_revocation`); never a confirmed downgrade on its own |
+| `members[].role` | the assigned workspace role, reported separately from the capability ceiling and never rewritten by the change |
+| `owners[]` | each owner assignment's effectiveness over the proposed set; `management_missing` means read survived but repository management did not |
+| `reductions_required[]` | exactly the members and capabilities a confirmation must acknowledge |
+| `committable` / `commit_blocked_reasons[]` | whether this exact addition may proceed and every reason it may not (`MULTI_REPOSITORY_GATE_DISABLED`, `CURRENT_SET_UNUSABLE`, `MEMBER_ADMISSION_NOT_RETAINED`, `LAST_EFFECTIVE_OWNER_MISSING`) |
+
 ## Runtime diagnostics (DAT-257)
 
 `GET /api/v1/runtime/diagnostics` returns a redacted `RuntimeDiagnostics`
@@ -951,6 +1016,15 @@ Stable codes and their default envelope semantics:
 | `CAPABILITY_CEILING_MISMATCH` | 409 | validation | stop | no | `refresh` |
 | `CAPABILITY_ADMIN_REQUIRED` | 403 | authorization | denial | no | `contact_admin` |
 | `CAPABILITY_MANAGEMENT_REQUIRED` | 403 | authorization | denial | no | `contact_admin` |
+| `REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED` | 403 | authorization | denial | no | `contact_admin` |
+| `REPOSITORY_SET_CHANGE_CONFIRMATION_REQUIRED` | 409 | validation | stop | no | `refresh` |
+| `REPOSITORY_SET_CHANGE_CONFIRMATION_CONSUMED` | 409 | validation | stop | no | `refresh` |
+| `REPOSITORY_SET_CHANGE_CONFIRMATION_EXPIRED` | 409 | validation | stop | no | `refresh` |
+| `REPOSITORY_SET_CHANGE_CONFIRMATION_STALE` | 409 | validation | stop | no | `refresh` |
+| `REPOSITORY_SET_CHANGE_INVALID_PROPOSAL` | 409 | validation | stop | no | `resubmit` |
+| `REPOSITORY_SET_CHANGE_NOT_ADMISSIBLE` | 409 | policy | denial | no | `contact_admin` |
+| `REPOSITORY_SET_CHANGE_CONFLICT` | 409 | execution | retry | yes | `refresh` |
+| `REPOSITORY_SET_CHANGE_AUDIT_FAILED` | 500 | execution | stop | no | `contact_admin` |
 
 Node maps dsh policy outcomes without exposing dsh internals:
 `403 DSH_SCOPE_DENIED|DSH_POLICY_DENIED` (stage `policy`, category `denial`),

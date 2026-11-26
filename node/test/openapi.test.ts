@@ -35,6 +35,9 @@ import {
   TURN_REPORT_OUTCOMES,
 } from "../src/pi/turn-report.js";
 import { SECURITY_AUDIT_EVENT_TYPES, SECURITY_AUDIT_RESULTS } from "../src/security/audit.js";
+import { WORKSPACE_ROLES } from "../src/control-plane/types.js";
+import { ADMISSION_EVIDENCE_CLASSES } from "../src/provider-access/member-admission.js";
+import { REPOSITORY_SET_ADDITION_COMMIT_BLOCKS } from "../src/provider-access/repository-set-change.js";
 import { CASE_STATES } from "../src/security/types.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -252,6 +255,16 @@ const SECURITY_ENDPOINTS: Array<[method: string, path: string]> = [
   ["post", "/api/v1/workspaces/{workspace_id}/security/audit/exports"],
 ];
 
+/** Workspace repository-addition preview/confirm/commit surface (DAT-286). */
+const REPOSITORY_SET_ENDPOINTS: Array<[method: string, path: string]> = [
+  ["post", "/api/v1/workspaces/{workspace_id}/repository-set-additions/preview"],
+  ["post", "/api/v1/workspaces/{workspace_id}/repository-set-additions/confirmations"],
+  [
+    "post",
+    "/api/v1/workspaces/{workspace_id}/repository-set-additions/confirmations/{confirmation_id}/commit",
+  ],
+];
+
 /** Runtime configuration diagnostics (DAT-257). */
 const RUNTIME_ENDPOINTS: Array<[method: string, path: string]> = [
   ["get", "/api/v1/runtime/diagnostics"],
@@ -267,6 +280,7 @@ const ALL_ENDPOINTS = [
   ...RSI_ENDPOINTS,
   ...DASHBOARD_ENDPOINTS,
   ...SECURITY_ENDPOINTS,
+  ...REPOSITORY_SET_ENDPOINTS,
   ...RUNTIME_ENDPOINTS,
 ];
 
@@ -916,6 +930,34 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
       "get"
     ] as { responses: Record<string, unknown> };
     expect(costItems.responses["403"]).toBeDefined();
+  });
+
+  test("the repository-addition contract reuses the domain vocabularies", () => {
+    const preview = document.components.schemas["RepositorySetAdditionPreview"] as {
+      properties: Record<string, { enum?: unknown[]; items?: { enum?: unknown[] } }>;
+    };
+    expect(preview.properties["multi_repository_gate"]?.enum).toEqual([
+      "enabled",
+      "disabled",
+      "unreadable",
+    ]);
+    expect(preview.properties["commit_blocked_reasons"]?.items?.enum).toEqual([
+      ...REPOSITORY_SET_ADDITION_COMMIT_BLOCKS,
+    ]);
+    const member = document.components.schemas["RepositorySetAdditionPreviewMember"] as {
+      properties: Record<string, { enum?: unknown[] }>;
+    };
+    expect(member.properties["role"]?.enum).toEqual([...WORKSPACE_ROLES]);
+    expect(member.properties["evidence_classes"]).toMatchObject({
+      items: { enum: [...ADMISSION_EVIDENCE_CLASSES] },
+    });
+    // A preview never authorizes access, and a confirmation is not a grant.
+    for (const schema of ["RepositorySetAdditionPreview", "RepositorySetAdditionConfirmation"]) {
+      const shape = document.components.schemas[schema] as {
+        properties: Record<string, { enum?: unknown[] }>;
+      };
+      expect(shape.properties["authorizes_access"]?.enum, schema).toEqual([false]);
+    }
   });
 
   test("documents every model-egress security endpoint", () => {

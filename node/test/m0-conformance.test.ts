@@ -55,6 +55,8 @@ function parseEndpoints(markdown: string): Array<[method: string, path: string]>
   const runtimeTable = /## Runtime diagnostics \(DAT-257\)([\s\S]*?)\n## /.exec(markdown)?.[1];
   const serviceIntegrationTable =
     /## Repository service integration \(DAT-267\)([\s\S]*?)\n## /.exec(markdown)?.[1];
+  const repositoryAdditionTable =
+    /## Workspace repository additions \(DAT-286\)([\s\S]*?)\n## /.exec(markdown)?.[1];
   if (
     !taskTable ||
     !identityTable ||
@@ -62,7 +64,8 @@ function parseEndpoints(markdown: string): Array<[method: string, path: string]>
     !dashboardTable ||
     !securityTable ||
     !runtimeTable ||
-    !serviceIntegrationTable
+    !serviceIntegrationTable ||
+    !repositoryAdditionTable
   ) {
     throw new Error("could not locate the endpoints tables in the contract");
   }
@@ -74,6 +77,7 @@ function parseEndpoints(markdown: string): Array<[method: string, path: string]>
     ...parseTableEndpoints(securityTable),
     ...parseTableEndpoints(runtimeTable),
     ...parseTableEndpoints(serviceIntegrationTable),
+    ...parseTableEndpoints(repositoryAdditionTable),
   ];
 }
 
@@ -306,9 +310,10 @@ describe("independent conformance to the normative contract", () => {
     // governance observation (DAT-261), the three administrator
     // service-integration operations (DAT-267), the six enterprise-user
     // operations (DAT-275), the three repository capability-ceiling
-    // operations (DAT-276), and the enterprise-scoped capability projection
-    // (DAT-278).
-    expect(checked).toBe(137);
+    // operations (DAT-276), the enterprise-scoped capability projection
+    // (DAT-278), and the three repository-addition preview/confirm/commit
+    // operations (DAT-286).
+    expect(checked).toBe(140);
   });
 
   test("the committed openapi.json also carries the auth scheme", () => {

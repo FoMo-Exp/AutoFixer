@@ -42,6 +42,10 @@ import { MEMBER_INELIGIBLE_REASONS } from "./member-candidate-types.js";
 import { RSI_OPENAPI_SCHEMAS, rsiOpenApiPaths } from "./openapi-rsi.js";
 import { RUNTIME_OPENAPI_SCHEMAS, runtimeOpenApiPaths } from "./openapi-runtime.js";
 import { SECURITY_OPENAPI_SCHEMAS, securityOpenApiPaths } from "./openapi-security.js";
+import {
+  REPOSITORY_SET_OPENAPI_SCHEMAS,
+  repositorySetOpenApiPaths,
+} from "./openapi-repository-set.js";
 import type { JsonObject } from "./openapi-types.js";
 import {
   CAPABILITY_DATA_CEILINGS,
@@ -6398,6 +6402,12 @@ export function buildOpenApiDocument(): OpenApiDocument {
   // separate startup/task/model readiness for the deployment operator.
   Object.assign(paths, runtimeOpenApiPaths());
 
+  // Workspace repository additions (DAT-286, ADR-0011): the full-set impact
+  // preview, the actor-bound confirmation of exactly that impact, and the
+  // single revalidating transaction that commits it. Nothing here opens the
+  // multi-repository gate.
+  Object.assign(paths, repositorySetOpenApiPaths());
+
   // Stamp the security requirement and 401 response onto every operation so
   // auth coverage cannot silently miss an endpoint.
   stampAuth(paths);
@@ -6530,6 +6540,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
         ...DASHBOARD_OPENAPI_SCHEMAS,
         ...SECURITY_OPENAPI_SCHEMAS,
         ...RUNTIME_OPENAPI_SCHEMAS,
+        ...REPOSITORY_SET_OPENAPI_SCHEMAS,
         Error: errorSchema,
       },
       securitySchemes: {

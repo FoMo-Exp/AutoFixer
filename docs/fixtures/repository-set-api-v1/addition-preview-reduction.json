@@ -1,0 +1,87 @@
+{
+  "preview": true,
+  "authorizes_access": false,
+  "enterprise_id": "ent_captured_1",
+  "workspace_id": "wsp_captured_2",
+  "set_version": 1,
+  "proposed_repository_count": 2,
+  "multi_repository_gate": "enabled",
+  "current_set_blocked_reason": null,
+  "checked_at": "2026-11-26T12:00:00.000Z",
+  "members": [
+    {
+      "membership_id": "mbr_captured_3",
+      "user_id": "usr_captured_4",
+      "role": "member",
+      "retains_admission": true,
+      "current_capabilities": [
+        "code_read",
+        "issue_write",
+        "repository_write"
+      ],
+      "proposed_capabilities": [
+        "code_read"
+      ],
+      "reduction": [
+        "issue_write",
+        "repository_write"
+      ],
+      "evidence_classes": [],
+      "evidence_complete": true,
+      "reason": null,
+      "verified_at": "2026-11-26T12:05:00.000Z"
+    },
+    {
+      "membership_id": "mbr_captured_5",
+      "user_id": "usr_captured_6",
+      "role": "owner",
+      "retains_admission": true,
+      "current_capabilities": [
+        "code_read",
+        "issue_write",
+        "repository_write",
+        "repository_manage"
+      ],
+      "proposed_capabilities": [
+        "code_read",
+        "issue_write",
+        "repository_write",
+        "repository_manage"
+      ],
+      "reduction": [],
+      "evidence_classes": [],
+      "evidence_complete": true,
+      "reason": null,
+      "verified_at": "2026-11-26T12:05:00.000Z"
+    }
+  ],
+  "owners": [
+    {
+      "user_id": "usr_captured_6",
+      "effective": true,
+      "reason": null
+    }
+  ],
+  "last_owner_survives": true,
+  "all_members_retain_admission": true,
+  "reductions_required": [
+    {
+      "membership_id": "mbr_captured_3",
+      "user_id": "usr_captured_4",
+      "capabilities": [
+        "issue_write",
+        "repository_write"
+      ]
+    }
+  ],
+  "impact": {
+    "proposed_repository_count": 2,
+    "protected_members": 2,
+    "reduced_members": 1,
+    "removed_capabilities": 2,
+    "effective_owners": 1,
+    "last_owner_survives": true
+  },
+  "committable": true,
+  "commit_blocked_reasons": []
+}

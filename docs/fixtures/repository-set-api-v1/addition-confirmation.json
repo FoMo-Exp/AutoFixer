@@ -1,0 +1,61 @@
+{
+  "confirmation_id": "rsc_captured_1",
+  "workspace_id": "wsp_captured_2",
+  "set_version": 1,
+  "proposed_repositories": [
+    {
+      "provider_instance_id": "pri_captured_3",
+      "repository_id": "gitlab:repo:9100"
+    }
+  ],
+  "members": [
+    {
+      "membership_id": "mbr_captured_4",
+      "user_id": "usr_captured_5",
+      "role": "owner",
+      "retains_admission": true,
+      "proposed_capabilities": [
+        "code_read",
+        "issue_write",
+        "repository_write",
+        "repository_manage"
+      ],
+      "reduction": []
+    },
+    {
+      "membership_id": "mbr_captured_6",
+      "user_id": "usr_captured_7",
+      "role": "member",
+      "retains_admission": true,
+      "proposed_capabilities": [
+        "code_read"
+      ],
+      "reduction": [
+        "issue_write",
+        "repository_write"
+      ]
+    }
+  ],
+  "owners": [
+    {
+      "user_id": "usr_captured_5",
+      "effective": true
+    }
+  ],
+  "last_owner_survives": true,
+  "all_members_retain_admission": true,
+  "evidence_complete": true,
+  "impact": {
+    "proposed_repository_count": 2,
+    "protected_members": 2,
+    "reduced_members": 1,
+    "removed_capabilities": 2,
+    "effective_owners": 1,
+    "last_owner_survives": true
+  },
+  "checked_at": "2026-11-26T12:00:00.000Z",
+  "expires_at": "2026-11-26T12:05:00.000Z",
+  "created_at": "2026-11-26T12:00:00.000Z",
+  "authorizes_access": false,
+  "consumed_at": null
+}

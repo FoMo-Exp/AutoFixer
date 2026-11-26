@@ -2470,6 +2470,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspace_id}/repository-set-additions/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview the member impact of adding repositories to a workspace
+         * @description Evaluates every current effective member's capability intersection over the proposed set and reports the exact before/after impact, the surviving effective owners, the reductions a confirmation must acknowledge, and every reason the addition cannot be committed. It writes nothing and grants nothing (`authorizes_access: false`). A member without verified code read on every proposed repository, or a member whose evidence is unknown, expired, truncated or unavailable, makes the addition non-committable — unknown evidence is never reported as a confirmed removal. The preview is only produced for a caller whose verified repository management covers every current repository; a caller who cannot see the whole impact is refused instead of being shown a redacted preview.
+         */
+        post: operations["previewRepositorySetAddition"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/repository-set-additions/confirmations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record an actor-bound confirmation of the previewed addition
+         * @description Records a durable, actor-bound, expiring confirmation of exactly the impact a preview showed. `confirmed_reductions` must match the preview's `reductions_required` exactly; any difference is refused as stale, so a capability reduction can never be a silent side effect. The change is refused outright when a protected member would lose admission, when any necessary evidence is not verified, or when no effective owner would survive — no member is removed and no unverified evidence is treated as consent. No binding is written; the confirmation is evidence of a decision, not a grant.
+         */
+        post: operations["confirmRepositorySetAddition"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/workspaces/{workspace_id}/repository-set-additions/confirmations/{confirmation_id}/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Commit one confirmed repository addition atomically
+         * @description Inside one transaction: re-authorizes the actor, re-reads the set version, re-evaluates every protected member, owner and provider evidence fact, compares it with the confirmed facts, then writes the bindings, the new set version, the approved ceiling reductions (the assigned roles are preserved), the required grant revocations, the required audit row and the confirmation's consumption together. Any change, expiry, permission loss or write failure refuses the whole change: a stale decision never commits and nothing is partially applied. A conflict is retried by previewing and confirming again; the old confirmation stays refused.
+         */
+        post: operations["commitRepositorySetAddition"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5301,6 +5361,179 @@ export interface components {
             notes: string[];
             /** Format: date-time */
             generated_at: string;
+        };
+        RepositorySetAdditionRepository: {
+            /** @description An instance this enterprise has approved; an unapproved one fails evidence. */
+            provider_instance_id: string;
+            /** @description The approved, active installation that observes exactly this workspace, instance and repository. A new addition always needs one; a null value only describes the legacy backfill and is refused for a new binding. */
+            installation_ref: string | null;
+            /** @description Immutable provider-assigned repository id; the only authority-bearing identity. */
+            repository_id: string;
+            /** @description Display metadata. Never stored in a confirmation, a binding or an audit row, and never used for authorization. */
+            repository_url?: string | null;
+            /** @description Display metadata. Never stored in a confirmation or an audit row; the committed binding takes its name from the verified installation. */
+            repository_name?: string | null;
+        };
+        RepositorySetAdditionPreview: {
+            /** @enum {boolean} */
+            preview: true;
+            /**
+             * @description Always false: a preview describes a repository set that does not exist yet, so it never authorizes access.
+             * @enum {boolean}
+             */
+            authorizes_access: false;
+            enterprise_id: string;
+            workspace_id: string;
+            /** @description The stored set version this preview was formed against. */
+            set_version: number;
+            /** @description Every active repository plus the proposed additions. */
+            proposed_repository_count: number;
+            /**
+             * @description Rollout gate. A change cannot commit while it is disabled: the set would be storage no access path enforces.
+             * @enum {string}
+             */
+            multi_repository_gate: "enabled" | "disabled" | "unreadable";
+            /**
+             * @description Why the *current* set already authorizes nothing, if it does.
+             * @enum {string|null}
+             */
+            current_set_blocked_reason: "workspace_archived" | "repository_missing" | "repository_set_unsupported" | "repository_binding_inconsistent" | "installation_not_approved" | "provider_instance_unapproved" | "subject_missing" | "authority_unknown" | "authority_stale" | "verification_expired" | "permission_visibility_none" | "permission_visibility_partial" | "role_missing" | "unsupported_role" | "repository_access_removed" | "no_code_read" | "capability_store_unavailable" | null;
+            /** Format: date-time */
+            checked_at: string;
+            members: components["schemas"]["RepositorySetAdditionPreviewMember"][];
+            owners: components["schemas"]["RepositorySetAdditionPreviewOwner"][];
+            /** @description False when no owner would keep every necessary management capability across the proposed set, even if everyone retains read. */
+            last_owner_survives: boolean;
+            /** @description True only when every current effective member keeps verified code read on every repository of the proposed set. */
+            all_members_retain_admission: boolean;
+            /** @description Exactly the members and capabilities a confirmation must acknowledge. An empty list means the addition removes nothing. */
+            reductions_required: components["schemas"]["ConfirmedReduction"][];
+            impact: components["schemas"]["RepositorySetChangeImpact"];
+            /** @description True only when this exact addition may proceed to confirmation. */
+            committable: boolean;
+            /** @description Every reason the addition cannot be committed, in canonical order. Empty exactly when `committable` is true. */
+            commit_blocked_reasons: ("MULTI_REPOSITORY_GATE_DISABLED" | "CURRENT_SET_UNUSABLE" | "MEMBER_ADMISSION_NOT_RETAINED" | "LAST_EFFECTIVE_OWNER_MISSING")[];
+        };
+        RepositorySetAdditionPreviewMember: {
+            membership_id: string;
+            user_id: string;
+            /**
+             * @description The assigned workspace role, preserved by any capability change.
+             * @enum {string}
+             */
+            role: "owner" | "admin" | "member" | "viewer";
+            /** @description True when the member keeps verified code read on the proposed set. */
+            retains_admission: boolean;
+            /** @description The verified effective intersection today. Empty when today's evidence cannot establish one — `evidence_classes` says why, and an empty list here is never a recorded revocation. */
+            current_capabilities: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+            /** @description Provider-proven repository capabilities, in canonical order. Never a provider role name and never a workspace role. */
+            proposed_capabilities: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+            /** @description Provider-proven repository capabilities, in canonical order. Never a provider role name and never a workspace role. */
+            reduction: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+            /** @description Every evidence class that is not `verified`: why the proposed set could not establish this member's admission. Unknown, expired, truncated or unavailable evidence is never reported as a confirmed removal. */
+            evidence_classes: ("verified" | "unknown" | "expired" | "truncated" | "provider_unavailable" | "confirmed_revocation")[];
+            evidence_complete: boolean;
+            /**
+             * @description Why the proposed set does not verify, when it does not.
+             * @enum {string|null}
+             */
+            reason: "workspace_archived" | "repository_missing" | "repository_set_unsupported" | "repository_binding_inconsistent" | "installation_not_approved" | "provider_instance_unapproved" | "subject_missing" | "authority_unknown" | "authority_stale" | "verification_expired" | "permission_visibility_none" | "permission_visibility_partial" | "role_missing" | "unsupported_role" | "repository_access_removed" | "no_code_read" | "capability_store_unavailable" | null;
+            /**
+             * Format: date-time
+             * @description Oldest verification timestamp behind the facts (safe bound).
+             */
+            verified_at: string | null;
+        };
+        RepositorySetAdditionPreviewOwner: {
+            user_id: string;
+            /** @description True only for an owner assignment with verified management capability across every repository of the proposed set. */
+            effective: boolean;
+            /** @enum {string|null} */
+            reason: "user_inactive" | "enterprise_inactive" | "admission_unverifiable" | "admission_revoked" | "management_missing" | null;
+        };
+        ConfirmedReduction: {
+            membership_id: string;
+            user_id: string;
+            /** @description Provider-proven repository capabilities, in canonical order. Never a provider role name and never a workspace role. */
+            capabilities: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+        };
+        RepositorySetChangeImpact: {
+            proposed_repository_count: number;
+            protected_members: number;
+            reduced_members: number;
+            removed_capabilities: number;
+            effective_owners: number;
+            last_owner_survives: boolean;
+        };
+        RepositorySetAdditionConfirmation: {
+            confirmation_id: string;
+            workspace_id: string;
+            /** @description The set version the confirmation was formed against. */
+            set_version: number;
+            proposed_repositories: components["schemas"]["RepositorySetAdditionRepositoryIdentity"][];
+            members: components["schemas"]["RepositorySetAdditionConfirmationMember"][];
+            owners: {
+                user_id: string;
+                effective: boolean;
+            }[];
+            last_owner_survives: boolean;
+            all_members_retain_admission: boolean;
+            evidence_complete: boolean;
+            impact: components["schemas"]["RepositorySetChangeImpact"];
+            /** Format: date-time */
+            checked_at: string;
+            /**
+             * Format: date-time
+             * @description Bounded validity. After this instant the commit is refused and a fresh preview and confirmation are required.
+             */
+            expires_at: string;
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * @description Always false: a confirmation is evidence of a decision, not a grant.
+             * @enum {boolean}
+             */
+            authorizes_access: false;
+            /**
+             * Format: date-time
+             * @description Set once a commit consumed the confirmation; a change commits at most once.
+             */
+            consumed_at: string | null;
+        };
+        /** @description The immutable identity a confirmation binds. Display metadata is deliberately absent: a decision record never stores a repository URL or name. */
+        RepositorySetAdditionRepositoryIdentity: {
+            provider_instance_id: string;
+            repository_id: string;
+        };
+        RepositorySetAdditionConfirmationMember: {
+            membership_id: string;
+            user_id: string;
+            /** @enum {string} */
+            role: "owner" | "admin" | "member" | "viewer";
+            retains_admission: boolean;
+            /** @description Provider-proven repository capabilities, in canonical order. Never a provider role name and never a workspace role. */
+            proposed_capabilities: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+            /** @description Provider-proven repository capabilities, in canonical order. Never a provider role name and never a workspace role. */
+            reduction: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+        };
+        RepositorySetAdditionCommitResult: {
+            workspace_id: string;
+            confirmation_id: string;
+            set_version_before: number;
+            /** @description The committed set version. Decisions formed against the old version are invalid and must be re-read. */
+            set_version_after: number;
+            repositories: components["schemas"]["RepositorySetAdditionRepositoryIdentity"][];
+            members_reduced: {
+                user_id: string;
+                /** @description Provider-proven repository capabilities, in canonical order. Never a provider role name and never a workspace role. */
+                capabilities: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+            }[];
+            /** @description Live capability grants revoked because the reduced ceiling no longer supports them. */
+            grants_revoked: number;
+            /** @description Owners that retain every necessary management capability over the committed set. */
+            effective_owners: string[];
+            /** Format: date-time */
+            committed_at: string;
         };
         Error: {
             /** @description The shared versioned error envelope (ADR-0008, DAT-226 alignment): a stable machine code, the processing stage, the outcome category, a safe localizable user message, service-decided retryability, retry-after where applicable, the request_id trace/case reference, safe-only structured details, and the authorized next action. No field ever carries secrets, credentials, invitation tokens, or sensitive diagnostics; those stay behind separate access checks. */
@@ -14685,6 +14918,252 @@ export interface operations {
             };
             /** @description FORBIDDEN — a session credential is not the deployment operator */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    previewRepositorySetAddition: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace locator, resolved against the caller's live membership. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The repository-set version the caller observed. The preview compares it with the stored version and refuses a conflict; the confirmation binds it, so a set change while the actor decides invalidates the decision. Optional on preview (the stored version is used), required to confirm. */
+                    expected_set_version?: number | null;
+                    /** @description Repositories to add. A proposal only adds: an already-bound repository is refused (409 REPOSITORY_SET_CHANGE_INVALID_PROPOSAL). */
+                    additional_repositories: components["schemas"]["RepositorySetAdditionRepository"][];
+                };
+            };
+        };
+        responses: {
+            /** @description The full-set impact preview. Nothing was written. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepositorySetAdditionPreview"];
+                };
+            };
+            /** @description INVALID_REQUEST — malformed proposal */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED — not an active workspace owner/admin with verified repository management across the current set; SCOPE_MUTATION_DISABLED / FEATURE_GATE_UNREADABLE when the gate refuses */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — unknown workspace or no live membership */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description REPOSITORY_SET_VERSION_CONFLICT or REPOSITORY_SET_CHANGE_INVALID_PROPOSAL */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    confirmRepositorySetAddition: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace locator, resolved against the caller's live membership. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The repository-set version the caller observed. The preview compares it with the stored version and refuses a conflict; the confirmation binds it, so a set change while the actor decides invalidates the decision. Optional on preview (the stored version is used), required to confirm. */
+                    expected_set_version: number;
+                    /** @description Repositories to add. A proposal only adds: an already-bound repository is refused (409 REPOSITORY_SET_CHANGE_INVALID_PROPOSAL). */
+                    additional_repositories: components["schemas"]["RepositorySetAdditionRepository"][];
+                    /** @description Exactly the affected members and capabilities the preview reported in `reductions_required`. Empty when nothing is reduced. */
+                    confirmed_reductions?: components["schemas"]["ConfirmedReduction"][];
+                    /** @description Optional bounded validity override (default fifteen minutes, maximum one day). A confirmation that outlives a workday is not a bounded decision. */
+                    ttl_ms?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description The recorded confirmation, with its exact impact and expiry. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepositorySetAdditionConfirmation"];
+                };
+            };
+            /** @description INVALID_REQUEST — malformed proposal or missing expected_set_version */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED, SCOPE_MUTATION_DISABLED — the caller may not decide this change */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — unknown workspace or no live membership */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description REPOSITORY_SET_CHANGE_NOT_ADMISSIBLE — a protected member would lose admission, evidence is not verified, or no effective owner would survive; REPOSITORY_SET_CHANGE_CONFIRMATION_STALE — the confirmed reductions differ from the current impact; REPOSITORY_SET_VERSION_CONFLICT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description REPOSITORY_SET_CHANGE_AUDIT_FAILED — nothing was recorded */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    commitRepositorySetAddition: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Required for cookie-authenticated state-changing requests: echo the session's `csrf_token`. A missing or wrong value is 403 CSRF_TOKEN_INVALID. Bearer-authenticated requests do not send it. */
+                "X-CSRF-Token"?: string;
+            };
+            path: {
+                /** @description Workspace locator, resolved against the caller's live membership. */
+                workspace_id: string;
+                /** @description Opaque id of a confirmation this actor recorded for this workspace; another actor's confirmation is indistinguishable from a missing one. */
+                confirmation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The committed change and its impact. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepositorySetAdditionCommitResult"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED, SCOPE_MUTATION_DISABLED — the caller may no longer decide this change */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — unknown workspace or no live membership */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description REPOSITORY_SET_CHANGE_CONFIRMATION_REQUIRED / _CONSUMED / _EXPIRED / _STALE, REPOSITORY_SET_CHANGE_NOT_ADMISSIBLE, REPOSITORY_SET_CHANGE_CONFLICT, REPOSITORY_SET_VERSION_CONFLICT */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description REPOSITORY_SET_CHANGE_AUDIT_FAILED — the whole change was rolled back */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
