@@ -16,6 +16,7 @@ import {
   seedWorkspace,
 } from "../../src/control-plane/index.js";
 import { createCapabilityCeilingService } from "../../src/provider-access/capability-ceiling.js";
+import { createMemberAdmissionService } from "../../src/provider-access/member-admission.js";
 import type {
   ControlPlaneDb,
   IdentityRepositories,
@@ -64,6 +65,7 @@ export interface Fixture {
   workspaceId: string;
   integration: ServiceIntegration;
   capabilityCeilings: ReturnType<typeof createCapabilityCeilingService>;
+  admission: ReturnType<typeof createMemberAdmissionService>;
   memberships: MembershipRepository;
   workspaces: WorkspaceRepository;
   users: UserRepository;
@@ -131,6 +133,14 @@ export function setupFixture(
     freshWindowMs: 15 * 60 * 1000,
     staleAfterMs: 24 * 60 * 60 * 1000,
   });
+  const admission = createMemberAdmissionService({
+    repositorySets: createWorkspaceRepositorySetRepository(db),
+    access,
+    memberships: repos.memberships,
+    identity,
+    capabilityCeilings,
+    clock: () => clock.now,
+  });
   const gate = createAccessGate({
     access,
     memberships: repos.memberships,
@@ -153,6 +163,7 @@ export function setupFixture(
     workspaceId: workspace.id,
     integration,
     capabilityCeilings,
+    admission,
     memberships: repos.memberships,
     workspaces: repos.workspaces,
     users: identity.users,

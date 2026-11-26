@@ -52,6 +52,7 @@ import {
 } from "./control-plane/index.js";
 import { createAuthorityEpoch } from "./provider-access/access-gate.js";
 import { createCapabilityCeilingService } from "./provider-access/capability-ceiling.js";
+import { createMemberAdmissionService } from "./provider-access/member-admission.js";
 import type { AuthenticatedPrincipal, RequestScopeDeps } from "./control-plane/request-scope.js";
 import { resolveRequestScope } from "./control-plane/request-scope.js";
 import { DashboardAuditLog, DashboardService } from "./dashboard/index.js";
@@ -634,6 +635,17 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       capabilities: createMemberCapabilityRepository(controlPlane),
       epoch: providerEpoch,
     });
+    // Admission across the whole repository set (DAT-283). One evaluation feeds
+    // the request path's last-effective-owner guard today and the repository
+    // addition preview a later route consumes; it never opens the
+    // multi-repository gate or writes a binding.
+    const memberAdmission = createMemberAdmissionService({
+      repositorySets: workspaceRepositorySets,
+      access: providerAccess,
+      memberships: repos.memberships,
+      identity,
+      capabilityCeilings,
+    });
     auth = new AuthService({
       repos,
       identity,
@@ -748,6 +760,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       access: providerAccess,
       repositorySets: workspaceRepositorySets,
       capabilityCeilings,
+      admission: memberAdmission,
       authority: providerAuthority,
       hub: auth.hub,
       epoch: providerEpoch,

@@ -80,6 +80,38 @@ export interface CapabilityCeilingDeps {
   freshWindowMs?: number;
 }
 
+/**
+ * One repository binding a caller wants evaluated but has not committed.
+ *
+ * Only the three authority-bearing fields appear: the provider instance that
+ * must be approved for the workspace's enterprise, the approved
+ * repository-scoped installation that observes it, and the immutable
+ * provider-assigned repository id. URLs and names are metadata and are
+ * deliberately absent, so a proposal cannot smuggle authority through them.
+ */
+export interface ProposedRepositoryBindingInput {
+  provider_instance_id: string;
+  installation_ref: string | null;
+  repository_id: string;
+}
+
+/**
+ * Options for one ceiling evaluation.
+ *
+ * `proposed_bindings` evaluates an **uncommitted** repository set (the
+ * repository-addition preview of ADR-0011). A preview never persists a ceiling,
+ * never records a confirmed reduction, and authorizes nothing; it only answers
+ * "what would the intersection be if this set existed". Everything else about
+ * the evaluation is unchanged, so a proposal cannot weaken the evidence rules.
+ */
+export interface CapabilityEvaluationOptions {
+  now?: Date;
+  persist?: boolean;
+  proposed_bindings?: readonly ProposedRepositoryBindingInput[];
+  /** Set version the proposal is formed against; defaults to the stored one. */
+  proposed_set_version?: number;
+}
+
 export interface CapabilityCeilingEvaluation {
   /** Effective state a decision may act on. */
   state: CapabilityCeilingState;
@@ -101,6 +133,17 @@ export interface CapabilityCeilingEvaluation {
   verified_at: string | null;
   checked_at: string;
   repository_count: number;
+  /**
+   * True when this evaluation was formed against an uncommitted proposed set.
+   * A preview is never a grant: callers must not persist it or authorize on it.
+   */
+  preview: boolean;
+  /**
+   * Why the *stored* set could not be used, reported even in a preview so the
+   * caller sees that the workspace itself is not yet usable (for example the
+   * closed multi-repository gate). Null when the stored set is usable.
+   */
+  current_set_blocked_reason: CapabilityBlockReason | null;
 }
 
 export interface CapabilityCeilingView {
@@ -133,7 +176,7 @@ export interface CapabilityCeilingService {
   evaluate(
     scope: WorkspaceScope,
     userId: string,
-    options?: { now?: Date; persist?: boolean },
+    options?: CapabilityEvaluationOptions,
   ): CapabilityCeilingEvaluation;
   /** Member-facing projection data (used by the access gate's projection). */
   view(scope: WorkspaceScope, userId: string, options?: { now?: Date }): CapabilityCeilingView;
@@ -360,11 +403,14 @@ export function createCapabilityCeilingService(
   function evaluate(
     scope: WorkspaceScope,
     userId: string,
-    options: { now?: Date; persist?: boolean } = {},
+    options: CapabilityEvaluationOptions = {},
   ): CapabilityCeilingEvaluation {
     const now = options.now ?? clock();
     const at = now.toISOString();
-    const persist = options.persist ?? true;
+    const proposed = options.proposed_bindings;
+    // A proposal is never a fact: it is evaluated, never persisted, and the
+    // caller must treat the result as a preview (see `preview` below).
+    const persist = proposed === undefined && (options.persist ?? true);
 
     // The membership is the outer requirement: a ceiling is only meaningful for
     // someone the workspace has assigned a role to. Without one the gate denies
@@ -410,6 +456,22 @@ export function createCapabilityCeilingService(
                 : error.code === "REPOSITORY_BINDING_UNAPPROVED"
                   ? "provider_instance_unapproved"
                   : "repository_set_unsupported";
+    }
+
+    // The stored set's verdict, reported separately from a preview's own
+    // result: a preview of a set this build cannot enforce is not authority.
+    const currentSetBlocked = setBlocked;
+    if (proposed !== undefined) {
+      setVersion = options.proposed_set_version ?? setVersion;
+      bindings = proposed.map((binding) => ({
+        repository_id: binding.repository_id,
+        provider_instance_id: binding.provider_instance_id,
+        installation_ref: binding.installation_ref,
+      }));
+      // The proposed set is evaluated on its own evidence. The gate/no-binding
+      // refusal is not applied here because a preview grants nothing either
+      // way; callers surface `current_set_blocked_reason` next to it.
+      setBlocked = null;
     }
 
     const repositories = bindings.map((binding) => evidenceFor(scope, binding, userId, now));
@@ -545,6 +607,8 @@ export function createCapabilityCeilingService(
       verified_at: verifiedAt,
       checked_at: at,
       repository_count: repositories.length,
+      preview: proposed !== undefined,
+      current_set_blocked_reason: currentSetBlocked,
     };
   }
 

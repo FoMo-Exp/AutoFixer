@@ -35,8 +35,11 @@ export type { CapabilityCeilingErrorCode, RequestScopeErrorCode } from "./errors
 export type {
   ControlPlaneRepositories,
   EnterpriseRepository,
+  MembershipBlockedAudit,
   MembershipChangeAudit,
+  MembershipMutationOptions,
   MembershipRepository,
+  OwnerRemovalVerdict,
   ProviderInstanceRepository,
   TeamRepository,
   WorkspaceRepository,
