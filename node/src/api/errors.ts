@@ -8,9 +8,11 @@ import {
   LastOwnerError as ControlPlaneLastOwnerError,
   NotFoundError,
   PreconditionFailedError,
+  RepositorySetChangeError,
   RequestScopeError,
   ValidationError,
   VersionConflictError,
+  WorkspaceRepositorySetError,
 } from "../control-plane/errors.js";
 
 /**
@@ -302,6 +304,63 @@ const ERROR_SEMANTICS: Record<string, ErrorSemantics> = {
     category: "stop",
     retryable: false,
     next_action: "refresh",
+  },
+  // Repository-addition preview/confirm/commit (DAT-286, ADR-0011). A refusal
+  // is never retried as-is: the caller either needs different authority
+  // (`contact_admin`) or a fresh preview and confirmation (`refresh`).
+  REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  REPOSITORY_SET_CHANGE_CONFIRMATION_REQUIRED: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  REPOSITORY_SET_CHANGE_CONFIRMATION_CONSUMED: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  REPOSITORY_SET_CHANGE_CONFIRMATION_EXPIRED: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  REPOSITORY_SET_CHANGE_CONFIRMATION_STALE: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  REPOSITORY_SET_CHANGE_INVALID_PROPOSAL: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: "resubmit",
+  },
+  REPOSITORY_SET_CHANGE_NOT_ADMISSIBLE: {
+    stage: "policy",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  REPOSITORY_SET_CHANGE_CONFLICT: {
+    stage: "execution",
+    category: "retry",
+    retryable: true,
+    next_action: "refresh",
+  },
+  REPOSITORY_SET_CHANGE_AUDIT_FAILED: {
+    stage: "execution",
+    category: "stop",
+    retryable: false,
+    next_action: "contact_admin",
   },
   SERVICE_INTEGRATION_NOT_FOUND: {
     stage: "validation",
@@ -782,6 +841,17 @@ export function apiErrorFromControlPlane(error: ControlPlaneError): ApiError {
   }
   if (error instanceof ValidationError) {
     return new ApiError(400, "INVALID_REQUEST", error.message);
+  }
+  if (error instanceof RepositorySetChangeError) {
+    // DAT-286: every refusal of the whole change keeps its stable code and
+    // 403/409/500 semantics. A 500 is a required audit failure, not a retryable
+    // transport error: the transaction rolled back and nothing was applied.
+    return new ApiError(error.status, error.code, error.message, error.details);
+  }
+  if (error instanceof WorkspaceRepositorySetError) {
+    // The repository-set boundary (DAT-281/286): a version conflict, a closed
+    // rollout gate or an unapproved installation keep their own codes.
+    return new ApiError(error.status, error.code, error.message, error.details);
   }
   if (error instanceof CapabilityCeilingError) {
     // DAT-276 refusals keep their stable codes and 403/409 semantics: a stale

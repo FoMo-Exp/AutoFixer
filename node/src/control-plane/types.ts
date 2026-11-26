@@ -27,6 +27,14 @@ export type ProviderType = "github" | "gitlab";
 export type WorkspaceStatus = "active" | "archived";
 export type WorkspaceRole = "owner" | "admin" | "member" | "viewer";
 
+/** Canonical workspace role list, for enumerations and validation. */
+export const WORKSPACE_ROLES: readonly WorkspaceRole[] = Object.freeze([
+  "owner",
+  "admin",
+  "member",
+  "viewer",
+]);
+
 // ---------------------------------------------------------------------------
 // Audit columns shared by every table
 // ---------------------------------------------------------------------------

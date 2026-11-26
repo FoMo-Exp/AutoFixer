@@ -109,6 +109,27 @@ export type CapabilityBlockReason =
   | "no_code_read"
   | "capability_store_unavailable";
 
+/** Canonical order for reporting, matching the type above one-for-one. */
+export const CAPABILITY_BLOCK_REASONS: readonly CapabilityBlockReason[] = Object.freeze([
+  "workspace_archived",
+  "repository_missing",
+  "repository_set_unsupported",
+  "repository_binding_inconsistent",
+  "installation_not_approved",
+  "provider_instance_unapproved",
+  "subject_missing",
+  "authority_unknown",
+  "authority_stale",
+  "verification_expired",
+  "permission_visibility_none",
+  "permission_visibility_partial",
+  "role_missing",
+  "unsupported_role",
+  "repository_access_removed",
+  "no_code_read",
+  "capability_store_unavailable",
+]);
+
 /**
  * State of the ceiling a decision can act on.
  *

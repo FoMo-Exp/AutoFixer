@@ -15,6 +15,11 @@ import { handleInvitationRequest } from "./invitation-http.js";
 import type { InvitationService } from "./invitation-service.js";
 import { handleWorkspaceMemberRequest, isWorkspaceMemberRoute } from "./workspace-member-http.js";
 import type { WorkspaceMemberService } from "./workspace-member-service.js";
+import {
+  handleRepositorySetChangeRequest,
+  isRepositorySetChangeRoute,
+} from "./repository-set-change-http.js";
+import type { WorkspaceRepositorySetChangeService } from "./repository-set-change-service.js";
 import { handleCollabRequest } from "./collab-http.js";
 import type { CollabHttpDeps } from "./collab-http.js";
 import {
@@ -75,6 +80,13 @@ export interface ApiServerDeps {
    * administrator membership entry nonexistent rather than unaudited.
    */
   members?: WorkspaceMemberService;
+  /**
+   * Workspace repository-addition preview/confirm/commit (DAT-286). Served
+   * with the identity surface because every request is membership-scoped and
+   * every decision revalidates the caller's verified provider authority.
+   * Unset keeps the routes nonexistent rather than unaudited.
+   */
+  repositorySetChanges?: WorkspaceRepositorySetChangeService;
   /** Workspace-scoped issue creation/list/detail and provider synchronization. */
   issues?: IssueSyncService;
   /**
@@ -639,6 +651,21 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
         }
         await handleWorkspaceMemberRequest(
           { auth: deps.auth, members: deps.members },
+          { req, res, url, segments, requestId },
+        );
+        return;
+      }
+
+      // Workspace repository-addition preview/confirm/commit (DAT-286). The
+      // path workspace is a locator: the service resolves the caller's live
+      // membership and the domain layer re-derives every fact before it
+      // records a confirmation or commits a change.
+      if (isRepositorySetChangeRoute(segments)) {
+        if (deps.auth === undefined || deps.repositorySetChanges === undefined) {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+        }
+        await handleRepositorySetChangeRequest(
+          { auth: deps.auth, changes: deps.repositorySetChanges },
           { req, res, url, segments, requestId },
         );
         return;

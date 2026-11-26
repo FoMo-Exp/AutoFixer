@@ -38,7 +38,10 @@ import type { ControlPlaneDb } from "../control-plane/db.js";
 import { RepositorySetChangeError, WorkspaceRepositorySetError } from "../control-plane/errors.js";
 import type { RepositorySetChangeErrorCode } from "../control-plane/errors.js";
 import type { IdentityRepositories } from "../control-plane/identity-repositories.js";
-import type { RepositoryCapability } from "../control-plane/member-capability-types.js";
+import type {
+  CapabilityBlockReason,
+  RepositoryCapability,
+} from "../control-plane/member-capability-types.js";
 import type { ProviderAccessRepositories } from "../control-plane/provider-access-repositories.js";
 import type { MembershipRepository } from "../control-plane/repositories.js";
 import type { RepositorySetChangeRepository } from "../control-plane/repository-set-change-repositories.js";
@@ -54,12 +57,20 @@ import type {
   RepositorySetChangeImpactSummary,
 } from "../control-plane/repository-set-change-types.js";
 import { REPOSITORY_SET_CHANGE_AUDIT_EVENTS } from "../control-plane/repository-set-change-types.js";
-import type { UserId, WorkspaceScope } from "../control-plane/types.js";
+import type {
+  EnterpriseId,
+  UserId,
+  WorkspaceId,
+  WorkspaceRole,
+  WorkspaceScope,
+} from "../control-plane/types.js";
 import type { WorkspaceRepositorySet } from "../control-plane/workspace-repository-types.js";
 import type { WorkspaceRepositorySetRepository } from "../control-plane/workspace-repository-repositories.js";
 import type { AuthorityEpoch } from "./access-gate.js";
 import type { CapabilityCeilingService } from "./capability-ceiling.js";
 import type {
+  AdmissionEvidenceClass,
+  EffectiveOwnerReason,
   MemberAdmissionService,
   ProposedMemberAdmission,
   ProposedSetAdmissionPreview,
@@ -90,7 +101,118 @@ export interface RepositorySetChangeDeps {
   clock?: () => Date;
 }
 
+export interface PreviewRepositorySetAdditionInput {
+  actor_user_id: UserId;
+  /**
+   * The set version the caller observed, when it has one. An omitted version
+   * previews the stored set as-is; the confirmation still binds the version.
+   */
+  expected_set_version?: number;
+  additional_repositories: RepositorySetAdditionBinding[];
+}
+
+/** One protected member's before/after facts in an addition preview. */
+export interface RepositorySetAdditionPreviewMember {
+  membership_id: string;
+  user_id: UserId;
+  /** The assigned workspace role. A capability change never rewrites it. */
+  role: WorkspaceRole;
+  retains_admission: boolean;
+  /**
+   * The verified effective intersection today, never a provider role name.
+   * Empty when today's evidence cannot establish one — `evidence_classes`
+   * says why, and an empty list here is never a recorded revocation.
+   */
+  current_capabilities: RepositoryCapability[];
+  /** Intersection the proposed set would produce, empty when it cannot verify. */
+  proposed_capabilities: RepositoryCapability[];
+  /** Effective capabilities the addition would take away. */
+  reduction: RepositoryCapability[];
+  /**
+   * Evidence classes that are not `verified` — why a verdict is missing. A
+   * non-empty list is unknown/expired/truncated/unavailable/revoked evidence,
+   * never a confirmed downgrade on its own.
+   */
+  evidence_classes: AdmissionEvidenceClass[];
+  evidence_complete: boolean;
+  reason: CapabilityBlockReason | null;
+  verified_at: string | null;
+}
+
+/** One owner assignment's effectiveness over the proposed set. */
+export interface RepositorySetAdditionPreviewOwner {
+  user_id: UserId;
+  effective: boolean;
+  reason: EffectiveOwnerReason | null;
+}
+
+/**
+ * Why the previewed addition cannot be committed. The preview is still
+ * produced (it is a report, not a decision), so a caller can show the reason
+ * instead of guessing from a refusal.
+ */
+export const REPOSITORY_SET_ADDITION_COMMIT_BLOCKS = Object.freeze([
+  "MULTI_REPOSITORY_GATE_DISABLED",
+  "CURRENT_SET_UNUSABLE",
+  "MEMBER_ADMISSION_NOT_RETAINED",
+  "LAST_EFFECTIVE_OWNER_MISSING",
+] as const);
+export type RepositorySetAdditionCommitBlock =
+  (typeof REPOSITORY_SET_ADDITION_COMMIT_BLOCKS)[number];
+
+/**
+ * The repository-addition preview (DAT-286, ADR-0011).
+ *
+ * Every field is a preview: `authorizes_access` is always false and nothing is
+ * stored. The object is safe to disclose to the authorized manager that asked
+ * for it — it carries no credentials, provider subjects, repository URLs or
+ * repository names.
+ */
+export interface RepositorySetAdditionPreview {
+  preview: true;
+  authorizes_access: false;
+  enterprise_id: EnterpriseId;
+  workspace_id: WorkspaceId;
+  /** The stored set version this preview was formed against. */
+  set_version: number;
+  proposed_repository_count: number;
+  /** The rollout gate's state; a change cannot commit while it is disabled. */
+  multi_repository_gate: "enabled" | "disabled" | "unreadable";
+  /** Why the *current* set already authorizes nothing, when it does not. */
+  current_set_blocked_reason: CapabilityBlockReason | null;
+  checked_at: string;
+  members: RepositorySetAdditionPreviewMember[];
+  owners: RepositorySetAdditionPreviewOwner[];
+  last_owner_survives: boolean;
+  all_members_retain_admission: boolean;
+  /**
+   * The exact reductions a confirmation must acknowledge. Empty when the
+   * addition removes no capability; a confirmation with any other list is
+   * refused, so a reduction is never a silent side effect.
+   */
+  reductions_required: ConfirmedReduction[];
+  impact: RepositorySetChangeImpactSummary;
+  /** True only when this exact addition may proceed to confirmation. */
+  committable: boolean;
+  /** Every reason the addition cannot be committed, in canonical order. */
+  commit_blocked_reasons: RepositorySetAdditionCommitBlock[];
+}
+
 export interface RepositorySetChangeService {
+  /**
+   * Preview the proposed set under the actor's authority. Reports the exact
+   * before/after capability impact of every protected member, the surviving
+   * owners, the reductions a confirmation must acknowledge and why the change
+   * could not be committed. Writes nothing.
+   *
+   * The preview is disclosed only to an authorized manager: an actor who
+   * cannot see the full impact is refused instead of being shown a redacted
+   * preview, because a redacted preview is not informed consent (ADR-0011).
+   */
+  previewAddition(
+    scope: WorkspaceScope,
+    input: PreviewRepositorySetAdditionInput,
+  ): RepositorySetAdditionPreview;
   /**
    * Preview the proposed set under the actor's authority, require every
    * protected member to retain admission and an effective owner to survive,
@@ -223,7 +345,7 @@ export function createRepositorySetChangeService(
   function previewSet(
     scope: WorkspaceScope,
     bindings: readonly RepositorySetAdditionBinding[],
-    expectedSetVersion: number,
+    expectedSetVersion: number | undefined,
     now: Date,
   ): ProposedSetAdmissionPreview {
     try {
@@ -235,7 +357,7 @@ export function createRepositorySetChangeService(
             installation_ref: binding.installation_ref,
             repository_id: binding.repository_id,
           })),
-          expected_set_version: expectedSetVersion,
+          ...(expectedSetVersion !== undefined ? { expected_set_version: expectedSetVersion } : {}),
         },
         { now },
       );
@@ -467,6 +589,104 @@ export function createRepositorySetChangeService(
     return canonicalOwners(preview)
       .filter((owner) => owner.effective)
       .map((owner) => owner.user_id);
+  }
+
+  /**
+   * Why the previewed addition could not commit, in canonical order. The
+   * preview reports these instead of refusing, so a caller sees the reason it
+   * would be refused rather than having to infer it from an error.
+   */
+  function commitBlockedReasons(
+    preview: ProposedSetAdmissionPreview,
+  ): RepositorySetAdditionCommitBlock[] {
+    const reasons: RepositorySetAdditionCommitBlock[] = [];
+    if (preview.multi_repository_gate !== "enabled") {
+      reasons.push("MULTI_REPOSITORY_GATE_DISABLED");
+    }
+    if (preview.current_set_blocked_reason !== null) {
+      reasons.push("CURRENT_SET_UNUSABLE");
+    }
+    if (!preview.all_members_retain_admission) {
+      reasons.push("MEMBER_ADMISSION_NOT_RETAINED");
+    }
+    if (!preview.last_owner_survives) {
+      reasons.push("LAST_EFFECTIVE_OWNER_MISSING");
+    }
+    return reasons;
+  }
+
+  // -------------------------------------------------------------------------
+  // Preview
+  // -------------------------------------------------------------------------
+
+  function previewAddition(
+    scope: WorkspaceScope,
+    input: PreviewRepositorySetAdditionInput,
+  ): RepositorySetAdditionPreview {
+    const now = clock();
+    if (
+      !Array.isArray(input.additional_repositories) ||
+      input.additional_repositories.length === 0
+    ) {
+      refuse(
+        "REPOSITORY_SET_CHANGE_INVALID_PROPOSAL",
+        "a repository-set change must propose at least one repository to add",
+      );
+    }
+
+    // Authority first: a caller without the full management intersection sees
+    // nothing. A redacted preview is not informed consent (ADR-0011).
+    requireManager(scope, input.actor_user_id, now);
+    const preview = previewSet(
+      scope,
+      input.additional_repositories,
+      input.expected_set_version,
+      now,
+    );
+
+    const members: RepositorySetAdditionPreviewMember[] = preview.members
+      .map((member) => ({
+        membership_id: member.membership_id,
+        user_id: member.user_id,
+        role: member.role,
+        retains_admission: member.retains_admission,
+        current_capabilities: normalizeCapabilitySet(member.current_capabilities),
+        proposed_capabilities: normalizeCapabilitySet(member.proposed_capabilities),
+        reduction: normalizeCapabilitySet(member.reduction),
+        evidence_classes: [...member.blockers],
+        evidence_complete: member.evidence_complete,
+        reason: member.reason,
+        verified_at: member.verified_at,
+      }))
+      .sort((a, b) => a.membership_id.localeCompare(b.membership_id));
+    const owners: RepositorySetAdditionPreviewOwner[] = preview.owners_after
+      .map((owner) => ({
+        user_id: owner.user_id,
+        effective: owner.effective,
+        reason: owner.reason,
+      }))
+      .sort((a, b) => a.user_id.localeCompare(b.user_id));
+    const blockedReasons = commitBlockedReasons(preview);
+
+    return {
+      preview: true,
+      authorizes_access: false,
+      enterprise_id: scope.enterprise_id,
+      workspace_id: scope.workspace_id,
+      set_version: preview.current_set_version,
+      proposed_repository_count: preview.proposed_repository_count,
+      multi_repository_gate: preview.multi_repository_gate,
+      current_set_blocked_reason: preview.current_set_blocked_reason,
+      checked_at: now.toISOString(),
+      members,
+      owners,
+      last_owner_survives: preview.last_owner_survives,
+      all_members_retain_admission: preview.all_members_retain_admission,
+      reductions_required: expectedReductions(preview),
+      impact: impactSummary(preview),
+      committable: blockedReasons.length === 0,
+      commit_blocked_reasons: blockedReasons,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -710,7 +930,7 @@ export function createRepositorySetChangeService(
     return result;
   }
 
-  return { recordAdditionConfirmation, commitAddition };
+  return { previewAddition, recordAdditionConfirmation, commitAddition };
 }
 
 // ---------------------------------------------------------------------------

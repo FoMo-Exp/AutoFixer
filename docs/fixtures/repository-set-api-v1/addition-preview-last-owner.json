@@ -1,0 +1,97 @@
+{
+  "preview": true,
+  "authorizes_access": false,
+  "enterprise_id": "ent_captured_1",
+  "workspace_id": "wsp_captured_2",
+  "set_version": 1,
+  "proposed_repository_count": 2,
+  "multi_repository_gate": "enabled",
+  "current_set_blocked_reason": null,
+  "checked_at": "2026-11-26T12:00:00.000Z",
+  "members": [
+    {
+      "membership_id": "mbr_captured_3",
+      "user_id": "usr_captured_4",
+      "role": "member",
+      "retains_admission": true,
+      "current_capabilities": [
+        "code_read",
+        "issue_write",
+        "repository_write"
+      ],
+      "proposed_capabilities": [
+        "code_read"
+      ],
+      "reduction": [
+        "issue_write",
+        "repository_write"
+      ],
+      "evidence_classes": [],
+      "evidence_complete": true,
+      "reason": null,
+      "verified_at": "2026-11-26T12:05:00.000Z"
+    },
+    {
+      "membership_id": "mbr_captured_5",
+      "user_id": "usr_captured_6",
+      "role": "owner",
+      "retains_admission": true,
+      "current_capabilities": [
+        "code_read",
+        "issue_write",
+        "repository_write",
+        "repository_manage"
+      ],
+      "proposed_capabilities": [
+        "code_read",
+        "issue_write",
+        "repository_write"
+      ],
+      "reduction": [
+        "repository_manage"
+      ],
+      "evidence_classes": [],
+      "evidence_complete": true,
+      "reason": null,
+      "verified_at": "2026-11-26T12:05:00.000Z"
+    }
+  ],
+  "owners": [
+    {
+      "user_id": "usr_captured_6",
+      "effective": false,
+      "reason": "management_missing"
+    }
+  ],
+  "last_owner_survives": false,
+  "all_members_retain_admission": true,
+  "reductions_required": [
+    {
+      "membership_id": "mbr_captured_3",
+      "user_id": "usr_captured_4",
+      "capabilities": [
+        "issue_write",
+        "repository_write"
+      ]
+    },
+    {
+      "membership_id": "mbr_captured_5",
+      "user_id": "usr_captured_6",
+      "capabilities": [
+        "repository_manage"
+      ]
+    }
+  ],
+  "impact": {
+    "proposed_repository_count": 2,
+    "protected_members": 2,
+    "reduced_members": 2,
+    "removed_capabilities": 3,
+    "effective_owners": 0,
+    "last_owner_survives": false
+  },
+  "committable": false,
+  "commit_blocked_reasons": [
+    "LAST_EFFECTIVE_OWNER_MISSING"
+  ]
+}

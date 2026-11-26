@@ -49,12 +49,15 @@ import {
   createMemberCapabilityRepository,
   createProviderAccessRepositories,
   createRepositories,
+  createRepositorySetChangeRepository,
   createWorkspaceRepositorySetRepository,
   openControlPlaneDb,
 } from "./control-plane/index.js";
 import { createAuthorityEpoch } from "./provider-access/access-gate.js";
 import { createCapabilityCeilingService } from "./provider-access/capability-ceiling.js";
 import { createMemberAdmissionService } from "./provider-access/member-admission.js";
+import { createRepositorySetChangeService } from "./provider-access/repository-set-change.js";
+import { WorkspaceRepositorySetChangeService } from "./api/repository-set-change-service.js";
 import type { AuthenticatedPrincipal, RequestScopeDeps } from "./control-plane/request-scope.js";
 import { resolveRequestScope } from "./control-plane/request-scope.js";
 import { DashboardAuditLog, DashboardService } from "./dashboard/index.js";
@@ -591,6 +594,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
    */
   let runStepAuthority: RunStepAuthority | undefined;
   let members: WorkspaceMemberService | undefined;
+  let repositorySetChanges: WorkspaceRepositorySetChangeService | undefined;
   let workspaceBindings = createConfiguredWorkspaceRunBindingResolver(config);
   let requestScopeDeps: RequestScopeDeps | undefined;
   // Live workspace rows for egress-coverage diagnostics (DAT-257). Read at
@@ -654,6 +658,28 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       memberships: repos.memberships,
       identity,
       capabilityCeilings,
+    });
+    // Repository additions (DAT-284/286). The domain service owns the two-step
+    // decision — a durable, actor-bound confirmation of the exact impact and a
+    // single revalidating transaction that commits the bindings, set version,
+    // approved ceiling reductions, revocations and audit row together. The API
+    // service only resolves the path workspace and projects safe views; the
+    // multi-repository gate stays the rollout switch, so no route can store a
+    // set that no access path enforces.
+    repositorySetChanges = new WorkspaceRepositorySetChangeService({
+      repos,
+      enterpriseId: config.enterpriseId,
+      changes: createRepositorySetChangeService({
+        db: controlPlane,
+        repositorySets: workspaceRepositorySets,
+        changes: createRepositorySetChangeRepository(controlPlane),
+        access: providerAccess,
+        memberships: repos.memberships,
+        identity,
+        capabilityCeilings,
+        admission: memberAdmission,
+        epoch: providerEpoch,
+      }),
     });
     auth = new AuthService({
       repos,
@@ -1100,6 +1126,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
     ...(invitations !== undefined ? { invitations } : {}),
     ...(members !== undefined ? { members } : {}),
+    ...(repositorySetChanges !== undefined ? { repositorySetChanges } : {}),
     ...(serviceIntegrations !== undefined ? { serviceIntegrations } : {}),
     ...(issues !== undefined ? { issues } : {}),
     ...(collab !== undefined ? { collab } : {}),
