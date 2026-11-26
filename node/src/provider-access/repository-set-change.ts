@@ -76,6 +76,7 @@ import type {
   ProposedSetAdmissionPreview,
 } from "./member-admission.js";
 import { AdmissionPreviewError } from "./member-admission.js";
+import { createRepositoryManagerGuard } from "./repository-manager.js";
 import { grantSupportedByCeiling, normalizeCapabilitySet } from "./repository-capabilities.js";
 
 /** Fifteen minutes: long enough to read a preview, short enough to stay current. */
@@ -249,6 +250,16 @@ export function createRepositorySetChangeService(
     epoch,
   } = deps;
   const clock = deps.clock ?? (() => new Date());
+  /**
+   * The repository-administration rule is shared with the discovery surface
+   * (DAT-289), so the two endpoints can never disagree about who may see or
+   * decide a repository set.
+   */
+  const managers = createRepositoryManagerGuard({
+    memberships,
+    identity,
+    capabilityCeilings,
+  });
 
   // -------------------------------------------------------------------------
   // Guards and canonical facts
@@ -307,39 +318,13 @@ export function createRepositorySetChangeService(
    * repository. Enterprise administration alone is not repository authority,
    * and a role-only claim never substitutes for provider evidence.
    */
+  /**
+   * A repository-set change is workspace administration: see
+   * {@link createRepositoryManagerGuard} for the rule the discovery surface
+   * shares.
+   */
   function requireManager(scope: WorkspaceScope, actorUserId: UserId, now: Date): void {
-    const user = identity.users.getById(actorUserId);
-    if (user === undefined || user.status !== "active") {
-      refuse(
-        "REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED",
-        "an active account is required to change a workspace repository set",
-        403,
-      );
-    }
-    const enterpriseUser = identity.enterpriseUsers.getByUser(scope.enterprise_id, actorUserId);
-    if (enterpriseUser === undefined || enterpriseUser.status !== "active") {
-      refuse(
-        "REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED",
-        "an active enterprise membership is required to change a workspace repository set",
-        403,
-      );
-    }
-    const membership = memberships.getByUser(scope, actorUserId);
-    if (membership === undefined || (membership.role !== "owner" && membership.role !== "admin")) {
-      refuse(
-        "REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED",
-        "workspace owner or admin authority is required to change the repository set",
-        403,
-      );
-    }
-    const evaluation = capabilityCeilings.evaluate(scope, actorUserId, { now, persist: false });
-    if (evaluation.state !== "verified" || !evaluation.capabilities.includes("repository_manage")) {
-      refuse(
-        "REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED",
-        "the caller lacks verified repository management capability across every current repository",
-        403,
-      );
-    }
+    managers.require(scope, actorUserId, now);
   }
 
   function previewSet(
