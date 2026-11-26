@@ -58,6 +58,7 @@ import { createCapabilityCeilingService } from "./provider-access/capability-cei
 import { createMemberAdmissionService } from "./provider-access/member-admission.js";
 import { createRepositorySetChangeService } from "./provider-access/repository-set-change.js";
 import { WorkspaceRepositorySetChangeService } from "./api/repository-set-change-service.js";
+import { WorkspaceRepositoryCandidateService } from "./api/repository-candidate-service.js";
 import type { AuthenticatedPrincipal, RequestScopeDeps } from "./control-plane/request-scope.js";
 import { resolveRequestScope } from "./control-plane/request-scope.js";
 import { DashboardAuditLog, DashboardService } from "./dashboard/index.js";
@@ -595,6 +596,13 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let runStepAuthority: RunStepAuthority | undefined;
   let members: WorkspaceMemberService | undefined;
   let repositorySetChanges: WorkspaceRepositorySetChangeService | undefined;
+  /**
+   * Approved-repository discovery (DAT-289). Read-only: it lists the
+   * repositories an authorized manager may select for this workspace, with the
+   * installation each one would be proposed through. It never creates an
+   * installation or a binding and never opens the multi-repository gate.
+   */
+  let repositoryCandidates: WorkspaceRepositoryCandidateService | undefined;
   let workspaceBindings = createConfiguredWorkspaceRunBindingResolver(config);
   let requestScopeDeps: RequestScopeDeps | undefined;
   // Live workspace rows for egress-coverage diagnostics (DAT-257). Read at
@@ -680,6 +688,14 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
         admission: memberAdmission,
         epoch: providerEpoch,
       }),
+    });
+    repositoryCandidates = new WorkspaceRepositoryCandidateService({
+      repos,
+      identity,
+      access: providerAccess,
+      repositorySets: workspaceRepositorySets,
+      capabilityCeilings,
+      enterpriseId: config.enterpriseId,
     });
     auth = new AuthService({
       repos,
@@ -1127,6 +1143,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     ...(invitations !== undefined ? { invitations } : {}),
     ...(members !== undefined ? { members } : {}),
     ...(repositorySetChanges !== undefined ? { repositorySetChanges } : {}),
+    ...(repositoryCandidates !== undefined ? { repositoryCandidates } : {}),
     ...(serviceIntegrations !== undefined ? { serviceIntegrations } : {}),
     ...(issues !== undefined ? { issues } : {}),
     ...(collab !== undefined ? { collab } : {}),

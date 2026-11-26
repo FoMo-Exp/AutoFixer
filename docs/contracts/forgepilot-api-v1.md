@@ -316,6 +316,74 @@ verified installation.
 | `reductions_required[]` | exactly the members and capabilities a confirmation must acknowledge |
 | `committable` / `commit_blocked_reasons[]` | whether this exact addition may proceed and every reason it may not (`MULTI_REPOSITORY_GATE_DISABLED`, `CURRENT_SET_UNUSABLE`, `MEMBER_ADMISSION_NOT_RETAINED`, `LAST_EFFECTIVE_OWNER_MISSING`) |
 
+## Approved-repository discovery (DAT-289)
+
+Adding a repository needs the provider instance, the repository-scoped active
+service integration (`installation_ref`) and the immutable `repository_id`, and
+an administrator should not have to assemble that triple by hand. The discovery
+surface lists the repositories an authorized manager may select for one
+workspace.
+
+It is a **read that grants nothing**. `proposable: true` means "selectable for
+the DAT-286 preview", never "approved". Submitting a candidate still runs the
+full preview → confirmation → commit chain, which re-verifies the caller, the
+installation, the entire member impact and the observed set version. Discovery
+writes no installation, no binding, no confirmation and no grant, and it never
+opens the multi-repository gate; while the gate is `disabled`, discovery still
+answers and `confirm`/`commit` still refuse.
+
+Authority is the same repository-administration rule the change surface applies:
+an active account with an active enterprise membership, a workspace `owner` or
+`admin` assignment, and verified `repository_manage` across every current
+repository. A caller who could not decide the change cannot enumerate its
+candidates (`403 REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED`). An unknown
+workspace, another enterprise's workspace and a workspace the caller holds no
+membership in are one indistinguishable `404`.
+
+The list is always **bounded**, and says so: `coverage.completeness` is `bounded`,
+`coverage.sources` names the store it was built from (`registered_service_integrations`),
+`coverage.unsupported_sources` names what this build cannot enumerate
+(`provider_repository_enumeration` — the provider adapters expose rosters, not
+repository enumeration), and `coverage.limits` states why. A repository this
+build cannot see is never reported as approved, and no response reads as an
+exhaustive list of what the provider would allow. Candidates come only from
+installations registered for this workspace in this enterprise, because
+provider evidence is workspace-scoped: another workspace's installation cannot
+vouch for this one, even for the same repository.
+
+A repository already bound in the workspace — active *or* retired — is excluded
+from `items` and counted in `totals.already_bound`, because an addition never
+re-binds and the unique binding identity makes a retired binding unrepeatable.
+An empty page therefore explains itself instead of reading as an error.
+
+A discovered installation that cannot serve as evidence is returned with its
+named `restriction_reasons` rather than hidden: `installation_inactive`,
+`provider_instance_unapproved`, `permission_visibility_none`,
+`permission_visibility_partial`, `provider_unavailable` (the last reconciliation
+could not reach the provider) or `roster_incomplete` (the last roster fetch was
+truncated). Each code describes the installation, never a confirmed member
+downgrade. Freshness is reported next to the verdict
+(`verification.freshness`: `fresh` within the one-day authority bound, `stale`
+beyond it, `never_verified` when no subject was ever verified) and is data, not
+a restriction: the preview decides whether each member's current evidence is
+sufficient.
+
+| Request | Response |
+|---|---|
+| `GET /api/v1/workspaces/{workspace_id}/repository-candidates?cursor=…` | `200 RepositoryCandidatePage`; `400 INVALID_CURSOR`; `403 REPOSITORY_SET_CHANGE_ACTOR_UNAUTHORIZED`; `404 NOT_FOUND`; `409` when the workspace repository set cannot be read (`REPOSITORY_BINDING_*`, `INSTALLATION_NOT_APPROVED`, `FEATURE_GATE_UNREADABLE`) |
+
+| Field | Meaning |
+|---|---|
+| `items[].provider_instance_id` | the approved provider instance to propose |
+| `items[].installation_ref` | the repository-scoped active service integration (a `DAT-286` proposal's `installation_ref`) |
+| `items[].repository_id` | immutable provider-assigned repository id; the only authority-bearing identity |
+| `items[].repository_name` | display metadata from the registered installation; never stored in a decision and never authority |
+| `items[].proposable` / `restriction_reasons[]` | whether the installation can be proposed as it stands, and every reason it cannot |
+| `items[].verification` | observed subject count, latest per-subject verification, freshness bound, last reconciliation attempt and its failure code |
+| `coverage` | the bounded-coverage disclosure: completeness, sources, unsupported sources, limits |
+| `set_version` | the version to pass as `expected_set_version` when previewing the selection |
+| `totals` | counts over the whole discovered set (`discovered`, `proposable`, `restricted`, `already_bound`), not just this page |
+
 ## Runtime diagnostics (DAT-257)
 
 `GET /api/v1/runtime/diagnostics` returns a redacted `RuntimeDiagnostics`

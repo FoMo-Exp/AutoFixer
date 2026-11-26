@@ -38,6 +38,14 @@ import { SECURITY_AUDIT_EVENT_TYPES, SECURITY_AUDIT_RESULTS } from "../src/secur
 import { WORKSPACE_ROLES } from "../src/control-plane/types.js";
 import { ADMISSION_EVIDENCE_CLASSES } from "../src/provider-access/member-admission.js";
 import { REPOSITORY_SET_ADDITION_COMMIT_BLOCKS } from "../src/provider-access/repository-set-change.js";
+import {
+  REPOSITORY_CANDIDATE_FRESHNESS,
+  REPOSITORY_CANDIDATE_RESTRICTIONS,
+  REPOSITORY_DISCOVERY_COMPLETENESS,
+  REPOSITORY_DISCOVERY_LIMITS,
+  REPOSITORY_DISCOVERY_SOURCES,
+  REPOSITORY_DISCOVERY_UNSUPPORTED_SOURCES,
+} from "../src/api/repository-candidate-types.js";
 import { CASE_STATES } from "../src/security/types.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -265,6 +273,11 @@ const REPOSITORY_SET_ENDPOINTS: Array<[method: string, path: string]> = [
   ],
 ];
 
+/** Approved-repository discovery (DAT-289). */
+const REPOSITORY_CANDIDATE_ENDPOINTS: Array<[method: string, path: string]> = [
+  ["get", "/api/v1/workspaces/{workspace_id}/repository-candidates"],
+];
+
 /** Runtime configuration diagnostics (DAT-257). */
 const RUNTIME_ENDPOINTS: Array<[method: string, path: string]> = [
   ["get", "/api/v1/runtime/diagnostics"],
@@ -281,6 +294,7 @@ const ALL_ENDPOINTS = [
   ...DASHBOARD_ENDPOINTS,
   ...SECURITY_ENDPOINTS,
   ...REPOSITORY_SET_ENDPOINTS,
+  ...REPOSITORY_CANDIDATE_ENDPOINTS,
   ...RUNTIME_ENDPOINTS,
 ];
 
@@ -958,6 +972,50 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
       };
       expect(shape.properties["authorizes_access"]?.enum, schema).toEqual([false]);
     }
+  });
+
+  test("the repository-candidate contract reuses the domain vocabularies", () => {
+    const candidate = document.components.schemas["RepositoryCandidate"] as {
+      properties: Record<string, { enum?: unknown[]; items?: { enum?: unknown[] } }>;
+    };
+    expect(candidate.properties["install_status"]?.enum).toEqual([
+      "active",
+      "suspended",
+      "uninstalled",
+    ]);
+    expect(candidate.properties["permission_visibility"]?.enum).toEqual([
+      "full",
+      "partial",
+      "none",
+    ]);
+    expect(candidate.properties["restriction_reasons"]).toMatchObject({
+      items: { enum: [...REPOSITORY_CANDIDATE_RESTRICTIONS] },
+    });
+    const verification = document.components.schemas["RepositoryCandidateVerification"] as {
+      properties: Record<string, { enum?: unknown[] }>;
+    };
+    expect(verification.properties["freshness"]?.enum).toEqual([...REPOSITORY_CANDIDATE_FRESHNESS]);
+    // Coverage can never read as an exhaustive list.
+    const coverage = document.components.schemas["RepositoryDiscoveryCoverage"] as {
+      properties: Record<string, { enum?: unknown[]; items?: { enum?: unknown[] } }>;
+    };
+    expect(coverage.properties["completeness"]?.enum).toEqual([
+      ...REPOSITORY_DISCOVERY_COMPLETENESS,
+    ]);
+    expect(coverage.properties["sources"]?.items?.enum).toEqual([...REPOSITORY_DISCOVERY_SOURCES]);
+    expect(coverage.properties["unsupported_sources"]?.items?.enum).toEqual([
+      ...REPOSITORY_DISCOVERY_UNSUPPORTED_SOURCES,
+    ]);
+    expect(coverage.properties["limits"]?.items?.enum).toEqual([...REPOSITORY_DISCOVERY_LIMITS]);
+    // `proposable` says "selectable", never "approved": nothing on this
+    // surface may advertise an approval or a grant.
+    const page = document.components.schemas["RepositoryCandidatePage"] as {
+      properties: Record<string, { enum?: unknown[] }>;
+    };
+    expect(page.properties["authorizes_access"]).toBeUndefined();
+    expect(
+      JSON.stringify(document.paths["/api/v1/workspaces/{workspace_id}/repository-candidates"]),
+    ).not.toMatch(/"authoriz/i);
   });
 
   test("documents every model-egress security endpoint", () => {

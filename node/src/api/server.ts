@@ -20,6 +20,11 @@ import {
   isRepositorySetChangeRoute,
 } from "./repository-set-change-http.js";
 import type { WorkspaceRepositorySetChangeService } from "./repository-set-change-service.js";
+import {
+  handleRepositoryCandidateRequest,
+  isRepositoryCandidateRoute,
+} from "./repository-candidate-http.js";
+import type { RepositoryCandidateService } from "./repository-candidate-service.js";
 import { handleCollabRequest } from "./collab-http.js";
 import type { CollabHttpDeps } from "./collab-http.js";
 import {
@@ -87,6 +92,11 @@ export interface ApiServerDeps {
    * Unset keeps the routes nonexistent rather than unaudited.
    */
   repositorySetChanges?: WorkspaceRepositorySetChangeService;
+  /**
+   * Approved-repository discovery (DAT-289). Read-only and membership-scoped,
+   * served with the identity surface; unset keeps the route nonexistent.
+   */
+  repositoryCandidates?: RepositoryCandidateService;
   /** Workspace-scoped issue creation/list/detail and provider synchronization. */
   issues?: IssueSyncService;
   /**
@@ -666,6 +676,20 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
         }
         await handleRepositorySetChangeRequest(
           { auth: deps.auth, changes: deps.repositorySetChanges },
+          { req, res, url, segments, requestId },
+        );
+        return;
+      }
+
+      // Approved-repository discovery (DAT-289). A read of the candidate
+      // repositories an authorized manager may select; it never creates an
+      // installation or a binding and never opens the multi-repository gate.
+      if (isRepositoryCandidateRoute(segments)) {
+        if (deps.auth === undefined || deps.repositoryCandidates === undefined) {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+        }
+        await handleRepositoryCandidateRequest(
+          { auth: deps.auth, candidates: deps.repositoryCandidates },
           { req, res, url, segments, requestId },
         );
         return;
