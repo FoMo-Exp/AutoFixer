@@ -913,6 +913,41 @@ export class TaskService {
   }
 
   /**
+   * The authorization facts the request boundary needs for one task (DAT-294).
+   *
+   * A task is served, streamed and read for artifacts against the immutable
+   * target it was created with, so the complete-set decision names that one
+   * repository instead of authorizing a workspace-wide read. Records persisted
+   * before the target contract report `target: null` and stay bounded by the
+   * workspace check. Unknown and foreign tasks resolve to nulls and do not
+   * throw: the route's own 404 decides, so this is never an enumeration
+   * oracle and the request gate never reveals which ids exist.
+   */
+  authorityScope(
+    taskId: string,
+    workspaceId?: string,
+  ): {
+    target: { provider_instance_id: string; repository_id: string } | null;
+    repository_set_version: number | null;
+  } {
+    const record = this.deps.store.get(taskId);
+    if (record === undefined || (workspaceId !== undefined && record.workspaceId !== workspaceId)) {
+      return { target: null, repository_set_version: null };
+    }
+    const target = record.target;
+    return {
+      target:
+        target === null
+          ? null
+          : {
+              provider_instance_id: target.provider_instance_id,
+              repository_id: target.repository_id,
+            },
+      repository_set_version: record.repositorySetVersion,
+    };
+  }
+
+  /**
    * Whether the task reached a terminal projection. The SSE handler uses
    * this to decide that no future events can exist, so it must never
    * subscribe a client to a terminal task — including one whose replay has

@@ -65,8 +65,17 @@ export interface ApprovalDirectoryDeps {
   workspaceActionAllowed?: (input: {
     user_id: string;
     workspace_id: string;
+    /** The issue's repository: the target the complete-set decision names. */
+    repository_id: string;
     action: "approval";
   }) => boolean;
+  /**
+   * Current repository-set version of the workspace (DAT-294). Recorded in the
+   * approval authority digest so a decision formed under one set is
+   * distinguishable from one formed under another. Absent keeps the
+   * pre-DAT-294 digest shape.
+   */
+  workspaceSetVersion?: (input: { workspace_id: string }) => number | null;
 }
 
 function controlPlaneScope(scope: WorkspaceScope): WorkspaceScope & { actor_id: string } {
@@ -147,6 +156,7 @@ export function createApprovalDirectory(deps: ApprovalDirectoryDeps): ApprovalDi
       return allowed({
         user_id: userId,
         workspace_id: scope.workspace_id,
+        repository_id: repositoryId,
         action: "approval",
       });
     } catch {
@@ -204,6 +214,11 @@ export function createApprovalDirectory(deps: ApprovalDirectoryDeps): ApprovalDi
         enterprise_id: scope.enterprise_id,
         workspace_id: scope.workspace_id,
         repository_id: repositoryId,
+        // The decision is formed against one version of the repository set; a
+        // set change makes it a different authority fact (DAT-294). A workspace
+        // whose set cannot be read records `null` rather than a guess.
+        repository_set_version:
+          deps.workspaceSetVersion?.({ workspace_id: scope.workspace_id }) ?? null,
         integrations,
         members: memberFacts(scope, repositoryId),
       });
@@ -225,17 +240,24 @@ export interface DeliveryPermissionDeps {
   workspaces: WorkspaceRepository;
   enterprise_id: string;
   /**
-   * Live re-check of the *requester's* repository capability (DAT-276). The
-   * delivery request recorded `requester_authorized`, but a recorded boolean is
-   * not a durable fact: every provider write asks again, so a confirmed
-   * downgrade between request and write stops the delivery instead of pushing
-   * a change the requester can no longer read the repository for.
+   * Live re-check of the *requester's* repository capability (DAT-276), named
+   * against the delivery's repository (DAT-294). The delivery request recorded
+   * `requester_authorized`, but a recorded boolean is not a durable fact: every
+   * provider write asks again, so a confirmed downgrade — or a set change that
+   * removed the target or reduced the intersection — between request and write
+   * stops the delivery instead of pushing a change the requester can no longer
+   * read the repository for.
    *
    * Returns `true` only when the requester's ceiling still supports repository
-   * write in this workspace. Absent, delivery uses the pre-DAT-276 behavior
-   * (delivery-grant-only), which is why the deployment wires it.
+   * write in this workspace and on the delivery's target. Absent, delivery uses
+   * the pre-DAT-276 behavior (delivery-grant-only), which is why the deployment
+   * wires it.
    */
-  requesterCapability?: (input: { workspace_id: string; user_id: string }) => boolean;
+  requesterCapability?: (input: {
+    workspace_id: string;
+    user_id: string;
+    repository_id: string;
+  }) => boolean;
   /** Clock for grant expiry (tests); defaults to the wall clock. */
   clock?: () => Date;
 }
@@ -349,6 +371,7 @@ export function createDeliveryPermission(
     return deps.requesterCapability({
       workspace_id: workspaceScope.workspace_id,
       user_id: requester,
+      repository_id: input.repository_id,
     });
   };
 }

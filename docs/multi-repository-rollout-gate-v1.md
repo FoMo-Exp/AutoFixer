@@ -24,6 +24,23 @@ change is `node/test/repository-set-change-http.test.ts` §
 > consumes the context yet. The findings and blockers below are therefore still
 > in force: the gate must not be enabled in this build.
 
+> **DAT-294 update (2026-11-28).** Every protected runtime path now consumes
+> that context
+> ([protected-path-authority-v1.md](contracts/protected-path-authority-v1.md)):
+> the request boundary (scoped and legacy task families), SSE open/replay/every
+> event, artifacts, task approvals, messages, issues and their
+> deliveries/approvals, memory, the task-target read, run starts and worker
+> steps. A resource is decided against its own target and, for a stream, the
+> set version it observed; approvals re-derive the whole-set intersection and
+> fold the set version into the recorded authority digest; the delivery broker
+> re-checks the requester's live capability on the delivery's repository before
+> every provider write. Blocker 1 below is therefore implemented in code, but
+> rollout is **still closed**: the shipped configuration keeps
+> `multiRepositoryEnforcement` / `multiRepositoryRuntime` at `none` and the gate
+> row at `disabled`, so a multi-repository workspace still refuses on every
+> path. Blockers 2–5 (removal/rollback path, real deployment evidence,
+> mixed-version rehearsal) and the release decision in §7 remain.
+
 ## 1. What was verified
 
 The repository-addition decision (DAT-283/284/286/287) is complete and safe:
@@ -114,13 +131,16 @@ next subscription is refused.
 
 ## 5. Blockers to a controlled opening
 
-1. **No multi-repository runtime enforcement on the protected paths.** The
-   ceiling engine (DAT-291), the task target and its dispatch re-check (DAT-293)
-   and the repository-set runtime capability exist, but the API reads, SSE,
-   artifacts, approvals, messages, issues, memory and delivery paths still
-   decide per route; DAT-294 owns them. Opening the gate before that would let a
-   path authorize a multi-repository workspace without checking the target and
-   the complete set, so the set continues to refuse creation.
+1. **Multi-repository runtime enforcement on the protected paths —
+   implemented (DAT-294), not enabled.** The ceiling engine (DAT-291), the task
+   target and its dispatch re-check (DAT-293) and the request boundary
+   (DAT-294) now decide every protected path from the complete set, the
+   resource's target and the observed version
+   ([protected-path-authority-v1.md](contracts/protected-path-authority-v1.md)).
+   The code path is only active in a build configured for complete-set
+   enforcement while the immutable gate is `enabled`; the shipped deployment
+   keeps the refusing defaults, so a multi-repository workspace still denies
+   everywhere. Enabling remains a separate release decision (§6, §7).
 2. **Target binding exists; the shape stays closed.** `workspace-bindings.ts`
    now has a runtime resolver (DAT-293) that selects one active binding by
    immutable identity at the observed set version, resolves a provider-verified
@@ -156,7 +176,10 @@ This document does not authorize any of them.
    DAT-294.
 3. **All consumers.** Request, SSE (including replay), artifacts, worker steps,
    delivery, issue sync, memory and approvals re-check the set version and the
-   target; a set change invalidates old decisions across processes.
+   target; a set change invalidates old decisions across processes. DAT-294
+   implements this for every listed path
+   ([protected-path-authority-v1.md](contracts/protected-path-authority-v1.md));
+   DAT-297 verifies the whole runtime before any opening decision.
 4. **Removal and rollback.** An audited removal path, with the same last-owner,
    evidence, preview/confirmation and audit rules as addition, and an explicit
    statement that removal never auto-promotes a reduced ceiling.

@@ -54,6 +54,7 @@ import type { ProviderAccessRepositories } from "../control-plane/provider-acces
 import type { MembershipRepository } from "../control-plane/repositories.js";
 import type { UserId, WorkspaceRole, WorkspaceScope } from "../control-plane/types.js";
 import type { WorkspaceRepositorySetRepository } from "../control-plane/workspace-repository-repositories.js";
+import type { WorkspaceRepositorySet } from "../control-plane/workspace-repository-types.js";
 import type {
   CapabilityCeilingEvaluation,
   CapabilityCeilingService,
@@ -275,6 +276,16 @@ export interface AuthorizationContextService {
   freshness(): { fresh_window_ms: number; stale_after_ms: number };
   /** Whether this deployment evaluates a multi-repository set as a whole. */
   enforcement(): "complete" | "none";
+  /**
+   * Resolve the immutable target identity of an **active** binding by its
+   * provider-assigned repository id (DAT-294). Consumers that hold a resource
+   * naming a repository (an issue, a delivery) pass that id and get the one
+   * binding that may authorize it — or `null` when the repository is not an
+   * active binding of the workspace's current set, which a caller must refuse
+   * rather than treat as "no target". The provider instance is read from the
+   * set, never guessed from a deployment default.
+   */
+  targetFor(scope: WorkspaceScope, repositoryId: string): RepositoryTarget | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -768,5 +779,26 @@ export function createAuthorizationContextService(
     },
     freshness: () => ({ fresh_window_ms: freshWindowMs, stale_after_ms: staleAfterMs }),
     enforcement: () => capabilityCeilings.enforcement(),
+    targetFor(scope: WorkspaceScope, repositoryId: string): RepositoryTarget | null {
+      let set: WorkspaceRepositorySet;
+      try {
+        set = repositorySets.getSet(scope);
+      } catch {
+        // An unreadable or unusable set proves no target: the caller refuses.
+        return null;
+      }
+      const matches = set.bindings.filter(
+        (binding) => binding.repository_id === repositoryId && binding.status === "active",
+      );
+      // Exactly one active binding per repository identity; two would be an
+      // ambiguous identity and are refused rather than resolved.
+      if (matches.length !== 1) {
+        return null;
+      }
+      return {
+        provider_instance_id: matches[0]!.provider_instance_id,
+        repository_id: matches[0]!.repository_id,
+      };
+    },
   };
 }

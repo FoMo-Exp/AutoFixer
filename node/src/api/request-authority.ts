@@ -39,6 +39,11 @@ import type {
 } from "../control-plane/repositories.js";
 import type { EnterpriseId, WorkspaceId, WorkspaceScope } from "../control-plane/types.js";
 import type { CapabilityCeilingService } from "../provider-access/capability-ceiling.js";
+import type {
+  AuthorizationContextService,
+  AuthorizationDecisionCode,
+  RepositoryTarget,
+} from "../provider-access/authorization-context.js";
 import type { SecurityDutyDirectory } from "../security/duties.js";
 import {
   createAccessGate,
@@ -84,6 +89,17 @@ export interface RequestAuthorityDeps {
    * capabilities over the workspace's repository set.
    */
   capabilityCeilings: CapabilityCeilingService;
+  /**
+   * The versioned authorization context (DAT-291, DAT-294). When set, every
+   * request is decided by one evaluation over the **complete** active
+   * repository set — enterprise status, assigned role, action policy, the set
+   * at its current version, the applicable target and the persisted ceiling —
+   * instead of the single-integration access gate. This is the same engine the
+   * run-start and worker-step boundary uses, so a route cannot authorize a
+   * multi-repository workspace from one repository's roster. Unset keeps the
+   * pre-DAT-294 single-integration decision.
+   */
+  contexts?: AuthorizationContextService;
   /** Workspace teams, for the memory team-leader exception (DAT-278). */
   teams?: Pick<TeamRepository, "list">;
   /** Enterprise administrator grant; metadata surfaces only, never repository data. */
@@ -103,6 +119,37 @@ export interface RequestAuthorityDeps {
   staleAfterMs?: number;
 }
 
+/**
+ * What a request acts on, beyond its workspace (DAT-294).
+ *
+ * A route that serves one resource names the repository that resource belongs
+ * to (an issue, a delivery) or the target the run was bound to (a task, its
+ * stream, its artifacts). A workspace-level route names nothing: the complete
+ * set is then the bound, and a capability grant must hold on every binding.
+ */
+export interface RequestAuthorityScope {
+  /** Immutable target identity, when the caller already holds it. */
+  target?: RepositoryTarget | null;
+  /**
+   * A repository id the resource names. The authority resolves it against the
+   * current set and denies when it is not an active binding — an unbound
+   * repository is never treated as "no target".
+   */
+  repository_id?: string;
+  /**
+   * The set version the caller's decision observed (a live subscription, a
+   * queued action). A mismatch is a 409 and never a stale allow; omit for a
+   * fresh read, which evaluates the current set.
+   */
+  expected_set_version?: number;
+}
+
+/** One request decision, with the stable code a route surfaces. */
+export interface RequestAuthorityDecision extends AccessDecision {
+  /** Stable decision code (context code, or the legacy classification). */
+  code: AuthorizationDecisionCode | "FORBIDDEN";
+}
+
 export interface RequestAuthority {
   /**
    * Whether provider authority is in play: the workspace has at least one
@@ -114,9 +161,19 @@ export interface RequestAuthority {
    */
   isEnforcing(workspaceId?: WorkspaceId): boolean;
   /** Non-throwing decision (used by live streams re-checking on change). */
-  check(userId: string, action: ActionKind, workspaceId?: WorkspaceId): AccessDecision;
-  /** Enforce one request action; throws {@link ApiError} 403 on denial. */
-  require(userId: string, action: ActionKind, workspaceId?: WorkspaceId): void;
+  check(
+    userId: string,
+    action: ActionKind,
+    workspaceId?: WorkspaceId,
+    scope?: RequestAuthorityScope,
+  ): RequestAuthorityDecision;
+  /** Enforce one request action; throws {@link ApiError} on denial. */
+  require(
+    userId: string,
+    action: ActionKind,
+    workspaceId?: WorkspaceId,
+    scope?: RequestAuthorityScope,
+  ): void;
   /** Subscribe to authority changes (revocation cuts live streams). */
   subscribe(listener: () => void): () => void;
   /** Shared authority-change signal; revoke/reconcile/events bump it. */
@@ -229,17 +286,37 @@ export function actionForRequest(method: string, segments: string[]): ActionKind
   return null;
 }
 
-function apiErrorForDenial(decision: AccessDecision): ApiError {
+function apiErrorForDenial(decision: RequestAuthorityDecision): ApiError {
   const action = decision.action;
-  if (decision.requires_reconciliation) {
+  const details = {
+    action,
+    ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
+    ...(decision.capability_reason !== null && decision.capability_reason !== undefined
+      ? { capability_reason: decision.capability_reason }
+      : {}),
+  };
+  if (decision.code === "REPOSITORY_SET_VERSION_CONFLICT") {
+    // The decision was formed against a repository-set version that moved.
+    // Nothing is authorized against the stale scope: the caller re-reads.
+    return new ApiError(
+      409,
+      "REPOSITORY_SET_VERSION_CONFLICT",
+      "The workspace repository set changed after this decision was formed; re-read it before retrying.",
+      details,
+    );
+  }
+  if (decision.requires_reconciliation === true || decision.code === "REPOSITORY_SET_UNAVAILABLE") {
     // AUTHORITY_RECHECK_REQUIRED is the existing reconciliation-stage
     // envelope code: unknown or stale provider authority blocks the action
-    // pending a successful reconciliation.
+    // pending a successful reconciliation. A set-level refusal (unsupported
+    // shape, archived workspace, inconsistent binding) keeps the same
+    // envelope: this build cannot establish authority over that set, and the
+    // precise capability reason travels in `details`.
     return new ApiError(
       403,
       "AUTHORITY_RECHECK_REQUIRED",
       "Repository authority is not currently verifiable; this action is blocked pending reconciliation.",
-      { action, ...(decision.reason ? { reason: decision.reason } : {}) },
+      details,
       { next_action: "reconcile" },
     );
   }
@@ -247,7 +324,7 @@ function apiErrorForDenial(decision: AccessDecision): ApiError {
     403,
     "FORBIDDEN",
     "The caller's repository authority does not permit this action.",
-    { action, ...(decision.reason ? { reason: decision.reason } : {}) },
+    details,
     { next_action: "request_review" },
   );
 }
@@ -291,7 +368,102 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
     return deps.access.integrations.listByWorkspace(scopeFor("system", workspaceId)).length > 0;
   }
 
-  function check(userId: string, action: ActionKind, workspaceId?: WorkspaceId): AccessDecision {
+  function nowIso(): string {
+    return (deps.clock ? deps.clock() : new Date()).toISOString();
+  }
+
+  /**
+   * The target a request acts on. A resource that names a repository is
+   * resolved against the current set: an unbound repository is refused with
+   * `TARGET_REPOSITORY_UNAVAILABLE`, never downgraded to a workspace-wide
+   * decision that would let a removed repository keep authorizing its
+   * resources. Two differing explicit identities are refused the same way.
+   */
+  function resolveScopeTarget(
+    userId: string,
+    workspaceId: WorkspaceId | undefined,
+    scope: RequestAuthorityScope,
+  ): { target: RepositoryTarget | null } | { denial: RequestAuthorityDecision["code"] } {
+    let target = scope.target ?? null;
+    if (scope.repository_id !== undefined) {
+      const resolved = deps.contexts?.targetFor(scopeFor(userId, workspaceId), scope.repository_id);
+      if (resolved === null || resolved === undefined) {
+        return { denial: "TARGET_REPOSITORY_UNAVAILABLE" };
+      }
+      if (target !== null && target.repository_id !== resolved.repository_id) {
+        return { denial: "TARGET_REPOSITORY_UNAVAILABLE" };
+      }
+      target = resolved;
+    }
+    return { target };
+  }
+
+  function decideWithContext(
+    userId: string,
+    action: ActionKind,
+    workspaceId: WorkspaceId | undefined,
+    scope: RequestAuthorityScope,
+  ): RequestAuthorityDecision {
+    const at = nowIso();
+    const resolved = resolveScopeTarget(userId, workspaceId, scope);
+    if ("denial" in resolved) {
+      return {
+        allowed: false,
+        action,
+        subject: null,
+        reason: "target_repository",
+        requires_reconciliation: false,
+        capability_reason: null,
+        authority_verified_at: null,
+        checked_at: at,
+        code: resolved.denial,
+      };
+    }
+    const context = deps.contexts!.evaluate({
+      scope: scopeFor(userId, workspaceId),
+      user_id: userId,
+      action,
+      target: resolved.target,
+      ...(scope.expected_set_version !== undefined
+        ? { expected_set_version: scope.expected_set_version }
+        : {}),
+      ...(deps.clock !== undefined ? { now: deps.clock() } : {}),
+    });
+    const decision = context.decision;
+    return {
+      allowed: decision.allowed,
+      action,
+      subject: null,
+      ...(decision.reason !== null ? { reason: decision.reason } : {}),
+      requires_reconciliation: decision.requires_reconciliation,
+      capability_reason: decision.capability_reason,
+      authority_verified_at: context.freshness.verified_at,
+      checked_at: context.checked_at,
+      code: decision.code,
+    };
+  }
+
+  function check(
+    userId: string,
+    action: ActionKind,
+    workspaceId?: WorkspaceId,
+    scope: RequestAuthorityScope = {},
+  ): RequestAuthorityDecision {
+    if (deps.contexts !== undefined && authorityInPlay(workspaceId)) {
+      // One evaluation over the complete active set, with the applicable
+      // target and observed version — the same rule the run-start and
+      // worker-step boundary applies. Never cached: a set or permission
+      // change in any process applies to the very next request.
+      //
+      // A workspace with zero integration rows has no repository authority to
+      // intersect (ADR-0006 local-prototype shape): it keeps the pre-existing
+      // abstention below, where the route's own role/object checks decide.
+      // The context still reports that shape as `not_applicable` for its other
+      // consumers.
+      return decideWithContext(userId, action, workspaceId, scope);
+    }
+    // Pre-DAT-294 single-integration decision (kept for deployments that have
+    // not configured the complete-set engine).
     // Enterprise status is the outer boundary: a missing or suspended
     // membership fails closed for every action, including workspaces with no
     // provider integration (local-prototype mode is not an enterprise
@@ -304,7 +476,11 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
         subject: null,
         reason: enterpriseUser?.status === "suspended" ? "user_suspended" : "enterprise_membership",
         authority_verified_at: null,
-        checked_at: (deps.clock ? deps.clock() : new Date()).toISOString(),
+        checked_at: nowIso(),
+        code:
+          enterpriseUser?.status === "suspended"
+            ? "USER_SUSPENDED"
+            : "ENTERPRISE_MEMBERSHIP_REQUIRED",
       };
     }
     if (!authorityInPlay(workspaceId)) {
@@ -315,18 +491,36 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
         action,
         subject: null,
         authority_verified_at: null,
-        checked_at: (deps.clock ? deps.clock() : new Date()).toISOString(),
+        checked_at: nowIso(),
+        code: "ALLOWED",
       };
     }
-    return gate.authorize({ scope: scopeFor(userId, workspaceId), user_id: userId, action });
+    const decision = gate.authorize({
+      scope: scopeFor(userId, workspaceId),
+      user_id: userId,
+      action,
+    });
+    return {
+      ...decision,
+      code: decision.allowed
+        ? "ALLOWED"
+        : decision.requires_reconciliation === true
+          ? "AUTHORITY_RECHECK_REQUIRED"
+          : "FORBIDDEN",
+    };
   }
 
   return {
     epoch,
     isEnforcing: authorityInPlay,
     check,
-    require(userId: string, action: ActionKind, workspaceId?: WorkspaceId): void {
-      const decision = check(userId, action, workspaceId);
+    require(
+      userId: string,
+      action: ActionKind,
+      workspaceId?: WorkspaceId,
+      scope: RequestAuthorityScope = {},
+    ): void {
+      const decision = check(userId, action, workspaceId, scope);
       if (!decision.allowed) {
         throw apiErrorForDenial(decision);
       }
