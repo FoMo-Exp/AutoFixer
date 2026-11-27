@@ -187,9 +187,15 @@ Rules:
 
 ## 7. Out of scope here
 
-Multi-repository **execution**: task target binding, cross-repository
-remediation/delivery, memory or approval enforcement over a multi-repository
-set. The addition decision itself is implemented (DAT-283/284/286): a
+Multi-repository **execution**: cross-repository remediation/delivery, memory
+or approval enforcement over a multi-repository set. DAT-292 added the task
+target **contract**: `GET /api/v1/workspaces/{workspace_id}/task-targets`
+names the active bindings and the trusted baseline, and a workspace-scoped
+create may select one by immutable identity at the observed set version. The
+task records that target and the set version, and a multi-repository set
+still refuses creation (`TARGET_REPOSITORY_REQUIRED` without a selection,
+`MULTI_REPOSITORY_SCOPE_*` with one) because no runtime can execute against it
+yet (DAT-293 owns resolution and dispatch). The addition decision itself is implemented (DAT-283/284/286): a
 repository may only be added through an authorized preview and explicit
 confirmation, the whole addition is refused when any current effective member
 would lose admission or an effective owner would lose the required management

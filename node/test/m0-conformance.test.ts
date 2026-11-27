@@ -311,9 +311,9 @@ describe("independent conformance to the normative contract", () => {
     // service-integration operations (DAT-267), the six enterprise-user
     // operations (DAT-275), the three repository capability-ceiling
     // operations (DAT-276), the enterprise-scoped capability projection
-    // (DAT-278), and the three repository-addition preview/confirm/commit
-    // operations (DAT-286).
-    expect(checked).toBe(140);
+    // (DAT-278), the three repository-addition preview/confirm/commit
+    // operations (DAT-286), and the task-target selection read (DAT-292).
+    expect(checked).toBe(141);
   });
 
   test("the committed openapi.json also carries the auth scheme", () => {

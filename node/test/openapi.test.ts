@@ -109,8 +109,9 @@ const AUTH_ENDPOINTS: Array<[method: string, path: string]> = [
   ],
 ];
 
-/** Workspace-scoped task family (DAT-244). */
+/** Workspace-scoped task family (DAT-244, task targets DAT-292). */
 const WORKSPACE_TASK_ENDPOINTS: Array<[method: string, path: string]> = [
+  ["get", "/api/v1/workspaces/{workspace_id}/task-targets"],
   ["post", "/api/v1/workspaces/{workspace_id}/tasks"],
   ["get", "/api/v1/workspaces/{workspace_id}/tasks"],
   ["get", "/api/v1/workspaces/{workspace_id}/tasks/{task_id}"],
@@ -364,6 +365,37 @@ describe("forgepilot-api/v1 OpenAPI document", () => {
     };
     expect(task.required).toContain("workspace_id");
     expect(task.properties.workspace_id.type).toBe("string");
+  });
+
+  test("Task requires the explicit target and its observed set version (DAT-292)", () => {
+    const task = document.components.schemas["Task"] as {
+      required: string[];
+      properties: { target: { oneOf: Array<Record<string, unknown>> } };
+    };
+    expect(task.required).toContain("target");
+    expect(task.required).toContain("repository_set_version");
+    expect(task.properties.target.oneOf).toEqual([
+      { $ref: "#/components/schemas/TaskTarget" },
+      { type: "null" },
+    ]);
+
+    const run = document.components.schemas["RunSummary"] as { required: string[] };
+    expect(run.required).toContain("target");
+    expect(run.required).toContain("repository_set_version");
+
+    const list = document.components.schemas["TaskTargetList"] as {
+      required: string[];
+      properties: { targets: unknown; blocked_reason: unknown };
+    };
+    expect(list.required).toEqual(
+      expect.arrayContaining([
+        "repository_set_version",
+        "selection_required",
+        "usable",
+        "blocked_reason",
+        "targets",
+      ]),
+    );
   });
 
   test("Task carries the required pi_summary field with the PiSummary schema", () => {

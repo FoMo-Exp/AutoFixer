@@ -123,7 +123,11 @@ next subscription is refused.
 2. **No target-repository binding for a run.** `workspace-bindings.ts` requires
    exactly one binding plus the deployment's pinned base revision; a task cannot
    name an active repository of a multi-repository workspace. ADR-0011 requires
-   that explicit target and a workspace-wide intersection.
+   that explicit target and a workspace-wide intersection. DAT-292 added the
+   contract — `GET …/task-targets`, immutable selection by observed set version,
+   and the target recorded on the task and its runs — but baseline resolution
+   and dispatch for a non-pinned repository are still DAT-293, so a
+   multi-repository set continues to refuse creation.
 3. **No removal or rollback path.** `removeBinding` is an unconditional refusal,
    so an enabled multi-repository workspace cannot be returned to one repository
    through the API.

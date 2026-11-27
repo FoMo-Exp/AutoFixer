@@ -113,6 +113,8 @@ function putTask(
     ...(run.actions_completed !== undefined
       ? { updated_at: `2026-11-0${(index % 9) + 1}T00:10:00.000Z` }
       : {}),
+    target: null,
+    repository_set_version: null,
   }));
   task.runId = runs[runs.length - 1]?.run_id ?? null;
   // Contaminated aggregate: every run merged would be the wrong conclusion.

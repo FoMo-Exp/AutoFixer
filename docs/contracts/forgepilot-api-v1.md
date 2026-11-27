@@ -356,6 +356,8 @@ blocked), and `2` (startup blocked).
   "id":"tsk_01J...","workspace_id":"wsp_01J...","version":12,"created_at":"2026-10-26T12:00:00Z","updated_at":"2026-10-26T12:03:00Z",
   "current_run_id":"run_01J...","run_history_url":"/api/v1/tasks/tsk_01J.../runs",
   "repository":{"id":"github:acme/payments","display_name":"acme/payments","base_ref":"main","base_sha":"ab12cd..."},
+  "target":{"binding_id":"wrb_01J...","repository_id":"github:acme/payments","provider_instance_id":"pi_01J...","installation_ref":"si_01J...","base_ref":"main","base_sha":"ab12cd...","set_version":1,"verified_at":"2026-10-26T12:00:00Z"},
+  "repository_set_version":1,
   "request":{"summary":"Fix export exception.","source_reference":"https://github.com/acme/payments/issues/1234"},
   "association":{"task_id":"tsk_01J...","run_id":"run_01J...","repository_id":"github:acme/payments","base_sha":"ab12cd...","head_sha":"9ef012..."},
   "revision":{"base_sha":"ab12cd...","head_sha":"9ef012..."},
@@ -377,6 +379,28 @@ workspace-scoped family, so following it can never cross workspaces.
 to the workspace in a workspace-scoped path, is never a request input, and can
 never be changed: a task read through another workspace's route family is
 `404 TASK_NOT_FOUND`.
+
+`target` is the immutable explicit target the task was created against
+(DAT-292): the workspace binding row, the provider instance, the approved
+installation, the provider-assigned repository id, the trusted `base_ref` and
+`base_sha`, and the repository-set version the decision observed. It is
+recorded once and never re-derived from the workspace's current binding.
+`repository_set_version` repeats the observed version for clients that do not
+need the whole target; it can be present on a DAT-285-era record whose
+`target` is `null`. A task whose target cannot be proven — a pre-contract
+record or one created on the deployment-owned legacy seam, which has no
+workspace binding — is served `target: null` and reported as unverified;
+history is never guessed or backfilled. Run summaries carry the same `target`
+and `repository_set_version` for the runs under the task.
+
+The selection read is
+`GET /api/v1/workspaces/{workspace_id}/task-targets`. It returns the active
+bindings' immutable identities, the observed `repository_set_version`, whether
+create requires an explicit selection, and `baseline.state` (`trusted` with
+its `base_ref`/`base_sha`, or `unavailable` when this build cannot pin one).
+`usable: false` means the set exists but this build cannot execute against it;
+selection is still described and creation is refused. The read never exposes
+credentials, provider subjects or another tenant's repositories.
 
 `association` and `revision` are the verifiable task/run/repository/base-SHA/
 head-SHA bindings. `run_id` and `head_sha` are projected from the
@@ -449,7 +473,8 @@ run summaries for that task; terminal grants are never reused.
 | `GET /api/v1/tasks/{task_id}/timeline` | none | `200 {items: TimelineEvent[]}` |
 | `GET /api/v1/tasks/{task_id}/artifacts/{artifact_id}` | none | `200 redacted artifact` |
 | `GET /api/v1/tasks/{task_id}/stream` | `Last-Event-ID` optional | `200 text/event-stream` |
-| `POST /api/v1/workspaces/{workspace_id}/tasks` | `repository_id`, `base_ref`, `summary`, `source_reference`, `acceptance_criteria[]`; optional `Idempotency-Key` header (workspace-scoped namespace) | `201 Task` bound to the workspace's repository and gateway identity |
+| `POST /api/v1/workspaces/{workspace_id}/tasks` | `summary`, plus either `target` (`repository_id`, `provider_instance_id`, `installation_ref`, `base_ref`, `expected_set_version`, optional `expected_base_sha`) or the legacy single-repository `repository_id` + `base_ref`; optional `source_reference`, `acceptance_criteria[]`, `Idempotency-Key` header (workspace-scoped namespace, bound to the resolved target) | `201 Task` with the immutable `target` recorded; `400 TARGET_REPOSITORY_REQUIRED` for a multi-repository workspace without a selection; `409 TARGET_IDENTITY_MISMATCH` / `REPOSITORY_SET_VERSION_CONFLICT` / `REPOSITORY_BINDING_UNAVAILABLE` / `TARGET_BASELINE_MISMATCH`; `403 MULTI_REPOSITORY_SCOPE_*` when the set is not executable |
+| `GET /api/v1/workspaces/{workspace_id}/task-targets` | none | `200 TaskTargetList`: active bindings' immutable identities, `repository_set_version`, `selection_required`, `usable`, `blocked_reason`, per-target trusted/unavailable baseline |
 | `GET /api/v1/workspaces/{workspace_id}/tasks?cursor=&status=` | none | `200 {items: Task[], next_cursor}` confined to that workspace |
 | `GET /api/v1/workspaces/{workspace_id}/tasks/{task_id}` | none | `200 Task` |
 | `GET /api/v1/workspaces/{workspace_id}/tasks/{task_id}/runs` | none | `200 {items: redacted RunSummary[]}` |

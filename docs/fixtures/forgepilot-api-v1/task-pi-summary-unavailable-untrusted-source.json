@@ -12,6 +12,8 @@
     "base_ref": "main",
     "base_sha": "52081eaddca099967fd8be13b3060337fde50d3f"
   },
+  "target": null,
+  "repository_set_version": null,
   "request": {
     "summary": "Verify the echo tool works",
     "source_reference": "https://github.com/FoMo-Exp/AutoFixer/issues/42"

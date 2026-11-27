@@ -1063,6 +1063,192 @@ const artifactMetadataSchema: JsonObject = {
   },
 };
 
+/**
+ * The immutable explicit task target (DAT-292).
+ *
+ * A task and every run under it are bound to one active workspace binding by
+ * immutable identity — provider instance, approved installation and
+ * provider-assigned repository id — at the repository-set version the create
+ * observed, with the trusted base revision pinned. Names and URLs are never
+ * authority, and no field here is client-supplied except through a selection
+ * the server verified against the set.
+ */
+const taskTargetSchema: JsonObject = {
+  type: "object",
+  description:
+    "Immutable target recorded when the task was created; never re-derived " +
+    "from the workspace's current binding. A `null` target on a task means " +
+    "the record predates this contract or was created on the deployment-owned " +
+    "legacy seam, which has no workspace binding; it is reported as " +
+    "unverified, never attributed to a later binding.",
+  required: [
+    "binding_id",
+    "repository_id",
+    "provider_instance_id",
+    "installation_ref",
+    "base_ref",
+    "base_sha",
+    "set_version",
+    "verified_at",
+  ],
+  properties: {
+    binding_id: {
+      type: "string",
+      description: "Workspace repository-binding row this target was verified against.",
+    },
+    repository_id: {
+      type: "string",
+      description: "Immutable provider-assigned repository id; the only repository authority.",
+    },
+    provider_instance_id: {
+      type: "string",
+      description: "Administrator-approved provider instance of the binding's enterprise.",
+    },
+    installation_ref: {
+      type: ["string", "null"],
+      description:
+        "Approved active installation (`service_integration.id`) through which " +
+        "the repository is observed. Null only in local-prototype mode, where " +
+        "the workspace has no integration at all.",
+    },
+    base_ref: { type: "string", description: "Trusted base revision name." },
+    base_sha: { type: "string", description: "Trusted commit the run is pinned to." },
+    set_version: {
+      type: "integer",
+      minimum: 1,
+      description:
+        "Workspace repository-set version this decision observed. Any later " +
+        "set change makes the recorded decision stale.",
+    },
+    verified_at: { type: "string", format: "date-time" },
+  },
+  additionalProperties: false,
+};
+
+/** Explicit target selection on the workspace-scoped create route (DAT-292). */
+const taskTargetSelectionSchema: JsonObject = {
+  type: "object",
+  description:
+    "Explicit selection of one active workspace binding. Required when the " +
+    "workspace binds more than one repository; refused against any other set " +
+    "version. `expected_base_sha` is an assertion, never the source of the " +
+    "baseline: a mismatch is a conflict and the trusted value is what the " +
+    "task records.",
+  required: [
+    "repository_id",
+    "provider_instance_id",
+    "installation_ref",
+    "base_ref",
+    "expected_set_version",
+  ],
+  properties: {
+    repository_id: { type: "string" },
+    provider_instance_id: { type: "string" },
+    installation_ref: { type: ["string", "null"] },
+    base_ref: { type: "string" },
+    expected_set_version: { type: "integer", minimum: 1 },
+    expected_base_sha: { type: "string" },
+  },
+  additionalProperties: false,
+};
+
+const taskTargetCandidateSchema: JsonObject = {
+  type: "object",
+  description:
+    "One active binding a caller may select. `baseline.state = unavailable` " +
+    "means this build cannot pin a trusted commit for that repository yet; it " +
+    "is never a fabricated SHA and the target cannot be created against it.",
+  required: [
+    "binding_id",
+    "repository_id",
+    "provider_instance_id",
+    "installation_ref",
+    "repository_name",
+    "position",
+    "baseline",
+  ],
+  properties: {
+    binding_id: { type: "string" },
+    repository_id: { type: "string" },
+    provider_instance_id: { type: "string" },
+    installation_ref: { type: ["string", "null"] },
+    repository_name: {
+      type: ["string", "null"],
+      description: "Display metadata only; renames never change authority.",
+    },
+    position: { type: "integer", minimum: 1 },
+    baseline: {
+      oneOf: [
+        {
+          type: "object",
+          required: ["state", "base_ref", "base_sha"],
+          properties: {
+            state: { type: "string", enum: ["trusted"] },
+            base_ref: { type: "string" },
+            base_sha: { type: "string" },
+          },
+          additionalProperties: false,
+        },
+        {
+          type: "object",
+          required: ["state", "base_ref", "base_sha", "reason"],
+          properties: {
+            state: { type: "string", enum: ["unavailable"] },
+            base_ref: { type: "null" },
+            base_sha: { type: "null" },
+            reason: { type: "string", enum: ["baseline_not_pinned"] },
+          },
+          additionalProperties: false,
+        },
+      ],
+    },
+  },
+  additionalProperties: false,
+};
+
+const taskTargetListSchema: JsonObject = {
+  type: "object",
+  required: [
+    "workspace_id",
+    "repository_set_version",
+    "multi_repository",
+    "selection_required",
+    "usable",
+    "blocked_reason",
+    "targets",
+  ],
+  properties: {
+    workspace_id: { type: "string" },
+    repository_set_version: { type: "integer", minimum: 1 },
+    multi_repository: { type: "boolean" },
+    selection_required: {
+      type: "boolean",
+      description: "True when create requires an explicit `target` selection.",
+    },
+    usable: {
+      type: "boolean",
+      description:
+        "False when this build cannot execute against the set (rollout gate " +
+        "closed). Selection is still described; creation is refused.",
+    },
+    blocked_reason: {
+      type: ["string", "null"],
+      enum: [
+        "REPOSITORY_BINDING_MISSING",
+        "REPOSITORY_BINDING_INCONSISTENT",
+        "REPOSITORY_BINDING_UNAPPROVED",
+        "INSTALLATION_NOT_APPROVED",
+        "WORKSPACE_ARCHIVED",
+        "MULTI_REPOSITORY_SCOPE_DISABLED",
+        "MULTI_REPOSITORY_SCOPE_UNSUPPORTED",
+        null,
+      ],
+    },
+    targets: { type: "array", items: { $ref: "#/components/schemas/TaskTargetCandidate" } },
+  },
+  additionalProperties: false,
+};
+
 const taskSchema: JsonObject = {
   type: "object",
   required: [
@@ -1074,6 +1260,8 @@ const taskSchema: JsonObject = {
     "current_run_id",
     "run_history_url",
     "repository",
+    "target",
+    "repository_set_version",
     "request",
     "association",
     "revision",
@@ -1117,6 +1305,21 @@ const taskSchema: JsonObject = {
         base_ref: { type: "string" },
         base_sha: { type: "string" },
       },
+    },
+    target: {
+      description:
+        "The explicit immutable target this task was created against " +
+        "(DAT-292). Null for a record that predates the contract or a task on " +
+        "the deployment-owned legacy seam; history is reported, never " +
+        "backfilled from the current binding.",
+      oneOf: [{ $ref: "#/components/schemas/TaskTarget" }, { type: "null" }],
+    },
+    repository_set_version: {
+      type: ["integer", "null"],
+      minimum: 1,
+      description:
+        "Repository-set version the target decision used. May be present on a " +
+        "DAT-285-era record whose `target` is null; null means unpinned.",
     },
     request: {
       type: "object",
@@ -1270,11 +1473,22 @@ const runSummarySchema: JsonObject = {
     "One remediation run on a task. The optional evidence fields are written " +
     "only while that run was active; absent means the evidence cannot be " +
     "attributed to this run (DAT-238), never that it is zero.",
-  required: ["run_id", "state", "created_at"],
+  required: ["run_id", "state", "created_at", "target", "repository_set_version"],
   properties: {
     run_id: { type: "string" },
     state: { type: "string", enum: [...DSH_STATES] },
     created_at: { type: "string", format: "date-time" },
+    target: {
+      description:
+        "The explicit target this run executed against (DAT-292); runs of one " +
+        "task share it. Null on a run recorded before the contract.",
+      oneOf: [{ $ref: "#/components/schemas/TaskTarget" }, { type: "null" }],
+    },
+    repository_set_version: {
+      type: ["integer", "null"],
+      minimum: 1,
+      description: "Repository-set version the run was bound to; null when unpinned.",
+    },
     actions_completed: {
       type: "integer",
       minimum: 0,
@@ -3286,25 +3500,59 @@ export function buildOpenApiDocument(): OpenApiDocument {
     // other workspace is the same 404, so the family is not an enumeration
     // oracle.
 
+    "/api/v1/workspaces/{workspace_id}/task-targets": {
+      get: {
+        operationId: "listTaskTargets",
+        summary: "List the workspace's selectable task targets",
+        description:
+          "Reports every active repository binding of the workspace with its " +
+          "immutable identity, the observed repository-set version, whether " +
+          "create requires an explicit selection, and the trusted baseline " +
+          "this build can pin. `usable: false` means the set exists but this " +
+          "build cannot execute against it (the multi-repository rollout gate " +
+          "is closed); selection is described, creation is refused. Requires " +
+          "live membership and the `read` action; unknown/archived workspaces " +
+          "and non-members are one `404 NOT_FOUND`. No credentials, provider " +
+          "subjects or another tenant's repositories are ever returned; " +
+          "`repository_name` is display metadata only.",
+        parameters: [WORKSPACE_ID_PARAMETER],
+        responses: {
+          200: {
+            description: "Selectable targets and the observed set version",
+            ...jsonRef("#/components/schemas/TaskTargetList"),
+          },
+          403: errorResponse(
+            "FORBIDDEN — repository authority does not permit reading this workspace, or WORKSPACE_ARCHIVED",
+          ),
+          404: errorResponse("NOT_FOUND — no live membership for this workspace"),
+        },
+      },
+    },
     "/api/v1/workspaces/{workspace_id}/tasks": {
       post: {
         operationId: "createWorkspaceTask",
         summary: "Create a task in one workspace",
         description:
-          "Creates the task and its dsh run inside the path workspace. The " +
-          "workspace's own binding supplies the repository, base revision, " +
-          "and model-gateway enterprise/workspace identity; the deployment's " +
-          "configured repository is never a fallback. `repository_id` must " +
-          "equal the workspace's repository binding (`400 " +
-          "REPOSITORY_NOT_IN_WORKSPACE`) and `base_ref` must equal that " +
-          "binding's pinned base revision (`400 BASE_REF_NOT_SUPPORTED`). " +
-          "Unknown/archived workspaces and non-members are one " +
-          "`404 NOT_FOUND`; viewers are `403 FORBIDDEN`. A workspace whose " +
-          "repository has no pinned base revision in this deployment is " +
-          "`409 REPOSITORY_BINDING_UNAVAILABLE`, and a provider instance " +
-          "that is no longer registered is `409 " +
-          "PROVIDER_INSTANCE_NOT_APPROVED`; both refuse before any dsh " +
-          "dispatch. Each workspace has its own idempotency-key namespace.",
+          "Creates the task and its dsh run inside the path workspace. A " +
+          "single-repository workspace keeps the legacy body `repository_id` + " +
+          "`base_ref`; a multi-repository workspace must send `target` with " +
+          "the immutable identity of one active binding (`400 " +
+          "TARGET_REPOSITORY_REQUIRED` otherwise). `GET " +
+          "/api/v1/workspaces/{workspace_id}/task-targets` is the read that " +
+          "supplies the selectable identities, the observed set version and " +
+          "the trusted baseline. The selected identity must match the " +
+          "binding exactly (`409 TARGET_IDENTITY_MISMATCH`), the observed set " +
+          "version must still be current (`409 REPOSITORY_SET_VERSION_CONFLICT`), " +
+          "and the trusted baseline must resolve (`409 " +
+          "REPOSITORY_BINDING_UNAVAILABLE` / `TARGET_BASELINE_MISMATCH`). " +
+          "The deployment's configured repository, the first binding and a " +
+          "repository name or URL are never fallbacks. Unknown/archived " +
+          "workspaces and non-members are one `404 NOT_FOUND`; viewers are " +
+          "`403 FORBIDDEN`. A set this build cannot execute against is " +
+          "`403 MULTI_REPOSITORY_SCOPE_*` — selection is validated first, " +
+          "then the rollout gate refuses. Each workspace has its own " +
+          "idempotency-key namespace, and a key is bound to the resolved " +
+          "target identity and baseline.",
         parameters: [
           { name: "workspace_id", in: "path", required: true, schema: { type: "string" } },
           {
@@ -3325,10 +3573,24 @@ export function buildOpenApiDocument(): OpenApiDocument {
             "application/json": {
               schema: {
                 type: "object",
-                required: ["repository_id", "base_ref", "summary"],
+                required: ["summary"],
+                anyOf: [{ required: ["target"] }, { required: ["repository_id", "base_ref"] }],
                 properties: {
-                  repository_id: { type: "string", examples: ["github:FoMo-Exp/AutoFixer"] },
-                  base_ref: { type: "string", examples: ["main"] },
+                  repository_id: {
+                    type: "string",
+                    examples: ["github:FoMo-Exp/AutoFixer"],
+                    description:
+                      "Legacy selector for a single-repository workspace; may " +
+                      "accompany `target` only when it names the same repository.",
+                  },
+                  base_ref: {
+                    type: "string",
+                    examples: ["main"],
+                    description:
+                      "Legacy base-revision selector; may accompany `target` " +
+                      "only when it equals the target's pinned base ref.",
+                  },
+                  target: { $ref: "#/components/schemas/TaskTargetSelection" },
                   summary: { type: "string" },
                   source_reference: { type: "string" },
                   acceptance_criteria: { type: "array", items: { type: "string" } },
@@ -3339,16 +3601,18 @@ export function buildOpenApiDocument(): OpenApiDocument {
         },
         responses: {
           201: {
-            description: "Task created in this workspace",
+            description: "Task created in this workspace, with its immutable target recorded",
             ...jsonRef("#/components/schemas/Task"),
           },
           400: errorResponse(
-            "INVALID_REQUEST, REPOSITORY_NOT_IN_WORKSPACE, or BASE_REF_NOT_SUPPORTED",
+            "INVALID_REQUEST, REPOSITORY_NOT_IN_WORKSPACE, BASE_REF_NOT_SUPPORTED, or TARGET_REPOSITORY_REQUIRED",
           ),
-          403: errorResponse("FORBIDDEN — viewer, or repository authority denied"),
+          403: errorResponse(
+            "FORBIDDEN — viewer or repository authority; MULTI_REPOSITORY_SCOPE_DISABLED/UNSUPPORTED when the set is not executable",
+          ),
           404: errorResponse("NOT_FOUND — no live membership for this workspace"),
           409: errorResponse(
-            "IDEMPOTENCY_CONFLICT, REPOSITORY_BINDING_UNAVAILABLE, or PROVIDER_INSTANCE_NOT_APPROVED",
+            "IDEMPOTENCY_CONFLICT, PROVIDER_INSTANCE_NOT_APPROVED, REPOSITORY_BINDING_UNAVAILABLE, REPOSITORY_SET_VERSION_CONFLICT, TARGET_IDENTITY_MISMATCH, or TARGET_BASELINE_MISMATCH",
           ),
           422: errorResponse(
             "Prohibited work was rejected by dsh (details.task_id names the rejected task)",
@@ -6416,7 +6680,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
     openapi: "3.1.0",
     info: {
       title: "ForgePilot orchestrator API",
-      version: "0.10.0",
+      version: "0.11.0",
       description:
         "forgepilot-api/v1: the Node-to-UI contract of the ForgePilot pilot, the " +
         "enterprise identity surface (DAT-202, ADR-0006), and the workspace, " +
@@ -6467,6 +6731,10 @@ export function buildOpenApiDocument(): OpenApiDocument {
     components: {
       schemas: {
         Task: taskSchema,
+        TaskTarget: taskTargetSchema,
+        TaskTargetSelection: taskTargetSelectionSchema,
+        TaskTargetCandidate: taskTargetCandidateSchema,
+        TaskTargetList: taskTargetListSchema,
         TaskEvent: taskEventSchema,
         PiSummary: piSummarySchema,
         PiSummarySource: piSummarySourceSchema,

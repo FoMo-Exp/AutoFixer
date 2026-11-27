@@ -38,6 +38,7 @@ import { SAFETY_DENIAL_CODES } from "./run-outcomes.js";
 import { ApiError, apiErrorFromDsh, DSH_SAFE_MESSAGES } from "./errors.js";
 import { PiSummaryTracker } from "./pi-summary.js";
 import type { PiSummary } from "./pi-summary.js";
+import type { TaskTarget, TaskTargetSelection } from "./task-targets.js";
 import type {
   TaskRecord,
   TaskEvent,
@@ -60,8 +61,18 @@ import {
 } from "./task-store.js";
 
 export interface CreateTaskInput {
-  repository_id: string;
-  base_ref: string;
+  /**
+   * Legacy single-repository selector. A workspace-scoped create may instead
+   * (and a multi-repository workspace must) supply {@link target}; the two
+   * forms may be combined only when they agree.
+   */
+  repository_id?: string;
+  base_ref?: string;
+  /**
+   * Explicit immutable target (DAT-292). Valid on the workspace-scoped route
+   * only; the resolver validates it against the workspace's versioned set.
+   */
+  target?: TaskTargetSelection;
   summary: string;
   source_reference?: string;
   acceptance_criteria?: string[];
@@ -115,6 +126,12 @@ export interface WorkspaceRunBinding {
    * set.
    */
   setVersion: number | null;
+  /**
+   * The immutable explicit target recorded on the task and every run
+   * (DAT-292). `null` is the deployment-owned legacy seam, which predates the
+   * target contract and has no workspace binding to name.
+   */
+  target: TaskTarget | null;
 }
 
 /**
@@ -171,7 +188,12 @@ export type RunStepAuthority = (input: RunStepAuthorityInput) => RunStepAuthorit
  * deployment's configured repository, is never allowed.
  */
 export interface WorkspaceRunBindingResolver {
-  resolve(workspaceId: string): WorkspaceRunBinding;
+  /**
+   * Resolve the workspace binding, optionally for one explicit target
+   * (DAT-292). A multi-repository workspace requires the selection; omitting
+   * it is refused rather than resolved to the first binding.
+   */
+  resolve(workspaceId: string, target?: TaskTargetSelection): WorkspaceRunBinding;
 }
 
 /**
@@ -187,8 +209,10 @@ export function deploymentRunBinding(config: OrchestratorConfig): WorkspaceRunBi
     repositoryUrl: config.repositoryUrl,
     baseRef: config.baseRef,
     baseSha: config.baseSha,
-    // The legacy seam predates the versioned set; it has no set to pin.
+    // The legacy seam predates the versioned set and the target contract; it
+    // has neither to pin.
     setVersion: null,
+    target: null,
   };
 }
 
@@ -413,12 +437,16 @@ const SESSION_BEARING_STATUSES: ReadonlySet<UiStatus> = new Set<UiStatus>([
  * task's identity. Normalization mirrors what createTask trims, so two
  * byte-different but semantically equal bodies share one idempotency slot.
  */
-function createTaskFingerprint(input: CreateTaskInput): string {
+function createTaskFingerprint(input: CreateTaskInput, binding: WorkspaceRunBinding): string {
   return createHash("sha256")
     .update(
       JSON.stringify([
-        input.repository_id,
-        input.base_ref,
+        // The resolved target is part of an idempotent create's identity: the
+        // same client key must not silently replay a task bound to another
+        // repository, binding or baseline (DAT-292).
+        binding.repositoryId,
+        binding.target?.binding_id ?? null,
+        binding.baseSha,
         input.summary.trim(),
         input.source_reference?.trim() || null,
         (input.acceptance_criteria ?? []).filter((criterion) => criterion.trim().length > 0),
@@ -482,15 +510,25 @@ export class TaskService {
 
   async createTask(input: CreateTaskInput, options: CreateTaskOptions = {}): Promise<TaskResource> {
     const scoped = options.workspaceId !== undefined;
-    const binding =
-      options.workspaceId === undefined
-        ? deploymentRunBinding(this.deps.config)
-        : this.deps.workspaceBindings.resolve(options.workspaceId);
+    if (!scoped && input.target !== undefined) {
+      // The legacy local-operator seam has no versioned set to validate an
+      // explicit target against. Refuse instead of accepting identity no
+      // authority checked.
+      throw new ApiError(
+        400,
+        "INVALID_REQUEST",
+        "target selection requires the workspace-scoped task route",
+      );
+    }
+    const binding = scoped
+      ? this.deps.workspaceBindings.resolve(options.workspaceId!, input.target)
+      : deploymentRunBinding(this.deps.config);
     if (scoped) {
-      // The path workspace's binding is authority; the request body may only
-      // select inside it. Neither mismatch is enumerable beyond the workspace
-      // the caller already reached.
-      if (input.repository_id !== binding.repositoryId) {
+      // The path workspace's resolved binding is authority; a legacy body may
+      // only select inside it, and a body that carries both forms must agree
+      // with the target the resolver verified. Neither mismatch is enumerable
+      // beyond the workspace the caller already reached.
+      if (input.repository_id !== undefined && input.repository_id !== binding.repositoryId) {
         throw new ApiError(
           400,
           "REPOSITORY_NOT_IN_WORKSPACE",
@@ -498,11 +536,11 @@ export class TaskService {
           { repository_id: input.repository_id },
         );
       }
-      if (input.base_ref !== binding.baseRef) {
+      if (input.base_ref !== undefined && input.base_ref !== binding.baseRef) {
         throw new ApiError(
           400,
           "BASE_REF_NOT_SUPPORTED",
-          "base_ref is not the pinned base revision of this workspace's repository",
+          "base_ref is not the pinned base revision of this target",
           { base_ref: input.base_ref },
         );
       }
@@ -529,8 +567,9 @@ export class TaskService {
       throw new ApiError(400, "INVALID_REQUEST", "summary is required");
     }
     const normalized: CreateTaskInput = {
-      repository_id: input.repository_id,
-      base_ref: input.base_ref,
+      repository_id: binding.repositoryId,
+      base_ref: binding.baseRef,
+      ...(input.target !== undefined ? { target: input.target } : {}),
       summary,
       ...(input.source_reference?.trim()
         ? { source_reference: input.source_reference.trim() }
@@ -554,7 +593,7 @@ export class TaskService {
     // were bypassed, dsh replays the recorded response instead of minting a
     // second run for the same logical create.
     const dshIdempotencyKey = `task-create-${createHash("sha256").update(key).digest("hex")}`;
-    const fingerprint = createTaskFingerprint(normalized);
+    const fingerprint = createTaskFingerprint(normalized, binding);
     const pending = this.pendingCreates.get(key);
     if (pending) {
       if (pending.fingerprint !== fingerprint) {
@@ -1097,6 +1136,7 @@ export class TaskService {
         base_ref: binding.baseRef,
         base_sha: binding.baseSha,
       },
+      target: binding.target,
       summary,
       sourceReference,
       acceptanceCriteria,
@@ -1108,6 +1148,8 @@ export class TaskService {
       run_id: created.run_id,
       state: created.state,
       created_at: record.createdAt,
+      target: record.target,
+      repository_set_version: record.repositorySetVersion,
     });
     record.risk = {
       class: created.risk_assessment.risk_class,
@@ -1150,6 +1192,7 @@ export class TaskService {
         base_ref: binding.baseRef,
         base_sha: binding.baseSha,
       },
+      target: binding.target,
       summary,
       sourceReference,
       acceptanceCriteria,
@@ -1159,7 +1202,13 @@ export class TaskService {
     const runId = typeof error.details["run_id"] === "string" ? error.details["run_id"] : null;
     record.runId = runId;
     if (runId) {
-      record.runs.push({ run_id: runId, state: "rejected", created_at: record.createdAt });
+      record.runs.push({
+        run_id: runId,
+        state: "rejected",
+        created_at: record.createdAt,
+        target: record.target,
+        repository_set_version: record.repositorySetVersion,
+      });
     }
     record.evidenceBundleAvailable = error.details["evidence_bundle_available"] === true;
     record.risk = {
@@ -1689,6 +1738,8 @@ export class TaskService {
       state,
       created_at: record.updatedAt,
       updated_at: new Date().toISOString(),
+      target: record.target,
+      repository_set_version: record.repositorySetVersion,
     });
   }
 

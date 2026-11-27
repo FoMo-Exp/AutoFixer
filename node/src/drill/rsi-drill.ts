@@ -512,6 +512,8 @@ function recordTask(
       actions_completed: actions,
       safety_events: safetyEvents,
       updated_at: DRILL_NOW_ISO,
+      target: null,
+      repository_set_version: null,
     },
   ];
   task.runId = runId;

@@ -192,6 +192,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspace_id}/task-targets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the workspace's selectable task targets
+         * @description Reports every active repository binding of the workspace with its immutable identity, the observed repository-set version, whether create requires an explicit selection, and the trusted baseline this build can pin. `usable: false` means the set exists but this build cannot execute against it (the multi-repository rollout gate is closed); selection is described, creation is refused. Requires live membership and the `read` action; unknown/archived workspaces and non-members are one `404 NOT_FOUND`. No credentials, provider subjects or another tenant's repositories are ever returned; `repository_name` is display metadata only.
+         */
+        get: operations["listTaskTargets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspace_id}/tasks": {
         parameters: {
             query?: never;
@@ -207,7 +227,7 @@ export interface paths {
         put?: never;
         /**
          * Create a task in one workspace
-         * @description Creates the task and its dsh run inside the path workspace. The workspace's own binding supplies the repository, base revision, and model-gateway enterprise/workspace identity; the deployment's configured repository is never a fallback. `repository_id` must equal the workspace's repository binding (`400 REPOSITORY_NOT_IN_WORKSPACE`) and `base_ref` must equal that binding's pinned base revision (`400 BASE_REF_NOT_SUPPORTED`). Unknown/archived workspaces and non-members are one `404 NOT_FOUND`; viewers are `403 FORBIDDEN`. A workspace whose repository has no pinned base revision in this deployment is `409 REPOSITORY_BINDING_UNAVAILABLE`, and a provider instance that is no longer registered is `409 PROVIDER_INSTANCE_NOT_APPROVED`; both refuse before any dsh dispatch. Each workspace has its own idempotency-key namespace.
+         * @description Creates the task and its dsh run inside the path workspace. A single-repository workspace keeps the legacy body `repository_id` + `base_ref`; a multi-repository workspace must send `target` with the immutable identity of one active binding (`400 TARGET_REPOSITORY_REQUIRED` otherwise). `GET /api/v1/workspaces/{workspace_id}/task-targets` is the read that supplies the selectable identities, the observed set version and the trusted baseline. The selected identity must match the binding exactly (`409 TARGET_IDENTITY_MISMATCH`), the observed set version must still be current (`409 REPOSITORY_SET_VERSION_CONFLICT`), and the trusted baseline must resolve (`409 REPOSITORY_BINDING_UNAVAILABLE` / `TARGET_BASELINE_MISMATCH`). The deployment's configured repository, the first binding and a repository name or URL are never fallbacks. Unknown/archived workspaces and non-members are one `404 NOT_FOUND`; viewers are `403 FORBIDDEN`. A set this build cannot execute against is `403 MULTI_REPOSITORY_SCOPE_*` — selection is validated first, then the rollout gate refuses. Each workspace has its own idempotency-key namespace, and a key is bound to the resolved target identity and baseline.
          */
         post: operations["createWorkspaceTask"];
         delete?: never;
@@ -2552,6 +2572,10 @@ export interface components {
                 base_ref: string;
                 base_sha: string;
             };
+            /** @description The explicit immutable target this task was created against (DAT-292). Null for a record that predates the contract or a task on the deployment-owned legacy seam; history is reported, never backfilled from the current binding. */
+            target: components["schemas"]["TaskTarget"] | null;
+            /** @description Repository-set version the target decision used. May be present on a DAT-285-era record whose `target` is null; null means unpinned. */
+            repository_set_version: number | null;
             request: {
                 summary: string;
                 source_reference: string | null;
@@ -2610,6 +2634,69 @@ export interface components {
                 evidence_bundle_available: boolean;
                 index: components["schemas"]["ArtifactMetadata"][];
             };
+        };
+        /** @description Immutable target recorded when the task was created; never re-derived from the workspace's current binding. A `null` target on a task means the record predates this contract or was created on the deployment-owned legacy seam, which has no workspace binding; it is reported as unverified, never attributed to a later binding. */
+        TaskTarget: {
+            /** @description Workspace repository-binding row this target was verified against. */
+            binding_id: string;
+            /** @description Immutable provider-assigned repository id; the only repository authority. */
+            repository_id: string;
+            /** @description Administrator-approved provider instance of the binding's enterprise. */
+            provider_instance_id: string;
+            /** @description Approved active installation (`service_integration.id`) through which the repository is observed. Null only in local-prototype mode, where the workspace has no integration at all. */
+            installation_ref: string | null;
+            /** @description Trusted base revision name. */
+            base_ref: string;
+            /** @description Trusted commit the run is pinned to. */
+            base_sha: string;
+            /** @description Workspace repository-set version this decision observed. Any later set change makes the recorded decision stale. */
+            set_version: number;
+            /** Format: date-time */
+            verified_at: string;
+        };
+        /** @description Explicit selection of one active workspace binding. Required when the workspace binds more than one repository; refused against any other set version. `expected_base_sha` is an assertion, never the source of the baseline: a mismatch is a conflict and the trusted value is what the task records. */
+        TaskTargetSelection: {
+            repository_id: string;
+            provider_instance_id: string;
+            installation_ref: string | null;
+            base_ref: string;
+            expected_set_version: number;
+            expected_base_sha?: string;
+        };
+        /** @description One active binding a caller may select. `baseline.state = unavailable` means this build cannot pin a trusted commit for that repository yet; it is never a fabricated SHA and the target cannot be created against it. */
+        TaskTargetCandidate: {
+            binding_id: string;
+            repository_id: string;
+            provider_instance_id: string;
+            installation_ref: string | null;
+            /** @description Display metadata only; renames never change authority. */
+            repository_name: string | null;
+            position: number;
+            baseline: {
+                /** @enum {string} */
+                state: "trusted";
+                base_ref: string;
+                base_sha: string;
+            } | {
+                /** @enum {string} */
+                state: "unavailable";
+                base_ref: null;
+                base_sha: null;
+                /** @enum {string} */
+                reason: "baseline_not_pinned";
+            };
+        };
+        TaskTargetList: {
+            workspace_id: string;
+            repository_set_version: number;
+            multi_repository: boolean;
+            /** @description True when create requires an explicit `target` selection. */
+            selection_required: boolean;
+            /** @description False when this build cannot execute against the set (rollout gate closed). Selection is still described; creation is refused. */
+            usable: boolean;
+            /** @enum {string|null} */
+            blocked_reason: "REPOSITORY_BINDING_MISSING" | "REPOSITORY_BINDING_INCONSISTENT" | "REPOSITORY_BINDING_UNAPPROVED" | "INSTALLATION_NOT_APPROVED" | "WORKSPACE_ARCHIVED" | "MULTI_REPOSITORY_SCOPE_DISABLED" | "MULTI_REPOSITORY_SCOPE_UNSUPPORTED" | null;
+            targets: components["schemas"]["TaskTargetCandidate"][];
         };
         TaskEvent: {
             event_id: string;
@@ -2679,6 +2766,10 @@ export interface components {
             state: "requested" | "approved" | "running" | "awaiting_review" | "approved_for_merge" | "stopped" | "timed_out" | "expired" | "rejected" | "cancelled" | "merged";
             /** Format: date-time */
             created_at: string;
+            /** @description The explicit target this run executed against (DAT-292); runs of one task share it. Null on a run recorded before the contract. */
+            target: components["schemas"]["TaskTarget"] | null;
+            /** @description Repository-set version the run was bound to; null when unpinned. */
+            repository_set_version: number | null;
             /** @description Executed tool actions attributed to this run. */
             actions_completed?: number;
             /** @description Prohibited/policy-denied tool intents attributed to this run. */
@@ -6271,6 +6362,55 @@ export interface operations {
             };
         };
     };
+    listTaskTargets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Selectable targets and the observed set version */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskTargetList"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description FORBIDDEN — repository authority does not permit reading this workspace, or WORKSPACE_ARCHIVED */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — no live membership for this workspace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     listWorkspaceTasks: {
         parameters: {
             query?: {
@@ -6343,18 +6483,25 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    /** @example github:FoMo-Exp/AutoFixer */
-                    repository_id: string;
-                    /** @example main */
-                    base_ref: string;
+                    /**
+                     * @description Legacy selector for a single-repository workspace; may accompany `target` only when it names the same repository.
+                     * @example github:FoMo-Exp/AutoFixer
+                     */
+                    repository_id?: string;
+                    /**
+                     * @description Legacy base-revision selector; may accompany `target` only when it equals the target's pinned base ref.
+                     * @example main
+                     */
+                    base_ref?: string;
+                    target?: components["schemas"]["TaskTargetSelection"];
                     summary: string;
                     source_reference?: string;
                     acceptance_criteria?: string[];
-                };
+                } | unknown | unknown;
             };
         };
         responses: {
-            /** @description Task created in this workspace */
+            /** @description Task created in this workspace, with its immutable target recorded */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -6363,7 +6510,7 @@ export interface operations {
                     "application/json": components["schemas"]["Task"];
                 };
             };
-            /** @description INVALID_REQUEST, REPOSITORY_NOT_IN_WORKSPACE, or BASE_REF_NOT_SUPPORTED */
+            /** @description INVALID_REQUEST, REPOSITORY_NOT_IN_WORKSPACE, BASE_REF_NOT_SUPPORTED, or TARGET_REPOSITORY_REQUIRED */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -6381,7 +6528,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description FORBIDDEN — viewer, or repository authority denied */
+            /** @description FORBIDDEN — viewer or repository authority; MULTI_REPOSITORY_SCOPE_DISABLED/UNSUPPORTED when the set is not executable */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6399,7 +6546,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description IDEMPOTENCY_CONFLICT, REPOSITORY_BINDING_UNAVAILABLE, or PROVIDER_INSTANCE_NOT_APPROVED */
+            /** @description IDEMPOTENCY_CONFLICT, PROVIDER_INSTANCE_NOT_APPROVED, REPOSITORY_BINDING_UNAVAILABLE, REPOSITORY_SET_VERSION_CONFLICT, TARGET_IDENTITY_MISMATCH, or TARGET_BASELINE_MISMATCH */
             409: {
                 headers: {
                     [name: string]: unknown;

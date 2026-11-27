@@ -59,6 +59,8 @@ function task(id: string, workspaceId: string, summary: string): Task {
     status: "executing",
     status_reason: null,
     repository: { id: "repo", display_name: "owner/repo", base_ref: "main", base_sha: "abc1234" },
+    target: null,
+    repository_set_version: null,
     request: { summary, source_reference: null },
     association: {
       task_id: id,

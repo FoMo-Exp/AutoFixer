@@ -35,6 +35,7 @@ import type { ServiceIntegrationService } from "./api/service-integration-servic
 import { TaskService } from "./api/task-service.js";
 import type { RunStepAuthority } from "./api/task-service.js";
 import { TaskStore } from "./api/task-store.js";
+import { TaskTargetService } from "./api/task-targets.js";
 import {
   createConfiguredWorkspaceRunBindingResolver,
   createWorkspaceRunBindingResolver,
@@ -595,6 +596,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let runStepAuthority: RunStepAuthority | undefined;
   let members: WorkspaceMemberService | undefined;
   let repositorySetChanges: WorkspaceRepositorySetChangeService | undefined;
+  let taskTargets: TaskTargetService | undefined;
   let workspaceBindings = createConfiguredWorkspaceRunBindingResolver(config);
   let requestScopeDeps: RequestScopeDeps | undefined;
   // Live workspace rows for egress-coverage diagnostics (DAT-257). Read at
@@ -992,6 +994,13 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       // fails closed instead of dispatching against one repository.
       repositorySets: workspaceRepositorySets,
     });
+    // DAT-292: the target-selection read names the workspace's active bindings
+    // and the trusted baseline this build can pin. It is still a read, not a
+    // grant, and the multi-repository gate is unchanged.
+    taskTargets = new TaskTargetService({
+      config,
+      repositorySets: workspaceRepositorySets,
+    });
     // The invitation digest key is deployment-owned and durable: a file next
     // to the control-plane database unless configured explicitly. An ephemeral
     // (in-memory) control plane gets a per-process key, which fails closed —
@@ -1127,6 +1136,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     ...(invitations !== undefined ? { invitations } : {}),
     ...(members !== undefined ? { members } : {}),
     ...(repositorySetChanges !== undefined ? { repositorySetChanges } : {}),
+    ...(taskTargets !== undefined ? { taskTargets } : {}),
     ...(serviceIntegrations !== undefined ? { serviceIntegrations } : {}),
     ...(issues !== undefined ? { issues } : {}),
     ...(collab !== undefined ? { collab } : {}),

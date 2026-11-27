@@ -31,6 +31,7 @@ import {
 } from "./http-util.js";
 import type { TaskEvent, TaskResource } from "./task-store.js";
 import type { TaskService } from "./task-service.js";
+import type { TaskTargetSelection, TaskTargetService } from "./task-targets.js";
 import { actionForRequest } from "./request-authority.js";
 import type { RequestAuthority } from "./request-authority.js";
 import { computeEnterpriseCapabilityProjection } from "./enterprise-capability.js";
@@ -87,6 +88,13 @@ export interface ApiServerDeps {
    * Unset keeps the routes nonexistent rather than unaudited.
    */
   repositorySetChanges?: WorkspaceRepositorySetChangeService;
+  /**
+   * Selectable task targets (DAT-292). Served with the identity surface,
+   * because the list is scoped to one workspace and every request is checked
+   * against live membership and the repository authority gate. Unset keeps
+   * the route nonexistent rather than unauthenticated.
+   */
+  taskTargets?: TaskTargetService;
   /** Workspace-scoped issue creation/list/detail and provider synchronization. */
   issues?: IssueSyncService;
   /**
@@ -209,6 +217,64 @@ function presentTask(ctx: TaskRequestContext, task: TaskResource): TaskResource 
 }
 
 /**
+ * Parse the explicit target selection (DAT-292).
+ *
+ * Shape validation only: whether the named immutable identity belongs to this
+ * workspace's active set, whether the observed version is current and whether
+ * a trusted baseline exists are decided by the workspace resolver against
+ * durable state. A malformed body never reaches authority resolution.
+ */
+function optionalTaskTarget(body: Record<string, unknown>): TaskTargetSelection | undefined {
+  const raw = body["target"];
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ApiError(400, "INVALID_REQUEST", "target must be an object");
+  }
+  const value = raw as Record<string, unknown>;
+  const requireNonEmpty = (field: string): string => {
+    const candidate = value[field];
+    if (typeof candidate !== "string" || candidate.length === 0) {
+      throw new ApiError(400, "INVALID_REQUEST", `target.${field} is required`);
+    }
+    return candidate;
+  };
+  const expectedSetVersion = value["expected_set_version"];
+  if (
+    typeof expectedSetVersion !== "number" ||
+    !Number.isInteger(expectedSetVersion) ||
+    expectedSetVersion < 1
+  ) {
+    throw new ApiError(
+      400,
+      "INVALID_REQUEST",
+      "target.expected_set_version must be a positive integer",
+    );
+  }
+  const installationRef = value["installation_ref"];
+  if (
+    installationRef !== undefined &&
+    installationRef !== null &&
+    typeof installationRef !== "string"
+  ) {
+    throw new ApiError(400, "INVALID_REQUEST", "target.installation_ref must be a string or null");
+  }
+  const expectedBaseSha = value["expected_base_sha"];
+  if (expectedBaseSha !== undefined && typeof expectedBaseSha !== "string") {
+    throw new ApiError(400, "INVALID_REQUEST", "target.expected_base_sha must be a string");
+  }
+  return {
+    repository_id: requireNonEmpty("repository_id"),
+    provider_instance_id: requireNonEmpty("provider_instance_id"),
+    installation_ref: (installationRef as string | null | undefined) ?? null,
+    base_ref: requireNonEmpty("base_ref"),
+    expected_set_version: expectedSetVersion,
+    ...(expectedBaseSha !== undefined ? { expected_base_sha: expectedBaseSha as string } : {}),
+  };
+}
+
+/**
  * Serve one task request. `tail` is the route suffix after the workspace
  * prefix (`[]` for a list, `[task_id, sub, artifact_id?]` otherwise), which
  * makes the legacy and workspace-scoped families share one implementation
@@ -239,10 +305,23 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
           },
         );
       }
+      const target = optionalTaskTarget(body);
+      const repositoryId =
+        typeof body["repository_id"] === "string" ? body["repository_id"] : undefined;
+      const baseRef = typeof body["base_ref"] === "string" ? body["base_ref"] : undefined;
+      if (target === undefined) {
+        if (repositoryId === undefined || repositoryId.length === 0) {
+          throw new ApiError(400, "INVALID_REQUEST", "repository_id is required");
+        }
+        if (baseRef === undefined || baseRef.length === 0) {
+          throw new ApiError(400, "INVALID_REQUEST", "base_ref is required");
+        }
+      }
       const created = await service.createTask(
         {
-          repository_id: requireString(body, "repository_id"),
-          base_ref: requireString(body, "base_ref"),
+          ...(repositoryId !== undefined ? { repository_id: repositoryId } : {}),
+          ...(baseRef !== undefined ? { base_ref: baseRef } : {}),
+          ...(target !== undefined ? { target } : {}),
           summary: requireString(body, "summary"),
           ...(typeof body["source_reference"] === "string"
             ? { source_reference: body["source_reference"] }
@@ -955,6 +1034,25 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
             return;
           }
           throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
+        }
+        // Selectable targets for an explicit task selection (DAT-292). The
+        // workspace locator is resolved against live membership below; the
+        // list names immutable binding identities and the trusted baseline,
+        // never credentials or another tenant's repositories.
+        if (segments[4] === "task-targets") {
+          if (method !== "GET" || segments.length !== 5) {
+            throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
+          }
+          const actor = authenticateRequest(req, deps);
+          scopedWorkspaceAccess(actor, deps, workspaceId);
+          if (actor.kind === "session" && deps.authority !== undefined) {
+            deps.authority.require(actor.ctx.user.id, "read", workspaceId);
+          }
+          if (deps.taskTargets === undefined) {
+            throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
+          }
+          writeJson(res, 200, deps.taskTargets.list(workspaceId));
+          return;
         }
         if (segments[4] !== "tasks") {
           throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);

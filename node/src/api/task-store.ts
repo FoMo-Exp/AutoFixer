@@ -5,6 +5,7 @@ import path from "node:path";
 import type { DshState } from "../dsh/types.js";
 import { projectPiSummary } from "./pi-summary.js";
 import type { PiSummary } from "./pi-summary.js";
+import type { TaskTarget } from "./task-targets.js";
 
 /** UI status enum from the M0 forgepilot-api/v1 contract. */
 export const UI_STATUSES = [
@@ -116,6 +117,19 @@ export interface TaskResource {
   current_run_id: string | null;
   run_history_url: string;
   repository: { id: string; display_name: string; base_ref: string; base_sha: string };
+  /**
+   * The explicit target this task and its runs were created against (DAT-292):
+   * the immutable binding identity, the observed repository-set version and
+   * the trusted base revision. `null` marks a record persisted before the
+   * target contract; it is reported, never reconstructed from today's binding.
+   */
+  target: TaskTarget | null;
+  /**
+   * The workspace repository-set version the target decision used. Present on
+   * records created under a versioned workspace binding, including records
+   * from DAT-285 that predate `target`; `null` means unpinned.
+   */
+  repository_set_version: number | null;
   request: { summary: string; source_reference: string | null };
   association: {
     task_id: string;
@@ -172,6 +186,14 @@ export interface RunSummary {
   safety_events?: number;
   /** Last time this run's own evidence changed; never another run's clock. */
   updated_at?: string;
+  /**
+   * The target this run executed against (DAT-292). Runs of one task share it;
+   * `null` means the run was recorded before the target contract, so it is
+   * reported as unverified rather than attributed to a current binding.
+   */
+  target: TaskTarget | null;
+  /** The repository-set version this run was bound to; null when unpinned. */
+  repository_set_version: number | null;
 }
 
 /**
@@ -242,6 +264,8 @@ export interface TaskRecord {
   createdAt: string;
   updatedAt: string;
   repository: TaskResource["repository"];
+  /** Immutable explicit target (DAT-292); null on pre-contract records. */
+  target: TaskTarget | null;
   summary: string;
   sourceReference: string | null;
   acceptanceCriteria: string[];
@@ -312,6 +336,7 @@ export function createTaskRecord(input: {
   workspaceId: string;
   enterpriseId: string;
   repository: TaskResource["repository"];
+  target?: TaskTarget | null;
   summary: string;
   sourceReference: string | null;
   acceptanceCriteria: string[];
@@ -327,6 +352,7 @@ export function createTaskRecord(input: {
     createdAt: now,
     updatedAt: now,
     repository: input.repository,
+    target: input.target ?? null,
     summary: input.summary,
     sourceReference: input.sourceReference,
     acceptanceCriteria: input.acceptanceCriteria,
@@ -366,6 +392,8 @@ export function toTaskResource(record: TaskRecord): TaskResource {
     current_run_id: record.runId,
     run_history_url: `/api/v1/tasks/${record.id}/runs`,
     repository: record.repository,
+    target: record.target,
+    repository_set_version: record.target?.set_version ?? record.repositorySetVersion ?? null,
     request: { summary: record.summary, source_reference: record.sourceReference },
     association: {
       task_id: record.id,
@@ -458,7 +486,13 @@ export class TaskStore {
   ): void {
     let entry = record.runs.find((run) => run.run_id === runId);
     if (entry === undefined) {
-      entry = { run_id: runId, state: "running", created_at: new Date().toISOString() };
+      entry = {
+        run_id: runId,
+        state: "running",
+        created_at: new Date().toISOString(),
+        target: record.target,
+        repository_set_version: record.repositorySetVersion,
+      };
       record.runs.push(entry);
     }
     if (evidence.action) {
@@ -632,7 +666,7 @@ interface PersistedState {
   idempotency: Record<string, CreateIdempotencyRecord>;
 }
 
-const CURRENT_SCHEMA_VERSION = 4;
+const CURRENT_SCHEMA_VERSION = 5;
 
 /** Version-0 was the unversioned M2 shape; migrate it before deserializing. */
 function migratePersistedState(raw: unknown): PersistedState {
@@ -705,5 +739,15 @@ function deserializeTask(
   // instead of assuming the deployment credential.
   record.requestedBy ??= null;
   record.repositorySetVersion ??= null;
+  // Schema < 5 predates the explicit target (DAT-292). History is reported,
+  // not repaired: a record whose target cannot be proven stays null even when
+  // the workspace's current binding would look like a plausible match, and
+  // every run summary carries the same unverified state. A set version that
+  // DAT-285 did record is preserved rather than rewritten.
+  record.target ??= null;
+  for (const run of record.runs) {
+    run.target ??= record.target;
+    run.repository_set_version ??= null;
+  }
   return record;
 }
