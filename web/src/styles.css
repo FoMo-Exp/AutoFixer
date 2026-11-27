@@ -2288,6 +2288,105 @@ p {
   grid-template-columns: minmax(0, 1.5fr) minmax(120px, 0.8fr);
 }
 
+/* Explicit task target (DAT-292): a required radio choice, never a default. */
+.target-field {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.target-fieldset {
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+}
+
+.target-fieldset legend {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0;
+}
+
+.target-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.modal label.target-option {
+  align-items: flex-start;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  flex-direction: row;
+  font-size: var(--fs-body);
+  font-weight: 400;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.modal label.target-option.selected {
+  border-color: var(--accent);
+}
+
+.modal label.target-option.disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.modal label.target-option input[type="radio"] {
+  accent-color: var(--accent);
+  background: none;
+  border: 0;
+  margin: 3px 0 0;
+  padding: 0;
+  width: auto;
+}
+
+.target-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.target-option-name {
+  color: var(--text);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.target-option-meta {
+  color: var(--muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.target-notice {
+  margin: 0;
+}
+
+.inline-error.target-notice {
+  margin: 0;
+  max-width: none;
+}
+
+.target-unverified {
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+  padding: 10px 0;
+}
+
 /* 必填标记：主题色上标 *，替代旧 optional/required 文字 */
 .required-dot {
   color: var(--accent);
