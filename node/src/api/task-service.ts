@@ -38,6 +38,7 @@ import { SAFETY_DENIAL_CODES } from "./run-outcomes.js";
 import { ApiError, apiErrorFromDsh, DSH_SAFE_MESSAGES } from "./errors.js";
 import { PiSummaryTracker } from "./pi-summary.js";
 import type { PiSummary } from "./pi-summary.js";
+import type { AsyncWorkspaceRunBindingResolver } from "./workspace-bindings.js";
 import type { TaskTarget, TaskTargetSelection } from "./task-targets.js";
 import type {
   TaskRecord,
@@ -151,6 +152,18 @@ export interface RunStepAuthorityInput {
   requested_by: TaskRequester | null;
   /** The set version the run was bound to; `null` for the legacy seam. */
   repository_set_version: number | null;
+  /**
+   * The run's immutable target (DAT-292). `null`/absent on records that
+   * predate the target contract; a present target is re-checked by binding id
+   * and immutable identity, never re-resolved.
+   */
+  target?: TaskTarget | null;
+  /**
+   * Where the check happens (DAT-293). `start` runs before any session work
+   * begins (including a create that dsh auto-approved); `step` runs before one
+   * `dsh_request_action`. Unset is `step`.
+   */
+  phase?: "start" | "step";
 }
 
 /** One step decision. A denial never dispatches anything. */
@@ -301,13 +314,23 @@ export interface TaskServiceDeps {
    */
   preparation?: Pick<PreparationBridge, "observe">;
   /**
-   * Sensitive worker-step re-authorization (DAT-285). Set when the deployment
-   * has provider authority: every `dsh_request_action` dispatch re-reads the
-   * requester's live membership and repository-capability intersection and the
-   * versioned repository set before anything leaves the process. Unset keeps
-   * the identity-less deployment, where the dsh grant is the only boundary.
+   * Sensitive worker-step re-authorization (DAT-285) and run-target resolution
+   * (DAT-293). Set when the deployment has provider authority: every
+   * `dsh_request_action` dispatch and every run start re-reads the requester's
+   * live membership, the versioned repository set, the run's immutable target
+   * and its approved credentials before anything leaves the process. Unset
+   * keeps the identity-less deployment, where the dsh grant is the only
+   * boundary.
    */
   runStepAuthority?: RunStepAuthority;
+  /**
+   * Provider-verified run-target resolution for the workspace-scoped create
+   * path (DAT-293). When set, a scoped create resolves its target, trusted
+   * baseline and approved credentials through it instead of the synchronous
+   * legacy resolver. Unset keeps the pre-DAT-293 behavior (deployment pins
+   * only, multi-repository sets refused).
+   */
+  runTargets?: AsyncWorkspaceRunBindingResolver;
 }
 
 /**
@@ -521,7 +544,7 @@ export class TaskService {
       );
     }
     const binding = scoped
-      ? this.deps.workspaceBindings.resolve(options.workspaceId!, input.target)
+      ? await this.resolveScopedBinding(options.workspaceId!, input.target)
       : deploymentRunBinding(this.deps.config);
     if (scoped) {
       // The path workspace's resolved binding is authority; a legacy body may
@@ -1021,7 +1044,10 @@ export class TaskService {
    * cached, so the answer is the state at this instant — in this process or
    * any other, after a restart included.
    */
-  private authorizeRunStep(record: TaskRecord): StepAuthorityDecision {
+  private authorizeRunStep(
+    record: TaskRecord,
+    phase: "start" | "step" = "step",
+  ): StepAuthorityDecision {
     const check = this.deps.runStepAuthority;
     if (check === undefined) {
       return { allowed: true };
@@ -1034,6 +1060,8 @@ export class TaskService {
         repository_id: record.repository.id,
         requested_by: record.requestedBy ?? null,
         repository_set_version: record.repositorySetVersion ?? null,
+        target: record.target ?? null,
+        phase,
       });
     } catch {
       // A check that cannot be evaluated is a denial: never dispatch on an
@@ -1052,6 +1080,22 @@ export class TaskService {
       message:
         "The run's repository authority no longer permits this action; nothing was dispatched.",
     };
+  }
+
+  /**
+   * The workspace-scoped binding, resolved through the provider-backed target
+   * resolver when the deployment has one (DAT-293). A refusal propagates as the
+   * resolver's own stable error; nothing is materialized or dispatched.
+   */
+  private async resolveScopedBinding(
+    workspaceId: string,
+    selection: TaskTargetSelection | undefined,
+  ): Promise<WorkspaceRunBinding> {
+    const targets: AsyncWorkspaceRunBindingResolver | undefined = this.deps.runTargets;
+    if (targets === undefined) {
+      return this.deps.workspaceBindings.resolve(workspaceId, selection);
+    }
+    return targets.resolve(workspaceId, selection);
   }
 
   /**
@@ -1237,6 +1281,22 @@ export class TaskService {
   ): void {
     if (!this.deps.model || !record.runId) {
       this.store.setStatus(record, "stopped", "PI_UNAVAILABLE: no Pi model configured");
+      this.finalizeIfTerminal(record);
+      return;
+    }
+    // Before any session work begins, re-verify the run's repository authority
+    // (DAT-293): the immutable target must still be an active binding of the
+    // set version the task was created under, the target's approved checkout
+    // (and, for a multi-repository run, delivery) capability must still exist,
+    // and the requester must still hold write authority there. A denial starts
+    // nothing; the run is left stopped for human triage with the safe code.
+    const startAuthority = this.authorizeRunStep(record, "start");
+    if (!startAuthority.allowed) {
+      this.store.setStatus(
+        record,
+        "stopped",
+        `RUN_AUTHORITY_DENIED: ${startAuthority.code ?? "TARGET_AUTHORITY_DENIED"}`,
+      );
       this.finalizeIfTerminal(record);
       return;
     }

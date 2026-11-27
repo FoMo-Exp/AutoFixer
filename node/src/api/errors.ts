@@ -296,6 +296,39 @@ const ERROR_SEMANTICS: Record<string, ErrorSemantics> = {
     retryable: false,
     next_action: "refresh",
   },
+  // Runtime target resolution and dispatch (DAT-293). A target whose approved
+  // installation or credentials this deployment cannot use is refused; none of
+  // these ever substitutes another repository, installation or credential.
+  TARGET_INSTALLATION_NOT_APPROVED: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  CHECKOUT_CREDENTIAL_UNAVAILABLE: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  DELIVERY_CREDENTIAL_UNAVAILABLE: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  TARGET_AUTHORITY_DENIED: {
+    stage: "authorization",
+    category: "denial",
+    retryable: false,
+    next_action: "contact_admin",
+  },
+  PROVIDER_UNAVAILABLE: {
+    stage: "authorization",
+    category: "retry",
+    retryable: true,
+    next_action: "retry",
+  },
   MULTI_REPOSITORY_SCOPE_DISABLED: {
     stage: "authorization",
     category: "denial",

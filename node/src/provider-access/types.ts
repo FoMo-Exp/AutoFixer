@@ -177,6 +177,21 @@ export interface ProviderAdapterCapabilities {
   delivery_capability: "scoped_write" | "none";
 }
 
+/**
+ * The commit a repository ref currently resolves to (DAT-293).
+ *
+ * A trusted task baseline is a provider-verified commit, never a branch name
+ * copied from a request: `sha` is the full object id the provider reports, and
+ * `ref` echoes exactly the ref that was asked for. `null` from
+ * {@link ProviderAdapter.resolveRef} means the provider says the ref does not
+ * exist; a provider that cannot answer throws, so an outage is never read as
+ * "no such revision".
+ */
+export interface ResolvedRepositoryRef {
+  ref: string;
+  sha: string;
+}
+
 export interface ProviderAdapter {
   readonly provider_type: ProviderType;
   readonly capabilities: ProviderAdapterCapabilities;
@@ -185,6 +200,16 @@ export interface ProviderAdapter {
     repository: RepositoryRef,
     cursor: string | null,
   ): Promise<RosterPage>;
+  /**
+   * Resolve one branch/tag/commit ref to the commit it names, read through the
+   * integration's checkout (read) capability. Never guesses: a missing ref is
+   * `null`, an unreadable provider throws.
+   */
+  resolveRef(
+    ctx: ProviderCallContext,
+    repository: RepositoryRef,
+    ref: string,
+  ): Promise<ResolvedRepositoryRef | null>;
   /**
    * Effective repository permission of one subject as the provider reports
    * it, or null when the provider says there is none. Throws

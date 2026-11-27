@@ -242,6 +242,7 @@ is [ADR-0001](docs/adr/0001-forgepilot-governance-and-threat-model.md).
 | [Product API contract](docs/contracts/forgepilot-api-v1.md) | UI-to-Node API, errors, idempotency, workspace scope |
 | [Workspace repository set](docs/contracts/workspace-repository-scope-v1.md) | Versioned repository bindings, immutable multi-repository gate, mixed-version refusal |
 | [Authorization context](docs/contracts/authorization-context-v1.md) | Versioned, whole-set capability intersection: decision rules, target, freshness, refusals |
+| [Run target authority](docs/contracts/run-target-authority-v1.md) | Trusted task baseline, approved checkout/delivery credentials, and the start/step dispatch re-check |
 | [Multi-repository rollout gate](docs/multi-repository-rollout-gate-v1.md) | DAT-288 acceptance evidence, blockers, controlled rollout, rollback and audit plan |
 | [First-run and controlled-delivery runbook](docs/first-run-controlled-delivery.md) | Operator setup, diagnostics, reviewed delivery, reconciliation, and PR observation |
 | [Service integration operations runbook](docs/service-integration-operations.md) | Administrator initialization, safe credential references, status, rotation, deactivation, and recovery |

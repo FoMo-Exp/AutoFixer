@@ -1051,7 +1051,7 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
           if (deps.taskTargets === undefined) {
             throw new ApiError(404, "NOT_FOUND", `No route for ${method} ${url.pathname}`);
           }
-          writeJson(res, 200, deps.taskTargets.list(workspaceId));
+          writeJson(res, 200, await deps.taskTargets.list(workspaceId));
           return;
         }
         if (segments[4] !== "tasks") {

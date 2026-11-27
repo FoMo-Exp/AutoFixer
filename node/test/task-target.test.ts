@@ -261,7 +261,7 @@ describe("explicit task target selection (DAT-292)", () => {
     );
   });
 
-  test("an archived workspace's target list is refused instead of offered", () => {
+  test("an archived workspace's target list is refused instead of offered", async () => {
     const service = new TaskTargetService({
       config: CONFIG,
       repositorySets: {
@@ -273,12 +273,13 @@ describe("explicit task target selection (DAT-292)", () => {
           }),
       } as never,
     });
-    expect(() => service.list(WORKSPACE)).toThrow(
-      expect.objectContaining({ code: "WORKSPACE_ARCHIVED", status: 403 }),
-    );
+    await expect(service.list(WORKSPACE)).rejects.toMatchObject({
+      code: "WORKSPACE_ARCHIVED",
+      status: 403,
+    });
   });
 
-  test("the target list read maps a set refusal to the API envelope", () => {
+  test("the target list read maps a set refusal to the API envelope", async () => {
     const service = new TaskTargetService({
       config: CONFIG,
       repositorySets: {
@@ -287,9 +288,10 @@ describe("explicit task target selection (DAT-292)", () => {
         },
       } as never,
     });
-    expect(() => service.list(WORKSPACE)).toThrow(
-      expect.objectContaining({ code: "REPOSITORY_BINDING_MISSING", status: 409 }),
-    );
+    await expect(service.list(WORKSPACE)).rejects.toMatchObject({
+      code: "REPOSITORY_BINDING_MISSING",
+      status: 409,
+    });
   });
 });
 

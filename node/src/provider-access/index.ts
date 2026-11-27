@@ -17,6 +17,7 @@ export type {
   ProviderCallContext,
   RawProviderRole,
   RepositoryRef,
+  ResolvedRepositoryRef,
   RosterPage,
 } from "./types.js";
 export {
@@ -31,7 +32,7 @@ export {
 } from "./types.js";
 
 export type { CollectedRoster } from "./adapter.js";
-export { collectRoster, fetchEffectivePermission } from "./adapter.js";
+export { collectRoster, fetchEffectivePermission, resolveRepositoryRef } from "./adapter.js";
 
 export type { EffectiveProviderRole } from "./normalize.js";
 export {

@@ -185,3 +185,14 @@ it.
 - Never fall back to another repository when the target is not an active
   binding: the context refuses with `TARGET_REPOSITORY_UNAVAILABLE`.
 
+### Consumed by DAT-293
+
+The run-start and worker-step boundary (`createRunStepAuthority`) now consumes
+this context for every `dsh_request_action` and for a session start, with
+`action: "write"`, the run's recorded `target` and the task's
+`repository_set_version` as `expected_set_version`. A denial code becomes the
+dispatch refusal: `AUTHORITY_RECHECK_REQUIRED` blocks only that dispatch, every
+other code stops the run for human triage. The HTTP write policy is used (an
+API write is task-plane mutation, not a repository delivery write), so the
+check remains the whole-set `repository_write` intersection plus freshness and
+the persisted ceiling. See `run-target-authority-v1.md`.

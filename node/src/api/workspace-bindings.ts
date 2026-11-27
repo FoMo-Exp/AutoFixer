@@ -9,9 +9,14 @@
  *
  * DAT-292 adds the explicit target: a multi-repository workspace must select
  * one of its active bindings by immutable identity, at the set version the
- * caller observed. The task records that target; execution against it still
- * requires the rollout gate to be opened by a release that enforces it
- * (DAT-293).
+ * caller observed. The task records that target.
+ *
+ * DAT-293 adds the runtime path ({@link createAsyncWorkspaceRunBindingResolver}):
+ * the target's trusted baseline is resolved from provider truth through its
+ * approved checkout capability, and a workspace whose installation or
+ * credentials cannot be proven is refused. The synchronous resolver stays the
+ * legacy single-repository seam (issue sync, local operator) and is never used
+ * to dispatch a multi-repository run.
  */
 
 import type { OrchestratorConfig } from "../config.js";
@@ -19,6 +24,7 @@ import type {
   ProviderInstanceRepository,
   WorkspaceRepository,
 } from "../control-plane/repositories.js";
+import type { ServiceIntegrationRepository } from "../control-plane/provider-access-repositories.js";
 import { WorkspaceRepositorySetError } from "../control-plane/errors.js";
 import type { WorkspaceRepositorySetRepository } from "../control-plane/workspace-repository-repositories.js";
 import type {
@@ -33,11 +39,15 @@ import {
   type WorkspaceRunBindingResolver,
 } from "./task-service.js";
 import {
+  matchTaskTargetBinding,
+  mintTaskTarget,
   pinnedTaskTargetBaselines,
   resolveTaskTargetSelection,
   type TaskTarget,
   type TaskTargetBaselines,
   type TaskTargetSelection,
+  type TrustedBaselineResult,
+  type TrustedBaselineResolver,
 } from "./task-targets.js";
 
 export interface WorkspaceRunBindingDeps {
@@ -150,23 +160,7 @@ function resolveExplicitTarget(
 ): WorkspaceRunBinding {
   const set = readSet(deps, workspace);
   const resolved = resolveTaskTargetSelection(set, selection, baselines);
-  // The target is valid, but this build can only execute against a set whose
-  // rollout gate and enforcement are open. The refusal names the gate, never
-  // the target, so a stale or partial client selection is not blamed for a
-  // deployment decision (DAT-288 blocker 1).
-  if (!set.usable) {
-    throw new ApiError(
-      403,
-      set.blocked_reason ?? "MULTI_REPOSITORY_SCOPE_DISABLED",
-      "This workspace's repository set is not executable by this build; the multi-repository gate is closed",
-      {
-        workspace_id: set.workspace_id,
-        binding_count: set.bindings.length,
-        set_version: set.set_version,
-        gate_state: set.gate.state,
-      },
-    );
-  }
+  assertSetExecutable(set);
   // Re-read at the version just validated for the same reason as the legacy
   // path: a concurrent set change makes this decision unrepresentable.
   reassertSetVersion(deps, set.workspace_id, set.set_version);
@@ -180,6 +174,30 @@ function resolveExplicitTarget(
     setVersion: resolved.target.set_version,
     target: resolved.target,
   };
+}
+
+/**
+ * Refuse a set this build cannot execute against.
+ *
+ * The target may be perfectly valid; the refusal names the deployment decision
+ * (the rollout gate or the set shape), never the caller's selection, so a stale
+ * or partial client choice is not blamed for it (DAT-288 blocker 1).
+ */
+function assertSetExecutable(set: WorkspaceRepositorySet): void {
+  if (set.usable) {
+    return;
+  }
+  throw new ApiError(
+    403,
+    set.blocked_reason ?? "MULTI_REPOSITORY_SCOPE_DISABLED",
+    "This workspace's repository set is not executable by this build; the multi-repository gate is closed",
+    {
+      workspace_id: set.workspace_id,
+      binding_count: set.bindings.length,
+      set_version: set.set_version,
+      gate_state: set.gate.state,
+    },
+  );
 }
 
 function readSet(deps: WorkspaceRunBindingDeps, workspace: Workspace): WorkspaceRepositorySet {
@@ -300,6 +318,218 @@ export function createConfiguredWorkspaceRunBindingResolver(
         throw new ApiError(404, "NOT_FOUND", "Workspace was not found");
       }
       return binding;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Runtime target resolution (DAT-293)
+// ---------------------------------------------------------------------------
+
+/**
+ * The runtime resolver: the async counterpart of
+ * {@link createWorkspaceRunBindingResolver} used by the workspace-scoped task
+ * create path.
+ *
+ * It performs every check the synchronous resolver performs and then resolves
+ * the selected binding's **trusted baseline** from provider truth: the
+ * deployment pin for its own repository, the approved integration's checkout
+ * capability for anything else. A multi-repository set additionally requires
+ * the target's delivery capability, because a run against one repository of
+ * several still has to deliver through that repository's own approval.
+ */
+export interface AsyncWorkspaceRunBindingDeps extends Omit<WorkspaceRunBindingDeps, "baselines"> {
+  /** Provider-verified baselines (DAT-293). */
+  trustedBaselines: TrustedBaselineResolver;
+  /**
+   * The workspace's service integrations, used to prove the target's delivery
+   * capability for a multi-repository run. Unset keeps the delivery check off
+   * (deployments without provider authority).
+   */
+  integrations?: ServiceIntegrationRepository;
+}
+
+export interface AsyncWorkspaceRunBindingResolver {
+  resolve(workspaceId: string, selection?: TaskTargetSelection): Promise<WorkspaceRunBinding>;
+}
+
+/** Map an unavailable baseline onto the stable refusal it deserves. */
+function baselineRefusal(baseline: TrustedBaselineResult): ApiError {
+  if (baseline.state === "trusted") {
+    throw new Error("baselineRefusal called with a trusted baseline");
+  }
+  const repositoryId = {
+    base_ref: baseline.base_ref,
+  };
+  switch (baseline.reason) {
+    case "integration_missing":
+    case "installation_not_approved":
+      return new ApiError(
+        409,
+        "TARGET_INSTALLATION_NOT_APPROVED",
+        "The selected repository has no active approved installation for this workspace",
+        repositoryId,
+      );
+    case "checkout_credential_missing":
+      return new ApiError(
+        409,
+        "CHECKOUT_CREDENTIAL_UNAVAILABLE",
+        "The selected repository has no approved checkout credential this deployment can use",
+        repositoryId,
+      );
+    case "provider_unavailable":
+      return new ApiError(
+        503,
+        "PROVIDER_UNAVAILABLE",
+        "The provider could not be read to prove the selected base revision; nothing was bound",
+        repositoryId,
+        { retryable: true, next_action: "retry" },
+      );
+    case "ref_not_found":
+      return new ApiError(
+        409,
+        "BASE_REF_NOT_SUPPORTED",
+        "The selected base revision does not resolve in the target repository",
+        repositoryId,
+      );
+    case "baseline_not_pinned":
+    default:
+      return new ApiError(
+        409,
+        "REPOSITORY_BINDING_UNAVAILABLE",
+        "This deployment has no trusted pinned baseline for the selected repository and base revision",
+        repositoryId,
+      );
+  }
+}
+
+/**
+ * Prove the target's delivery capability for a multi-repository run.
+ *
+ * Single-repository workspaces keep their pre-DAT-293 behavior: an installation
+ * without a delivery credential can still prepare a change (delivery is
+ * refused later by the broker). A run that selects one repository of several
+ * must have that repository's own delivery capability, because the workspace's
+ * other repositories are not a substitute and the broker never falls back.
+ */
+function requireDeliveryCapability(
+  deps: AsyncWorkspaceRunBindingDeps,
+  set: WorkspaceRepositorySet,
+  binding: WorkspaceRepositoryBinding,
+): void {
+  if (!set.multi_repository || deps.integrations === undefined) {
+    return;
+  }
+  const integration = deps.integrations.getByRepository(
+    {
+      enterprise_id: deps.config.enterpriseId,
+      actor_id: deps.config.actorId,
+    },
+    binding.repository_id,
+  );
+  if (
+    integration !== undefined &&
+    integration.workspace_id === binding.workspace_id &&
+    integration.provider_instance_id === binding.provider_instance_id &&
+    integration.install_status === "active" &&
+    integration.delivery_credential_ref !== null &&
+    integration.delivery_credential_ref.trim() !== ""
+  ) {
+    return;
+  }
+  throw new ApiError(
+    409,
+    "DELIVERY_CREDENTIAL_UNAVAILABLE",
+    "The selected repository has no approved delivery capability in this workspace",
+    { repository_id: binding.repository_id },
+  );
+}
+
+/**
+ * Resolve one workspace-scoped run binding, including its trusted baseline.
+ *
+ * Ordering is deliberate: workspace, approved provider instance, the set's
+ * shape and gate, the selected immutable identity at the observed version, the
+ * trusted baseline, the delivery capability, and a final re-read of the set
+ * version. A failure at any step refuses the create — nothing is dispatched
+ * against a repository the decision did not prove.
+ */
+export function createAsyncWorkspaceRunBindingResolver(
+  deps: AsyncWorkspaceRunBindingDeps,
+): AsyncWorkspaceRunBindingResolver {
+  const enterpriseScope = {
+    enterprise_id: deps.config.enterpriseId,
+    actor_id: deps.config.actorId,
+  };
+  return {
+    async resolve(workspaceId, selection): Promise<WorkspaceRunBinding> {
+      const workspace = deps.workspaces.getById(enterpriseScope, workspaceId);
+      if (workspace === undefined || workspace.status !== "active") {
+        // Unknown, archived, and cross-enterprise are one answer: the
+        // workspace locator itself never reveals another scope.
+        throw new ApiError(404, "NOT_FOUND", "Workspace was not found");
+      }
+      const provider = deps.providerInstances.getById(
+        enterpriseScope,
+        workspace.provider_instance_id,
+      );
+      if (provider === undefined) {
+        throw new ApiError(
+          409,
+          "PROVIDER_INSTANCE_NOT_APPROVED",
+          "The workspace's provider instance is not registered for this enterprise",
+        );
+      }
+
+      const set = readSet(deps, workspace);
+      let binding: WorkspaceRepositoryBinding;
+      if (selection === undefined) {
+        // No selection: the legacy single-repository shape. A multi-repository
+        // set refuses with TARGET_REPOSITORY_REQUIRED instead of choosing one.
+        binding = requireSingleRepositoryBinding(deps, workspace).binding;
+      } else {
+        binding = matchTaskTargetBinding(set, selection);
+        assertSetExecutable(set);
+      }
+
+      const baseline = await deps.trustedBaselines.resolve(binding, selection?.base_ref);
+      if (baseline.state !== "trusted") {
+        throw baselineRefusal(baseline);
+      }
+      if (
+        selection?.expected_base_sha !== undefined &&
+        selection.expected_base_sha !== baseline.base_sha
+      ) {
+        throw new ApiError(
+          409,
+          "TARGET_BASELINE_MISMATCH",
+          "The selected base revision no longer resolves to the observed commit; re-read the targets",
+          {
+            expected_base_sha: selection.expected_base_sha,
+            actual_base_sha: baseline.base_sha,
+          },
+        );
+      }
+      requireDeliveryCapability(deps, set, binding);
+      // The set may have moved while the provider answered. Re-read at the
+      // version this decision was formed against; a concurrent change makes it
+      // unrepresentable and refuses now rather than dispatching stale scope.
+      reassertSetVersion(deps, set.workspace_id, set.set_version);
+
+      return {
+        enterpriseId: set.enterprise_id,
+        workspaceId: set.workspace_id,
+        repositoryId: binding.repository_id,
+        repositoryUrl: baseline.repository_url,
+        baseRef: baseline.base_ref,
+        baseSha: baseline.base_sha,
+        setVersion: set.set_version,
+        target: mintTaskTarget(
+          binding,
+          { base_ref: baseline.base_ref, base_sha: baseline.base_sha },
+          set.set_version,
+        ),
+      };
     },
   };
 }

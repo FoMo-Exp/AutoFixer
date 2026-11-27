@@ -3545,6 +3545,13 @@ export function buildOpenApiDocument(): OpenApiDocument {
           "version must still be current (`409 REPOSITORY_SET_VERSION_CONFLICT`), " +
           "and the trusted baseline must resolve (`409 " +
           "REPOSITORY_BINDING_UNAVAILABLE` / `TARGET_BASELINE_MISMATCH`). " +
+          "For a repository other than the deployment's own pin the baseline " +
+          "is the commit its approved checkout capability resolves " +
+          "(`409 TARGET_INSTALLATION_NOT_APPROVED`, `409 " +
+          "CHECKOUT_CREDENTIAL_UNAVAILABLE`, `409 DELIVERY_CREDENTIAL_UNAVAILABLE` " +
+          "for a multi-repository target, `409 BASE_REF_NOT_SUPPORTED` when the " +
+          "ref does not resolve, `503 PROVIDER_UNAVAILABLE` when the provider " +
+          "cannot be read); no credential value ever leaves the service. " +
           "The deployment's configured repository, the first binding and a " +
           "repository name or URL are never fallbacks. Unknown/archived " +
           "workspaces and non-members are one `404 NOT_FOUND`; viewers are " +
@@ -3612,12 +3619,12 @@ export function buildOpenApiDocument(): OpenApiDocument {
           ),
           404: errorResponse("NOT_FOUND — no live membership for this workspace"),
           409: errorResponse(
-            "IDEMPOTENCY_CONFLICT, PROVIDER_INSTANCE_NOT_APPROVED, REPOSITORY_BINDING_UNAVAILABLE, REPOSITORY_SET_VERSION_CONFLICT, TARGET_IDENTITY_MISMATCH, or TARGET_BASELINE_MISMATCH",
+            "IDEMPOTENCY_CONFLICT, PROVIDER_INSTANCE_NOT_APPROVED, REPOSITORY_BINDING_UNAVAILABLE, REPOSITORY_SET_VERSION_CONFLICT, TARGET_IDENTITY_MISMATCH, TARGET_BASELINE_MISMATCH, TARGET_INSTALLATION_NOT_APPROVED, CHECKOUT_CREDENTIAL_UNAVAILABLE, DELIVERY_CREDENTIAL_UNAVAILABLE, or BASE_REF_NOT_SUPPORTED",
           ),
           422: errorResponse(
             "Prohibited work was rejected by dsh (details.task_id names the rejected task)",
           ),
-          503: errorResponse("PI_UNAVAILABLE or DSH_UNAVAILABLE"),
+          503: errorResponse("PI_UNAVAILABLE, DSH_UNAVAILABLE, or PROVIDER_UNAVAILABLE"),
         },
       },
       get: {

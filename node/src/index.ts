@@ -37,9 +37,12 @@ import type { RunStepAuthority } from "./api/task-service.js";
 import { TaskStore } from "./api/task-store.js";
 import { TaskTargetService } from "./api/task-targets.js";
 import {
+  createAsyncWorkspaceRunBindingResolver,
   createConfiguredWorkspaceRunBindingResolver,
   createWorkspaceRunBindingResolver,
 } from "./api/workspace-bindings.js";
+import type { AsyncWorkspaceRunBindingResolver } from "./api/workspace-bindings.js";
+import { createTrustedBaselineResolver } from "./api/trusted-baselines.js";
 import { createRunStepAuthority } from "./api/run-step-authority.js";
 import type { OrchestratorConfig } from "./config.js";
 import { configFromEnv, defaultSecurityStatePath } from "./config.js";
@@ -56,6 +59,7 @@ import {
 } from "./control-plane/index.js";
 import { createAuthorityEpoch } from "./provider-access/access-gate.js";
 import { createCapabilityCeilingService } from "./provider-access/capability-ceiling.js";
+import { createAuthorizationContextService } from "./provider-access/authorization-context.js";
 import { createMemberAdmissionService } from "./provider-access/member-admission.js";
 import { createRepositorySetChangeService } from "./provider-access/repository-set-change.js";
 import { WorkspaceRepositorySetChangeService } from "./api/repository-set-change-service.js";
@@ -143,6 +147,7 @@ import { IssueSyncStore } from "./issue-sync/store.js";
 import { collectRuntimeDiagnostics } from "./diagnostics/runtime.js";
 import type { RuntimeDiagnostics } from "./diagnostics/runtime.js";
 import { redactSensitiveText } from "./errors/redact.js";
+import { HTTP_ACTION_POLICY } from "./api/request-authority.js";
 
 export interface OrchestratorOptions {
   config: OrchestratorConfig;
@@ -598,6 +603,12 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let repositorySetChanges: WorkspaceRepositorySetChangeService | undefined;
   let taskTargets: TaskTargetService | undefined;
   let workspaceBindings = createConfiguredWorkspaceRunBindingResolver(config);
+  /**
+   * Provider-verified run-target resolution for the workspace-scoped create
+   * path (DAT-293). Set with the identity surface; unset keeps the deployment
+   * pins and the synchronous legacy resolver.
+   */
+  let runTargets: AsyncWorkspaceRunBindingResolver | undefined;
   let requestScopeDeps: RequestScopeDeps | undefined;
   // Live workspace rows for egress-coverage diagnostics (DAT-257). Read at
   // probe time so a workspace created after startup is still seen; an
@@ -639,6 +650,12 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     // so a confirmed capability reduction closes live streams in this process
     // while the persisted ceiling applies in every process.
     const providerAccess = createProviderAccessRepositories(controlPlane);
+    // DAT-293 ships the runtime target path (trusted baseline, approved
+    // installation and credentials, dispatch re-check) but deliberately keeps
+    // the multi-repository set **unusable**: the protected-path consumers
+    // (DAT-294) have not been wired yet, so a set of several still refuses
+    // every path. `multiRepositoryRuntime: "complete"` exists in the control
+    // plane for the release that opens it together with the immutable gate row.
     const workspaceRepositorySets = createWorkspaceRepositorySetRepository(controlPlane);
     const providerEpoch = createAuthorityEpoch();
     const capabilityCeilings = createCapabilityCeilingService({
@@ -787,17 +804,30 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       enterpriseId: config.enterpriseId,
       workspaceId: config.workspaceId,
     });
-    // Sensitive worker steps (DAT-285). A remediation run outlives the request
-    // that created it, so every `dsh_request_action` re-asks the live boundary:
-    // the bound repository set must still be the version the run was created
-    // against, and the recorded requester must still hold `write` authority in
-    // that workspace. Both reads are durable, so a revocation or downgrade
-    // observed by another process (or before a restart) applies here too.
+    // Sensitive worker steps and run starts (DAT-285/291/293). A remediation
+    // run outlives the request that created it, so every `dsh_request_action`
+    // and every run start re-asks the live boundary: the bound repository set
+    // must still be the version the run was created against, the run's
+    // immutable target must still be an active binding of it, its approved
+    // credentials must still exist, and the recorded requester must still hold
+    // `write` authority in that workspace. Every read is durable, so a
+    // revocation, downgrade or set change observed by another process (or
+    // before a restart) applies here too.
     runStepAuthority = createRunStepAuthority({
       enterpriseId: config.enterpriseId,
       actorId: config.actorId,
       repositorySets: workspaceRepositorySets,
       authority: providerAuthority,
+      contexts: createAuthorizationContextService({
+        repositorySets: workspaceRepositorySets,
+        capabilityCeilings,
+        memberships: repos.memberships,
+        enterpriseUsers: identity.enterpriseUsers,
+        users: identity.users,
+        access: providerAccess,
+        policy: HTTP_ACTION_POLICY,
+      }),
+      integrations: providerAccess.integrations,
     });
 
     // Workspace membership (DAT-277) is decided from the caller's live role
@@ -994,12 +1024,31 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       // fails closed instead of dispatching against one repository.
       repositorySets: workspaceRepositorySets,
     });
-    // DAT-292: the target-selection read names the workspace's active bindings
-    // and the trusted baseline this build can pin. It is still a read, not a
-    // grant, and the multi-repository gate is unchanged.
+    // DAT-292/293: the target-selection read names the workspace's active
+    // bindings and their **provider-verified** trusted baselines, read through
+    // each binding's approved checkout capability. It is still a read, not a
+    // grant, and a target this deployment cannot pin is reported unavailable.
+    const trustedBaselines = createTrustedBaselineResolver({
+      config,
+      integrations: providerAccess.integrations,
+      providerInstances: repos.providerInstances,
+      credentials: serviceCredentials,
+      ...(providerApiBaseUrl !== undefined ? { api_base_url: providerApiBaseUrl } : {}),
+    });
+    runTargets = createAsyncWorkspaceRunBindingResolver({
+      config,
+      workspaces: repos.workspaces,
+      providerInstances: repos.providerInstances,
+      repositorySets: workspaceRepositorySets,
+      trustedBaselines,
+      // A multi-repository run must have its target's own delivery capability;
+      // the other repositories of the set are never a substitute.
+      integrations: providerAccess.integrations,
+    });
     taskTargets = new TaskTargetService({
       config,
       repositorySets: workspaceRepositorySets,
+      trustedBaselines,
     });
     // The invitation digest key is deployment-owned and durable: a file next
     // to the control-plane database unless configured explicitly. An ephemeral
@@ -1083,6 +1132,10 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     ...(memory !== undefined && rsi !== undefined ? { memory: { memory, rsi } } : {}),
     ...(memoryCapture !== undefined ? { capture: memoryCapture } : {}),
     ...(runStepAuthority !== undefined ? { runStepAuthority } : {}),
+    // DAT-293: the workspace-scoped create path resolves its target, trusted
+    // baseline and approved credentials through the provider, never through the
+    // deployment's own pins for another workspace's repository.
+    ...(runTargets !== undefined ? { runTargets } : {}),
   });
   // Workspace dashboard (DAT-230): a read-only projection over the ledger,
   // budget journal, trace and task event log. It is only served when the
