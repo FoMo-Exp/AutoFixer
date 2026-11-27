@@ -68,6 +68,23 @@ export type {
 export { capabilityBlockSummary, createCapabilityCeilingService } from "./capability-ceiling.js";
 
 export type {
+  AuthorizationContext,
+  AuthorizationContextDecision,
+  AuthorizationContextDeps,
+  AuthorizationContextRequest,
+  AuthorizationContextService,
+  AuthorizationContextState,
+  AuthorizationDecisionCode,
+  AuthorizationRepositoryEvidence,
+  RepositoryTarget,
+} from "./authorization-context.js";
+export {
+  AUTHORIZATION_CONTEXT_SCHEMA_VERSION,
+  AuthorizationContextError,
+  createAuthorizationContextService,
+} from "./authorization-context.js";
+
+export type {
   AdmissionEvidenceClass,
   EffectiveOwnerReason,
   EffectiveOwnerStatus,

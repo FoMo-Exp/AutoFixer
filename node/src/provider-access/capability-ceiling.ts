@@ -78,6 +78,16 @@ export interface CapabilityCeilingDeps {
   clock?: () => Date;
   staleAfterMs?: number;
   freshWindowMs?: number;
+  /**
+   * Complete-set authorization mode (DAT-291). `"complete"` states that this
+   * deployment enforces the intersection over *every* active binding, so a
+   * multi-repository set is evaluated instead of being refused as an
+   * unsupported shape. It is not a rollout switch: the immutable
+   * `multi_repository_workspace` gate must still be `enabled`, and a disabled
+   * or unreadable gate keeps refusing regardless of this setting. The default
+   * (`"none"`) preserves the single-repository-only contract.
+   */
+  multiRepositoryEnforcement?: "complete" | "none";
 }
 
 /**
@@ -129,6 +139,17 @@ export interface CapabilityCeilingEvaluation {
   /** A confirmed reduction could not be persisted/audited; access must deny. */
   persistence_failed: boolean;
   set_version: number;
+  /** True when the set binds more than one repository. */
+  multi_repository: boolean;
+  /** Effective rollout-gate decision observed while reading the set. */
+  gate_state: "enabled" | "disabled" | "unreadable";
+  /**
+   * True when this evaluation authorized against every binding of a
+   * multi-repository set: the gate is enabled and this deployment is
+   * configured for complete-set enforcement. Always false for a
+   * single-repository set and for a preview of an uncommitted proposal.
+   */
+  set_enforced: boolean;
   /** Oldest verification timestamp among the repositories (safe bound). */
   verified_at: string | null;
   checked_at: string;
@@ -192,6 +213,12 @@ export interface CapabilityCeilingService {
   ): MemberCapabilityCeiling;
   /** Safe reason → API code mapping for callers. */
   freshness(): { fresh_window_ms: number; stale_after_ms: number };
+  /**
+   * Whether this deployment evaluates a multi-repository set as a whole
+   * (`"complete"`) or refuses it as an unsupported shape (`"none"`). The
+   * rollout gate remains the outer decision in both cases.
+   */
+  enforcement(): "complete" | "none";
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +289,8 @@ export function createCapabilityCeilingService(
   } = deps;
   const staleAfterMs = deps.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
   const freshWindowMs = deps.freshWindowMs ?? DEFAULT_FRESH_WINDOW_MS;
+  const enforcement: "complete" | "none" =
+    deps.multiRepositoryEnforcement === "complete" ? "complete" : "none";
 
   /**
    * Build one repository's evidence. Every branch that cannot prove a
@@ -430,9 +459,14 @@ export function createCapabilityCeilingService(
       installation_ref: string | null;
     }> = [];
     let setBlocked: CapabilityBlockReason | null = null;
+    let multiRepository = false;
+    let gateState: "enabled" | "disabled" | "unreadable" = "unreadable";
+    let setEnforced = false;
     try {
       const set = repositorySets.getSet(scope);
       setVersion = set.set_version;
+      multiRepository = set.multi_repository;
+      gateState = set.gate.state;
       bindings = set.bindings.map((binding) => ({
         repository_id: binding.repository_id,
         provider_instance_id: binding.provider_instance_id,
@@ -440,15 +474,25 @@ export function createCapabilityCeilingService(
       }));
       if (set.blocked_reason === "WORKSPACE_ARCHIVED") {
         setBlocked = "workspace_archived";
+      } else if (set.multi_repository) {
+        // Complete-set authorization (DAT-291): every active binding is
+        // verified and intersected, but only while the immutable rollout gate
+        // is enabled *and* the caller enforces the whole set. The option can
+        // never override a closed or unreadable gate; an unsupported shape
+        // still authorizes nothing.
+        setEnforced = set.gate.state === "enabled" && enforcement === "complete";
+        setBlocked = setEnforced ? null : "repository_set_unsupported";
       } else if (set.blocked_reason !== null) {
-        // A multi-repository set this build cannot enforce: every repository is
-        // still verified and intersected (the engine is general), but the
-        // workspace scope itself authorizes nothing until the gate opens.
         setBlocked = "repository_set_unsupported";
       }
     } catch (error) {
       if (!(error instanceof WorkspaceRepositorySetError)) {
         throw error;
+      }
+      try {
+        gateState = repositorySets.gate().state;
+      } catch {
+        gateState = "unreadable";
       }
       setBlocked =
         error.code === "REPOSITORY_BINDING_MISSING"
@@ -469,6 +513,8 @@ export function createCapabilityCeilingService(
     const currentSetBlocked = setBlocked;
     if (proposed !== undefined) {
       setVersion = options.proposed_set_version ?? setVersion;
+      multiRepository = proposed.length > 1;
+      setEnforced = false;
       bindings = proposed.map((binding) => ({
         repository_id: binding.repository_id,
         provider_instance_id: binding.provider_instance_id,
@@ -610,6 +656,9 @@ export function createCapabilityCeilingService(
         isSubset(record.ceiling, available),
       persistence_failed: persistenceFailed,
       set_version: setVersion,
+      multi_repository: multiRepository,
+      gate_state: gateState,
+      set_enforced: setEnforced,
       verified_at: verifiedAt,
       checked_at: at,
       repository_count: repositories.length,
@@ -755,5 +804,6 @@ export function createCapabilityCeilingService(
     view,
     reapprove,
     freshness: () => ({ fresh_window_ms: freshWindowMs, stale_after_ms: staleAfterMs }),
+    enforcement: () => enforcement,
   };
 }
