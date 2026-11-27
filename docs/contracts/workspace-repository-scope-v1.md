@@ -1,10 +1,15 @@
 # Workspace repository set and multi-repository gate (v1)
 
 Status: **storage and read boundary implemented; repository-addition decision
-implemented behind the gate; multi-repository scope not usable.** Implements
-DAT-281, with DAT-283/284/286 adding the member-admission, audited-commit and
-HTTP preview/confirm/commit surfaces. This contract describes what exists, what
-is refused, and how a later release may turn the capability on. It is not a
+implemented behind the gate; whole-set authorization engine implemented, not
+wired; multi-repository scope not usable.** Implements DAT-281, with
+DAT-283/284/286 adding the member-admission, audited-commit and HTTP
+preview/confirm/commit surfaces. DAT-291 adds the versioned authorization
+context and the complete-set capability intersection
+([authorization-context-v1.md](authorization-context-v1.md)); it does not enable
+the gate, and every consumer path still refuses a multi-repository scope until a
+release wires and verifies the whole set. This contract describes what exists,
+what is refused, and how a later release may turn the capability on. It is not a
 claim that multi-repository execution, delivery, memory or approvals are
 enforced — they are not, and until they are, every multi-repository scope fails
 closed. DAT-288 recorded the acceptance evidence and remaining blockers in
@@ -195,3 +200,26 @@ is settled as "reject the addition", not "remove or suspend the member".
 Removal is not implemented: `removeBinding` refuses, so a workspace cannot be
 returned to one repository through the API until a later audited change adds
 that path (see the rollout gate document).
+
+## 8. Whole-set authorization engine (DAT-291)
+
+`provider-access/authorization-context.ts` produces one versioned authorization
+context per member and action: enterprise membership, workspace role, the set
+at one version, per-repository verified evidence, the intersected and persisted
+ceiling, freshness and an optional target repository. Its contract is
+[authorization-context-v1.md](authorization-context-v1.md).
+
+The engine can evaluate a multi-repository set only when **both** hold:
+
+1. the capability engine is constructed with
+   `multiRepositoryEnforcement: "complete"`, and
+2. the immutable gate row is `enabled`.
+
+A `disabled` or unreadable gate still refuses, and the default
+single-repository configuration still reports
+`MULTI_REPOSITORY_SCOPE_UNSUPPORTED` for every multi-repository set. DAT-291
+ships the engine and its tests, not a rollout: the deployment gate remains
+`disabled`, no route or worker consumes the context yet, and
+`requireSingleRepository` continues to refuse a multi-repository set for the
+legacy run binding. DAT-292/293/294 own the target model and the runtime
+wiring.

@@ -13,6 +13,17 @@ Baseline: `main` at `322b755` (DAT-287). The acceptance suite added by this
 change is `node/test/repository-set-change-http.test.ts` §
 `full-chain acceptance gate (DAT-288)`.
 
+> **DAT-291 update (2026-11-27).** The complete-set capability intersection and
+> the versioned authorization context now exist
+> (`node/src/provider-access/authorization-context.ts`,
+> [authorization-context-v1.md](contracts/authorization-context-v1.md)). The
+> engine evaluates a multi-repository set only when the immutable gate is
+> `enabled` **and** the deployment is configured for complete-set enforcement;
+> the shipped configuration still refuses, the gate stays `disabled`, and no
+> route, stream, artifact, approval, memory, worker step or delivery path
+> consumes the context yet. The findings and blockers below are therefore still
+> in force: the gate must not be enabled in this build.
+
 ## 1. What was verified
 
 The repository-addition decision (DAT-283/284/286/287) is complete and safe:
@@ -106,7 +117,9 @@ next subscription is refused.
 1. **No multi-repository runtime enforcement.** The ceiling, task binding,
    streams, worker steps and delivery all refuse the set. Failing closed is
    required, but opening the gate requires enforcing the complete set instead of
-   refusing it.
+   refusing it. DAT-291 provides the intersection engine and the versioned
+   context; DAT-293/294 still have to bind the target and consume the context on
+   every path.
 2. **No target-repository binding for a run.** `workspace-bindings.ts` requires
    exactly one binding plus the deployment's pinned base revision; a task cannot
    name an active repository of a multi-repository workspace. ADR-0011 requires

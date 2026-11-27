@@ -281,7 +281,17 @@ export type DenyReason =
   | "capability_unverified"
   | "capability_loss"
   | "capability_ceiling"
-  | "capability_persistence";
+  | "capability_persistence"
+  /**
+   * The authorization context was formed against a repository-set version that
+   * is no longer current (DAT-291). Re-read the set before authorizing again.
+   */
+  | "repository_set_version"
+  /**
+   * The named target repository is not an active, unambiguous binding of the
+   * workspace (DAT-291). Never resolved by falling back to the first binding.
+   */
+  | "target_repository";
 
 export interface AccessDecision {
   allowed: boolean;
