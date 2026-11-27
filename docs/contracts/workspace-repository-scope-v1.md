@@ -1,11 +1,14 @@
 # Workspace repository set and multi-repository gate (v1)
 
-Status: **storage and read boundary implemented; multi-repository scope not
-usable.** Implements DAT-281 under ADR-0011. This contract describes what
-exists, what is refused, and how a later release may turn the capability on. It
-is not a claim that multi-repository membership, execution, delivery, memory or
-approvals are enforced — they are not, and until they are, every multi-
-repository scope fails closed.
+Status: **storage and read boundary implemented; repository-addition decision
+implemented behind the gate; multi-repository scope not usable.** Implements
+DAT-281, with DAT-283/284/286 adding the member-admission, audited-commit and
+HTTP preview/confirm/commit surfaces. This contract describes what exists, what
+is refused, and how a later release may turn the capability on. It is not a
+claim that multi-repository execution, delivery, memory or approvals are
+enforced — they are not, and until they are, every multi-repository scope fails
+closed. DAT-288 recorded the acceptance evidence and remaining blockers in
+[multi-repository-rollout-gate-v1.md](../multi-repository-rollout-gate-v1.md).
 
 ## 1. Model
 
@@ -105,7 +108,7 @@ against the pre-transfer repository.
 | `WORKSPACE_ARCHIVED`                 | The workspace is archived; its retired set authorizes nothing.                                     |
 | `MULTI_REPOSITORY_SCOPE_DISABLED`    | More than one active binding while the gate is `disabled`.                                         |
 | `MULTI_REPOSITORY_SCOPE_UNSUPPORTED` | More than one active binding while the gate is `enabled` but this build has no enforcement for it. |
-| `SCOPE_MUTATION_DISABLED`            | `addBinding` / `removeBinding` — there is no API that creates or changes a multi-repository scope. |
+| `SCOPE_MUTATION_DISABLED`            | The storage-layer `addBinding` / `removeBinding` helpers, or a change attempted while the gate is disabled. The supported addition path is the preview/confirm/commit API, and it refuses while the gate is closed. |
 | `FEATURE_GATE_UNREADABLE`            | Gate row missing, malformed, or decided by a newer schema.                                         |
 
 A refusal is an authorization outcome (403) or a binding/version fact (409). It
@@ -179,8 +182,16 @@ Rules:
 
 ## 7. Out of scope here
 
-Adding a repository to an existing workspace, multi-repository membership
-intersection, cross-repository remediation/delivery, and the affected-member
-preview are **not** implemented. ADR-0011's open product question (reject the
-addition versus suspending excluded members) stays unanswered; the current
-decision is to reject, which `addBinding` enforces unconditionally.
+Multi-repository **execution**: task target binding, cross-repository
+remediation/delivery, memory or approval enforcement over a multi-repository
+set. The addition decision itself is implemented (DAT-283/284/286): a
+repository may only be added through an authorized preview and explicit
+confirmation, the whole addition is refused when any current effective member
+would lose admission or an effective owner would lose the required management
+capabilities, and the audited commit is atomic. `addBinding` remains an
+unconditional refusal; it is not the addition path. ADR-0011's product question
+is settled as "reject the addition", not "remove or suspend the member".
+
+Removal is not implemented: `removeBinding` refuses, so a workspace cannot be
+returned to one repository through the API until a later audited change adds
+that path (see the rollout gate document).
