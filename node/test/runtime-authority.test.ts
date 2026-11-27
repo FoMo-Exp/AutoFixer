@@ -299,7 +299,10 @@ describe("a running run re-authorizes every sensitive step", () => {
       "the first action to complete",
     );
     const denied = await waitForDenial(authApp, session, task.id);
-    expect(denied.data["error_code"]).toBe("FORBIDDEN");
+    // The denial is decided by the versioned authorization context (DAT-293):
+    // it names the missing capability instead of the older blanket FORBIDDEN,
+    // while the dispatch itself is refused exactly as before.
+    expect(denied.data["error_code"]).toBe("CAPABILITY_REQUIRED");
     expect(String(denied.data["message"])).toContain("no longer permits");
     const events = await timelineOf(authApp, session, task.id);
     // Exactly one action ever reached dsh; the downgraded step dispatched

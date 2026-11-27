@@ -192,10 +192,13 @@ or approval enforcement over a multi-repository set. DAT-292 added the task
 target **contract**: `GET /api/v1/workspaces/{workspace_id}/task-targets`
 names the active bindings and the trusted baseline, and a workspace-scoped
 create may select one by immutable identity at the observed set version. The
-task records that target and the set version, and a multi-repository set
-still refuses creation (`TARGET_REPOSITORY_REQUIRED` without a selection,
-`MULTI_REPOSITORY_SCOPE_*` with one) because no runtime can execute against it
-yet (DAT-293 owns resolution and dispatch). The addition decision itself is implemented (DAT-283/284/286): a
+task records that target and the set version. DAT-293 added the runtime path —
+provider-verified trusted baseline, approved installation and checkout/delivery
+credentials, and a start/step re-check of the target at the recorded version
+(see [run-target-authority-v1.md](run-target-authority-v1.md)) — but a
+multi-repository set still refuses creation (`TARGET_REPOSITORY_REQUIRED`
+without a selection, `MULTI_REPOSITORY_SCOPE_*` with one) because the protected
+paths have not been wired to the complete set yet (DAT-294). The addition decision itself is implemented (DAT-283/284/286): a
 repository may only be added through an authorized preview and explicit
 confirmation, the whole addition is refused when any current effective member
 would lose admission or an effective owner would lose the required management
@@ -225,7 +228,32 @@ A `disabled` or unreadable gate still refuses, and the default
 single-repository configuration still reports
 `MULTI_REPOSITORY_SCOPE_UNSUPPORTED` for every multi-repository set. DAT-291
 ships the engine and its tests, not a rollout: the deployment gate remains
-`disabled`, no route or worker consumes the context yet, and
-`requireSingleRepository` continues to refuse a multi-repository set for the
-legacy run binding. DAT-292/293/294 own the target model and the runtime
-wiring.
+`disabled` and `requireSingleRepository` continues to refuse a multi-repository
+set for the legacy run binding.
+
+DAT-293 added the target model's runtime wiring: the workspace-scoped create
+path resolves a provider-verified baseline and the run start / worker step
+re-check the recorded target through this context (see
+[run-target-authority-v1.md](run-target-authority-v1.md)). The other protected
+paths (API reads, SSE, artifacts, approvals, messages, issues, memory,
+delivery) still decide per route and are DAT-294.
+
+## 9. Runtime target and dispatch authority (DAT-293)
+
+A workspace-scoped create binds one immutable target per run: the binding row,
+the provider instance, the repository id, the approved installation, a trusted
+base commit and the observed set version. The trusted baseline is the
+deployment pin for its own repository and a checkout-capability read for any
+other repository; a missing installation, checkout or delivery capability, an
+unresolvable ref or a provider outage refuses the create with a stable code and
+never falls back to another repository. Before a session starts and before
+every dispatched action, the run is re-checked against the live set version,
+the recorded target's identity, its approved credentials and the requester's
+whole-set capability intersection. The contract is
+[run-target-authority-v1.md](run-target-authority-v1.md).
+
+`multiRepositoryRuntime` on the repository-set repository declares whether the
+build can execute a multi-repository set at all; it defaults to `none` and is
+**not** enabled by this change. Opening a multi-repository workspace therefore
+still needs DAT-294's per-route enforcement plus a release that appends the
+enabled gate row.

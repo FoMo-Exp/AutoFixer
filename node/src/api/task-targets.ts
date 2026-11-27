@@ -109,18 +109,59 @@ export interface TaskTargetList {
 }
 
 /**
- * The trusted baseline for one binding.
+ * The trusted baseline for one binding, resolved synchronously from the
+ * deployment's own pins.
  *
- * DAT-292 ships the deployment's pinned repository only. Resolving a baseline
- * for another repository needs the provider checkout path and belongs to
- * DAT-293; returning null here is the honest "this deployment cannot pin it",
- * never a fabricated SHA.
+ * DAT-292 ships the deployment's pinned repository only. A provider-verified
+ * baseline for another repository is the async
+ * {@link TrustedBaselineResolver} below (DAT-293); returning null here is the
+ * honest "this deployment cannot pin it", never a fabricated SHA.
  */
 export interface TaskTargetBaselines {
   resolve(
     binding: WorkspaceRepositoryBinding,
     requestedBaseRef?: string,
   ): { base_ref: string; base_sha: string; repository_url: string } | null;
+}
+
+/** Why this deployment cannot pin a trusted baseline for a binding (DAT-293). */
+export type TrustedBaselineReason =
+  | "baseline_not_pinned"
+  | "integration_missing"
+  | "installation_not_approved"
+  | "checkout_credential_missing"
+  | "provider_unavailable"
+  | "ref_not_found";
+
+/** One binding's trusted baseline, or the exact reason it has none. */
+export type TrustedBaselineResult =
+  | {
+      state: "trusted";
+      base_ref: string;
+      base_sha: string;
+      repository_url: string;
+      integration_id: string | null;
+    }
+  | {
+      state: "unavailable";
+      base_ref: string | null;
+      base_sha: null;
+      reason: TrustedBaselineReason;
+    };
+
+/**
+ * Asynchronous, provider-verified baseline resolution (DAT-293).
+ *
+ * A task's baseline for a repository other than the deployment's pin is a
+ * commit read through that repository's approved checkout capability. The
+ * resolver reports unavailability as data, so a create can refuse with a
+ * stable code and the selection read can show the same reason.
+ */
+export interface TrustedBaselineResolver {
+  resolve(
+    binding: WorkspaceRepositoryBinding,
+    requestedBaseRef?: string,
+  ): Promise<TrustedBaselineResult>;
 }
 
 /** The deployment pin, for the one repository this process can pin. */
@@ -149,29 +190,22 @@ export interface ResolvedTaskTarget {
 }
 
 /**
- * Validate one explicit selection against the verified set and mint the
- * immutable target.
+ * Match one selection to exactly one active binding of the set.
  *
  * Refuses (never falls back):
  * - unknown or retired repository → `REPOSITORY_NOT_IN_WORKSPACE` (400);
  * - a provider instance or installation that is not the binding's own
  *   immutable identity → `TARGET_IDENTITY_MISMATCH` (409);
  * - a set version other than the observed one → `REPOSITORY_SET_VERSION_CONFLICT`
- *   (409);
- * - a base ref the deployment cannot pin, or a baseline assertion that
- *   disagrees with the trusted value → `REPOSITORY_BINDING_UNAVAILABLE` /
- *   `BASE_REF_NOT_SUPPORTED` / `TARGET_BASELINE_MISMATCH` (409).
+ *   (409).
  *
- * The caller still decides whether the set is usable for execution; this
- * function deliberately reports the target of a set whose gate is closed so
- * the refusal can name the gate instead of pretending the target is invalid.
+ * The baseline is resolved separately so a provider-backed resolver (DAT-293)
+ * and the deployment pin can share one identity and version check.
  */
-export function resolveTaskTargetSelection(
+export function matchTaskTargetBinding(
   set: WorkspaceRepositorySet,
   selection: TaskTargetSelection,
-  baselines: TaskTargetBaselines,
-  now: () => Date = () => new Date(),
-): ResolvedTaskTarget {
+): WorkspaceRepositoryBinding {
   const binding = set.bindings.find(
     (candidate) =>
       candidate.status === "active" && candidate.repository_id === selection.repository_id,
@@ -209,6 +243,43 @@ export function resolveTaskTargetSelection(
       },
     );
   }
+  return binding;
+}
+
+/** Mint the immutable target once the baseline has been established. */
+export function mintTaskTarget(
+  binding: WorkspaceRepositoryBinding,
+  baseline: { base_ref: string; base_sha: string },
+  setVersion: number,
+  now: () => Date = () => new Date(),
+): TaskTarget {
+  return {
+    binding_id: binding.id,
+    repository_id: binding.repository_id,
+    provider_instance_id: binding.provider_instance_id,
+    installation_ref: binding.installation_ref,
+    base_ref: baseline.base_ref,
+    base_sha: baseline.base_sha,
+    set_version: setVersion,
+    verified_at: now().toISOString(),
+  };
+}
+
+/**
+ * Validate one explicit selection against the verified set and mint the
+ * immutable target from the deployment's own pins.
+ *
+ * The caller still decides whether the set is usable for execution; this
+ * function deliberately reports the target of a set whose gate is closed so
+ * the refusal can name the gate instead of pretending the target is invalid.
+ */
+export function resolveTaskTargetSelection(
+  set: WorkspaceRepositorySet,
+  selection: TaskTargetSelection,
+  baselines: TaskTargetBaselines,
+  now: () => Date = () => new Date(),
+): ResolvedTaskTarget {
+  const binding = matchTaskTargetBinding(set, selection);
   const baseline = baselines.resolve(binding, selection.base_ref);
   if (baseline === null) {
     throw new ApiError(
@@ -235,16 +306,51 @@ export function resolveTaskTargetSelection(
   return {
     binding,
     baseline,
-    target: {
-      binding_id: binding.id,
-      repository_id: binding.repository_id,
-      provider_instance_id: binding.provider_instance_id,
-      installation_ref: binding.installation_ref,
-      base_ref: baseline.base_ref,
-      base_sha: baseline.base_sha,
-      set_version: set.set_version,
-      verified_at: now().toISOString(),
-    },
+    target: mintTaskTarget(binding, baseline, set.set_version, now),
+  };
+}
+
+/** One candidate from an already-resolved baseline. */
+function candidateFrom(
+  binding: WorkspaceRepositoryBinding,
+  baseline: { base_ref: string; base_sha: string } | null,
+): TaskTargetCandidate {
+  return {
+    binding_id: binding.id,
+    repository_id: binding.repository_id,
+    provider_instance_id: binding.provider_instance_id,
+    installation_ref: binding.installation_ref,
+    repository_name: binding.repository_name,
+    position: binding.position,
+    baseline:
+      baseline === null
+        ? {
+            state: "unavailable" as const,
+            base_ref: null,
+            base_sha: null,
+            reason: "baseline_not_pinned" as const,
+          }
+        : {
+            state: "trusted" as const,
+            base_ref: baseline.base_ref,
+            base_sha: baseline.base_sha,
+          },
+  };
+}
+
+function activeBindings(set: WorkspaceRepositorySet): WorkspaceRepositoryBinding[] {
+  return set.bindings.filter((binding) => binding.status === "active");
+}
+
+function targetList(set: WorkspaceRepositorySet, targets: TaskTargetCandidate[]): TaskTargetList {
+  return {
+    workspace_id: set.workspace_id,
+    repository_set_version: set.set_version,
+    multi_repository: set.multi_repository,
+    selection_required: set.multi_repository,
+    usable: set.usable,
+    blocked_reason: set.blocked_reason,
+    targets,
   };
 }
 
@@ -253,77 +359,75 @@ export function listTaskTargetCandidates(
   set: WorkspaceRepositorySet,
   baselines: TaskTargetBaselines,
 ): TaskTargetList {
-  return {
-    workspace_id: set.workspace_id,
-    repository_set_version: set.set_version,
-    multi_repository: set.multi_repository,
-    selection_required: set.multi_repository,
-    usable: set.usable,
-    blocked_reason: set.blocked_reason,
-    targets: set.bindings
-      .filter((binding) => binding.status === "active")
-      .map((binding) => {
-        const baseline = baselines.resolve(binding);
-        return {
-          binding_id: binding.id,
-          repository_id: binding.repository_id,
-          provider_instance_id: binding.provider_instance_id,
-          installation_ref: binding.installation_ref,
-          repository_name: binding.repository_name,
-          position: binding.position,
-          baseline:
-            baseline === null
-              ? {
-                  state: "unavailable" as const,
-                  base_ref: null,
-                  base_sha: null,
-                  reason: "baseline_not_pinned" as const,
-                }
-              : {
-                  state: "trusted" as const,
-                  base_ref: baseline.base_ref,
-                  base_sha: baseline.base_sha,
-                },
-        };
-      }),
-  };
+  return targetList(
+    set,
+    activeBindings(set).map((binding) => candidateFrom(binding, baselines.resolve(binding))),
+  );
+}
+
+/**
+ * Project the set's active bindings with a provider-verified baseline
+ * (DAT-293). A binding whose baseline cannot be proven is offered as
+ * `unavailable` with its reason, never with an invented commit.
+ */
+export async function listTaskTargetCandidatesVerified(
+  set: WorkspaceRepositorySet,
+  baselines: TrustedBaselineResolver,
+): Promise<TaskTargetList> {
+  const targets = await Promise.all(
+    activeBindings(set).map(async (binding) => {
+      const baseline = await baselines.resolve(binding);
+      return candidateFrom(binding, baseline.state === "trusted" ? baseline : null);
+    }),
+  );
+  return targetList(set, targets);
 }
 
 export interface TaskTargetServiceDeps {
   config: OrchestratorConfig;
   repositorySets: WorkspaceRepositorySetRepository;
+  /**
+   * Provider-verified baselines (DAT-293). Unset keeps the pin-only read of
+   * DAT-292, which reports every non-pinned repository as unavailable.
+   */
+  trustedBaselines?: TrustedBaselineResolver;
 }
 
 /** Read the workspace's selectable targets behind the authenticated route. */
 export class TaskTargetService {
   private readonly deps: TaskTargetServiceDeps;
   private readonly baselines: TaskTargetBaselines;
+  private readonly trustedBaselines: TrustedBaselineResolver | undefined;
 
   constructor(deps: TaskTargetServiceDeps) {
     this.deps = deps;
     this.baselines = pinnedTaskTargetBaselines(deps.config);
+    this.trustedBaselines = deps.trustedBaselines;
   }
 
-  list(workspaceId: string): TaskTargetList {
+  async list(workspaceId: string): Promise<TaskTargetList> {
     const scope = {
       enterprise_id: this.deps.config.enterpriseId,
       actor_id: this.deps.config.actorId,
       workspace_id: workspaceId,
     };
+    let set: WorkspaceRepositorySet;
     try {
-      const set = this.deps.repositorySets.getSet(scope);
-      // An archived workspace's retired set describes history, not something a
-      // task can target. Refuse the selection read instead of offering rows
-      // whose create would be refused later.
-      if (set.blocked_reason === "WORKSPACE_ARCHIVED") {
-        throw new ApiError(403, "WORKSPACE_ARCHIVED", "This workspace is archived");
-      }
-      return listTaskTargetCandidates(set, this.baselines);
+      set = this.deps.repositorySets.getSet(scope);
     } catch (error) {
       if (error instanceof WorkspaceRepositorySetError) {
         throw new ApiError(error.status, error.code, error.message);
       }
       throw error;
     }
+    // An archived workspace's retired set describes history, not something a
+    // task can target. Refuse the selection read instead of offering rows
+    // whose create would be refused later.
+    if (set.blocked_reason === "WORKSPACE_ARCHIVED") {
+      throw new ApiError(403, "WORKSPACE_ARCHIVED", "This workspace is archived");
+    }
+    return this.trustedBaselines === undefined
+      ? listTaskTargetCandidates(set, this.baselines)
+      : await listTaskTargetCandidatesVerified(set, this.trustedBaselines);
   }
 }

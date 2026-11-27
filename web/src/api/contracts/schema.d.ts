@@ -227,7 +227,7 @@ export interface paths {
         put?: never;
         /**
          * Create a task in one workspace
-         * @description Creates the task and its dsh run inside the path workspace. A single-repository workspace keeps the legacy body `repository_id` + `base_ref`; a multi-repository workspace must send `target` with the immutable identity of one active binding (`400 TARGET_REPOSITORY_REQUIRED` otherwise). `GET /api/v1/workspaces/{workspace_id}/task-targets` is the read that supplies the selectable identities, the observed set version and the trusted baseline. The selected identity must match the binding exactly (`409 TARGET_IDENTITY_MISMATCH`), the observed set version must still be current (`409 REPOSITORY_SET_VERSION_CONFLICT`), and the trusted baseline must resolve (`409 REPOSITORY_BINDING_UNAVAILABLE` / `TARGET_BASELINE_MISMATCH`). The deployment's configured repository, the first binding and a repository name or URL are never fallbacks. Unknown/archived workspaces and non-members are one `404 NOT_FOUND`; viewers are `403 FORBIDDEN`. A set this build cannot execute against is `403 MULTI_REPOSITORY_SCOPE_*` — selection is validated first, then the rollout gate refuses. Each workspace has its own idempotency-key namespace, and a key is bound to the resolved target identity and baseline.
+         * @description Creates the task and its dsh run inside the path workspace. A single-repository workspace keeps the legacy body `repository_id` + `base_ref`; a multi-repository workspace must send `target` with the immutable identity of one active binding (`400 TARGET_REPOSITORY_REQUIRED` otherwise). `GET /api/v1/workspaces/{workspace_id}/task-targets` is the read that supplies the selectable identities, the observed set version and the trusted baseline. The selected identity must match the binding exactly (`409 TARGET_IDENTITY_MISMATCH`), the observed set version must still be current (`409 REPOSITORY_SET_VERSION_CONFLICT`), and the trusted baseline must resolve (`409 REPOSITORY_BINDING_UNAVAILABLE` / `TARGET_BASELINE_MISMATCH`). For a repository other than the deployment's own pin the baseline is the commit its approved checkout capability resolves (`409 TARGET_INSTALLATION_NOT_APPROVED`, `409 CHECKOUT_CREDENTIAL_UNAVAILABLE`, `409 DELIVERY_CREDENTIAL_UNAVAILABLE` for a multi-repository target, `409 BASE_REF_NOT_SUPPORTED` when the ref does not resolve, `503 PROVIDER_UNAVAILABLE` when the provider cannot be read); no credential value ever leaves the service. The deployment's configured repository, the first binding and a repository name or URL are never fallbacks. Unknown/archived workspaces and non-members are one `404 NOT_FOUND`; viewers are `403 FORBIDDEN`. A set this build cannot execute against is `403 MULTI_REPOSITORY_SCOPE_*` — selection is validated first, then the rollout gate refuses. Each workspace has its own idempotency-key namespace, and a key is bound to the resolved target identity and baseline.
          */
         post: operations["createWorkspaceTask"];
         delete?: never;
@@ -6546,7 +6546,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description IDEMPOTENCY_CONFLICT, PROVIDER_INSTANCE_NOT_APPROVED, REPOSITORY_BINDING_UNAVAILABLE, REPOSITORY_SET_VERSION_CONFLICT, TARGET_IDENTITY_MISMATCH, or TARGET_BASELINE_MISMATCH */
+            /** @description IDEMPOTENCY_CONFLICT, PROVIDER_INSTANCE_NOT_APPROVED, REPOSITORY_BINDING_UNAVAILABLE, REPOSITORY_SET_VERSION_CONFLICT, TARGET_IDENTITY_MISMATCH, TARGET_BASELINE_MISMATCH, TARGET_INSTALLATION_NOT_APPROVED, CHECKOUT_CREDENTIAL_UNAVAILABLE, DELIVERY_CREDENTIAL_UNAVAILABLE, or BASE_REF_NOT_SUPPORTED */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -6564,7 +6564,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description PI_UNAVAILABLE or DSH_UNAVAILABLE */
+            /** @description PI_UNAVAILABLE, DSH_UNAVAILABLE, or PROVIDER_UNAVAILABLE */
             503: {
                 headers: {
                     [name: string]: unknown;

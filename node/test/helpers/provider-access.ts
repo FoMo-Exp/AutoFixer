@@ -49,6 +49,7 @@ import type {
   ProviderCallContext,
   RawProviderRole,
   RepositoryRef,
+  ResolvedRepositoryRef,
   RosterPage,
 } from "../../src/provider-access/types.js";
 
@@ -252,6 +253,10 @@ export interface ScriptedAdapterOptions {
   effective?: Record<string, RawProviderRole | null>;
   /** Make fetchEffectivePermission throw MissingPermissionError. */
   denyPermissionQuery?: boolean;
+  /** Refs this adapter can resolve, and the heavy commit id each maps to. */
+  refs?: Record<string, string>;
+  /** Make resolveRef throw ProviderUnavailableError. */
+  failRefResolution?: boolean;
 }
 
 export interface ScriptedAdapter extends ProviderAdapter {
@@ -285,6 +290,18 @@ export function scriptedAdapter(options: ScriptedAdapterOptions = {}): ScriptedA
         return { entries: [], next_cursor: null, has_more: false };
       }
       return page;
+    },
+    async resolveRef(
+      _ctx: ProviderCallContext,
+      _repository: RepositoryRef,
+      ref: string,
+    ): Promise<ResolvedRepositoryRef | null> {
+      if (options.failRefResolution) {
+        const { ProviderUnavailableError } = await import("../../src/provider-access/types.js");
+        throw new ProviderUnavailableError("server_error");
+      }
+      const sha = options.refs?.[ref];
+      return sha === undefined ? null : { ref, sha };
     },
     async fetchEffectivePermission(
       _ctx: ProviderCallContext,

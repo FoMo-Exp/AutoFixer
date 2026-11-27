@@ -60,6 +60,7 @@ import {
   type ProviderRoleSourceKind,
   type RawProviderRole,
   type RepositoryRef,
+  type ResolvedRepositoryRef,
   type RosterPage,
 } from "../types.js";
 
@@ -464,6 +465,43 @@ export function createGitHubAdapter(options: GitHubAdapterOptions): ProviderAdap
     );
   }
 
+  /**
+   * Resolve one ref to its commit (DAT-293).
+   *
+   * `GET /repos/{owner}/{repo}/commits/{ref}` is the canonical read: GitHub
+   * resolves branches, tags and prefixes there, and answers with the full
+   * commit object. A 404 is the provider saying the ref does not exist (a
+   * stale branch is not an outage); every other failure throws through
+   * {@link assertProviderStatus}, so an unreadable provider never turns into a
+   * quietly unavailable baseline. A response without a full 40-hex commit id
+   * is a provider anomaly, not a commit to pin.
+   */
+  async function resolveRef(
+    ctx: ProviderCallContext,
+    ref: string,
+  ): Promise<ResolvedRepositoryRef | null> {
+    const trimmed = ref.trim();
+    if (trimmed === "") {
+      throw new MissingPermissionError("permission_query", "github ref must not be empty");
+    }
+    const url = `${base}/repos/${repoPath}/commits/${encodeURIComponent(trimmed)}`;
+    const response = await request(ctx, url);
+    assertProviderStatus("github", response, url);
+    if (response.status === 404) {
+      return null;
+    }
+    const payload = parseJsonBody<Record<string, unknown>>(response.body, url);
+    const raw = payload["sha"];
+    const sha = typeof raw === "string" ? raw.toLowerCase() : "";
+    if (!/^[0-9a-f]{40}$/.test(sha)) {
+      throw new ProviderUnavailableError(
+        "unexpected_status",
+        `github commit payload for ${url} has no full commit id`,
+      );
+    }
+    return { ref: trimmed, sha };
+  }
+
   return {
     provider_type: "github",
     capabilities,
@@ -521,6 +559,13 @@ export function createGitHubAdapter(options: GitHubAdapterOptions): ProviderAdap
         authority_ref: `repository:${coords.path}`,
         inherited_from: null,
       };
+    },
+    async resolveRef(
+      ctx: ProviderCallContext,
+      _repository: RepositoryRef,
+      ref: string,
+    ): Promise<ResolvedRepositoryRef | null> {
+      return resolveRef(ctx, ref);
     },
   };
 }

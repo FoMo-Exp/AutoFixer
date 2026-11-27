@@ -66,6 +66,7 @@ import {
   type ProviderRoleSourceKind,
   type RawProviderRole,
   type RepositoryRef,
+  type ResolvedRepositoryRef,
   type RosterPage,
 } from "../types.js";
 
@@ -749,6 +750,41 @@ export function createGitLabAdapter(options: GitLabAdapterOptions): ProviderAdap
     );
   }
 
+  /**
+   * Resolve one ref to its commit (DAT-293).
+   *
+   * `GET /projects/{path}/repository/commits/{ref}` accepts the URL-encoded
+   * project path, so no separate project discovery is needed. A 404 is the
+   * provider saying the ref does not exist; every other failure throws through
+   * {@link assertProviderStatus}. The response's `id` must be a full commit id
+   * — a truncated or missing value is a provider anomaly, not a baseline.
+   */
+  async function resolveRef(
+    ctx: ProviderCallContext,
+    ref: string,
+  ): Promise<ResolvedRepositoryRef | null> {
+    const trimmed = ref.trim();
+    if (trimmed === "") {
+      throw new MissingPermissionError("permission_query", "gitlab ref must not be empty");
+    }
+    const url = `${base}/projects/${projectPath}/repository/commits/${encodeURIComponent(trimmed)}`;
+    const response = await request(ctx, url);
+    assertProviderStatus("gitlab", response, url);
+    if (response.status === 404) {
+      return null;
+    }
+    const payload = parseJsonBody<Record<string, unknown>>(response.body, url);
+    const raw = payload["id"];
+    const sha = typeof raw === "string" ? raw.toLowerCase() : "";
+    if (!/^[0-9a-f]{40}$/.test(sha)) {
+      throw new ProviderUnavailableError(
+        "unexpected_status",
+        `gitlab commit payload for ${url} has no full commit id`,
+      );
+    }
+    return { ref: trimmed, sha };
+  }
+
   return {
     provider_type: "gitlab",
     capabilities,
@@ -906,6 +942,13 @@ export function createGitLabAdapter(options: GitLabAdapterOptions): ProviderAdap
         authority_ref: `project:${repo.project_id}`,
         inherited_from: null,
       };
+    },
+    async resolveRef(
+      ctx: ProviderCallContext,
+      _repository: RepositoryRef,
+      ref: string,
+    ): Promise<ResolvedRepositoryRef | null> {
+      return resolveRef(ctx, ref);
     },
   };
 }

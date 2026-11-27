@@ -16,10 +16,12 @@
 import {
   IncompleteRosterError,
   MissingPermissionError,
+  ProviderUnavailableError,
   type ProviderAdapter,
   type ProviderCallContext,
   type RawProviderRole,
   type RepositoryRef,
+  type ResolvedRepositoryRef,
 } from "./types.js";
 
 export interface CollectedRoster {
@@ -133,4 +135,41 @@ export async function fetchEffectivePermission(
     }
   }
   return adapter.fetchEffectivePermission(ctx, repository, subject);
+}
+
+/** A full commit object id: the only shape a trusted baseline may take. */
+const COMMIT_SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * Resolve one repository ref to a provider-verified commit (DAT-293).
+ *
+ * This is the one sanctioned way to derive a task's trusted baseline from a
+ * provider. It only accepts an answer that names a full commit: a branch name,
+ * a short sha or an empty value never becomes a pinned baseline, and a provider
+ * that cannot answer throws rather than returning "unavailable". `null` is the
+ * provider's own "no such ref".
+ */
+export async function resolveRepositoryRef(
+  adapter: ProviderAdapter,
+  ctx: ProviderCallContext,
+  repository: RepositoryRef,
+  ref: string,
+): Promise<ResolvedRepositoryRef | null> {
+  const trimmed = ref.trim();
+  if (trimmed === "") {
+    throw new ProviderUnavailableError("unexpected_status", "a repository ref must not be empty");
+  }
+  const resolved = await adapter.resolveRef(ctx, repository, trimmed);
+  if (resolved === null) {
+    return null;
+  }
+  if (!COMMIT_SHA.test(resolved.sha)) {
+    throw new ProviderUnavailableError(
+      "unexpected_status",
+      `${adapter.provider_type} resolved ${JSON.stringify(trimmed)} to a value that is not a full commit id`,
+    );
+  }
+  // The echo is the ref that was asked for, never a provider-supplied label:
+  // a baseline names exactly the revision the task pinned.
+  return { ref: trimmed, sha: resolved.sha };
 }

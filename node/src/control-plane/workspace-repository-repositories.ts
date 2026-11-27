@@ -73,9 +73,10 @@ export interface WorkspaceRepositorySetRepository {
   /** The set, but only if it is still at the caller's observed version. */
   getSetAtVersion(scope: WorkspaceScope, expectedSetVersion: number): WorkspaceRepositorySet;
   /**
-   * The only shape authorization may consume today: exactly one verified
-   * repository binding. Refuses a multi-repository set, and refuses when the
-   * gate row is unreadable or from a newer schema.
+   * The only shape a legacy single-repository consumer may act on: exactly one
+   * verified repository binding. Refuses a multi-repository set regardless of
+   * the rollout gate (a set of several is never resolved to its first binding),
+   * and refuses when the gate row is unreadable or from a newer schema.
    */
   requireSingleRepository(scope: WorkspaceScope): SingleRepositoryWorkspaceScope;
   /**
@@ -148,12 +149,18 @@ function toBinding(row: BindingRow): WorkspaceRepositoryBinding {
 class SqliteWorkspaceRepositorySetRepository implements WorkspaceRepositorySetRepository {
   /** The schema version this build can enforce; see `assertSchemaSupported`. */
   private readonly supportedSchemaVersion: number;
+  /** Whether this build executes against a multi-repository set (DAT-293). */
+  private readonly multiRepositoryRuntime: "complete" | "none";
 
   constructor(
     private readonly db: ControlPlaneDb,
-    options: { supportedSchemaVersion?: number } = {},
+    options: {
+      supportedSchemaVersion?: number;
+      multiRepositoryRuntime?: "complete" | "none";
+    } = {},
   ) {
     this.supportedSchemaVersion = options.supportedSchemaVersion ?? CURRENT_SCHEMA_VERSION;
+    this.multiRepositoryRuntime = options.multiRepositoryRuntime ?? "none";
   }
 
   gate(): DeploymentFeatureGate {
@@ -269,7 +276,9 @@ class SqliteWorkspaceRepositorySetRepository implements WorkspaceRepositorySetRe
       ? ("WORKSPACE_ARCHIVED" as const)
       : multi
         ? gate.state === "enabled"
-          ? ("MULTI_REPOSITORY_SCOPE_UNSUPPORTED" as const)
+          ? this.multiRepositoryRuntime === "complete"
+            ? null
+            : ("MULTI_REPOSITORY_SCOPE_UNSUPPORTED" as const)
           : ("MULTI_REPOSITORY_SCOPE_DISABLED" as const)
         : null;
 
@@ -300,18 +309,22 @@ class SqliteWorkspaceRepositorySetRepository implements WorkspaceRepositorySetRe
 
   requireSingleRepository(scope: WorkspaceScope): SingleRepositoryWorkspaceScope {
     const set = this.getSet(scope);
-    if (!set.usable || set.blocked_reason !== null) {
-      throw new WorkspaceRepositorySetError(
-        set.blocked_reason ?? "MULTI_REPOSITORY_SCOPE_DISABLED",
-        blockedReasonMessage(set),
-        403,
-        {
-          workspace_id: set.workspace_id,
-          binding_count: set.bindings.length,
-          set_version: set.set_version,
-          gate_state: set.gate.state,
-        },
-      );
+    // `usable` covers the gate and the build's runtime capability, but never
+    // the shape: a legacy single-repository consumer must not silently take the
+    // first binding of a set of several, even when a newer build could execute
+    // against the whole set (DAT-293).
+    if (set.multi_repository || !set.usable || set.blocked_reason !== null) {
+      const code =
+        set.blocked_reason ??
+        (set.multi_repository
+          ? ("MULTI_REPOSITORY_SCOPE_UNSUPPORTED" as const)
+          : ("MULTI_REPOSITORY_SCOPE_DISABLED" as const));
+      throw new WorkspaceRepositorySetError(code, blockedReasonMessage(set), 403, {
+        workspace_id: set.workspace_id,
+        binding_count: set.bindings.length,
+        set_version: set.set_version,
+        gate_state: set.gate.state,
+      });
     }
     return {
       enterprise_id: set.enterprise_id,
@@ -702,10 +715,20 @@ export function bumpRepositorySetVersion(
  * Create the workspace repository-set repository backed by one database
  * handle. Consumers get reads only; the binding writers above stay module
  * functions used by the workspace lifecycle.
+ *
+ * `multiRepositoryRuntime` declares whether **this build** can execute a run
+ * against a multi-repository set (DAT-293). It is not a rollout switch: the
+ * immutable gate row is the rollout decision, and a set stays unusable unless
+ * both the gate is `enabled` and the build declares `complete`. The default
+ * `none` keeps a build that has no runtime consumer refusing the shape
+ * (`MULTI_REPOSITORY_SCOPE_UNSUPPORTED`).
  */
 export function createWorkspaceRepositorySetRepository(
   db: ControlPlaneDb,
-  options: { supportedSchemaVersion?: number } = {},
+  options: {
+    supportedSchemaVersion?: number;
+    multiRepositoryRuntime?: "complete" | "none";
+  } = {},
 ): WorkspaceRepositorySetRepository {
   return new SqliteWorkspaceRepositorySetRepository(db, options);
 }

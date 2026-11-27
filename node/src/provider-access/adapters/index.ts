@@ -41,6 +41,16 @@ export interface IntegrationAdapterOptions {
   /** Canonical locator of the repository, e.g. `github:FoMo-Exp/AutoFixer`. */
   canonical_repository_id: string;
   credentials: ServiceCredentialStore;
+  /**
+   * Which of the integration's credentials the adapter reads through.
+   *
+   * `source` (default) is the roster/metadata read. `checkout` is the
+   * repository read capability a task's trusted baseline is resolved with
+   * (DAT-293): the same credential a run would check the code out with, never
+   * the delivery write capability. A missing reference refuses instead of
+   * substituting another credential.
+   */
+  credential_kind?: "source" | "checkout";
   /** Approved provider-instance origin (self-hosted GitHub/GitLab). */
   provider_origin?: string;
   /** Explicit API base override (tests and pinned deployments). */
@@ -60,11 +70,14 @@ export interface IntegrationAdapterOptions {
  */
 export function createIntegrationAdapter(options: IntegrationAdapterOptions): ProviderAdapter {
   const coords: CanonicalRepositoryId = parseCanonicalRepositoryId(options.canonical_repository_id);
-  const credentialRef = options.integration.source_credential_ref;
+  const credentialRef =
+    options.credential_kind === "checkout"
+      ? (options.integration.checkout_credential_ref ?? undefined)
+      : options.integration.source_credential_ref;
   if (credentialRef === undefined || credentialRef === "") {
     throw new ProviderIntegrationError(
       "PROVIDER_CREDENTIAL_MISSING",
-      `integration ${options.integration.id} has no source credential reference`,
+      `integration ${options.integration.id} has no ${options.credential_kind ?? "source"} credential reference`,
     );
   }
 

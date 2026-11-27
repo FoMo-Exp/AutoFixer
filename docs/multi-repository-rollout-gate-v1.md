@@ -114,20 +114,22 @@ next subscription is refused.
 
 ## 5. Blockers to a controlled opening
 
-1. **No multi-repository runtime enforcement.** The ceiling, task binding,
-   streams, worker steps and delivery all refuse the set. Failing closed is
-   required, but opening the gate requires enforcing the complete set instead of
-   refusing it. DAT-291 provides the intersection engine and the versioned
-   context; DAT-293/294 still have to bind the target and consume the context on
-   every path.
-2. **No target-repository binding for a run.** `workspace-bindings.ts` requires
-   exactly one binding plus the deployment's pinned base revision; a task cannot
-   name an active repository of a multi-repository workspace. ADR-0011 requires
-   that explicit target and a workspace-wide intersection. DAT-292 added the
-   contract — `GET …/task-targets`, immutable selection by observed set version,
-   and the target recorded on the task and its runs — but baseline resolution
-   and dispatch for a non-pinned repository are still DAT-293, so a
-   multi-repository set continues to refuse creation.
+1. **No multi-repository runtime enforcement on the protected paths.** The
+   ceiling engine (DAT-291), the task target and its dispatch re-check (DAT-293)
+   and the repository-set runtime capability exist, but the API reads, SSE,
+   artifacts, approvals, messages, issues, memory and delivery paths still
+   decide per route; DAT-294 owns them. Opening the gate before that would let a
+   path authorize a multi-repository workspace without checking the target and
+   the complete set, so the set continues to refuse creation.
+2. **Target binding exists; the shape stays closed.** `workspace-bindings.ts`
+   now has a runtime resolver (DAT-293) that selects one active binding by
+   immutable identity at the observed set version, resolves a provider-verified
+   trusted baseline through the target's approved checkout capability, and
+   requires its delivery capability for a multi-repository run; the contract is
+   `docs/contracts/run-target-authority-v1.md`. Because the build's
+   `multiRepositoryRuntime` stays `none` in the deployment and the gate row
+   stays `disabled`, a multi-repository set still refuses creation —
+   `MULTI_REPOSITORY_SCOPE_DISABLED` / `MULTI_REPOSITORY_SCOPE_UNSUPPORTED`.
 3. **No removal or rollback path.** `removeBinding` is an unconditional refusal,
    so an enabled multi-repository workspace cannot be returned to one repository
    through the API.
@@ -149,7 +151,9 @@ This document does not authorize any of them.
 2. **Explicit task target.** A run binds one active repository of the
    workspace, with its own base revision, checkout credential and delivery
    credential; the workspace-wide capability intersection still bounds every
-   action. No "first repository" fallback.
+   action. No "first repository" fallback. DAT-293 implements this for
+   creation, run start and worker steps; the remaining protected paths are
+   DAT-294.
 3. **All consumers.** Request, SSE (including replay), artifacts, worker steps,
    delivery, issue sync, memory and approvals re-check the set version and the
    target; a set change invalidates old decisions across processes.
