@@ -7,6 +7,9 @@ export type RunSummary = components["schemas"]["RunSummary"];
 export type ArtifactMetadata = components["schemas"]["ArtifactMetadata"];
 export type TaskStatus = Task["status"];
 export type TaskPage = operations["listTasks"]["responses"][200]["content"]["application/json"];
+export type TaskTargetList = components["schemas"]["TaskTargetList"];
+export type TaskTargetCandidate = components["schemas"]["TaskTargetCandidate"];
+export type TaskTargetSelection = components["schemas"]["TaskTargetSelection"];
 
 export type Workspace = components["schemas"]["Workspace"];
 export type Issue = components["schemas"]["Issue"];
@@ -411,13 +414,20 @@ async function errorFromResponse(response: Response, fallback: string): Promise<
   return new ApiError(response.status, payload, fallback);
 }
 
-export interface CreateTaskInput {
-  repository_id: string;
-  base_ref: string;
+export interface CreateTaskRequest {
   summary: string;
   source_reference?: string;
   acceptance_criteria?: string[];
 }
+
+/**
+ * A workspace-scoped create is either the explicit immutable target (required
+ * once the workspace binds more than one repository) or the legacy single
+ * repository selectors. The contract accepts no third shape.
+ */
+export type CreateTaskInput =
+  | (CreateTaskRequest & { target: TaskTargetSelection })
+  | (CreateTaskRequest & { repository_id: string; base_ref: string });
 
 export interface ApprovalInput {
   decision: "approve" | "reject";
@@ -514,6 +524,22 @@ export class ForgePilotClient extends ApiTransport {
       },
       body: JSON.stringify(input),
     });
+  }
+
+  /**
+   * The workspace's selectable task targets: immutable binding identities at
+   * the observed repository-set version. Only the workspace-scoped family has
+   * this read; the legacy seam has no versioned set to select from.
+   */
+  async listTaskTargets(): Promise<TaskTargetList> {
+    if (this.workspaceId === null) {
+      throw new ApiConfigurationError(
+        "Task target selection requires a workspace-scoped API client.",
+      );
+    }
+    return this.request<TaskTargetList>(
+      `/api/v1/workspaces/${encodeURIComponent(this.workspaceId)}/task-targets`,
+    );
   }
 
   async getTask(taskId: string): Promise<Task> {

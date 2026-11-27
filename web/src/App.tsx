@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
 import { ApiConfigurationError, ApiError, ForgePilotClient } from "./api/client";
-import type { ArtifactMetadata, RunSummary, Task, TaskEvent, TaskStatus } from "./api/client";
+import type {
+  ArtifactMetadata,
+  CreateTaskInput,
+  RunSummary,
+  Task,
+  TaskEvent,
+  TaskStatus,
+} from "./api/client";
 import { IdentityClient } from "./api/identity";
 import type { Workspace } from "./api/identity";
 import { resolveApiConfig } from "./api/config";
@@ -49,6 +56,16 @@ import {
   WorkspaceUnavailableScreen,
 } from "./workspaces/WorkspaceSwitcher";
 import { RepositoryPicker } from "./settings/RepositoryPicker";
+import { TaskTargetField } from "./tasks/TaskTargetField";
+import {
+  INITIAL_TARGET_VIEW,
+  hasTrustedBaseline,
+  isStaleTargetError,
+  taskTargetCreateReady,
+  taskTargetInput,
+  targetReadError,
+} from "./tasks/task-target";
+import type { TaskTargetView } from "./tasks/task-target";
 import { SettingsDialog } from "./settings/SettingsDialog";
 import { captureInviteToken } from "./workspaces/invite-token";
 import { InviteJoin } from "./workspaces/InviteJoin";
@@ -97,6 +114,8 @@ interface CreateTaskForm {
   summary: string;
   sourceReference: string;
   acceptanceCriteria: string;
+  /** binding_id of the explicit multi-repository target; empty until chosen. */
+  targetBindingId: string;
 }
 
 const INITIAL_FORM: CreateTaskForm = {
@@ -105,6 +124,7 @@ const INITIAL_FORM: CreateTaskForm = {
   summary: "",
   sourceReference: "",
   acceptanceCriteria: "",
+  targetBindingId: "",
 };
 
 /** A workspace task is created against the workspace's own repository binding. */
@@ -837,6 +857,10 @@ function Workbench({
   // discovery against the (possibly changed) account set.
   const [settingsEpoch, setSettingsEpoch] = useState(0);
   const [form, setForm] = useState<CreateTaskForm>(() => initialForm(workspace));
+  const [targetView, setTargetView] = useState<TaskTargetView>(INITIAL_TARGET_VIEW);
+  const [targetReloadToken, setTargetReloadToken] = useState(0);
+  const [targetConflict, setTargetConflict] = useState<string>();
+  const targetRequestRef = useRef(0);
   const [isCreating, setIsCreating] = useState(false);
   const [actionError, setActionError] = useState<string>();
   // Creation failures stay inside the create dialog; task-action failures
@@ -969,6 +993,47 @@ function Workbench({
     if (canReadTasks) void loadTasks(true);
   }, [canReadTasks, loadTasks]);
 
+  // The create dialog's only authority for repository scope: the workspace's
+  // versioned selection read. A failed read never falls back to the workspace
+  // snapshot or a guessed repository.
+  const loadTaskTargets = useCallback(async (): Promise<void> => {
+    if (workspace === undefined) return;
+    const requestId = ++targetRequestRef.current;
+    setTargetView({ status: "loading" });
+    try {
+      const list = await client.listTaskTargets();
+      if (requestId !== targetRequestRef.current) return;
+      setTargetView({ status: "ready", list });
+      if (!list.selection_required) {
+        // The single-repository form has no choice to re-establish.
+        setTargetConflict(undefined);
+      }
+      setForm((current) => {
+        if (current.targetBindingId === "") return current;
+        const stillOffered = list.targets.some(
+          (candidate) =>
+            candidate.binding_id === current.targetBindingId && hasTrustedBaseline(candidate),
+        );
+        return list.selection_required && list.usable && stillOffered
+          ? current
+          : { ...current, targetBindingId: "" };
+      });
+    } catch (caught) {
+      if (requestId !== targetRequestRef.current) return;
+      if (caught instanceof ApiError && caught.status === 401) return;
+      if (caught instanceof ApiError && caught.status === 404) {
+        onWorkspaceUnavailable();
+        return;
+      }
+      setTargetView({ status: "error", error: targetReadError(caught) });
+    }
+  }, [client, onWorkspaceUnavailable, workspace]);
+
+  useEffect(() => {
+    if (!showCreate || workspace === undefined) return;
+    void loadTaskTargets();
+  }, [loadTaskTargets, showCreate, targetReloadToken, workspace]);
+
   const refreshSelectedTask = useCallback(async (): Promise<void> => {
     const requestedId = selectedIdRef.current;
     if (!requestedId || !canReadTasks) return;
@@ -1100,39 +1165,65 @@ function Workbench({
   function openCreateDialog(): void {
     if (!taskCreateAllowed) return;
     setCreateError(undefined);
+    setTargetConflict(undefined);
+    setTargetView(INITIAL_TARGET_VIEW);
+    setForm((current) => ({ ...current, targetBindingId: "" }));
+    setTargetReloadToken((value) => value + 1);
     setShowCreate(true);
   }
 
   function closeCreateDialog(): void {
+    targetRequestRef.current += 1;
     setShowCreate(false);
     setCreateError(undefined);
+    setTargetConflict(undefined);
   }
 
   async function handleCreate(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (!taskCreateAllowed || !form.summary.trim()) return;
+    const request = {
+      summary: form.summary.trim(),
+      ...(form.sourceReference.trim() ? { source_reference: form.sourceReference.trim() } : {}),
+      ...(form.acceptanceCriteria.trim()
+        ? { acceptance_criteria: splitCriteria(form.acceptanceCriteria) }
+        : {}),
+    };
+    let input: CreateTaskInput;
+    if (workspace !== undefined) {
+      if (!taskTargetCreateReady(targetView, form.targetBindingId)) return;
+      const targetInput = taskTargetInput(targetView, form.targetBindingId);
+      if (targetInput === undefined) return;
+      input = { ...request, ...targetInput };
+    } else {
+      input = {
+        ...request,
+        repository_id: form.repositoryId.trim(),
+        base_ref: form.baseRef.trim(),
+      };
+    }
     setIsCreating(true);
     setCreateError(undefined);
     try {
-      const input = {
-        repository_id: form.repositoryId.trim(),
-        base_ref: form.baseRef.trim(),
-        summary: form.summary.trim(),
-        ...(form.sourceReference.trim() ? { source_reference: form.sourceReference.trim() } : {}),
-        ...(form.acceptanceCriteria.trim()
-          ? { acceptance_criteria: splitCriteria(form.acceptanceCriteria) }
-          : {}),
-      };
       const idempotencyKey = createKeyRef.current.forInput(input);
       const task = await client.createTask(input, idempotencyKey);
       createKeyRef.current.complete(input);
       selectTask(task);
       setShowCreate(false);
       setCreateError(undefined);
+      setTargetConflict(undefined);
       setForm(initialForm(workspace));
       await loadTasks();
     } catch (caught) {
-      reportRequestError(caught, setCreateError);
+      if (workspace !== undefined && isStaleTargetError(caught)) {
+        // The body was formed against a set the service no longer accepts;
+        // invalidate it and re-read rather than replay the refused selection.
+        setTargetConflict("The repository set changed. Select the target again.");
+        setForm((current) => ({ ...current, targetBindingId: "" }));
+        setTargetReloadToken((value) => value + 1);
+      } else {
+        reportRequestError(caught, setCreateError);
+      }
     } finally {
       setIsCreating(false);
     }
@@ -1739,8 +1830,18 @@ function Workbench({
           <CreateTaskDialog
             workspace={workspace}
             form={form}
+            targetView={targetView}
+            targetConflict={targetConflict}
+            canSubmit={
+              workspace === undefined || taskTargetCreateReady(targetView, form.targetBindingId)
+            }
             isCreating={isCreating}
             onChange={setForm}
+            onSelectTarget={(bindingId) => {
+              setTargetConflict(undefined);
+              setForm((current) => ({ ...current, targetBindingId: bindingId }));
+            }}
+            onRetryTargets={() => setTargetReloadToken((value) => value + 1)}
             onClose={closeCreateDialog}
             onOpenSettings={() => setShowSettings(true)}
             onSubmit={handleCreate}
@@ -2263,8 +2364,42 @@ function TaskDetail({
               </div>
             </div>
             <InfoRow label="Repository" value={redactText(task.repository.display_name)} />
-            <InfoRow label="Base ref" value={redactText(task.repository.base_ref)} mono />
-            <InfoRow label="Base revision" value={shortId(task.repository.base_sha, 16)} mono />
+            <InfoRow
+              label="Base ref"
+              value={redactText(task.target?.base_ref ?? task.repository.base_ref)}
+              mono
+            />
+            <InfoRow
+              label="Base revision"
+              value={shortId(task.target?.base_sha ?? task.repository.base_sha, 16)}
+              mono
+            />
+            {task.target ? (
+              <>
+                <InfoRow label="Repository ID" value={redactText(task.target.repository_id)} mono />
+                <InfoRow label="Binding" value={shortId(task.target.binding_id, 16)} mono />
+                <InfoRow
+                  label="Provider instance"
+                  value={shortId(task.target.provider_instance_id, 16)}
+                  mono
+                />
+                <InfoRow
+                  label="Installation"
+                  value={
+                    task.target.installation_ref === null
+                      ? "Local prototype"
+                      : shortId(task.target.installation_ref, 16)
+                  }
+                  mono={task.target.installation_ref !== null}
+                />
+                <InfoRow label="Set version" value={`v${task.target.set_version}`} mono />
+                <InfoRow label="Verified" value={formatDate(task.target.verified_at)} />
+              </>
+            ) : (
+              <p className="target-unverified">
+                Target unverified — recorded before the explicit target contract.
+              </p>
+            )}
             <InfoRow label="Task ID" value={shortId(task.id, 16)} mono />
             {task.request.source_reference && (
               <InfoRow label="Source" value={redactText(task.request.source_reference)} />
@@ -2487,8 +2622,13 @@ function InfoRow({
 function CreateTaskDialog({
   workspace,
   form,
+  targetView,
+  targetConflict,
+  canSubmit,
   isCreating,
   onChange,
+  onSelectTarget,
+  onRetryTargets,
   onClose,
   onOpenSettings,
   onSubmit,
@@ -2496,8 +2636,13 @@ function CreateTaskDialog({
 }: {
   workspace?: Workspace;
   form: CreateTaskForm;
+  targetView: TaskTargetView;
+  targetConflict?: string;
+  canSubmit: boolean;
   isCreating: boolean;
   onChange: (form: CreateTaskForm) => void;
+  onSelectTarget: (bindingId: string) => void;
+  onRetryTargets: () => void;
   onClose: () => void;
   onOpenSettings: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
@@ -2530,21 +2675,13 @@ function CreateTaskDialog({
         </p>
         <form onSubmit={(event) => void onSubmit(event)}>
           {workspace ? (
-            <div className="form-grid">
-              <label>
-                Repository
-                <input value={workspace.repository.repository_id} readOnly />
-              </label>
-              <label>
-                Base ref
-                <input
-                  value={form.baseRef}
-                  onChange={(event) => onChange({ ...form, baseRef: event.target.value })}
-                  placeholder="main"
-                  required
-                />
-              </label>
-            </div>
+            <TaskTargetField
+              view={targetView}
+              selectedBindingId={form.targetBindingId}
+              conflict={targetConflict}
+              onSelect={onSelectTarget}
+              onRetry={onRetryTargets}
+            />
           ) : (
             <RepositoryPicker
               repositoryId={form.repositoryId}
@@ -2594,7 +2731,7 @@ function CreateTaskDialog({
               <button
                 className="button button-primary"
                 type="submit"
-                disabled={isCreating || !form.summary.trim()}
+                disabled={isCreating || !form.summary.trim() || !canSubmit}
               >
                 {isCreating ? "Creating…" : "Create task"}
               </button>

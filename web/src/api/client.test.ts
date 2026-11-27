@@ -47,6 +47,79 @@ describe("ForgePilotClient", () => {
     });
   });
 
+  it("reads the workspace's selectable targets from the scoped route", async () => {
+    const targets = {
+      workspace_id: "wsp_1",
+      repository_set_version: 4,
+      multi_repository: true,
+      selection_required: true,
+      usable: true,
+      blocked_reason: null,
+      targets: [
+        {
+          binding_id: "wrb_1",
+          repository_id: "github:FoMo-Exp/AutoFixer",
+          provider_instance_id: "pi_1",
+          installation_ref: "svi_1",
+          repository_name: "FoMo-Exp/AutoFixer",
+          position: 1,
+          baseline: {
+            state: "trusted",
+            base_ref: "main",
+            base_sha: "52081eaddca099967fd8be13b3060337fde50d3f",
+          },
+        },
+      ],
+    };
+    const fetchImpl = vi.fn().mockResolvedValue(response(targets));
+    const client = new ForgePilotClient({
+      baseUrl: "http://127.0.0.1:4567",
+      token: "token",
+      workspaceId: "wsp_1",
+      fetchImpl,
+    });
+
+    await expect(client.listTaskTargets()).resolves.toEqual(targets);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      "http://127.0.0.1:4567/api/v1/workspaces/wsp_1/task-targets",
+    );
+  });
+
+  it("sends the immutable target instead of legacy selectors", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(response({ id: "tsk_1" }));
+    const client = new ForgePilotClient({
+      baseUrl: "http://127.0.0.1:4567",
+      token: "token",
+      workspaceId: "wsp_1",
+      fetchImpl,
+    });
+
+    await client.createTask(
+      {
+        summary: "Repair the export path",
+        target: {
+          repository_id: "github:FoMo-Exp/AutoFixer",
+          provider_instance_id: "pi_1",
+          installation_ref: "svi_1",
+          base_ref: "main",
+          expected_set_version: 4,
+        },
+      },
+      "create-key",
+    );
+
+    expect(JSON.parse(fetchImpl.mock.calls[0]?.[1]?.body as string)).toEqual({
+      summary: "Repair the export path",
+      target: {
+        repository_id: "github:FoMo-Exp/AutoFixer",
+        provider_instance_id: "pi_1",
+        installation_ref: "svi_1",
+        base_ref: "main",
+        expected_set_version: 4,
+      },
+    });
+  });
+
   it("surfaces the contract error envelope", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       response(
