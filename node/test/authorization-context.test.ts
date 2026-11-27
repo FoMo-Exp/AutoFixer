@@ -927,6 +927,69 @@ describe("versioned decisions", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Immutability
+// ---------------------------------------------------------------------------
+
+describe("immutability", () => {
+  test("the context and every nested decision fact are deeply frozen", () => {
+    const { userId } = addMember(fixture, { subject: "7501", login: "ivy", role: "member" });
+    verify(fixture.integration, "7501", userId, "write");
+    const second = addRepository({ repositoryId: "github:repo:9501" });
+    verify(second, "7501", userId, "read");
+    enableGate(fixture.db);
+    const h = harness({ enforcement: "complete" });
+
+    const denied = decision(h, userId, "issue_sync", {
+      target: {
+        provider_instance_id: second.provider_instance_id,
+        repository_id: second.repository_id,
+      },
+    });
+    expect(denied.decision).toMatchObject({ allowed: false, code: "CAPABILITY_REQUIRED" });
+
+    // Every container a consumer could reach is frozen, not just the root.
+    expect(Object.isFrozen(denied)).toBe(true);
+    expect(Object.isFrozen(denied.decision)).toBe(true);
+    expect(Object.isFrozen(denied.repository_set)).toBe(true);
+    expect(Object.isFrozen(denied.repository_set.target)).toBe(true);
+    expect(Object.isFrozen(denied.freshness)).toBe(true);
+    expect(Object.isFrozen(denied.enterprise)).toBe(true);
+    expect(Object.isFrozen(denied.workspace)).toBe(true);
+    expect(Object.isFrozen(denied.ceiling)).toBe(true);
+    expect(Object.isFrozen(denied.ceiling.capabilities)).toBe(true);
+    expect(Object.isFrozen(denied.repositories)).toBe(true);
+    expect(Object.isFrozen(denied.repositories[0])).toBe(true);
+    expect(Object.isFrozen(denied.capabilities)).toBe(true);
+    expect(Object.isFrozen(denied.available_capabilities)).toBe(true);
+
+    // A denied decision cannot be rewritten into an allow, and the facts
+    // behind it cannot be edited after evaluation.
+    expect(() => {
+      (denied.decision as { allowed: boolean }).allowed = true;
+    }).toThrow(TypeError);
+    expect(denied.decision.allowed).toBe(false);
+
+    expect(() => {
+      (denied.capabilities as unknown as string[]).push("repository_write");
+    }).toThrow(TypeError);
+    expect(denied.capabilities).toEqual(["code_read"]);
+
+    expect(() => {
+      (denied.repositories[0] as { state: string }).state = "removed";
+    }).toThrow(TypeError);
+    expect(denied.repositories[0]!.state).toBe("verified");
+
+    // An allowed context is frozen the same way.
+    const allowed = decision(h, userId, "read");
+    expect(Object.isFrozen(allowed.decision)).toBe(true);
+    expect(() => {
+      (allowed.decision as { allowed: boolean }).allowed = false;
+    }).toThrow(TypeError);
+    expect(allowed.decision.allowed).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Target repository and grants
 // ---------------------------------------------------------------------------
 

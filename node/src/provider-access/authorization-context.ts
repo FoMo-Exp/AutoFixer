@@ -203,13 +203,13 @@ export interface AuthorizationContext {
   /** Per-repository evidence, in binding order. */
   repositories: readonly AuthorizationRepositoryEvidence[];
   /** Verified intersection before the persisted (approved) ceiling. */
-  available_capabilities: RepositoryCapability[];
+  available_capabilities: readonly RepositoryCapability[];
   /** Effective capabilities the decision was made with. */
-  capabilities: RepositoryCapability[];
+  capabilities: readonly RepositoryCapability[];
   ceiling: {
     /** Persisted ceiling state (`approved` may be raised by an administrator). */
     state: "approved" | "downgraded" | null;
-    capabilities: RepositoryCapability[];
+    capabilities: readonly RepositoryCapability[];
     /** Persisted, human-readable reason (never provider secrets). */
     reason: string | null;
     version: number | null;
@@ -280,6 +280,31 @@ export interface AuthorizationContextService {
 // ---------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------
+
+/**
+ * Freeze the context and every nested object/array.
+ *
+ * A shallow freeze would leave `decision.allowed`, `capabilities` or a
+ * repository's evidence writable after the fact: a consumer that mutated them
+ * would be passing an authorization fact the server never decided. The walk is
+ * over plain data only (no class instances), uses a `WeakSet` so a shared or
+ * cyclic reference cannot loop, and still descends into already-frozen
+ * containers so no child escapes.
+ */
+function deepFreeze<T>(value: T, seen: WeakSet<object> = new WeakSet()): T {
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  const object = value as object;
+  if (seen.has(object)) {
+    return value;
+  }
+  seen.add(object);
+  for (const nested of Object.values(object as Record<string, unknown>)) {
+    deepFreeze(nested, seen);
+  }
+  return Object.freeze(value);
+}
 
 interface DecisionFacts {
   action: ActionKind;
@@ -706,7 +731,10 @@ export function createAuthorizationContextService(
       checked_at: at,
     };
 
-    return Object.freeze(context);
+    // Deep-freeze: every nested decision field and array is read-only, so a
+    // context handed to another component cannot be rewritten into a decision
+    // the server did not make.
+    return deepFreeze(context);
   }
 
   return {
