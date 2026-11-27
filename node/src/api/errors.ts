@@ -275,6 +275,27 @@ const ERROR_SEMANTICS: Record<string, ErrorSemantics> = {
     retryable: false,
     next_action: "refresh",
   },
+  // Explicit task target (DAT-292). A missing selection, a tampered identity
+  // and a changed trusted baseline are distinct refusals; none of them ever
+  // falls back to a repository or a base SHA the caller did not observe.
+  TARGET_REPOSITORY_REQUIRED: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: "resubmit",
+  },
+  TARGET_IDENTITY_MISMATCH: {
+    stage: "validation",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
+  TARGET_BASELINE_MISMATCH: {
+    stage: "authorization",
+    category: "stop",
+    retryable: false,
+    next_action: "refresh",
+  },
   MULTI_REPOSITORY_SCOPE_DISABLED: {
     stage: "authorization",
     category: "denial",

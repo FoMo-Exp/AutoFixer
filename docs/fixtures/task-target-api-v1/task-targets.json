@@ -1,0 +1,23 @@
+{
+  "workspace_id": "wsp_fixture_0001",
+  "repository_set_version": 1,
+  "multi_repository": false,
+  "selection_required": false,
+  "usable": true,
+  "blocked_reason": null,
+  "targets": [
+    {
+      "binding_id": "wrb_fixture_0001",
+      "repository_id": "github:FoMo-Exp/AutoFixer",
+      "provider_instance_id": "pi_fixture_0001",
+      "installation_ref": null,
+      "repository_name": null,
+      "position": 1,
+      "baseline": {
+        "state": "trusted",
+        "base_ref": "main",
+        "base_sha": "52081eaddca099967fd8be13b3060337fde50d3f"
+      }
+    }
+  ]
+}

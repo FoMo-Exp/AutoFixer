@@ -149,6 +149,15 @@ export function actionForRequest(method: string, segments: string[]): ActionKind
   } else if (
     segments[2] === "workspaces" &&
     segments[3] !== undefined &&
+    segments[4] === "task-targets"
+  ) {
+    // The target-selection read is an ordinary workspace read (DAT-292): the
+    // caller's membership and verified repository authority bound it, exactly
+    // like listing task history.
+    return segments.length === 5 && (method === "GET" || method === "HEAD") ? "read" : null;
+  } else if (
+    segments[2] === "workspaces" &&
+    segments[3] !== undefined &&
     segments[4] === "issues"
   ) {
     tail = segments.slice(5);

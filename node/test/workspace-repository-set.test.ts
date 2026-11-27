@@ -875,7 +875,7 @@ describe("multi-repository gate", () => {
     const fixture = seedSingleRepositoryWorkspace(db);
     insertSecondBinding(db, fixture);
     expect(() => resolverFor(db, fixture).resolve(fixture.workspace.id)).toThrow(
-      expect.objectContaining({ code: "MULTI_REPOSITORY_SCOPE_DISABLED" }),
+      expect.objectContaining({ code: "TARGET_REPOSITORY_REQUIRED", status: 400 }),
     );
   });
 
@@ -1138,8 +1138,8 @@ describe("refusal surface", () => {
     } catch (error) {
       expect(error).toBeInstanceOf(ApiError);
       const apiError = error as ApiError;
-      expect(apiError.status).toBe(403);
-      expect(apiError.code).toBe("MULTI_REPOSITORY_SCOPE_DISABLED");
+      expect(apiError.status).toBe(400);
+      expect(apiError.code).toBe("TARGET_REPOSITORY_REQUIRED");
       expect(JSON.stringify(apiError.details ?? {})).not.toContain("github:");
     }
     expect(new WorkspaceRepositorySetError("SCOPE_MUTATION_DISABLED", "x").status).toBe(409);

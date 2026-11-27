@@ -1,0 +1,66 @@
+{
+  "id": "tsk_fixture_0001",
+  "workspace_id": "wsp_fixture_0001",
+  "version": 3,
+  "created_at": "2026-11-27T12:00:00.000Z",
+  "updated_at": "2026-11-27T12:00:00.000Z",
+  "current_run_id": "run_fixture_0001",
+  "run_history_url": "/api/v1/workspaces/wsp_fixture_0001/tasks/tsk_fixture_0001/runs",
+  "repository": {
+    "id": "github:FoMo-Exp/AutoFixer",
+    "display_name": "FoMo-Exp/AutoFixer",
+    "base_ref": "main",
+    "base_sha": "52081eaddca099967fd8be13b3060337fde50d3f"
+  },
+  "target": {
+    "binding_id": "wrb_fixture_0001",
+    "repository_id": "github:FoMo-Exp/AutoFixer",
+    "provider_instance_id": "pi_fixture_0001",
+    "installation_ref": null,
+    "base_ref": "main",
+    "base_sha": "52081eaddca099967fd8be13b3060337fde50d3f",
+    "set_version": 1,
+    "verified_at": "2026-11-27T12:00:00.000Z"
+  },
+  "repository_set_version": 1,
+  "request": {
+    "summary": "legacy create records a target",
+    "source_reference": null
+  },
+  "association": {
+    "task_id": "tsk_fixture_0001",
+    "run_id": "run_fixture_0001",
+    "repository_id": "github:FoMo-Exp/AutoFixer",
+    "base_sha": "52081eaddca099967fd8be13b3060337fde50d3f",
+    "head_sha": null
+  },
+  "revision": {
+    "base_sha": "52081eaddca099967fd8be13b3060337fde50d3f",
+    "head_sha": null
+  },
+  "status": "awaiting_approval",
+  "status_reason": "dsh requires a pre-grant human approval",
+  "risk": {
+    "class": "elevated",
+    "decision_code": "elevated_requires_approval",
+    "requires_human_approval": true
+  },
+  "progress": {
+    "phase": null,
+    "actions_completed": 0,
+    "actions_total": null
+  },
+  "pi_summary": null,
+  "memory": null,
+  "governance": {
+    "current_head_sha": null,
+    "observations_valid": true,
+    "merge_queue_eligible": false
+  },
+  "artifacts": {
+    "patch": null,
+    "report": null,
+    "evidence_bundle_available": false,
+    "index": []
+  }
+}

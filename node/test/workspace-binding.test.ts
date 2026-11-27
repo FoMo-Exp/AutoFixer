@@ -40,6 +40,7 @@ const BETA: WorkspaceRunBinding = {
   baseRef: "trunk",
   baseSha: "b".repeat(40),
   setVersion: 1,
+  target: null,
 };
 
 function runResponse(taskId: string, runId: string): DshRunResponse {

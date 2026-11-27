@@ -40,6 +40,8 @@ function twoRunTask(): { store: TaskStore; task: TaskRecord } {
       actions_completed: 2,
       safety_events: 1,
       updated_at: "2026-11-01T00:10:00.000Z",
+      target: null,
+      repository_set_version: null,
     },
     {
       run_id: "run_current",
@@ -48,6 +50,8 @@ function twoRunTask(): { store: TaskStore; task: TaskRecord } {
       actions_completed: 7,
       safety_events: 0,
       updated_at: "2026-11-02T00:10:00.000Z",
+      target: null,
+      repository_set_version: null,
     },
   );
   task.runId = "run_current";
@@ -100,8 +104,20 @@ describe("trusted run outcomes", () => {
   test("a multi-run task without run-level evidence is excluded, not zero-filled", () => {
     const { store, task } = newTask("tsk_legacy");
     task.runs.push(
-      { run_id: "run_a", state: "rejected", created_at: "2026-11-01T00:00:00.000Z" },
-      { run_id: "run_b", state: "merged", created_at: "2026-11-02T00:00:00.000Z" },
+      {
+        run_id: "run_a",
+        state: "rejected",
+        created_at: "2026-11-01T00:00:00.000Z",
+        target: null,
+        repository_set_version: null,
+      },
+      {
+        run_id: "run_b",
+        state: "merged",
+        created_at: "2026-11-02T00:00:00.000Z",
+        target: null,
+        repository_set_version: null,
+      },
     );
     task.runId = "run_b";
     task.status = "merged";
@@ -116,7 +132,13 @@ describe("trusted run outcomes", () => {
 
   test("a single-run task may use the equivalent task-level aggregates", () => {
     const { store, task } = newTask("tsk_single");
-    task.runs.push({ run_id: "run_only", state: "merged", created_at: "2026-11-01T00:00:00.000Z" });
+    task.runs.push({
+      run_id: "run_only",
+      state: "merged",
+      created_at: "2026-11-01T00:00:00.000Z",
+      target: null,
+      repository_set_version: null,
+    });
     task.runId = "run_only";
     task.status = "merged";
     task.terminal = true;
@@ -142,6 +164,8 @@ describe("trusted run outcomes", () => {
       created_at: "2026-11-01T00:00:00.000Z",
       actions_completed: 3,
       safety_events: 0,
+      target: null,
+      repository_set_version: null,
     });
     task.runId = "run_running";
     const outcome = createTaskRunOutcomes(store).outcomeFor("run_running");

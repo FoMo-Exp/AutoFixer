@@ -774,6 +774,8 @@ describe("task service completion integration (DAT-258)", () => {
       run_id: RUN_ID,
       state: "running",
       created_at: record.createdAt,
+      target: null,
+      repository_set_version: null,
     });
     record.status = "validating";
     store.put(record);
