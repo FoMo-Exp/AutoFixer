@@ -196,6 +196,17 @@ export interface OrchestratorOptions {
    */
   securityDutyDirectory?: SecurityDutyDirectory;
   /**
+   * Complete-set enforcement (DAT-294). `"complete"` configures this build to
+   * evaluate a multi-repository workspace as a whole — for the capability
+   * ceiling, the request boundary, run dispatch, SSE, artifacts, approvals,
+   * messages, issues, memory and delivery — and to execute a run against one
+   * explicitly selected target of that set. It is **not** a rollout switch:
+   * the immutable `multi_repository_workspace` gate row must still say
+   * `enabled`, and a release that enables it is a separate, audited decision.
+   * The shipped deployment passes nothing, so both stay refusing.
+   */
+  multiRepositoryEnforcement?: "complete" | "none";
+  /**
    * Read-only pull-request governance reader (DAT-261). Unset uses the
    * reviewed GitHub reader over the integration's read-only source
    * credential; a repository without an active integration yields a blocked
@@ -651,12 +662,16 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     // while the persisted ceiling applies in every process.
     const providerAccess = createProviderAccessRepositories(controlPlane);
     // DAT-293 ships the runtime target path (trusted baseline, approved
-    // installation and credentials, dispatch re-check) but deliberately keeps
-    // the multi-repository set **unusable**: the protected-path consumers
-    // (DAT-294) have not been wired yet, so a set of several still refuses
-    // every path. `multiRepositoryRuntime: "complete"` exists in the control
-    // plane for the release that opens it together with the immutable gate row.
-    const workspaceRepositorySets = createWorkspaceRepositorySetRepository(controlPlane);
+    // installation and credentials, dispatch re-check). DAT-294 wires every
+    // protected path to the complete-set authorization context. Both the
+    // execution shape and the enforcement mode are a **deployment** decision:
+    // the shipped deployment configures neither, so a set of several still
+    // refuses every path, and the immutable rollout gate row stays the outer
+    // decision that a later release must append.
+    const completeSet = options.multiRepositoryEnforcement === "complete";
+    const workspaceRepositorySets = createWorkspaceRepositorySetRepository(controlPlane, {
+      ...(completeSet ? { multiRepositoryRuntime: "complete" as const } : {}),
+    });
     const providerEpoch = createAuthorityEpoch();
     const capabilityCeilings = createCapabilityCeilingService({
       repositorySets: workspaceRepositorySets,
@@ -666,6 +681,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       identity,
       capabilities: createMemberCapabilityRepository(controlPlane),
       epoch: providerEpoch,
+      ...(completeSet ? { multiRepositoryEnforcement: "complete" as const } : {}),
     });
     // Admission across the whole repository set (DAT-283). One evaluation feeds
     // the request path's last-effective-owner guard today and the repository
@@ -777,6 +793,19 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       // Canary samples come only from the task projection for pinned runs.
       outcomes: createTaskRunOutcomes(store),
     });
+    // One versioned authorization context for every protected path (DAT-294).
+    // The request boundary, the run-start/worker-step boundary and the
+    // approval/delivery re-checks all evaluate the same object, so "the
+    // intersection over every active repository is the ceiling" exists once.
+    const authorizationContexts = createAuthorizationContextService({
+      repositorySets: workspaceRepositorySets,
+      capabilityCeilings,
+      memberships: repos.memberships,
+      enterpriseUsers: identity.enterpriseUsers,
+      users: identity.users,
+      access: providerAccess,
+      policy: HTTP_ACTION_POLICY,
+    });
     providerAuthority = createRequestAuthority({
       access: providerAccess,
       memberships: repos.memberships,
@@ -785,6 +814,9 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       identities: identity.identities,
       enterpriseUsers: identity.enterpriseUsers,
       capabilityCeilings,
+      // Every request is decided by the complete-set context, with the
+      // resource's target and any observed set version (DAT-294).
+      contexts: authorizationContexts,
       // The memory team-leader exception reads the live team rows; enterprise
       // administration is checked from the separate enterprise grant.
       teams: repos.teams,
@@ -818,15 +850,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       actorId: config.actorId,
       repositorySets: workspaceRepositorySets,
       authority: providerAuthority,
-      contexts: createAuthorizationContextService({
-        repositorySets: workspaceRepositorySets,
-        capabilityCeilings,
-        memberships: repos.memberships,
-        enterpriseUsers: identity.enterpriseUsers,
-        users: identity.users,
-        access: providerAccess,
-        policy: HTTP_ACTION_POLICY,
-      }),
+      contexts: authorizationContexts,
       integrations: providerAccess.integrations,
     });
 
@@ -885,10 +909,26 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       access: providerAccess,
       // Approval eligibility is a workspace action: the issue repository's
       // roster fact alone is not enough once the workspace has a repository
-      // set, so the gate's verified intersection decides (DAT-285).
+      // set, so the context's verified intersection decides, named against the
+      // issue's repository (DAT-285/294).
       workspaceActionAllowed: (input) => {
-        const decision = providerAuthority?.check(input.user_id, "approval", input.workspace_id);
+        const decision = providerAuthority?.check(input.user_id, "approval", input.workspace_id, {
+          repository_id: input.repository_id,
+        });
         return decision?.allowed === true;
+      },
+      // The approval authority digest records the set version the decision was
+      // formed against, so a change is visible and auditable (DAT-294).
+      workspaceSetVersion: (input) => {
+        try {
+          return workspaceRepositorySets.currentSetVersion({
+            enterprise_id: config.enterpriseId,
+            workspace_id: input.workspace_id,
+            actor_id: config.actorId,
+          });
+        } catch {
+          return null;
+        }
       },
     });
     // The delivery provider is the only write path to a repository, and the
@@ -977,6 +1017,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
               input.user_id,
               "delivery",
               input.workspace_id,
+              { repository_id: input.repository_id },
             );
             return decision?.allowed === true;
           },

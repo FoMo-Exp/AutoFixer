@@ -33,7 +33,8 @@ import type { TaskEvent, TaskResource } from "./task-store.js";
 import type { TaskService } from "./task-service.js";
 import type { TaskTargetSelection, TaskTargetService } from "./task-targets.js";
 import { actionForRequest } from "./request-authority.js";
-import type { RequestAuthority } from "./request-authority.js";
+import type { RequestAuthority, RequestAuthorityScope } from "./request-authority.js";
+import type { ActionKind } from "../provider-access/types.js";
 import { computeEnterpriseCapabilityProjection } from "./enterprise-capability.js";
 import type { IssueSyncService } from "../issue-sync/service.js";
 import type { RuntimeDiagnostics } from "../diagnostics/runtime.js";
@@ -198,6 +199,58 @@ interface TaskRequestContext {
   workspaceId: string;
   /** Whether this request arrived on the workspace-scoped route family. */
   scoped: boolean;
+}
+
+/**
+ * The repository a task resource is authorized against (DAT-294).
+ *
+ * A task, its stream and its artifacts are decided with the immutable target
+ * the task was created with, so the complete-set evaluation names that one
+ * repository instead of authorizing a workspace-wide action. A live stream
+ * also asserts the set version it was opened against: a set change closes it
+ * rather than letting it keep emitting under a newer set. A record without a
+ * target (pre-DAT-292) or an unknown task contributes no scope and stays
+ * bounded by the workspace-level decision; the route's own 404 decides.
+ */
+function taskAuthorityScope(
+  deps: ApiServerDeps,
+  taskId: string | undefined,
+  workspaceId: string,
+  action: ActionKind | null,
+): RequestAuthorityScope | undefined {
+  if (taskId === undefined || taskId.length === 0) {
+    return undefined;
+  }
+  const facts = deps.service.authorityScope(taskId, workspaceId);
+  const scope: RequestAuthorityScope = {};
+  if (facts.target !== null) {
+    scope.target = facts.target;
+  }
+  if (action === "stream" && facts.repository_set_version !== null) {
+    scope.expected_set_version = facts.repository_set_version;
+  }
+  return Object.keys(scope).length > 0 ? scope : undefined;
+}
+
+/**
+ * The repository an issue resource belongs to, for the request decision
+ * (DAT-294). The identity comes from the server-side record — never a body or
+ * query field — and is resolved to its active binding by the authority. An
+ * unknown issue contributes no scope and the route's own 404 decides.
+ */
+function issueRepositoryId(
+  deps: ApiServerDeps,
+  workspaceId: string,
+  issueId: string | undefined,
+): string | undefined {
+  if (issueId === undefined || issueId.length === 0) {
+    return undefined;
+  }
+  const collaborative = deps.collab?.machine.getIssue(issueId);
+  if (collaborative !== undefined && collaborative.workspace.workspace_id === workspaceId) {
+    return collaborative.repository.repository_id;
+  }
+  return deps.issues?.get(workspaceId, issueId)?.repository.repository_id;
 }
 
 /**
@@ -441,12 +494,17 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
     const streamAuthority =
       actor.kind === "session" && deps.authority !== undefined ? deps.authority : undefined;
     const streamUser = actor.kind === "session" ? actor.ctx.user.id : null;
+    // The subscription is bound to the task's target and to the set version it
+    // was opened against (DAT-294): a removal, a transfer or any set change
+    // makes the next re-authorization fail, so the stream stops instead of
+    // replaying or emitting history under a scope it no longer holds.
+    const streamScope = taskAuthorityScope(deps, taskId, workspaceId, "stream");
     const streamStillAllowed = (): boolean => {
       if (streamAuthority === undefined || streamUser === null) {
         return true;
       }
       try {
-        return streamAuthority.check(streamUser, "stream", workspaceId).allowed;
+        return streamAuthority.check(streamUser, "stream", workspaceId, streamScope).allowed;
       } catch {
         // A failed re-authorization is a denial: never keep emitting on an
         // authority state that could not be evaluated.
@@ -457,7 +515,7 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
       // Re-check before committing any history. A denial here is still a real
       // 403 envelope (headers are not sent yet), which is better than an empty
       // 200 stream; the per-event check below covers the remaining window.
-      streamAuthority.require(streamUser, "stream", workspaceId);
+      streamAuthority.require(streamUser, "stream", workspaceId, streamScope);
     }
 
     res.writeHead(200, {
@@ -886,10 +944,17 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
             throw new ApiError(403, "FORBIDDEN", "this session has read-only access");
           }
           const requestAction = actionForRequest(method, segments);
-          if (actor.kind === "session" && requestAction !== null && deps.authority !== undefined) {
-            deps.authority.require(actor.ctx.user.id, requestAction, workspaceId);
-          }
           const tail = segments.slice(5);
+          // An issue resource is decided with the repository it belongs to
+          // (DAT-294): the complete-set evaluation names that target, so a
+          // repository removed from the set can no longer authorize its
+          // issues, deliveries or approvals.
+          const issueRepository = issueRepositoryId(deps, workspaceId, tail[0]);
+          const issueScope =
+            issueRepository !== undefined ? { repository_id: issueRepository } : undefined;
+          if (actor.kind === "session" && requestAction !== null && deps.authority !== undefined) {
+            deps.authority.require(actor.ctx.user.id, requestAction, workspaceId, issueScope);
+          }
           // Candidate review, candidate-bound approval, and broker-controlled
           // delivery (DAT-259). The path workspace is already resolved against
           // live membership and, for session actors, the action class against
@@ -917,7 +982,8 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
                 actor.kind === "local_operator"
                   ? true
                   : deps.authority === undefined ||
-                    deps.authority.check(actor.ctx.user.id, "delivery", workspaceId).allowed,
+                    deps.authority.check(actor.ctx.user.id, "delivery", workspaceId, issueScope)
+                      .allowed,
             });
             if (handled) {
               return;
@@ -1064,7 +1130,15 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
         }
         const requestAction = actionForRequest(method, segments);
         if (actor.kind === "session" && requestAction !== null && deps.authority !== undefined) {
-          deps.authority.require(actor.ctx.user.id, requestAction, workspaceId);
+          // A task, its stream and its artifacts are decided against the
+          // task's immutable target; a stream also asserts the set version it
+          // opened against (DAT-294).
+          deps.authority.require(
+            actor.ctx.user.id,
+            requestAction,
+            workspaceId,
+            taskAuthorityScope(deps, segments[5], workspaceId, requestAction),
+          );
         }
         await handleTaskRequest(
           {
@@ -1105,7 +1179,15 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
       // The legacy family is bound to the configured workspace.
       const requestAction = actionForRequest(method, segments);
       if (actor.kind === "session" && requestAction !== null && deps.authority !== undefined) {
-        deps.authority.require(actor.ctx.user.id, requestAction);
+        // The legacy seam is the same protected path: it names the task's
+        // target instead of authorizing from the deployment's default
+        // repository (DAT-294).
+        deps.authority.require(
+          actor.ctx.user.id,
+          requestAction,
+          deps.legacyWorkspaceId,
+          taskAuthorityScope(deps, segments[3], deps.legacyWorkspaceId, requestAction),
+        );
       }
       await handleTaskRequest(
         {

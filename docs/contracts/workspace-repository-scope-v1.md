@@ -1,19 +1,22 @@
 # Workspace repository set and multi-repository gate (v1)
 
 Status: **storage and read boundary implemented; repository-addition decision
-implemented behind the gate; whole-set authorization engine implemented, not
-wired; multi-repository scope not usable.** Implements DAT-281, with
+implemented behind the gate; whole-set authorization engine implemented and
+wired into every protected runtime path (DAT-294); multi-repository scope not
+usable.** Implements DAT-281, with
 DAT-283/284/286 adding the member-admission, audited-commit and HTTP
 preview/confirm/commit surfaces. DAT-291 adds the versioned authorization
 context and the complete-set capability intersection
-([authorization-context-v1.md](authorization-context-v1.md)); it does not enable
-the gate, and every consumer path still refuses a multi-repository scope until a
-release wires and verifies the whole set. This contract describes what exists,
-what is refused, and how a later release may turn the capability on. It is not a
-claim that multi-repository execution, delivery, memory or approvals are
-enforced — they are not, and until they are, every multi-repository scope fails
-closed. DAT-288 recorded the acceptance evidence and remaining blockers in
-[multi-repository-rollout-gate-v1.md](../multi-repository-rollout-gate-v1.md).
+([authorization-context-v1.md](authorization-context-v1.md)); DAT-294 wires
+that context into the request boundary, SSE, artifacts, approvals, messages,
+issues, memory, worker steps and delivery
+([protected-path-authority-v1.md](protected-path-authority-v1.md)). Neither
+change enables the gate: the shipped deployment keeps the refusing defaults,
+so every multi-repository scope still fails closed until a release configures
+complete-set enforcement and appends the enabled gate row. This contract
+describes what exists, what is refused, and how a later release may turn the
+capability on. DAT-288 recorded the acceptance evidence and remaining blockers
+in [multi-repository-rollout-gate-v1.md](../multi-repository-rollout-gate-v1.md).
 
 ## 1. Model
 
@@ -197,8 +200,9 @@ provider-verified trusted baseline, approved installation and checkout/delivery
 credentials, and a start/step re-check of the target at the recorded version
 (see [run-target-authority-v1.md](run-target-authority-v1.md)) — but a
 multi-repository set still refuses creation (`TARGET_REPOSITORY_REQUIRED`
-without a selection, `MULTI_REPOSITORY_SCOPE_*` with one) because the protected
-paths have not been wired to the complete set yet (DAT-294). The addition decision itself is implemented (DAT-283/284/286): a
+without a selection, `MULTI_REPOSITORY_SCOPE_*` with one) because the shipped
+configuration does not enable complete-set enforcement and the gate stays
+closed (DAT-294 wired the protected paths; see §10). The addition decision itself is implemented (DAT-283/284/286): a
 repository may only be added through an authorized preview and explicit
 confirmation, the whole addition is refused when any current effective member
 would lose admission or an effective owner would lose the required management
@@ -234,9 +238,10 @@ set for the legacy run binding.
 DAT-293 added the target model's runtime wiring: the workspace-scoped create
 path resolves a provider-verified baseline and the run start / worker step
 re-check the recorded target through this context (see
-[run-target-authority-v1.md](run-target-authority-v1.md)). The other protected
-paths (API reads, SSE, artifacts, approvals, messages, issues, memory,
-delivery) still decide per route and are DAT-294.
+[run-target-authority-v1.md](run-target-authority-v1.md)). DAT-294 wired the
+remaining protected paths (API reads, SSE and replay, artifacts, approvals,
+messages, issues, memory, delivery) to the same context; see §10 and
+[protected-path-authority-v1.md](protected-path-authority-v1.md).
 
 ## 9. Runtime target and dispatch authority (DAT-293)
 
@@ -255,5 +260,30 @@ whole-set capability intersection. The contract is
 `multiRepositoryRuntime` on the repository-set repository declares whether the
 build can execute a multi-repository set at all; it defaults to `none` and is
 **not** enabled by this change. Opening a multi-repository workspace therefore
-still needs DAT-294's per-route enforcement plus a release that appends the
-enabled gate row.
+still needs a release that configures complete-set enforcement (`"complete"`)
+and appends the enabled gate row.
+
+## 10. Protected-path runtime authorization (DAT-294)
+
+Every protected request is decided by one versioned authorization context:
+enterprise membership, assigned role, action policy, the **complete** active
+repository set at its current version, and the repository the resource belongs
+to. Task-shaped resources (detail, runs, timeline, artifacts, messages, cancel,
+archive, approvals) name the task's recorded immutable target; a stream also
+asserts the task's recorded set version, so a set change refuses the
+subscription (`409 REPOSITORY_SET_VERSION_CONFLICT`) and closes a live one.
+Issue-shaped resources (issues, their deliveries and approvals, the issue
+stream) name the issue's repository, resolved to its one active binding; a
+repository that left the set is refused as a target, never authorized
+workspace-wide. Memory and the task-target read are workspace-shaped. The
+approval directory re-derives eligibility from the whole-set intersection and
+records the set version in its authority digest; the delivery broker re-checks
+the requester's live capability on the delivery's repository before every
+provider write. Nothing is cached: a set or permission change applies to the
+next request in every process.
+
+The boundary, its HTTP refusals and its evidence are
+[protected-path-authority-v1.md](protected-path-authority-v1.md). It does not
+open the gate: a multi-repository workspace still refuses on every path in the
+shipped configuration, and a single-repository workspace keeps its previous
+behavior.

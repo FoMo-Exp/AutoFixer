@@ -1,11 +1,12 @@
 # Versioned authorization context (v1)
 
-Status: **implemented for the complete-set capability intersection (DAT-291);
-not yet wired into every runtime path.** The `multi_repository_workspace`
-rollout gate stays `disabled`, so no deployment authorizes a multi-repository
-workspace in this build. DAT-293 (task target) and DAT-294 (protected-path
-runtime authorization) consume this contract; DAT-297 verifies the whole
-runtime. This document describes the shared context those tasks build on.
+Status: **implemented for the complete-set capability intersection (DAT-291) and
+wired into the protected runtime paths (DAT-294).** The
+`multi_repository_workspace` rollout gate stays `disabled`, so no deployment
+authorizes a multi-repository workspace in this build. DAT-293 (task target)
+and DAT-294 (protected-path runtime authorization) consume this contract;
+DAT-297 verifies the whole runtime. This document describes the shared context
+those tasks build on.
 
 ## 1. Purpose
 
@@ -166,9 +167,13 @@ it.
 - **Single repository:** the context reproduces the request gate's decision for
   every action class; a workspace that binds one repository keeps exactly the
   access it had.
-- **Local prototype:** a workspace with zero `service_integration` rows keeps
-  the role/policy-only boundary (`repository_authority: "not_applicable"`), so
-  the operator prototype is unchanged.
+- **Local prototype:** a workspace with zero `service_integration` rows has no
+  repository authority to intersect (`repository_authority:
+  "not_applicable"`). The request gate keeps its pre-existing abstention for
+  that shape, so the route's own role/object checks decide; consumers that
+  evaluate the context directly (run start, worker step) still apply the
+  enterprise membership and action policy. Neither shape grants repository
+  data.
 - **No migration, no route, no field:** DAT-291 adds no schema version and no
   HTTP surface. `web/src/api/contracts/openapi.json` and generated types are
   unchanged. The task target model and its API belong to DAT-292.
@@ -196,3 +201,21 @@ other code stops the run for human triage. The HTTP write policy is used (an
 API write is task-plane mutation, not a repository delivery write), so the
 check remains the whole-set `repository_write` intersection plus freshness and
 the persisted ceiling. See `run-target-authority-v1.md`.
+
+### Consumed by DAT-294
+
+`createRequestAuthority` now decides **every** protected request through this
+context when the deployment configures it: the scoped and legacy task
+families, SSE (open, replay and every event), artifacts, task approvals,
+messages/cancel/archive, issues and their deliveries/approvals, the
+task-target read and memory. A task-shaped resource names its recorded
+immutable target (a stream also asserts the task's `repository_set_version`);
+an issue-shaped resource names the issue's repository, resolved to its one
+active binding; a workspace-shaped action names no target and is bounded by
+the whole set. The same authority is asked by the approval directory (approval
+eligibility, with the set version folded into the recorded authority digest)
+and by the delivery broker immediately before each provider write (the
+requester's live capability on the delivery's repository). A workspace with
+zero integration rows keeps the pre-existing request-gate abstention described
+in §8. The boundary, its refusal envelopes and its evidence are
+`protected-path-authority-v1.md`.

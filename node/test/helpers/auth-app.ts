@@ -152,6 +152,13 @@ export interface AuthAppOptions {
    * (DAT-278). Unset grants nobody a security action.
    */
   securityDutyDirectory?: SecurityDutyDirectory;
+  /**
+   * Configure the build for complete-set enforcement (DAT-294). This is a
+   * deployment mode, not a rollout switch: the immutable
+   * `multi_repository_workspace` gate row must also be `enabled`. Unset keeps
+   * the refusing default all shipped deployments use.
+   */
+  multiRepositoryEnforcement?: "complete" | "none";
 }
 
 let appCounter = 0;
@@ -274,6 +281,9 @@ export async function startAuthApp(options: AuthAppOptions): Promise<AuthApp> {
         : {}),
       ...(options.securityDutyDirectory !== undefined
         ? { securityDutyDirectory: options.securityDutyDirectory }
+        : {}),
+      ...(options.multiRepositoryEnforcement !== undefined
+        ? { multiRepositoryEnforcement: options.multiRepositoryEnforcement }
         : {}),
     });
   let orchestrator = buildOrchestrator();

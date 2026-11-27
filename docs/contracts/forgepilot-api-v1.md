@@ -185,6 +185,40 @@ administration, security duties or delivery approval.
   checked time. It never exposes another tenant, credentials, teammate data or
   provider role internals.
 
+## Protected-path runtime authorization (DAT-294)
+
+Every protected request is decided once, from the same versioned context: the
+enterprise membership, the assigned role, the action policy, the workspace's
+**complete** active repository set at its current version, and the repository
+the resource belongs to. The contract is
+[protected-path-authority-v1.md](protected-path-authority-v1.md).
+
+- **Target-aware.** A task, its artifacts, stream, messages, cancel, archive
+  and approval routes are decided against the task's recorded immutable
+  target; an issue, its stream, candidate approvals and deliveries are decided
+  against the issue's repository. A repository that is not an active binding of
+  the current set authorizes nothing (`403 FORBIDDEN`,
+  `details.reason: "target_repository"`); there is no fallback to another
+  repository or to a workspace-wide decision.
+- **Version-bound streams.** Opening a task stream, including a
+  `Last-Event-ID` replay, asserts the set version the task recorded. If the set
+  changed, the stream is refused `409 REPOSITORY_SET_VERSION_CONFLICT` and
+  replays no history; a live stream re-checks on every event and closes on any
+  denial. A workspace action that observed a version may pass
+  `expected_set_version` and receives the same `409` instead of a stale allow.
+- **Refusals.** Unknown/stale/unverifiable authority is
+  `403 AUTHORITY_RECHECK_REQUIRED` (`next_action: reconcile`,
+  `details.capability_reason` naming the ceiling reason) and is never recorded
+  as a downgrade. A confirmed loss, a missing capability, a missing grant or a
+  role/policy failure is `403 FORBIDDEN` (`next_action: request_review`). The
+  advisory capability projection is never a credential; every request is
+  decided again from server-side facts.
+- **Approvals and delivery.** Approval eligibility re-derives the whole-set
+  intersection for the issue's repository and records the set version in the
+  approval authority digest. Before every provider write the broker re-checks
+  the requester's live capability on the delivery's repository, so a set or
+  permission change stops the write.
+
 ## Eight-module capability projection (DAT-278)
 
 `GET /api/v1/workspaces/{workspace_id}/capabilities` serves
