@@ -509,12 +509,23 @@ async function handleTaskRequest(ctx: TaskRequestContext, tail: string[]): Promi
     // makes the next re-authorization fail, so the stream stops instead of
     // replaying or emitting history under a scope it no longer holds.
     const streamScope = taskAuthorityScope(deps, taskId, workspaceId, "stream");
+    let streamDenialAudited = false;
     const streamStillAllowed = (): boolean => {
       if (streamAuthority === undefined || streamUser === null) {
         return true;
       }
       try {
-        return streamAuthority.check(streamUser, "stream", workspaceId, streamScope).allowed;
+        // A mid-stream denial is a refused protected-request decision, but the
+        // check runs on every event and epoch signal. Audit it once per
+        // subscription: the first refusal ends the stream, and repeat signals
+        // must not append duplicate evidence for the same refusal.
+        const decision = streamAuthority.check(streamUser, "stream", workspaceId, streamScope, {
+          audit: !streamDenialAudited,
+        });
+        if (!decision.allowed) {
+          streamDenialAudited = true;
+        }
+        return decision.allowed;
       } catch {
         // A failed re-authorization is a denial: never keep emitting on an
         // authority state that could not be evaluated.
@@ -1052,12 +1063,18 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
                       display_name: actor.ctx.user.display_name,
                     }
                   : { kind: "local_operator", user_id: null, display_name: null },
+              // This is a second, independent decision: the request-boundary
+              // `require` above already allowed the action, but authority can
+              // change between the two evaluations. A refusal acts on the
+              // request, so it appends its own `authorization.denied` record
+              // exactly once (the earlier allow appended nothing).
               requesterAuthorized:
                 actor.kind === "local_operator"
                   ? true
                   : deps.authority === undefined ||
-                    deps.authority.check(actor.ctx.user.id, "delivery", workspaceId, issueScope)
-                      .allowed,
+                    deps.authority.check(actor.ctx.user.id, "delivery", workspaceId, issueScope, {
+                      audit: true,
+                    }).allowed,
             });
             if (handled) {
               return;

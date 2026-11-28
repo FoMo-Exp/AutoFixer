@@ -15,8 +15,14 @@ import type { DshServerHandle } from "./helpers/dsh-server.js";
 import { startDshServer } from "./helpers/dsh-server.js";
 import { cookieSessionHeaders, startAuthApp, webLogin } from "./helpers/auth-app.js";
 import type { AuthApp, LoggedInSession } from "./helpers/auth-app.js";
-import { getJson } from "./helpers/http.js";
-import { CURRENT_SCHEMA_VERSION, createRepositories } from "../src/control-plane/index.js";
+import { getJson, postJson } from "./helpers/http.js";
+import {
+  CURRENT_SCHEMA_VERSION,
+  createProviderAccessRepositories,
+  createRepositories,
+} from "../src/control-plane/index.js";
+import { planningIssue } from "./helpers/collab.js";
+import { REPOSITORY_ID } from "./helpers/auth-app.js";
 
 let dsh: DshServerHandle;
 const apps: AuthApp[] = [];
@@ -202,5 +208,101 @@ describe("workspace authorization status over HTTP (DAT-296)", () => {
       cookieSessionHeaders(owner),
     );
     expect(response.status).toBe(400);
+  }, 120_000);
+});
+
+describe("a refusal from the second delivery decision is audited (DAT-296)", () => {
+  test("the collab delivery decision appends exactly one denial when authority changes between require and check", async () => {
+    const app = await startAuthApp({
+      dsh,
+      repositoryIntegration: true,
+      multiRepositoryEnforcement: "complete",
+    });
+    apps.push(app);
+    const owner = await webLogin(app);
+    addMembership(app, owner.userId, "owner");
+
+    const db = app.orchestrator.controlPlane;
+    if (db === undefined) {
+      throw new Error("fixture requires the control-plane database");
+    }
+    const integration = app.integration;
+    const authority = app.orchestrator.providerAuthority;
+    const machine = app.orchestrator.collaboration;
+    if (integration === undefined || authority === undefined || machine === undefined) {
+      throw new Error("fixture requires the integration, authority and collaboration machine");
+    }
+    const scope = {
+      enterprise_id: app.enterpriseId,
+      workspace_id: app.workspaceId,
+      actor_id: "usr_seed",
+    };
+    const access = createProviderAccessRepositories(db);
+    access.roster.applySnapshot(scope, integration.id, {
+      roles: [
+        {
+          subject: "1001",
+          login: "octo",
+          source_kind: "direct_collaborator",
+          provider_role: "admin",
+          authority_ref: REPOSITORY_ID,
+          inherited_from: null,
+        },
+      ],
+      verified_at: new Date().toISOString(),
+    });
+    const issue = planningIssue(machine, {
+      workspace: { enterprise_id: app.enterpriseId, workspace_id: app.workspaceId },
+      repository: {
+        repository_id: REPOSITORY_ID,
+        url: "https://github.com/FoMo-Exp/AutoFixer.git",
+        base_ref: "main",
+        base_sha: "52081eaddca099967fd8be13b3060337fde50d3f",
+      },
+    });
+
+    // The request-boundary `require` allows this delivery; then authority is
+    // aged before the second, independent delivery decision. That refusal is
+    // the decision QA flagged: it must append its own denial row.
+    const originalRequire = authority.require.bind(authority);
+    let flipped = false;
+    authority.require = (userId, action, workspaceId, requestScope) => {
+      originalRequire(userId, action, workspaceId, requestScope);
+      if (action === "delivery" && !flipped) {
+        flipped = true;
+        access.roster.setAuthorityState(
+          scope,
+          integration.id,
+          "1001",
+          "stale",
+          new Date().toISOString(),
+        );
+      }
+    };
+
+    const response = await postJson(
+      `${app.base}/api/v1/workspaces/${app.workspaceId}/issues/${issue.issue_id}/deliveries`,
+      {},
+      cookieSessionHeaders(owner),
+    );
+    // The handler refuses the unsigned delivery request; the status is not the
+    // point — the audited refusal of the second decision is.
+    expect(response.status).not.toBe(200);
+
+    const rows = db
+      .prepare(
+        `SELECT details FROM auth_audit
+          WHERE event = 'authorization.denied' AND workspace_id = ? AND action = 'delivery'`,
+      )
+      .all(app.workspaceId) as unknown as Array<{ details: string }>;
+    expect(rows).toHaveLength(1);
+    const details = JSON.parse(rows[0]!.details) as Record<string, unknown>;
+    expect(details).toMatchObject({
+      outcome: "denied",
+      action: "delivery",
+      code: "AUTHORITY_RECHECK_REQUIRED",
+      repository_set_version: 1,
+      target: { repository_id: REPOSITORY_ID },
+    });
   }, 120_000);
 });

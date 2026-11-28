@@ -34,6 +34,15 @@ import type {
   WorkspaceScope,
 } from "../src/control-plane/index.js";
 import { createAuthorizationStatusService } from "../src/api/authorization-status.js";
+import { createAuthorizationContextService } from "../src/provider-access/authorization-context.js";
+import { createRequestAuthority, HTTP_ACTION_POLICY } from "../src/api/request-authority.js";
+import {
+  NOW,
+  REPO_ID,
+  addMember,
+  setupFixture,
+  verifyAuthority,
+} from "./helpers/provider-access.js";
 
 const ACTOR = "usr_operator";
 const REPOSITORY = "github:repo:4242";
@@ -357,5 +366,110 @@ describe("workspace authorization status (DAT-296)", () => {
     });
     expect(status.rollout.gate.state).toBe("unreadable");
     expect(status.rollout.gate.unreadable_code).toBe("SCHEMA_VERSION_UNSUPPORTED");
+  });
+});
+
+describe("a second decision on the same request is audited exactly once (DAT-296)", () => {
+  function authorityFor(fixture: ReturnType<typeof setupFixture>) {
+    const audit = createAuthorizationAuditRepository(fixture.db);
+    const contexts = createAuthorizationContextService({
+      repositorySets: createWorkspaceRepositorySetRepository(fixture.db),
+      capabilityCeilings: fixture.capabilityCeilings,
+      memberships: fixture.memberships,
+      enterpriseUsers: fixture.identity.enterpriseUsers,
+      users: fixture.users,
+      access: fixture.access,
+      policy: HTTP_ACTION_POLICY,
+      clock: () => fixture.clock.now,
+    });
+    const authority = createRequestAuthority({
+      access: fixture.access,
+      memberships: fixture.memberships,
+      workspaces: fixture.workspaces,
+      users: fixture.users,
+      identities: fixture.identities,
+      enterpriseUsers: fixture.identity.enterpriseUsers,
+      capabilityCeilings: fixture.capabilityCeilings,
+      contexts,
+      epoch: fixture.epoch,
+      enterpriseId: fixture.scope.enterprise_id,
+      workspaceId: fixture.workspaceId,
+      clock: () => fixture.clock.now,
+      authorizations: audit,
+    });
+    return { authority, audit };
+  }
+
+  function denialRows(db: ControlPlaneDb): Array<{ details: string }> {
+    return db
+      .prepare("SELECT details FROM auth_audit WHERE event = 'authorization.denied'")
+      .all() as unknown as Array<{ details: string }>;
+  }
+
+  test("an audited check refusal appends one row; an unaudited check appends none", () => {
+    const fixture = setupFixture();
+    const member = addMember(fixture, { subject: "7101", login: "deliverer", role: "member" });
+    verifyAuthority(fixture, "7101", member.userId, NOW, { provider_role: "write" });
+    const { authority } = authorityFor(fixture);
+
+    // Allowed: nothing is recorded for an allow, audited or not.
+    const allowed = authority.check(
+      member.userId,
+      "delivery",
+      fixture.workspaceId,
+      {
+        repository_id: REPO_ID,
+      },
+      { audit: true },
+    );
+    expect(allowed.allowed).toBe(true);
+    expect(denialRows(fixture.db)).toHaveLength(0);
+
+    // A provider observation ages the subject's authority: the next audited
+    // check refuses and appends exactly one record naming the target and set
+    // version.
+    fixture.access.roster.setAuthorityState(
+      fixture.scope,
+      fixture.integration.id,
+      "7101",
+      "stale",
+      NOW,
+    );
+    const denied = authority.check(
+      member.userId,
+      "delivery",
+      fixture.workspaceId,
+      { repository_id: REPO_ID },
+      { audit: true },
+    );
+    expect(denied.allowed).toBe(false);
+    expect(denied.code).toBe("AUTHORITY_RECHECK_REQUIRED");
+    const rows = denialRows(fixture.db);
+    expect(rows).toHaveLength(1);
+    const details = JSON.parse(rows[0]!.details) as Record<string, unknown>;
+    expect(details).toMatchObject({
+      outcome: "denied",
+      action: "delivery",
+      code: "AUTHORITY_RECHECK_REQUIRED",
+      repository_set_version: 1,
+      context_schema_version: 1,
+      target: { repository_id: REPO_ID },
+    });
+
+    // The same decision without the audit option adds no second record.
+    expect(
+      authority.check(member.userId, "delivery", fixture.workspaceId, {
+        repository_id: REPO_ID,
+      }).allowed,
+    ).toBe(false);
+    expect(denialRows(fixture.db)).toHaveLength(1);
+
+    // `require` records its own refusal once, and never through `check`.
+    expect(() =>
+      authority.require(member.userId, "delivery", fixture.workspaceId, {
+        repository_id: REPO_ID,
+      }),
+    ).toThrow();
+    expect(denialRows(fixture.db)).toHaveLength(2);
   });
 });

@@ -77,6 +77,15 @@ mutations already commit their required audit row in their own transaction
 authorization boundary contributes the fact those domains never see — the
 refusal. A failed audit append propagates; it is never swallowed into an allow.
 
+A request can make a **second** authorization decision after the boundary
+`require` already allowed — the collab issue path re-decides `delivery` before
+passing `requester_authorized` to the handler, and a live stream re-checks
+`stream` on every event/epoch signal. Those checks pass `{ audit: true }`, so a
+refusal at that moment appends its own record exactly once (the earlier allow
+appended nothing); a stream records at most one denial per subscription, and
+repeated signals for the same refusal append no duplicates. `require` records
+its own refusal and never delegates to the audited check path.
+
 Records contain no credential, bearer value, provider URL or name, task/issue
 content, diff or other member's identity. A test asserts the serialized row
 matches none of those shapes.
