@@ -48,6 +48,8 @@ import type { OrchestratorConfig } from "./config.js";
 import { configFromEnv, defaultSecurityStatePath } from "./config.js";
 import type { ControlPlaneDb } from "./control-plane/index.js";
 import {
+  CURRENT_SCHEMA_VERSION,
+  createAuthorizationAuditRepository,
   createIdentityRepositories,
   createInvitationRepository,
   createMemberCapabilityRepository,
@@ -56,10 +58,13 @@ import {
   createRepositorySetChangeRepository,
   createWorkspaceRepositorySetRepository,
   openControlPlaneDb,
+  readSchemaVersion,
 } from "./control-plane/index.js";
 import { createAuthorityEpoch } from "./provider-access/access-gate.js";
 import { createCapabilityCeilingService } from "./provider-access/capability-ceiling.js";
 import { createAuthorizationContextService } from "./provider-access/authorization-context.js";
+import { createAuthorizationStatusService } from "./api/authorization-status.js";
+import type { AuthorizationStatusService } from "./api/authorization-status.js";
 import { createMemberAdmissionService } from "./provider-access/member-admission.js";
 import { createRepositorySetChangeService } from "./provider-access/repository-set-change.js";
 import { WorkspaceRepositorySetChangeService } from "./api/repository-set-change-service.js";
@@ -603,6 +608,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
   let invitations: InvitationService | undefined;
   let controlPlane: ControlPlaneDb | undefined;
   let providerAuthority: RequestAuthority | undefined;
+  let authorizationStatus: AuthorizationStatusService | undefined;
   /**
    * Sensitive worker-step re-authorization (DAT-285). Set with the identity
    * surface so every `dsh_request_action` re-reads the requester's current
@@ -806,6 +812,11 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       access: providerAccess,
       policy: HTTP_ACTION_POLICY,
     });
+    // One append-only authorization audit (DAT-296). Denials on every
+    // protected path and every refused worker step land here with the actor,
+    // workspace, target identity and the versions that decided; allowed
+    // requests keep their domain-owned audit rows.
+    const authorizationAudit = createAuthorizationAuditRepository(controlPlane);
     providerAuthority = createRequestAuthority({
       access: providerAccess,
       memberships: repos.memberships,
@@ -835,6 +846,19 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       epoch: providerEpoch,
       enterpriseId: config.enterpriseId,
       workspaceId: config.workspaceId,
+      authorizations: authorizationAudit,
+    });
+    // Operational authorization status (DAT-296): schema/gate/set versions,
+    // the caller's own live evidence and a bounded denial trend. It never
+    // grants authority; it explains the current decision and its refusals.
+    const controlPlaneDb = controlPlane;
+    authorizationStatus = createAuthorizationStatusService({
+      enterprise_id: config.enterpriseId,
+      repositorySets: workspaceRepositorySets,
+      contexts: authorizationContexts,
+      audit: authorizationAudit,
+      buildSchemaVersion: CURRENT_SCHEMA_VERSION,
+      databaseSchemaVersion: () => readSchemaVersion(controlPlaneDb),
     });
     // Sensitive worker steps and run starts (DAT-285/291/293). A remediation
     // run outlives the request that created it, so every `dsh_request_action`
@@ -852,6 +876,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
       authority: providerAuthority,
       contexts: authorizationContexts,
       integrations: providerAccess.integrations,
+      authorizationAudit,
     });
 
     // Workspace membership (DAT-277) is decided from the caller's live role
@@ -1227,6 +1252,7 @@ export function createOrchestrator(options: OrchestratorOptions): OrchestratorHa
     runtimeDiagnostics: diagnostics,
     ...(auth !== undefined ? { auth } : {}),
     ...(providerAuthority !== undefined ? { authority: providerAuthority } : {}),
+    ...(authorizationStatus !== undefined ? { authorizationStatus } : {}),
     ...(invitations !== undefined ? { invitations } : {}),
     ...(members !== undefined ? { members } : {}),
     ...(repositorySetChanges !== undefined ? { repositorySetChanges } : {}),

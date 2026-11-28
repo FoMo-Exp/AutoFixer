@@ -89,6 +89,10 @@ export const CAPABILITY_GRANT_KINDS = ["checkout_read", "delivery_write"] as con
  * - `capability_store_unavailable` — the confirmed reduction could not be
  *   persisted/audited; access fails closed rather than acting on an
  *   unauditable decision.
+ * - `schema_version_unsupported` — the database was migrated by a newer build
+ *   than this process, so the set cannot be evaluated with this build's rules.
+ * - `repository_set_state_unsupported` — a binding carries a state this build
+ *   does not understand; ignoring it would shrink the set.
  */
 export type CapabilityBlockReason =
   | "workspace_archived"
@@ -107,7 +111,9 @@ export type CapabilityBlockReason =
   | "unsupported_role"
   | "repository_access_removed"
   | "no_code_read"
-  | "capability_store_unavailable";
+  | "capability_store_unavailable"
+  | "schema_version_unsupported"
+  | "repository_set_state_unsupported";
 
 /** Canonical order for reporting, matching the type above one-for-one. */
 export const CAPABILITY_BLOCK_REASONS: readonly CapabilityBlockReason[] = Object.freeze([
@@ -128,6 +134,8 @@ export const CAPABILITY_BLOCK_REASONS: readonly CapabilityBlockReason[] = Object
   "repository_access_removed",
   "no_code_read",
   "capability_store_unavailable",
+  "schema_version_unsupported",
+  "repository_set_state_unsupported",
 ]);
 
 /**

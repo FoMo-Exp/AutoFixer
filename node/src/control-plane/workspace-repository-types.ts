@@ -51,6 +51,12 @@ export type WorkspaceRepositoryBindingStatus = "active" | "retired";
  * - `SCOPE_MUTATION_DISABLED` — creating or changing a binding is refused.
  * - `FEATURE_GATE_UNREADABLE` — the gate row is missing or its schema version
  *   is newer than this build; authority cannot be established.
+ * - `SCHEMA_VERSION_UNSUPPORTED` — the database was migrated by a newer build
+ *   than this process (a rolling deploy in progress); the set cannot be read
+ *   with this build's rules, so authority fails closed.
+ * - `REPOSITORY_SET_STATE_UNSUPPORTED` — a binding row carries a state this
+ *   build does not understand (written by a newer schema). Ignoring the row
+ *   would silently shrink the set, so the whole set is refused instead.
  */
 export type WorkspaceRepositorySetErrorCode =
   | "REPOSITORY_BINDING_MISSING"
@@ -62,7 +68,9 @@ export type WorkspaceRepositorySetErrorCode =
   | "MULTI_REPOSITORY_SCOPE_DISABLED"
   | "MULTI_REPOSITORY_SCOPE_UNSUPPORTED"
   | "SCOPE_MUTATION_DISABLED"
-  | "FEATURE_GATE_UNREADABLE";
+  | "FEATURE_GATE_UNREADABLE"
+  | "SCHEMA_VERSION_UNSUPPORTED"
+  | "REPOSITORY_SET_STATE_UNSUPPORTED";
 
 // ---------------------------------------------------------------------------
 // Entities

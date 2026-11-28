@@ -47,9 +47,15 @@ import type {
   AuthorizationContextService,
   AuthorizationDecisionCode,
 } from "../provider-access/authorization-context.js";
-import type { RunStepAuthority } from "./task-service.js";
+import type {
+  RunStepAuthority,
+  RunStepAuthorityInput,
+  RunStepAuthorityResult,
+} from "./task-service.js";
 import type { RequestAuthority } from "./request-authority.js";
 import type { TaskTarget } from "./task-targets.js";
+import { CURRENT_SCHEMA_VERSION } from "../control-plane/db.js";
+import type { AuthorizationAuditRepository } from "../control-plane/authorization-audit-repositories.js";
 
 export interface RunStepAuthorityDeps {
   enterpriseId: string;
@@ -68,6 +74,12 @@ export interface RunStepAuthorityDeps {
   integrations?: ServiceIntegrationRepository;
   /** Clock seam for context freshness in tests. */
   clock?: () => Date;
+  /**
+   * Append-only denial audit (DAT-296). A refused run start or worker-step
+   * dispatch is recorded with the run's target, set version and requester, so
+   * the runtime boundary's refusals are observable next to HTTP denials.
+   */
+  authorizationAudit?: AuthorizationAuditRepository;
 }
 
 /** Decision codes a dispatch denial may carry. */
@@ -177,7 +189,7 @@ export function createRunStepAuthority(deps: RunStepAuthorityDeps): RunStepAutho
     return null;
   }
 
-  return (input) => {
+  const decide = (input: RunStepAuthorityInput): RunStepAuthorityResult => {
     let set: WorkspaceRepositorySet | null = null;
     if (input.repository_set_version !== null) {
       set = readSetAt(input.workspace_id, input.repository_set_version);
@@ -268,5 +280,37 @@ export function createRunStepAuthority(deps: RunStepAuthorityDeps): RunStepAutho
       // dispatch, so the run can resume when the facts verify again.
       terminal: decision.requires_reconciliation !== true,
     };
+  };
+
+  return (input: RunStepAuthorityInput): RunStepAuthorityResult => {
+    const result = decide(input);
+    if (!result.allowed) {
+      // Required evidence for a refused dispatch. A failure to append still
+      // refuses the dispatch (the write propagates); it never becomes an allow.
+      deps.authorizationAudit?.recordDenial({
+        enterprise_id: deps.enterpriseId,
+        workspace_id: input.workspace_id,
+        actor_kind: input.requested_by?.kind === "deployment" ? "deployment" : "user",
+        actor_user_id:
+          input.requested_by?.kind === "deployment" ? null : (input.requested_by?.user_id ?? null),
+        action: "write",
+        decision_code: result.code ?? "AUTHORITY_RECHECK_REQUIRED",
+        reason: result.reason ?? null,
+        capability_reason: null,
+        required_capability: "repository_write",
+        requires_reconciliation: result.terminal !== true,
+        target:
+          input.target === null || input.target === undefined
+            ? null
+            : {
+                provider_instance_id: input.target.provider_instance_id,
+                repository_id: input.target.repository_id,
+              },
+        repository_set_version: input.repository_set_version,
+        context_schema_version: deps.contexts !== undefined ? 1 : null,
+        build_schema_version: CURRENT_SCHEMA_VERSION,
+      });
+    }
+    return result;
   };
 }

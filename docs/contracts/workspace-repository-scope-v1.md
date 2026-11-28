@@ -156,10 +156,17 @@ Rules:
 
 - The service refuses to serve a database whose `schema_migrations` version is
   newer than the build (`SchemaVersionMismatchError`,
-  `SCHEMA_VERSION_UNSUPPORTED`). An older single-repository process can
-  therefore never open a database that already records a multi-repository
-  decision it cannot enforce: it would read one column, ignore the rest of the
-  set, and authorize against one repository of many.
+  `SCHEMA_VERSION_UNSUPPORTED`) at open **and on every authority read**
+  (DAT-296). An older single-repository process can therefore never open a
+  database that already records a multi-repository decision it cannot enforce:
+  it would read one column, ignore the rest of the set, and authorize against
+  one repository of many. The per-read guard is what makes a rolling deploy
+  (a newer process migrating the shared database while an older one is still
+  serving) fail closed on the next decision instead of at the next restart.
+- A binding row whose `status` is not `active` / `retired` was written by a
+  state this build does not understand; the whole set is refused
+  (`REPOSITORY_SET_STATE_UNSUPPORTED`) rather than silently filtered, because
+  filtering would shrink the set and could over-authorize the rest.
 - A gate row newer than the build is `FEATURE_GATE_UNREADABLE`, so authority
   cannot be established from a rollout decision the process does not
   understand.
@@ -287,3 +294,18 @@ The boundary, its HTTP refusals and its evidence are
 open the gate: a multi-repository workspace still refuses on every path in the
 shipped configuration, and a single-repository workspace keeps its previous
 behavior.
+
+## 11. Mixed-version protection, audit and observability (DAT-296)
+
+A database migrated by a newer build is refused on every authority read, not
+only at process start; an unknown binding state refuses the whole set. Every
+refused authorization on a protected path or worker step appends one
+`authorization.denied` record to the storage-append-only `auth_audit` (v23
+adds `workspace_id` / `action` / `decision_code` and update/delete triggers),
+naming the actor, workspace, action, immutable target identity, set/context/
+build/database versions and the safe code. An admin/owner can read the build
+and database schema versions, the gate, the set version, their own evidence
+freshness and a bounded denial trend at
+`GET /api/v1/workspaces/{id}/authorization-status`. The contract is
+[mixed-version-audit-observability-v1.md](mixed-version-audit-observability-v1.md).
+None of this enables the gate or grants authority.

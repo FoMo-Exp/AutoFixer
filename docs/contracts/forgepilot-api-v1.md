@@ -133,6 +133,7 @@ Endpoints (details in the OpenAPI document):
 | `POST /api/v1/admin/users/{user_id}/suspend` | none | `200 User`; deployment operator only |
 | `POST /api/v1/admin/users/{user_id}/activate` | none | `200 User`; deployment operator only |
 | `GET /api/v1/workspaces/{workspace_id}/capabilities` | none | `200 WorkspaceCapabilityProjection`; `404 Workspace was not found`; session only |
+| `GET /api/v1/workspaces/{workspace_id}/authorization-status?window_minutes=` | optional `window_minutes` (1–10080) | `200 WorkspaceAuthorizationStatus`; `400 INVALID_REQUEST`; `403 WORKSPACE_ROLE_REQUIRED`; `404 Workspace was not found`; admin/owner only |
 | `GET /api/v1/enterprises/{enterprise_id}/capabilities` | none | `200 EnterpriseCapabilityProjection`; `403` membership required/suspended; `404 Enterprise was not found`; session only |
 | `GET /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}/capability-ceiling` | none | `200 MemberCapabilityCeilingView`; `403 FORBIDDEN`; `404` |
 | `POST /api/v1/admin/enterprises/{enterprise_id}/workspaces/{workspace_id}/members/{user_id}/capability-ceiling` | `{version, capabilities?}` | `200 MemberCapabilityCeiling`; `403 CAPABILITY_ADMIN_REQUIRED`/`CAPABILITY_MANAGEMENT_REQUIRED`/`CAPABILITY_CEILING_EXCEEDS_VERIFIED`/`CAPABILITY_CEILING_NOT_ELIGIBLE`; `409 VERSION_CONFLICT`/`CAPABILITY_CEILING_MISMATCH`/`CAPABILITY_CEILING_UNAVAILABLE` |

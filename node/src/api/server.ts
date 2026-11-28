@@ -43,6 +43,7 @@ import {
   isServiceIntegrationRoute,
 } from "./service-integration-http.js";
 import type { ServiceIntegrationService } from "./service-integration-service.js";
+import type { AuthorizationStatusService } from "./authorization-status.js";
 
 export interface ApiServerDeps {
   service: TaskService;
@@ -96,6 +97,15 @@ export interface ApiServerDeps {
    * the route nonexistent rather than unauthenticated.
    */
   taskTargets?: TaskTargetService;
+  /**
+   * Workspace authorization status (DAT-296): build/database schema versions,
+   * the immutable rollout gate, the set version, the caller's own evidence
+   * freshness and safe refusal codes, and a bounded denial trend from the
+   * append-only audit. Read-only and admin-scoped; it must stay readable while
+   * authority is unverified, because that is exactly when an operator needs
+   * it. Unset keeps the route nonexistent.
+   */
+  authorizationStatus?: AuthorizationStatusService;
   /** Workspace-scoped issue creation/list/detail and provider synchronization. */
   issues?: IssueSyncService;
   /**
@@ -874,6 +884,70 @@ export function createApiServer(deps: ApiServerDeps): http.Server {
             fresh_window_ms: freshness.fresh_window_ms,
             stale_after_ms: freshness.stale_after_ms,
           }),
+        );
+        return;
+      }
+
+      // Workspace authorization status (DAT-296). Admin-scoped operational
+      // evidence: schema/gate/set versions, the caller's own current
+      // authorization context, and denial counts by safe code. It is served
+      // ahead of the provider gate because an unverified authority is the
+      // state it exists to explain; the membership + role check below is the
+      // whole authorization for this read, and it discloses no repository
+      // content, credential, actor identity or target URL.
+      if (
+        segments[2] === "workspaces" &&
+        segments.length === 5 &&
+        segments[4] === "authorization-status"
+      ) {
+        if (req.method !== "GET") {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+        }
+        if (deps.authorizationStatus === undefined) {
+          throw new ApiError(404, "NOT_FOUND", `No route for ${req.method} ${url.pathname}`);
+        }
+        const actor = authenticateRequest(req, deps);
+        const workspaceId = segments[3];
+        if (workspaceId === undefined) {
+          throw new ApiError(404, "NOT_FOUND", "Workspace was not found");
+        }
+        if (actor.kind === "local_operator") {
+          if (workspaceId !== deps.legacyWorkspaceId) {
+            throw new ApiError(404, "NOT_FOUND", "Workspace was not found");
+          }
+        } else {
+          if (deps.auth === undefined) {
+            throw new ApiError(404, "NOT_FOUND", "Workspace was not found");
+          }
+          const access = deps.auth.workspaceAccess(actor.ctx.user.id, workspaceId);
+          if (access === undefined) {
+            throw new ApiError(404, "NOT_FOUND", "Workspace was not found");
+          }
+          if (access.membership.role !== "admin" && access.membership.role !== "owner") {
+            throw new ApiError(
+              403,
+              "WORKSPACE_ROLE_REQUIRED",
+              "workspace authorization status requires the admin or owner role",
+            );
+          }
+        }
+        const windowParam = url.searchParams.get("window_minutes");
+        let windowMs: number | undefined;
+        if (windowParam !== null) {
+          const minutes = Number(windowParam);
+          if (!Number.isFinite(minutes) || minutes <= 0) {
+            throw new ApiError(400, "INVALID_REQUEST", "window_minutes must be a positive number");
+          }
+          windowMs = minutes * 60 * 1000;
+        }
+        writeJson(
+          res,
+          200,
+          deps.authorizationStatus.view(
+            workspaceId,
+            actor.kind === "session" ? actor.ctx.user.id : "usr_local_operator",
+            windowMs !== undefined ? { window_ms: windowMs } : {},
+          ),
         );
         return;
       }

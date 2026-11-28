@@ -32,7 +32,13 @@
  */
 
 import type { ControlPlaneDb } from "./db.js";
-import { CURRENT_SCHEMA_VERSION, newId, nowIso } from "./db.js";
+import {
+  CURRENT_SCHEMA_VERSION,
+  SchemaVersionMismatchError,
+  assertSchemaSupported,
+  newId,
+  nowIso,
+} from "./db.js";
 import { NotFoundError, WorkspaceRepositorySetError } from "./errors.js";
 import type { EnterpriseScope, WorkspaceId, WorkspaceScope } from "./types.js";
 import type {
@@ -164,6 +170,7 @@ class SqliteWorkspaceRepositorySetRepository implements WorkspaceRepositorySetRe
   }
 
   gate(): DeploymentFeatureGate {
+    this.assertSchemaCurrent();
     const rows = this.db
       .prepare(
         `SELECT key, state, reason, min_schema_version, created_at, created_by
@@ -230,6 +237,7 @@ class SqliteWorkspaceRepositorySetRepository implements WorkspaceRepositorySetRe
 
   getSet(scope: WorkspaceScope): WorkspaceRepositorySet {
     const workspace = this.requireWorkspace(scope);
+    this.assertBindingStatesSupported(scope);
     const gate = this.gate();
     const archived = workspace.status !== "active";
     const bindings = this.listBindings(scope, { include_retired: archived });
@@ -358,6 +366,7 @@ class SqliteWorkspaceRepositorySetRepository implements WorkspaceRepositorySetRe
   // -------------------------------------------------------------------------
 
   private requireWorkspace(scope: WorkspaceScope): WorkspaceRow {
+    this.assertSchemaCurrent();
     const row = this.db
       .prepare(
         `SELECT id, enterprise_id, repository_id, provider_instance_id, status, repository_set_version
@@ -368,6 +377,63 @@ class SqliteWorkspaceRepositorySetRepository implements WorkspaceRepositorySetRe
       throw new NotFoundError("Workspace", scope.workspace_id);
     }
     return row;
+  }
+
+  /**
+   * Refuse to read authority out of a database migrated by a newer build.
+   *
+   * `openControlPlaneDb` checks this once at startup, which is not enough for
+   * a rolling deploy: a newer process can migrate the shared database while
+   * this one is still serving. Re-reading the version on every authority read
+   * (it is an indexed `MAX` over a tiny table) makes the next decision fail
+   * closed instead of silently applying an older build's rules to newer
+   * state. The refusal is a normal authorization error, never an unhandled
+   * crash, so the caller surfaces a safe denial.
+   */
+  private assertSchemaCurrent(): void {
+    try {
+      assertSchemaSupported(this.db, this.supportedSchemaVersion);
+    } catch (error) {
+      if (error instanceof SchemaVersionMismatchError) {
+        throw new WorkspaceRepositorySetError(
+          "SCHEMA_VERSION_UNSUPPORTED",
+          `The control-plane database schema ${error.database_version} is newer than this build's ${error.supported_version}; refusing to authorize from state this process cannot enforce`,
+          409,
+          {
+            database_schema_version: error.database_version,
+            build_schema_version: error.supported_version,
+          },
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Refuse a set containing a binding state this build does not understand.
+   *
+   * `listBindings` filters to `active` / `retired`. A future schema may add a
+   * further state; silently filtering an unknown row would shrink the set and
+   * could over-authorize the remaining repositories. The whole set is refused
+   * instead, and the caller reports `REPOSITORY_SET_STATE_UNSUPPORTED`.
+   */
+  private assertBindingStatesSupported(scope: WorkspaceScope): void {
+    const unknown = this.db
+      .prepare(
+        `SELECT status FROM workspace_repository_binding
+          WHERE enterprise_id = ? AND workspace_id = ?
+            AND status NOT IN ('active', 'retired')
+          LIMIT 1`,
+      )
+      .get(scope.enterprise_id, scope.workspace_id) as { status: string } | undefined;
+    if (unknown !== undefined) {
+      throw new WorkspaceRepositorySetError(
+        "REPOSITORY_SET_STATE_UNSUPPORTED",
+        `Workspace ${scope.workspace_id} has a repository binding in state ${JSON.stringify(unknown.status)}, which this build does not understand; refusing to authorize a set it cannot evaluate`,
+        409,
+        { workspace_id: scope.workspace_id, binding_state: unknown.status },
+      );
+    }
   }
 
   /**
