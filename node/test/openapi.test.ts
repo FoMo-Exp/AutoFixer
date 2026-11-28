@@ -98,6 +98,7 @@ const AUTH_ENDPOINTS: Array<[method: string, path: string]> = [
   // DAT-276/278: repository capability ceiling projection, enterprise-scoped
   // projection, and administrator reapproval.
   ["get", "/api/v1/workspaces/{workspace_id}/capabilities"],
+  ["get", "/api/v1/workspaces/{workspace_id}/authorization-status"],
   ["get", "/api/v1/enterprises/{enterprise_id}/capabilities"],
   [
     "get",

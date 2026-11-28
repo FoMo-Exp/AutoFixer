@@ -1753,6 +1753,38 @@ const MIGRATIONS: Migration[] = [
         BEGIN SELECT RAISE(ABORT, 'workspace_repository_set_confirmation rows are single-use'); END`,
     ],
   },
+  {
+    // Mixed-version protection, authorization audit and denial observability
+    // (DAT-296, ADR-0011).
+    //
+    // `auth_audit` is the existing append-only authorization trail: every
+    // membership, invitation, capability-ceiling and repository-set change
+    // already writes its evidence there. It gains the three fields a denial
+    // trend needs to be queryable by scope without parsing free-form JSON,
+    // plus storage-level append-only triggers so no application path (present
+    // or future) can rewrite history. Adding a column and an index is a
+    // forward-only change: a previously published migration is untouched.
+    //
+    // Existing rows keep nulls in the new columns; every read that uses them
+    // defines what a null means (an older event with no workspace scope is not
+    // attributed to any workspace).
+    version: 23,
+    statements: [
+      `ALTER TABLE auth_audit ADD COLUMN workspace_id TEXT`,
+      `ALTER TABLE auth_audit ADD COLUMN action TEXT`,
+      `ALTER TABLE auth_audit ADD COLUMN decision_code TEXT`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_audit_workspace_at
+        ON auth_audit(workspace_id, at)`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_audit_event_at
+        ON auth_audit(event, at)`,
+      `CREATE TRIGGER IF NOT EXISTS auth_audit_append_only_update
+        BEFORE UPDATE ON auth_audit
+        BEGIN SELECT RAISE(ABORT, 'auth_audit is append-only; append a new record'); END`,
+      `CREATE TRIGGER IF NOT EXISTS auth_audit_append_only_delete
+        BEFORE DELETE ON auth_audit
+        BEGIN SELECT RAISE(ABORT, 'auth_audit is append-only; never delete evidence'); END`,
+    ],
+  },
 ];
 
 /** Highest schema version this build knows how to run. */
@@ -1827,12 +1859,24 @@ export function assertSchemaSupported(
   db: ControlPlaneDb,
   supportedVersion: number = CURRENT_SCHEMA_VERSION,
 ): void {
-  const row = db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as
-    { version: number | null } | undefined;
-  const applied = typeof row?.version === "number" ? row.version : 0;
+  const applied = readSchemaVersion(db);
   if (applied > supportedVersion) {
     throw new SchemaVersionMismatchError(applied, supportedVersion);
   }
+}
+
+/**
+ * The highest schema version recorded in this database.
+ *
+ * Read (not cached) so an authorization path can prove the database it is
+ * serving was not migrated by a newer build in another process: a rolling
+ * deploy in which a newer migration runs while a process is still serving must
+ * fail closed on its next decision, not at its next restart.
+ */
+export function readSchemaVersion(db: ControlPlaneDb): number {
+  const row = db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as
+    { version: number | null } | undefined;
+  return typeof row?.version === "number" ? row.version : 0;
 }
 
 /**

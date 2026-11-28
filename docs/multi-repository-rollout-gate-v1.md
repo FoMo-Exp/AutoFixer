@@ -24,6 +24,19 @@ change is `node/test/repository-set-change-http.test.ts` §
 > consumes the context yet. The findings and blockers below are therefore still
 > in force: the gate must not be enabled in this build.
 
+> **DAT-296 update (2026-11-28).** Forward-version protection is now enforced
+> on every authority read (not only at process start), an unknown repository
+> binding state refuses the whole set, and every authorization refusal on a
+> protected path or worker step appends an immutable `authorization.denied`
+> record to the storage-append-only `auth_audit`. An admin/owner can read
+> build/database/gate/set versions, their own evidence freshness and a bounded
+> denial trend at `GET /api/v1/workspaces/{id}/authorization-status` — even
+> while authority is unverified. See
+> [contracts/mixed-version-audit-observability-v1.md](contracts/mixed-version-audit-observability-v1.md).
+> This closes the code side of blockers 5 and 6; the real rolling-upgrade
+> rehearsal and the release decision remain open, and nothing here enables the
+> gate.
+
 > **DAT-294 update (2026-11-28).** Every protected runtime path now consumes
 > that context
 > ([protected-path-authority-v1.md](contracts/protected-path-authority-v1.md)):
@@ -154,10 +167,14 @@ next subscription is refused.
    so an enabled multi-repository workspace cannot be returned to one repository
    through the API.
 4. **Real deployment evidence outstanding.** See §4.
-5. **Mixed-version operation is proven only in-process.** The schema and gate
-   guards fail closed, but the production rolling-upgrade sequence (old build,
-   new build, forward migration, rollback) has not been rehearsed against a real
-   deployment.
+5. **Mixed-version operation is proven in-process, not against a real
+   deployment.** DAT-296 added a per-authority-read schema guard (a rolling
+   deploy cannot leave an older build silently serving newer state), an unknown
+   binding-state refusal, and an append-only audit of every refusal. The
+   production rolling-upgrade sequence (old build, new build, forward
+   migration, rollback) has still not been rehearsed against a real deployment;
+   a build predating the guard cannot be retrofitted and must not be left
+   serving across a migration.
 
 ## 6. Preconditions for a later opening change
 
@@ -187,9 +204,14 @@ This document does not authorize any of them.
    deployment: OAuth login, enterprise directory, two providers, preview,
    confirmation, commit, then every path on the new set; process restart;
    mixed-version (old build refuses the new schema/gate row).
-6. **Observability.** Audit events, denial reasons, projection state and
-   freshness are queryable; dashboards alert on unexpected
-   `MULTI_REPOSITORY_SCOPE_*` or `capability_unverified` rates.
+6. **Observability — implemented (DAT-296), alert policy outstanding.**
+   Audit events, denial reasons, gate/schema/set versions and evidence
+   freshness are queryable through
+   `GET /api/v1/workspaces/{id}/authorization-status` (admin/owner) and the
+   append-only `auth_audit`; the bounded denial trend groups by safe code,
+   action and capability reason. A deployment-specific alert threshold for
+   unexpected `MULTI_REPOSITORY_SCOPE_*` / `capability_unverified` /
+   `schema_version_unsupported` rates remains release configuration.
 
 ## 7. Controlled rollout (after preconditions)
 

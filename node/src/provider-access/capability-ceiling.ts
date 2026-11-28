@@ -494,18 +494,35 @@ export function createCapabilityCeilingService(
       } catch {
         gateState = "unreadable";
       }
-      setBlocked =
-        error.code === "REPOSITORY_BINDING_MISSING"
-          ? "repository_missing"
-          : error.code === "REPOSITORY_BINDING_INCONSISTENT"
-            ? "repository_binding_inconsistent"
-            : error.code === "WORKSPACE_ARCHIVED"
-              ? "workspace_archived"
-              : error.code === "INSTALLATION_NOT_APPROVED"
-                ? "installation_not_approved"
-                : error.code === "REPOSITORY_BINDING_UNAPPROVED"
-                  ? "provider_instance_unapproved"
-                  : "repository_set_unsupported";
+      switch (error.code) {
+        case "REPOSITORY_BINDING_MISSING":
+          setBlocked = "repository_missing";
+          break;
+        case "REPOSITORY_BINDING_INCONSISTENT":
+          setBlocked = "repository_binding_inconsistent";
+          break;
+        case "WORKSPACE_ARCHIVED":
+          setBlocked = "workspace_archived";
+          break;
+        case "INSTALLATION_NOT_APPROVED":
+          setBlocked = "installation_not_approved";
+          break;
+        case "REPOSITORY_BINDING_UNAPPROVED":
+          setBlocked = "provider_instance_unapproved";
+          break;
+        case "SCHEMA_VERSION_UNSUPPORTED":
+          // A rolling deploy migrated the database past this build: the set
+          // cannot be evaluated, so authority fails closed (DAT-296).
+          setBlocked = "schema_version_unsupported";
+          break;
+        case "REPOSITORY_SET_STATE_UNSUPPORTED":
+          // A binding state this build does not understand: refusing the set
+          // prevents silently shrinking it (DAT-296).
+          setBlocked = "repository_set_state_unsupported";
+          break;
+        default:
+          setBlocked = "repository_set_unsupported";
+      }
     }
 
     // The stored set's verdict, reported separately from a preview's own

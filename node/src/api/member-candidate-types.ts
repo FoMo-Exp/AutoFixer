@@ -34,6 +34,8 @@ export const MEMBER_INELIGIBLE_REASONS = [
   "repository_access_removed",
   "no_code_read",
   "capability_store_unavailable",
+  "schema_version_unsupported",
+  "repository_set_state_unsupported",
 ] as const;
 
 export type MemberIneligibleReason = (typeof MEMBER_INELIGIBLE_REASONS)[number];

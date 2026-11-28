@@ -46,6 +46,10 @@ import {
   REPOSITORY_SET_OPENAPI_SCHEMAS,
   repositorySetOpenApiPaths,
 } from "./openapi-repository-set.js";
+import {
+  AUTHORIZATION_STATUS_OPENAPI_SCHEMAS,
+  authorizationStatusOpenApiPaths,
+} from "./openapi-authorization-status.js";
 import type { JsonObject } from "./openapi-types.js";
 import {
   CAPABILITY_DATA_CEILINGS,
@@ -6679,6 +6683,11 @@ export function buildOpenApiDocument(): OpenApiDocument {
   // multi-repository gate.
   Object.assign(paths, repositorySetOpenApiPaths());
 
+  // Workspace authorization status (DAT-296): schema/gate/set versions, the
+  // caller's own live evidence, and a bounded denial trend from the append-only
+  // audit. Operational evidence for an admin; never a grant.
+  Object.assign(paths, authorizationStatusOpenApiPaths());
+
   // Stamp the security requirement and 401 response onto every operation so
   // auth coverage cannot silently miss an endpoint.
   stampAuth(paths);
@@ -6687,7 +6696,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
     openapi: "3.1.0",
     info: {
       title: "ForgePilot orchestrator API",
-      version: "0.11.0",
+      version: "0.12.0",
       description:
         "forgepilot-api/v1: the Node-to-UI contract of the ForgePilot pilot, the " +
         "enterprise identity surface (DAT-202, ADR-0006), and the workspace, " +
@@ -6816,6 +6825,7 @@ export function buildOpenApiDocument(): OpenApiDocument {
         ...SECURITY_OPENAPI_SCHEMAS,
         ...RUNTIME_OPENAPI_SCHEMAS,
         ...REPOSITORY_SET_OPENAPI_SCHEMAS,
+        ...AUTHORIZATION_STATUS_OPENAPI_SCHEMAS,
         Error: errorSchema,
       },
       securitySchemes: {

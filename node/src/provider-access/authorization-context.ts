@@ -86,6 +86,8 @@ const SET_LEVEL_BLOCK_REASONS: ReadonlySet<CapabilityBlockReason> = new Set([
   "repository_binding_inconsistent",
   "installation_not_approved",
   "provider_instance_unapproved",
+  "schema_version_unsupported",
+  "repository_set_state_unsupported",
 ]);
 
 // ---------------------------------------------------------------------------

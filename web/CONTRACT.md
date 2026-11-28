@@ -902,3 +902,17 @@ Surface boundaries:
   provider identity, so the form collects `provider_instance_id`,
   `installation_ref` and `repository_id` (prefilling the workspace's current
   provider instance) and sends optional display metadata only when entered.
+
+## Workspace authorization status (DAT-296)
+
+Backend-only operational surface; the workbench does not consume it yet, and it
+is not a capability projection or a grant.
+
+| Endpoint                                                                  | Request fields               | Response type                   | Status |
+| ------------------------------------------------------------------------- | ---------------------------- | ------------------------------- | ------ |
+| `GET /api/v1/workspaces/{workspace_id}/authorization-status?window_minutes=` | optional `window_minutes` (1–10080, default 1440) | `WorkspaceAuthorizationStatus` | ✅     |
+
+Admin/owner only (`403 WORKSPACE_ROLE_REQUIRED` for viewer/member, `404` for a
+non-member). It stays readable while authority is unverified, because it exists
+to explain that state. Contract: OpenAPI `0.12.0`,
+`docs/contracts/mixed-version-audit-observability-v1.md`.

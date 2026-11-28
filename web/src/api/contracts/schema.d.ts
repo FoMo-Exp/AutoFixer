@@ -2550,6 +2550,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/{workspace_id}/authorization-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Workspace authorization status and denial trend
+         * @description Admin/owner-scoped, read-only evidence for incident response: build and database schema versions, the immutable multi-repository rollout gate, the workspace repository-set version, the caller's own live authorization context (per-repository evidence freshness and the safe refusal code), and denial counts by code/action/capability reason inside a bounded window. It remains readable while authority is unverified, which is the state it exists to explain. It grants nothing: every protected request decides on its own. It exposes no credential, repository URL or content, or other member's identity.
+         */
+        get: operations["getWorkspaceAuthorizationStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2892,7 +2912,7 @@ export interface components {
              * @description Machine code naming why the candidate cannot be imported. Every value is a refusal: an unverifiable provider fact never degrades into an implied eligibility, and an unlinked subject is never claimed through an email address. Null only when `eligible` is true.
              * @enum {string|null}
              */
-            ineligible_reason: "identity_unlinked" | "already_member" | "workspace_archived" | "repository_missing" | "repository_set_unsupported" | "repository_binding_inconsistent" | "installation_not_approved" | "provider_instance_unapproved" | "subject_missing" | "authority_unknown" | "authority_stale" | "verification_expired" | "permission_visibility_none" | "permission_visibility_partial" | "role_missing" | "unsupported_role" | "repository_access_removed" | "no_code_read" | "capability_store_unavailable" | null;
+            ineligible_reason: "identity_unlinked" | "already_member" | "workspace_archived" | "repository_missing" | "repository_set_unsupported" | "repository_binding_inconsistent" | "installation_not_approved" | "provider_instance_unapproved" | "subject_missing" | "authority_unknown" | "authority_stale" | "verification_expired" | "permission_visibility_none" | "permission_visibility_partial" | "role_missing" | "unsupported_role" | "repository_access_removed" | "no_code_read" | "capability_store_unavailable" | "schema_version_unsupported" | "repository_set_state_unsupported" | null;
             /**
              * @description Highest viewer/member role the candidate's verified capability intersection supports: `repository_write` on every repository allows `member`, otherwise only `viewer`. Null when ineligible. `admin`/`owner` are never provider-derived — they are a separate, audited owner decision.
              * @enum {string|null}
@@ -5488,7 +5508,7 @@ export interface components {
              * @description Why the *current* set already authorizes nothing, if it does.
              * @enum {string|null}
              */
-            current_set_blocked_reason: "workspace_archived" | "repository_missing" | "repository_set_unsupported" | "repository_binding_inconsistent" | "installation_not_approved" | "provider_instance_unapproved" | "subject_missing" | "authority_unknown" | "authority_stale" | "verification_expired" | "permission_visibility_none" | "permission_visibility_partial" | "role_missing" | "unsupported_role" | "repository_access_removed" | "no_code_read" | "capability_store_unavailable" | null;
+            current_set_blocked_reason: "workspace_archived" | "repository_missing" | "repository_set_unsupported" | "repository_binding_inconsistent" | "installation_not_approved" | "provider_instance_unapproved" | "subject_missing" | "authority_unknown" | "authority_stale" | "verification_expired" | "permission_visibility_none" | "permission_visibility_partial" | "role_missing" | "unsupported_role" | "repository_access_removed" | "no_code_read" | "capability_store_unavailable" | "schema_version_unsupported" | "repository_set_state_unsupported" | null;
             /** Format: date-time */
             checked_at: string;
             members: components["schemas"]["RepositorySetAdditionPreviewMember"][];
@@ -5528,7 +5548,7 @@ export interface components {
              * @description Why the proposed set does not verify, when it does not.
              * @enum {string|null}
              */
-            reason: "workspace_archived" | "repository_missing" | "repository_set_unsupported" | "repository_binding_inconsistent" | "installation_not_approved" | "provider_instance_unapproved" | "subject_missing" | "authority_unknown" | "authority_stale" | "verification_expired" | "permission_visibility_none" | "permission_visibility_partial" | "role_missing" | "unsupported_role" | "repository_access_removed" | "no_code_read" | "capability_store_unavailable" | null;
+            reason: "workspace_archived" | "repository_missing" | "repository_set_unsupported" | "repository_binding_inconsistent" | "installation_not_approved" | "provider_instance_unapproved" | "subject_missing" | "authority_unknown" | "authority_stale" | "verification_expired" | "permission_visibility_none" | "permission_visibility_partial" | "role_missing" | "unsupported_role" | "repository_access_removed" | "no_code_read" | "capability_store_unavailable" | "schema_version_unsupported" | "repository_set_state_unsupported" | null;
             /**
              * Format: date-time
              * @description Oldest verification timestamp behind the facts (safe bound).
@@ -5625,6 +5645,119 @@ export interface components {
             effective_owners: string[];
             /** Format: date-time */
             committed_at: string;
+        };
+        AuthorizationStatusRepository: {
+            repository_id: string;
+            provider_instance_id: string;
+            /** @enum {string} */
+            state: "verified" | "unverified" | "removed";
+            /** @description Provider-proven repository capabilities, in canonical order. */
+            capabilities: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+            /** @enum {string|null} */
+            reason: "workspace_archived" | "repository_missing" | "repository_set_unsupported" | "repository_binding_inconsistent" | "installation_not_approved" | "provider_instance_unapproved" | "subject_missing" | "authority_unknown" | "authority_stale" | "verification_expired" | "permission_visibility_none" | "permission_visibility_partial" | "role_missing" | "unsupported_role" | "repository_access_removed" | "no_code_read" | "capability_store_unavailable" | "schema_version_unsupported" | "repository_set_state_unsupported" | null;
+            /** Format: date-time */
+            verified_at: string | null;
+            /** @enum {string} */
+            freshness: "fresh" | "stale" | "expired" | "unknown";
+            target: boolean;
+        };
+        AuthorizationStatusCaller: {
+            /** @description False when this deployment or this database could not evaluate the context. */
+            evaluated: boolean;
+            allowed: boolean;
+            code: string | null;
+            status: number | null;
+            reason: string | null;
+            /** @enum {string|null} */
+            capability_reason: "workspace_archived" | "repository_missing" | "repository_set_unsupported" | "repository_binding_inconsistent" | "installation_not_approved" | "provider_instance_unapproved" | "subject_missing" | "authority_unknown" | "authority_stale" | "verification_expired" | "permission_visibility_none" | "permission_visibility_partial" | "role_missing" | "unsupported_role" | "repository_access_removed" | "no_code_read" | "capability_store_unavailable" | "schema_version_unsupported" | "repository_set_state_unsupported" | null;
+            requires_reconciliation: boolean;
+            /** @enum {string|null} */
+            required_capability: "code_read" | "issue_write" | "repository_write" | "repository_manage" | null;
+            target: {
+                provider_instance_id: string;
+                repository_id: string;
+            } | null;
+            repository_set_version: number | null;
+            context_schema_version: number | null;
+            /** @description Provider-proven repository capabilities, in canonical order. */
+            capabilities: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+            /** @description Provider-proven repository capabilities, in canonical order. */
+            available_capabilities: ("code_read" | "issue_write" | "repository_write" | "repository_manage")[];
+            freshness: {
+                /** Format: date-time */
+                verified_at: string | null;
+                fresh_window_ms: number;
+                stale_after_ms: number;
+                /** @enum {string} */
+                state: "fresh" | "stale" | "expired" | "unknown";
+            };
+            repositories: components["schemas"]["AuthorizationStatusRepository"][];
+        };
+        WorkspaceAuthorizationStatus: {
+            /** @enum {string} */
+            schema_version: "1";
+            enterprise_id: string;
+            workspace_id: string;
+            /** Format: date-time */
+            checked_at: string;
+            build: {
+                schema_version: number;
+                database_schema_version: number;
+                /** @description True when the database was migrated by a newer build than this process; authorization refuses on that state and names this fact. */
+                mixed_version: boolean;
+            };
+            rollout: {
+                gate: {
+                    key: string;
+                    /** @enum {string} */
+                    state: "enabled" | "disabled" | "unreadable";
+                    min_schema_version: number | null;
+                    unreadable_code: string | null;
+                };
+                /**
+                 * @description This build's complete-set enforcement mode; not a rollout switch.
+                 * @enum {string}
+                 */
+                enforcement: "complete" | "none";
+            };
+            repository_set: {
+                readable: boolean;
+                /** @description A stable repository-set refusal code when the set could not be read. */
+                unreadable_reason: string | null;
+                version: number | null;
+                repository_count: number | null;
+                multi_repository: boolean | null;
+                usable: boolean | null;
+                blocked_reason: string | null;
+            };
+            caller: components["schemas"]["AuthorizationStatusCaller"];
+            denials: {
+                /** Format: date-time */
+                since: string;
+                /** Format: date-time */
+                until: string;
+                window_ms: number;
+                total: number;
+                by_code: {
+                    code: string;
+                    count: number;
+                }[];
+                by_action: {
+                    action: string;
+                    count: number;
+                }[];
+                by_capability_reason: {
+                    /** @enum {string} */
+                    code: "workspace_archived" | "repository_missing" | "repository_set_unsupported" | "repository_binding_inconsistent" | "installation_not_approved" | "provider_instance_unapproved" | "subject_missing" | "authority_unknown" | "authority_stale" | "verification_expired" | "permission_visibility_none" | "permission_visibility_partial" | "role_missing" | "unsupported_role" | "repository_access_removed" | "no_code_read" | "capability_store_unavailable" | "schema_version_unsupported" | "repository_set_state_unsupported";
+                    count: number;
+                }[];
+                /** @description Sparse UTC hourly counts, oldest first; a missing hour is a zero. */
+                series?: {
+                    /** Format: date-time */
+                    bucket_start: string;
+                    count: number;
+                }[];
+            };
         };
         Error: {
             /** @description The shared versioned error envelope (ADR-0008, DAT-226 alignment): a stable machine code, the processing stage, the outcome category, a safe localizable user message, service-decided retryability, retry-after where applicable, the request_id trace/case reference, safe-only structured details, and the authorized next action. No field ever carries secrets, credentials, invitation tokens, or sensitive diagnostics; those stay behind separate access checks. */
@@ -15311,6 +15444,68 @@ export interface operations {
             };
             /** @description REPOSITORY_SET_CHANGE_AUDIT_FAILED — the whole change was rolled back */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getWorkspaceAuthorizationStatus: {
+        parameters: {
+            query?: {
+                /** @description Denial-trend window; clamped to the service's bounded range. */
+                window_minutes?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Workspace locator, resolved against the caller's live membership. */
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The workspace's authorization status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceAuthorizationStatus"];
+                };
+            };
+            /** @description INVALID_REQUEST — window_minutes is not a positive number */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description WORKSPACE_ROLE_REQUIRED — the caller is not admin or owner */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description NOT_FOUND — unknown workspace or no live membership */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

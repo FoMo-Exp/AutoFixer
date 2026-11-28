@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "ForgePilot orchestrator API",
-    "version": "0.11.0",
+    "version": "0.12.0",
     "description": "forgepilot-api/v1: the Node-to-UI contract of the ForgePilot pilot, the enterprise identity surface (DAT-202, ADR-0006), and the workspace, team, member, and invitation surface (DAT-205). The UI calls Node only; it never sees dsh sockets, boot tokens, Pi credentials, raw tool output, or provider credentials. Pi text is displayed only through the fail-closed pi_summary contract (DAT-191), whose classification boundary is DAT-192, whose trusted-source display boundary is DAT-193, and whose verifiable provenance record and read-side gate are DAT-194. Every error uses the shared versioned envelope (DAT-226 alignment, docs/contracts/error-envelope-v1.md vocabulary); authentication failures and cross-scope reads are non-enumerating; session invalidation terminates SSE subscriptions; and enterprise/workspace scope is always resolved server-side from authenticated membership — client-supplied identifiers never grant access. The collaboration surface (DAT-221, ADR-0007) defines durable issues, child tasks, bounded runs, immutable candidates, candidate-bound human pre-PR approvals, and broker-controlled deliveries; this contract is merged ahead of its serving implementation so dependent web work never invents fields, and it claims no running control until that implementation lands. Product stages and harness run states are separate vocabularies, and its outcome semantics are explicit: a `stopped` run or `needs_human` stop is a `stop` category — not retryable, requiring human disposition and a fresh run/grant; an `unknown` provider/delivery outcome is the `unknown` category — never auto-retried and requiring reconciliation before further writes; only service-decided bounded retries are `retry`, with `retryable` and `retry_after_seconds` on the shared envelope. Mutating collaboration commands are replay-safe by `Idempotency-Key`, and the issue SSE stream replays by `Last-Event-ID` with replay-stable event ids. client-supplied identifiers never grant access. Workspace memory (DAT-236) is bounded, cited, reproducible, and untrusted by construction: the bundle records the exact memory and retrieval-policy version it read, omits rather than dilutes, surfaces conflicts instead of overwriting, degrades to policy-only when the memory store is unavailable, and can never expand a capability grant — dsh remains the sole tool gate. The workspace dashboard (DAT-230, ADR-0008) is a read-only, workspace-scoped aggregate over invocation, cost, budget, trace and task telemetry: missing, stale, estimated and unknown data stays explicit and is never zero-filled, and financial, content and quarantine access stay separate. Generated from the orchestrator implementation; shapes are defined by docs/contracts/forgepilot-api-v1.md."
   },
   "servers": [
@@ -15876,6 +15876,99 @@
           }
         ]
       }
+    },
+    "/api/v1/workspaces/{workspace_id}/authorization-status": {
+      "get": {
+        "operationId": "getWorkspaceAuthorizationStatus",
+        "summary": "Workspace authorization status and denial trend",
+        "description": "Admin/owner-scoped, read-only evidence for incident response: build and database schema versions, the immutable multi-repository rollout gate, the workspace repository-set version, the caller's own live authorization context (per-repository evidence freshness and the safe refusal code), and denial counts by code/action/capability reason inside a bounded window. It remains readable while authority is unverified, which is the state it exists to explain. It grants nothing: every protected request decides on its own. It exposes no credential, repository URL or content, or other member's identity.",
+        "tags": [
+          "workspaces"
+        ],
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace locator, resolved against the caller's live membership."
+          },
+          {
+            "name": "window_minutes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10080,
+              "default": 1440
+            },
+            "description": "Denial-trend window; clamped to the service's bounded range."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The workspace's authorization status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceAuthorizationStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "INVALID_REQUEST — window_minutes is not a positive number",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED — missing, invalid, expired, or invalidated credential (bearer token or session cookie). The response is uniform for every authentication failure; it never names the cause (see the contract's Non-enumeration section).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "WORKSPACE_ROLE_REQUIRED — the caller is not admin or owner",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND — unknown workspace or no live membership",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -17206,6 +17299,8 @@
               "repository_access_removed",
               "no_code_read",
               "capability_store_unavailable",
+              "schema_version_unsupported",
+              "repository_set_state_unsupported",
               null
             ],
             "description": "Machine code naming why the candidate cannot be imported. Every value is a refusal: an unverifiable provider fact never degrades into an implied eligibility, and an unlinked subject is never claimed through an email address. Null only when `eligible` is true."
@@ -28045,6 +28140,8 @@
               "repository_access_removed",
               "no_code_read",
               "capability_store_unavailable",
+              "schema_version_unsupported",
+              "repository_set_state_unsupported",
               null
             ],
             "description": "Why the *current* set already authorizes nothing, if it does."
@@ -28218,6 +28315,8 @@
               "repository_access_removed",
               "no_code_read",
               "capability_store_unavailable",
+              "schema_version_unsupported",
+              "repository_set_state_unsupported",
               null
             ],
             "description": "Why the proposed set does not verify, when it does not."
@@ -28583,6 +28682,578 @@
           "committed_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "AuthorizationStatusRepository": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "repository_id",
+          "provider_instance_id",
+          "state",
+          "capabilities",
+          "reason",
+          "verified_at",
+          "freshness",
+          "target"
+        ],
+        "properties": {
+          "repository_id": {
+            "type": "string"
+          },
+          "provider_instance_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "unverified",
+              "removed"
+            ]
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "code_read",
+                "issue_write",
+                "repository_write",
+                "repository_manage"
+              ]
+            },
+            "description": "Provider-proven repository capabilities, in canonical order."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "workspace_archived",
+              "repository_missing",
+              "repository_set_unsupported",
+              "repository_binding_inconsistent",
+              "installation_not_approved",
+              "provider_instance_unapproved",
+              "subject_missing",
+              "authority_unknown",
+              "authority_stale",
+              "verification_expired",
+              "permission_visibility_none",
+              "permission_visibility_partial",
+              "role_missing",
+              "unsupported_role",
+              "repository_access_removed",
+              "no_code_read",
+              "capability_store_unavailable",
+              "schema_version_unsupported",
+              "repository_set_state_unsupported",
+              null
+            ]
+          },
+          "verified_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "freshness": {
+            "type": "string",
+            "enum": [
+              "fresh",
+              "stale",
+              "expired",
+              "unknown"
+            ]
+          },
+          "target": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AuthorizationStatusCaller": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "evaluated",
+          "allowed",
+          "code",
+          "status",
+          "reason",
+          "capability_reason",
+          "requires_reconciliation",
+          "required_capability",
+          "target",
+          "repository_set_version",
+          "context_schema_version",
+          "capabilities",
+          "available_capabilities",
+          "freshness",
+          "repositories"
+        ],
+        "properties": {
+          "evaluated": {
+            "type": "boolean",
+            "description": "False when this deployment or this database could not evaluate the context."
+          },
+          "allowed": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "capability_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "workspace_archived",
+              "repository_missing",
+              "repository_set_unsupported",
+              "repository_binding_inconsistent",
+              "installation_not_approved",
+              "provider_instance_unapproved",
+              "subject_missing",
+              "authority_unknown",
+              "authority_stale",
+              "verification_expired",
+              "permission_visibility_none",
+              "permission_visibility_partial",
+              "role_missing",
+              "unsupported_role",
+              "repository_access_removed",
+              "no_code_read",
+              "capability_store_unavailable",
+              "schema_version_unsupported",
+              "repository_set_state_unsupported",
+              null
+            ]
+          },
+          "requires_reconciliation": {
+            "type": "boolean"
+          },
+          "required_capability": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "code_read",
+              "issue_write",
+              "repository_write",
+              "repository_manage",
+              null
+            ]
+          },
+          "target": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "provider_instance_id",
+              "repository_id"
+            ],
+            "properties": {
+              "provider_instance_id": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              }
+            }
+          },
+          "repository_set_version": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "context_schema_version": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "code_read",
+                "issue_write",
+                "repository_write",
+                "repository_manage"
+              ]
+            },
+            "description": "Provider-proven repository capabilities, in canonical order."
+          },
+          "available_capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "code_read",
+                "issue_write",
+                "repository_write",
+                "repository_manage"
+              ]
+            },
+            "description": "Provider-proven repository capabilities, in canonical order."
+          },
+          "freshness": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "verified_at",
+              "fresh_window_ms",
+              "stale_after_ms",
+              "state"
+            ],
+            "properties": {
+              "verified_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "fresh_window_ms": {
+                "type": "integer"
+              },
+              "stale_after_ms": {
+                "type": "integer"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "fresh",
+                  "stale",
+                  "expired",
+                  "unknown"
+                ]
+              }
+            }
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuthorizationStatusRepository"
+            }
+          }
+        }
+      },
+      "WorkspaceAuthorizationStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema_version",
+          "enterprise_id",
+          "workspace_id",
+          "checked_at",
+          "build",
+          "rollout",
+          "repository_set",
+          "caller",
+          "denials"
+        ],
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "enum": [
+              "1"
+            ]
+          },
+          "enterprise_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          },
+          "checked_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "build": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "schema_version",
+              "database_schema_version",
+              "mixed_version"
+            ],
+            "properties": {
+              "schema_version": {
+                "type": "integer"
+              },
+              "database_schema_version": {
+                "type": "integer"
+              },
+              "mixed_version": {
+                "type": "boolean",
+                "description": "True when the database was migrated by a newer build than this process; authorization refuses on that state and names this fact."
+              }
+            }
+          },
+          "rollout": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "gate",
+              "enforcement"
+            ],
+            "properties": {
+              "gate": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "key",
+                  "state",
+                  "min_schema_version",
+                  "unreadable_code"
+                ],
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "enabled",
+                      "disabled",
+                      "unreadable"
+                    ]
+                  },
+                  "min_schema_version": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "unreadable_code": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              },
+              "enforcement": {
+                "type": "string",
+                "enum": [
+                  "complete",
+                  "none"
+                ],
+                "description": "This build's complete-set enforcement mode; not a rollout switch."
+              }
+            }
+          },
+          "repository_set": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "readable",
+              "unreadable_reason",
+              "version",
+              "repository_count",
+              "multi_repository",
+              "usable",
+              "blocked_reason"
+            ],
+            "properties": {
+              "readable": {
+                "type": "boolean"
+              },
+              "unreadable_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "A stable repository-set refusal code when the set could not be read."
+              },
+              "version": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "repository_count": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "multi_repository": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "usable": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "blocked_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "caller": {
+            "$ref": "#/components/schemas/AuthorizationStatusCaller"
+          },
+          "denials": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "since",
+              "until",
+              "window_ms",
+              "total",
+              "by_code",
+              "by_action",
+              "by_capability_reason"
+            ],
+            "properties": {
+              "since": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "until": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "window_ms": {
+                "type": "integer"
+              },
+              "total": {
+                "type": "integer"
+              },
+              "by_code": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "code",
+                    "count"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "count": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              "by_action": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "action",
+                    "count"
+                  ],
+                  "properties": {
+                    "action": {
+                      "type": "string"
+                    },
+                    "count": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              "by_capability_reason": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "code",
+                    "count"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "workspace_archived",
+                        "repository_missing",
+                        "repository_set_unsupported",
+                        "repository_binding_inconsistent",
+                        "installation_not_approved",
+                        "provider_instance_unapproved",
+                        "subject_missing",
+                        "authority_unknown",
+                        "authority_stale",
+                        "verification_expired",
+                        "permission_visibility_none",
+                        "permission_visibility_partial",
+                        "role_missing",
+                        "unsupported_role",
+                        "repository_access_removed",
+                        "no_code_read",
+                        "capability_store_unavailable",
+                        "schema_version_unsupported",
+                        "repository_set_state_unsupported"
+                      ]
+                    },
+                    "count": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              "series": {
+                "type": "array",
+                "description": "Sparse UTC hourly counts, oldest first; a missing hour is a zero.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "bucket_start",
+                    "count"
+                  ],
+                  "properties": {
+                    "bucket_start": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "count": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       },

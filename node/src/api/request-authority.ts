@@ -39,6 +39,9 @@ import type {
 } from "../control-plane/repositories.js";
 import type { EnterpriseId, WorkspaceId, WorkspaceScope } from "../control-plane/types.js";
 import type { CapabilityCeilingService } from "../provider-access/capability-ceiling.js";
+import { requiredCapabilityForAction } from "../provider-access/repository-capabilities.js";
+import { CURRENT_SCHEMA_VERSION } from "../control-plane/db.js";
+import type { AuthorizationAuditRepository } from "../control-plane/authorization-audit-repositories.js";
 import type {
   AuthorizationContextService,
   AuthorizationDecisionCode,
@@ -114,6 +117,15 @@ export interface RequestAuthorityDeps {
    * SSE subscriptions in this process; decisions themselves are never cached.
    */
   epoch?: AuthorityEpoch;
+  /**
+   * Append-only denial audit (DAT-296). Every refusal on a protected request
+   * path appends one safe record (actor, workspace, action, target identity,
+   * set/context/build versions, decision code). Allowed requests are not
+   * recorded here: their own domain transaction carries the required audit
+   * row, and the authorization boundary adds the fact domains never see — the
+   * refusal. Unset keeps the boundary unaudited (test/legacy wiring only).
+   */
+  authorizations?: AuthorizationAuditRepository;
   clock?: () => Date;
   freshWindowMs?: number;
   staleAfterMs?: number;
@@ -148,6 +160,15 @@ export interface RequestAuthorityScope {
 export interface RequestAuthorityDecision extends AccessDecision {
   /** Stable decision code (context code, or the legacy classification). */
   code: AuthorizationDecisionCode | "FORBIDDEN";
+  /**
+   * The repository-set version and context schema the decision was formed
+   * against (DAT-296). Present when the versioned context decided; absent for
+   * the legacy single-integration path. Recorded with a denial so evidence
+   * names the exact facts that were refused, never a later re-read.
+   */
+  repository_set_version?: number | null;
+  target?: RepositoryTarget | null;
+  context_schema_version?: number | null;
 }
 
 export interface RequestAuthority {
@@ -160,12 +181,23 @@ export interface RequestAuthority {
    * second, weaker meaning of enforcement.
    */
   isEnforcing(workspaceId?: WorkspaceId): boolean;
-  /** Non-throwing decision (used by live streams re-checking on change). */
+  /**
+   * Non-throwing decision (used by live streams re-checking on change, and by
+   * a caller that makes a second decision on the same request).
+   *
+   * `options.audit` appends the `authorization.denied` record when the decision
+   * refuses, exactly once for that decision. A caller uses it when the refusal
+   * is acted upon but no `require` covers it — for example the collab delivery
+   * decision taken after the request-boundary `require` already allowed, where
+   * authority may change in between. `require` records its own refusal, so it
+   * must not pass this option.
+   */
   check(
     userId: string,
     action: ActionKind,
     workspaceId?: WorkspaceId,
     scope?: RequestAuthorityScope,
+    options?: { audit?: boolean },
   ): RequestAuthorityDecision;
   /** Enforce one request action; throws {@link ApiError} on denial. */
   require(
@@ -417,6 +449,9 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
         authority_verified_at: null,
         checked_at: at,
         code: resolved.denial,
+        repository_set_version: scope.expected_set_version ?? null,
+        target: scope.target ?? null,
+        context_schema_version: null,
       };
     }
     const context = deps.contexts!.evaluate({
@@ -440,10 +475,13 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
       authority_verified_at: context.freshness.verified_at,
       checked_at: context.checked_at,
       code: decision.code,
+      repository_set_version: context.repository_set.version,
+      target: resolved.target,
+      context_schema_version: context.schema_version,
     };
   }
 
-  function check(
+  function decide(
     userId: string,
     action: ActionKind,
     workspaceId?: WorkspaceId,
@@ -510,6 +548,48 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
     };
   }
 
+  /**
+   * Append one refusal. Required evidence: a failure propagates and the action
+   * stays refused; it is never swallowed into an allow.
+   */
+  function recordDenial(
+    decision: RequestAuthorityDecision,
+    action: ActionKind,
+    workspaceId: WorkspaceId,
+    actorUserId: string,
+  ): void {
+    deps.authorizations?.recordDenial({
+      enterprise_id: deps.enterpriseId,
+      workspace_id: workspaceId,
+      actor_kind: "user",
+      actor_user_id: actorUserId,
+      action,
+      decision_code: decision.code,
+      reason: decision.reason ?? null,
+      capability_reason: decision.capability_reason ?? null,
+      required_capability: requiredCapabilityForAction(action),
+      requires_reconciliation: decision.requires_reconciliation === true,
+      target: decision.target ?? null,
+      repository_set_version: decision.repository_set_version ?? null,
+      context_schema_version: decision.context_schema_version ?? null,
+      build_schema_version: CURRENT_SCHEMA_VERSION,
+    });
+  }
+
+  function check(
+    userId: string,
+    action: ActionKind,
+    workspaceId?: WorkspaceId,
+    scope: RequestAuthorityScope = {},
+    options: { audit?: boolean } = {},
+  ): RequestAuthorityDecision {
+    const decision = decide(userId, action, workspaceId, scope);
+    if (!decision.allowed && options.audit === true) {
+      recordDenial(decision, action, workspaceId ?? deps.workspaceId, userId);
+    }
+    return decision;
+  }
+
   return {
     epoch,
     isEnforcing: authorityInPlay,
@@ -520,8 +600,11 @@ export function createRequestAuthority(deps: RequestAuthorityDeps): RequestAutho
       workspaceId?: WorkspaceId,
       scope: RequestAuthorityScope = {},
     ): void {
-      const decision = check(userId, action, workspaceId, scope);
+      const decision = decide(userId, action, workspaceId, scope);
       if (!decision.allowed) {
+        // Recorded exactly once here; `require` never delegates to the
+        // audited `check` path.
+        recordDenial(decision, action, workspaceId ?? deps.workspaceId, userId);
         throw apiErrorForDenial(decision);
       }
     },

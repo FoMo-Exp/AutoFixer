@@ -16,7 +16,25 @@ export {
   newId,
   nowIso,
   openControlPlaneDb,
+  readSchemaVersion,
 } from "./db.js";
+
+export {
+  AUTHORIZATION_DENIED_EVENT,
+  AUTHORIZATION_DENIAL_WINDOW_MAX_MS,
+  AUTHORIZATION_DENIAL_WINDOW_MIN_MS,
+  createAuthorizationAuditRepository,
+} from "./authorization-audit-repositories.js";
+export type {
+  AuthorizationAuditRepository,
+  AuthorizationAuditTarget,
+  AuthorizationDenialBucket,
+  AuthorizationDenialCount,
+  AuthorizationDenialInput,
+  AuthorizationDenialRecord,
+  AuthorizationDenialTrend,
+  AuthorizationDenialTrendQuery,
+} from "./authorization-audit-repositories.js";
 
 export {
   CapabilityCeilingError,
